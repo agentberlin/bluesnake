@@ -5,7 +5,7 @@ set -e
 
 # Get the repo root (where this script is located)
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DESKTOP_DIR="$REPO_ROOT/desktop"
+DESKTOP_DIR="$REPO_ROOT/cmd/desktop"
 
 echo "🔨 Building BlueSnake..."
 cd "$DESKTOP_DIR"
