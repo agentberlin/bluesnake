@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/agentberlin/bluesnake"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -24,6 +25,24 @@ type CrawlResult struct {
 	Error      string `json:"error,omitempty"`
 }
 
+// ProjectInfo represents project information for the frontend
+type ProjectInfo struct {
+	ID            uint   `json:"id"`
+	URL           string `json:"url"`
+	Domain        string `json:"domain"`
+	CrawlDateTime int64  `json:"crawlDateTime"`
+	CrawlDuration int64  `json:"crawlDuration"`
+	PagesCrawled  int    `json:"pagesCrawled"`
+}
+
+// crawlStats tracks crawl statistics
+type crawlStats struct {
+	startTime    time.Time
+	pagesCrawled int
+	url          string
+	domain       string
+}
+
 // NewApp creates a new App application struct
 func NewApp() *App {
 	return &App{}
@@ -33,6 +52,11 @@ func NewApp() *App {
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+
+	// Initialize database
+	if err := InitDB(); err != nil {
+		runtime.LogErrorf(ctx, "Failed to initialize database: %v", err)
+	}
 }
 
 // StartCrawl initiates a crawl for the given URL
@@ -49,6 +73,14 @@ func (a *App) StartCrawl(urlStr string) error {
 }
 
 func (a *App) runCrawler(parsedURL *url.URL) {
+	// Initialize crawl stats
+	stats := &crawlStats{
+		startTime:    time.Now(),
+		pagesCrawled: 0,
+		url:          parsedURL.String(),
+		domain:       parsedURL.Hostname(),
+	}
+
 	c := bluesnake.NewCollector(
 		bluesnake.EnableJSRendering(),
 		bluesnake.AllowedDomains(parsedURL.Hostname()),
@@ -101,6 +133,9 @@ func (a *App) runCrawler(parsedURL *url.URL) {
 			Indexable: isIndexable,
 		}
 
+		// Increment pages crawled
+		stats.pagesCrawled++
+
 		// Emit result to frontend
 		runtime.EventsEmit(a.ctx, "crawl:result", result)
 	})
@@ -123,8 +158,47 @@ func (a *App) runCrawler(parsedURL *url.URL) {
 	c.Visit(parsedURL.String())
 	c.Wait()
 
+	// Calculate crawl duration
+	crawlDuration := time.Since(stats.startTime).Milliseconds()
+
+	// Save project to database
+	err := SaveProject(
+		stats.url,
+		stats.domain,
+		stats.startTime.Unix(),
+		crawlDuration,
+		stats.pagesCrawled,
+	)
+
+	if err != nil {
+		runtime.LogErrorf(a.ctx, "Failed to save project: %v", err)
+	}
+
 	// Send crawl complete event
 	runtime.EventsEmit(a.ctx, "crawl:completed", map[string]string{
 		"message": "Crawl completed",
 	})
+}
+
+// GetProjects returns all projects from the database
+func (a *App) GetProjects() ([]ProjectInfo, error) {
+	projects, err := GetAllProjects()
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to ProjectInfo for frontend
+	projectInfos := make([]ProjectInfo, len(projects))
+	for i, p := range projects {
+		projectInfos[i] = ProjectInfo{
+			ID:            p.ID,
+			URL:           p.URL,
+			Domain:        p.Domain,
+			CrawlDateTime: p.CrawlDateTime,
+			CrawlDuration: p.CrawlDuration,
+			PagesCrawled:  p.PagesCrawled,
+		}
+	}
+
+	return projectInfos, nil
 }

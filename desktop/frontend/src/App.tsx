@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl } from "../wailsjs/go/main/App";
+import { StartCrawl, GetProjects } from "../wailsjs/go/main/App";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 
@@ -12,15 +12,28 @@ interface CrawlResult {
   error?: string;
 }
 
+interface ProjectInfo {
+  id: number;
+  url: string;
+  domain: string;
+  crawlDateTime: number;
+  crawlDuration: number;
+  pagesCrawled: number;
+}
+
 function App() {
   const [url, setUrl] = useState('');
   const [isCrawling, setIsCrawling] = useState(false);
   const [results, setResults] = useState<CrawlResult[]>([]);
   const [currentUrl, setCurrentUrl] = useState('');
   const [hasStarted, setHasStarted] = useState(false);
+  const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    // Load projects on start
+    loadProjects();
+
     // Listen for crawl events
     EventsOn("crawl:started", (data: any) => {
       setIsCrawling(true);
@@ -43,8 +56,19 @@ function App() {
     EventsOn("crawl:completed", () => {
       setIsCrawling(false);
       setCurrentUrl('');
+      // Reload projects after crawl completes
+      loadProjects();
     });
   }, []);
+
+  const loadProjects = async () => {
+    try {
+      const projectList = await GetProjects();
+      setProjects(projectList || []);
+    } catch (error) {
+      console.error('Failed to load projects:', error);
+    }
+  };
 
   const handleStartCrawl = async () => {
     if (!url.trim()) return;
@@ -69,6 +93,28 @@ function App() {
     setUrl('');
     setIsCrawling(false);
     setCurrentUrl('');
+  };
+
+  const handleProjectClick = async (projectUrl: string) => {
+    setUrl(projectUrl);
+    await handleStartCrawl();
+  };
+
+  const formatDate = (timestamp: number): string => {
+    const date = new Date(timestamp * 1000);
+    return date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    });
+  };
+
+  const formatDuration = (ms: number): string => {
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}m ${remainingSeconds}s`;
   };
 
   const getStatusColor = (status: number): string => {
@@ -116,6 +162,37 @@ function App() {
               </svg>
             </button>
           </div>
+
+          {projects.length > 0 && (
+            <div className="projects-section">
+              <h3 className="projects-title">Recent Projects</h3>
+              <div className="projects-grid">
+                {projects.map((project) => (
+                  <div
+                    key={project.id}
+                    className="project-card"
+                    onClick={() => handleProjectClick(project.url)}
+                  >
+                    <div className="project-header">
+                      <div className="project-domain">{project.domain}</div>
+                      <div className="project-date">{formatDate(project.crawlDateTime)}</div>
+                    </div>
+                    <div className="project-url">{project.url}</div>
+                    <div className="project-stats">
+                      <div className="project-stat">
+                        <span className="project-stat-value">{project.pagesCrawled}</span>
+                        <span className="project-stat-label">pages</span>
+                      </div>
+                      <div className="project-stat">
+                        <span className="project-stat-value">{formatDuration(project.crawlDuration)}</span>
+                        <span className="project-stat-label">duration</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
