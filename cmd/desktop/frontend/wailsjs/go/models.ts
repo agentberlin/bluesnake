@@ -98,6 +98,7 @@ export namespace main {
 	    id: number;
 	    url: string;
 	    domain: string;
+	    faviconPath: string;
 	    crawlDateTime: number;
 	    crawlDuration: number;
 	    pagesCrawled: number;
@@ -112,6 +113,7 @@ export namespace main {
 	        this.id = source["id"];
 	        this.url = source["url"];
 	        this.domain = source["domain"];
+	        this.faviconPath = source["faviconPath"];
 	        this.crawlDateTime = source["crawlDateTime"];
 	        this.crawlDuration = source["crawlDuration"];
 	        this.pagesCrawled = source["pagesCrawled"];

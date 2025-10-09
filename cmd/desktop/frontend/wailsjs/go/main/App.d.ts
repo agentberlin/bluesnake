@@ -12,6 +12,8 @@ export function GetCrawlWithResults(arg1:number):Promise<main.CrawlResultDetaile
 
 export function GetCrawls(arg1:number):Promise<Array<main.CrawlInfo>>;
 
+export function GetFaviconData(arg1:string):Promise<string>;
+
 export function GetProjects():Promise<Array<main.ProjectInfo>>;
 
 export function StartCrawl(arg1:string):Promise<void>;

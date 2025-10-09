@@ -22,6 +22,10 @@ export function GetCrawls(arg1) {
   return window['go']['main']['App']['GetCrawls'](arg1);
 }
 
+export function GetFaviconData(arg1) {
+  return window['go']['main']['App']['GetFaviconData'](arg1);
+}
+
 export function GetProjects() {
   return window['go']['main']['App']['GetProjects']();
 }

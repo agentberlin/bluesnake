@@ -2,8 +2,12 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -23,12 +27,13 @@ type Config struct {
 
 // Project represents a project (base URL) that can have multiple crawls
 type Project struct {
-	ID        uint     `gorm:"primaryKey"`
-	URL       string   `gorm:"not null"` // Normalized URL for the project
-	Domain    string   `gorm:"uniqueIndex;not null"` // Domain identifier (includes subdomain)
-	Crawls    []Crawl  `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
-	CreatedAt int64    `gorm:"autoCreateTime"`
-	UpdatedAt int64    `gorm:"autoUpdateTime"`
+	ID          uint     `gorm:"primaryKey"`
+	URL         string   `gorm:"not null"` // Normalized URL for the project
+	Domain      string   `gorm:"uniqueIndex;not null"` // Domain identifier (includes subdomain)
+	FaviconPath string   `gorm:"type:text"` // Path to cached favicon
+	Crawls      []Crawl  `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
+	CreatedAt   int64    `gorm:"autoCreateTime"`
+	UpdatedAt   int64    `gorm:"autoUpdateTime"`
 }
 
 // Crawl represents a single crawl session for a project
@@ -146,6 +151,55 @@ func GetConfig(domain string) (*Config, error) {
 	return GetOrCreateConfig(domain)
 }
 
+// fetchAndSaveFavicon fetches the favicon for a domain and saves it locally
+func fetchAndSaveFavicon(projectID uint, domain string) (string, error) {
+	// Get user home directory
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get user home directory: %v", err)
+	}
+
+	// Create project directory
+	projectDir := filepath.Join(homeDir, ".bluesnake", "projects", fmt.Sprintf("%d", projectID))
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create project directory: %v", err)
+	}
+
+	// Extract base domain (remove port if present for Google favicon API)
+	baseDomain := domain
+	if strings.Contains(domain, ":") {
+		if parsedURL, err := url.Parse("http://" + domain); err == nil {
+			baseDomain = parsedURL.Hostname()
+		}
+	}
+
+	// Fetch favicon from Google's favicon service
+	faviconURL := fmt.Sprintf("https://www.google.com/s2/favicons?domain=%s&sz=128", url.QueryEscape(baseDomain))
+	resp, err := http.Get(faviconURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch favicon: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to fetch favicon: status %d", resp.StatusCode)
+	}
+
+	// Save favicon to file
+	faviconPath := filepath.Join(projectDir, "favicon.png")
+	file, err := os.Create(faviconPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create favicon file: %v", err)
+	}
+	defer file.Close()
+
+	if _, err := io.Copy(file, resp.Body); err != nil {
+		return "", fmt.Errorf("failed to save favicon: %v", err)
+	}
+
+	return faviconPath, nil
+}
+
 // GetOrCreateProject gets or creates a project by domain
 func GetOrCreateProject(url string, domain string) (*Project, error) {
 	var project Project
@@ -160,6 +214,15 @@ func GetOrCreateProject(url string, domain string) (*Project, error) {
 		if err := db.Create(&project).Error; err != nil {
 			return nil, fmt.Errorf("failed to create project: %v", err)
 		}
+
+		// Fetch and save favicon asynchronously (don't fail if this fails)
+		go func(projectID uint, domain string) {
+			if faviconPath, err := fetchAndSaveFavicon(projectID, domain); err == nil {
+				// Update project with favicon path
+				db.Model(&Project{}).Where("id = ?", projectID).Update("favicon_path", faviconPath)
+			}
+		}(project.ID, domain)
+
 		return &project, nil
 	}
 
@@ -171,6 +234,15 @@ func GetOrCreateProject(url string, domain string) (*Project, error) {
 	if project.URL != url {
 		project.URL = url
 		db.Save(&project)
+	}
+
+	// If favicon doesn't exist, try to fetch it
+	if project.FaviconPath == "" {
+		go func(projectID uint, domain string) {
+			if faviconPath, err := fetchAndSaveFavicon(projectID, domain); err == nil {
+				db.Model(&Project{}).Where("id = ?", projectID).Update("favicon_path", faviconPath)
+			}
+		}(project.ID, domain)
 	}
 
 	return &project, nil
@@ -217,13 +289,28 @@ func UpdateCrawlStats(crawlID uint, crawlDuration int64, pagesCrawled int) error
 // GetAllProjects returns all projects with their latest crawl info
 func GetAllProjects() ([]Project, error) {
 	var projects []Project
-	// Preload the most recent crawl for each project
-	result := db.Preload("Crawls", func(db *gorm.DB) *gorm.DB {
-		return db.Order("crawl_date_time DESC").Limit(1)
-	}).Find(&projects)
 
+	// First, get all projects
+	result := db.Order("id ASC").Find(&projects)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get projects: %v", result.Error)
+	}
+
+	// For each project, manually fetch the latest crawl
+	for i := range projects {
+		var latestCrawl Crawl
+		err := db.Where("project_id = ?", projects[i].ID).
+			Order("crawl_date_time DESC").
+			First(&latestCrawl).Error
+
+		if err == nil {
+			// Found a crawl, add it to the project
+			projects[i].Crawls = []Crawl{latestCrawl}
+		} else if err != gorm.ErrRecordNotFound {
+			// An actual error occurred (not just "no records")
+			return nil, fmt.Errorf("failed to get latest crawl for project %d: %v", projects[i].ID, err)
+		}
+		// If err == gorm.ErrRecordNotFound, Crawls will remain empty slice
 	}
 
 	return projects, nil

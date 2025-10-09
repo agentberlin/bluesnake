@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { GetConfigForDomain, UpdateConfigForDomain } from "../wailsjs/go/main/App";
 import './Config.css';
-import logo from './assets/images/bluesnake-logo.png';
 
 interface ConfigProps {
   url: string;
@@ -63,10 +62,7 @@ function Config({ url, onClose }: ConfigProps) {
       <div className="config-page">
         <div className="config-header">
           <div className="config-header-content">
-            <div className="brand">
-              <img src={logo} alt="BlueSnake Logo" className="brand-logo" />
-              <h2 className="config-title">Configuration</h2>
-            </div>
+            <h2 className="config-title">Configuration</h2>
             <button className="config-close-button" onClick={onClose} title="Close">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="18" y1="6" x2="6" y2="18"></line>
