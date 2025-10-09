@@ -119,6 +119,9 @@ type Collector struct {
 	// MaxRequests limit the number of requests done by the instance.
 	// Set it to 0 for infinite requests (default).
 	MaxRequests uint32
+	// EnableRendering enables JavaScript rendering using headless Chrome.
+	// When set to true, pages will be rendered with chromedp before parsing.
+	EnableRendering bool
 
 	store                    storage.Storage
 	debugger                 debug.Debugger
@@ -481,6 +484,14 @@ func CheckHead() CollectorOption {
 func CacheExpiration(d time.Duration) CollectorOption {
 	return func(c *Collector) {
 		c.CacheExpiration = d
+	}
+}
+
+// EnableJSRendering enables JavaScript rendering using headless Chrome.
+// When enabled, pages will be rendered with chromedp before parsing.
+func EnableJSRendering() CollectorOption {
+	return func(c *Collector) {
+		c.EnableRendering = true
 	}
 }
 
@@ -1198,7 +1209,23 @@ func (c *Collector) handleOnHTML(resp *Response) error {
 		return nil
 	}
 
-	doc, err := goquery.NewDocumentFromReader(bytes.NewBuffer(resp.Body))
+	// If rendering is enabled, use chromedp to get the rendered HTML
+	var bodyReader *bytes.Buffer
+	if c.EnableRendering {
+		renderer := getRenderer()
+		renderedHTML, err := renderer.RenderPage(resp.Request.URL.String())
+		if err != nil {
+			// If rendering fails, fall back to original HTML
+			log.Printf("Chromedp rendering failed for %s: %v. Falling back to non-rendered HTML", resp.Request.URL.String(), err)
+			bodyReader = bytes.NewBuffer(resp.Body)
+		} else {
+			bodyReader = bytes.NewBufferString(renderedHTML)
+		}
+	} else {
+		bodyReader = bytes.NewBuffer(resp.Body)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(bodyReader)
 	if err != nil {
 		return err
 	}

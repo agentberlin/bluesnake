@@ -12,6 +12,7 @@ import (
 
 func main() {
 	urlFlag := flag.String("url", "", "URL to crawl")
+	renderFlag := flag.Bool("r", false, "Enable JavaScript rendering with headless Chrome")
 	flag.Parse()
 
 	if *urlFlag == "" {
@@ -23,9 +24,14 @@ func main() {
 		log.Fatalf("Failed to parse URL: %v", err)
 	}
 
-	c := bluesnake.NewCollector(
-		bluesnake.AllowedDomains(parsedURL.Hostname()),
-	)
+	var collectorOpts []bluesnake.CollectorOption
+	collectorOpts = append(collectorOpts, bluesnake.AllowedDomains(parsedURL.Hostname()))
+
+	if *renderFlag {
+		collectorOpts = append(collectorOpts, bluesnake.EnableJSRendering())
+	}
+
+	c := bluesnake.NewCollector(collectorOpts...)
 
 	c.OnRequest(func(r *bluesnake.Request) {
 		fmt.Println("Crawling:", r.URL.String())

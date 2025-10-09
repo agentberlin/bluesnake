@@ -50,6 +50,7 @@ func (a *App) StartCrawl(urlStr string) error {
 
 func (a *App) runCrawler(parsedURL *url.URL) {
 	c := bluesnake.NewCollector(
+		bluesnake.EnableJSRendering(),
 		bluesnake.AllowedDomains(parsedURL.Hostname()),
 	)
 

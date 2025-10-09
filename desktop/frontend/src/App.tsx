@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
 import { StartCrawl } from "../wailsjs/go/main/App";
-import { EventsOn } from "../wailsjs/runtime/runtime";
+import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 
 interface CrawlResult {
@@ -77,6 +77,10 @@ function App() {
     if (status >= 400 && status < 500) return 'status-client-error';
     if (status >= 500) return 'status-server-error';
     return '';
+  };
+
+  const handleOpenUrl = (url: string) => {
+    BrowserOpenURL(url);
   };
 
   if (!hasStarted) {
@@ -164,9 +168,13 @@ function App() {
             {results.map((result, index) => (
               <div key={index} className="result-row">
                 <div className="result-cell url-col">
-                  <a href={result.url} target="_blank" rel="noopener noreferrer" className="url-link">
+                  <span
+                    onClick={() => handleOpenUrl(result.url)}
+                    className="url-link"
+                    style={{ cursor: 'pointer' }}
+                  >
                     {result.url}
-                  </a>
+                  </span>
                 </div>
                 <div className={`result-cell status-col ${getStatusColor(result.status)}`}>
                   {result.error ? 'Error' : result.status}
