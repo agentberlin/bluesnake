@@ -97,10 +97,7 @@ interface CrawlInfo {
   pagesCrawled: number;
 }
 
-interface CrawlResultDetailed {
-  crawlInfo: CrawlInfo;
-  results: CrawlResult[];
-}
+
 
 type View = 'start' | 'crawl' | 'config';
 
@@ -329,6 +326,17 @@ function App() {
         const crawlData = await GetCrawlWithResults(project.latestCrawlId);
         setSelectedCrawl(crawlData.crawlInfo);
         setResults(crawlData.results);
+
+        // Populate urlStatuses from the results
+        const newUrlStatuses = new Map<string, UrlStatus>();
+        crawlData.results.forEach((result: CrawlResult) => {
+          newUrlStatuses.set(result.url, {
+            url: result.url,
+            status: 'completed',
+            result: result
+          });
+        });
+        setUrlStatuses(newUrlStatuses);
       }
 
       setView('crawl');
@@ -342,6 +350,17 @@ function App() {
       const crawlData = await GetCrawlWithResults(crawlId);
       setSelectedCrawl(crawlData.crawlInfo);
       setResults(crawlData.results);
+
+      // Populate urlStatuses from the results
+      const newUrlStatuses = new Map<string, UrlStatus>();
+      crawlData.results.forEach((result: CrawlResult) => {
+        newUrlStatuses.set(result.url, {
+          url: result.url,
+          status: 'completed',
+          result: result
+        });
+      });
+      setUrlStatuses(newUrlStatuses);
     } catch (error) {
       console.error('Failed to load crawl:', error);
     }
