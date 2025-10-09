@@ -208,6 +208,34 @@
   }
 }
 
+/* Circular Progress */
+.circular-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.progress-ring {
+  flex-shrink: 0;
+}
+
+.progress-ring-circle-bg {
+  stroke: #e0e0e0;
+}
+
+.progress-ring-circle {
+  stroke: #2196f3;
+  transition: stroke-dashoffset 0.3s ease;
+  stroke-linecap: round;
+}
+
+.progress-text {
+  font-size: 12px;
+  font-weight: 400;
+  color: #666;
+  white-space: nowrap;
+}
+
 .current-url {
   display: flex;
   gap: 8px;

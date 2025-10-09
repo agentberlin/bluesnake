@@ -14,6 +14,46 @@ interface CrawlResult {
 }
 
 type View = 'start' | 'crawl' | 'config';
+interface CircularProgressProps {
+  crawled: number;
+  total: number;
+}
+
+function CircularProgress({ crawled, total }: CircularProgressProps) {
+  const percentage = total > 0 ? (crawled / total) * 100 : 0;
+  const radius = 8;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = circumference - (percentage / 100) * circumference;
+
+  return (
+    <div className="circular-progress">
+      <svg width="20" height="20" viewBox="0 0 20 20" className="progress-ring">
+        <circle
+          className="progress-ring-circle-bg"
+          cx="10"
+          cy="10"
+          r={radius}
+          strokeWidth="2"
+          fill="none"
+        />
+        <circle
+          className="progress-ring-circle"
+          cx="10"
+          cy="10"
+          r={radius}
+          strokeWidth="2"
+          fill="none"
+          strokeDasharray={circumference}
+          strokeDashoffset={strokeDashoffset}
+          transform="rotate(-90 10 10)"
+        />
+      </svg>
+      <span className="progress-text">
+        {crawled} / {total}
+      </span>
+    </div>
+  );
+}
 
 function App() {
   const [url, setUrl] = useState('');
@@ -21,6 +61,8 @@ function App() {
   const [results, setResults] = useState<CrawlResult[]>([]);
   const [currentUrl, setCurrentUrl] = useState('');
   const [view, setView] = useState<View>('start');
+  const [hasStarted, setHasStarted] = useState(false);
+  const [discoveredUrls, setDiscoveredUrls] = useState<Set<string>>(new Set());
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -29,10 +71,12 @@ function App() {
       setIsCrawling(true);
       setView('crawl');
       setResults([]);
+      setDiscoveredUrls(new Set());
     });
 
     EventsOn("crawl:request", (data: any) => {
       setCurrentUrl(data.url);
+      setDiscoveredUrls(prev => new Set(prev).add(data.url));
     });
 
     EventsOn("crawl:result", (result: CrawlResult) => {
@@ -72,6 +116,7 @@ function App() {
     setUrl('');
     setIsCrawling(false);
     setCurrentUrl('');
+    setDiscoveredUrls(new Set());
   };
 
   const handleNewCrawl = async () => {
@@ -231,7 +276,7 @@ function App() {
           <div className="footer-content">
             {isCrawling && (
               <div className="status-indicator">
-                <span className="pulse"></span>
+                <CircularProgress crawled={results.length} total={discoveredUrls.size} />
                 <span className="status-text">Crawling...</span>
               </div>
             )}
