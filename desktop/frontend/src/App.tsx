@@ -3,6 +3,7 @@ import './App.css';
 import { StartCrawl } from "../wailsjs/go/main/App";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
+import Config from './Config';
 
 interface CrawlResult {
   url: string;
@@ -12,19 +13,21 @@ interface CrawlResult {
   error?: string;
 }
 
+type View = 'start' | 'crawl' | 'config';
+
 function App() {
   const [url, setUrl] = useState('');
   const [isCrawling, setIsCrawling] = useState(false);
   const [results, setResults] = useState<CrawlResult[]>([]);
   const [currentUrl, setCurrentUrl] = useState('');
-  const [hasStarted, setHasStarted] = useState(false);
+  const [view, setView] = useState<View>('start');
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     // Listen for crawl events
     EventsOn("crawl:started", (data: any) => {
       setIsCrawling(true);
-      setHasStarted(true);
+      setView('crawl');
       setResults([]);
     });
 
@@ -63,12 +66,31 @@ function App() {
     }
   };
 
-  const handleNewCrawl = () => {
-    setHasStarted(false);
+  const handleHome = () => {
+    setView('start');
     setResults([]);
     setUrl('');
     setIsCrawling(false);
     setCurrentUrl('');
+  };
+
+  const handleNewCrawl = async () => {
+    if (!url.trim()) return;
+
+    try {
+      await StartCrawl(url);
+    } catch (error) {
+      console.error('Failed to start crawl:', error);
+      setIsCrawling(false);
+    }
+  };
+
+  const handleOpenConfig = () => {
+    setView('config');
+  };
+
+  const handleCloseConfig = () => {
+    setView('crawl');
   };
 
   const getStatusColor = (status: number): string => {
@@ -83,8 +105,13 @@ function App() {
     BrowserOpenURL(url);
   };
 
-  if (!hasStarted) {
-    // Start screen
+  // Config page
+  if (view === 'config') {
+    return <Config url={url} onClose={handleCloseConfig} />;
+  }
+
+  // Start screen
+  if (view === 'start') {
     return (
       <div className="app">
         <div className="start-screen">
@@ -132,7 +159,26 @@ function App() {
               <h2 className="crawl-title">BlueSnake</h2>
             </div>
             <div className="header-actions">
-              <button className="new-crawl-button" onClick={handleNewCrawl}>
+              <button className="icon-button" onClick={handleHome} title="Home">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                  <polyline points="9 22 9 12 15 12 15 22"></polyline>
+                </svg>
+              </button>
+              <button className="icon-button" onClick={handleOpenConfig} title="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="4" y1="21" x2="4" y2="14"></line>
+                  <line x1="4" y1="10" x2="4" y2="3"></line>
+                  <line x1="12" y1="21" x2="12" y2="12"></line>
+                  <line x1="12" y1="8" x2="12" y2="3"></line>
+                  <line x1="20" y1="21" x2="20" y2="16"></line>
+                  <line x1="20" y1="12" x2="20" y2="3"></line>
+                  <line x1="1" y1="14" x2="7" y2="14"></line>
+                  <line x1="9" y1="8" x2="15" y2="8"></line>
+                  <line x1="17" y1="16" x2="23" y2="16"></line>
+                </svg>
+              </button>
+              <button className="new-crawl-button" onClick={handleNewCrawl} disabled={isCrawling}>
                 New Crawl
               </button>
             </div>

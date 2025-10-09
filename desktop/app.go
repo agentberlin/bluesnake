@@ -33,6 +33,11 @@ func NewApp() *App {
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+
+	// Initialize database
+	if err := InitDB(); err != nil {
+		fmt.Printf("Failed to initialize database: %v\n", err)
+	}
 }
 
 // StartCrawl initiates a crawl for the given URL
@@ -49,10 +54,36 @@ func (a *App) StartCrawl(urlStr string) error {
 }
 
 func (a *App) runCrawler(parsedURL *url.URL) {
-	c := bluesnake.NewCollector(
-		bluesnake.EnableJSRendering(),
-		bluesnake.AllowedDomains(parsedURL.Hostname()),
-	)
+	// Get configuration for this domain
+	domain := parsedURL.Hostname()
+	config, err := GetOrCreateConfig(domain)
+	if err != nil {
+		fmt.Printf("Failed to get config for domain %s: %v\n", domain, err)
+		// Use defaults if config retrieval fails
+		config = &Config{
+			JSRenderingEnabled: false,
+			Parallelism:        5,
+		}
+	}
+
+	// Build collector options based on config
+	options := []bluesnake.CollectorOption{
+		bluesnake.AllowedDomains(domain),
+	}
+
+	if config.JSRenderingEnabled {
+		options = append(options, bluesnake.EnableJSRendering())
+	}
+
+	c := bluesnake.NewCollector(options...)
+
+	// Apply parallelism limit
+	if config.Parallelism > 0 {
+		c.Limit(&bluesnake.LimitRule{
+			DomainGlob:  "*",
+			Parallelism: config.Parallelism,
+		})
+	}
 
 	// Send crawl start event
 	runtime.EventsEmit(a.ctx, "crawl:started", map[string]string{
@@ -127,4 +158,26 @@ func (a *App) runCrawler(parsedURL *url.URL) {
 	runtime.EventsEmit(a.ctx, "crawl:completed", map[string]string{
 		"message": "Crawl completed",
 	})
+}
+
+// GetConfigForDomain retrieves the configuration for a specific domain
+func (a *App) GetConfigForDomain(urlStr string) (*Config, error) {
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL: %v", err)
+	}
+
+	domain := parsedURL.Hostname()
+	return GetOrCreateConfig(domain)
+}
+
+// UpdateConfigForDomain updates the configuration for a specific domain
+func (a *App) UpdateConfigForDomain(urlStr string, jsRendering bool, parallelism int) error {
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %v", err)
+	}
+
+	domain := parsedURL.Hostname()
+	return UpdateConfig(domain, jsRendering, parallelism)
 }
