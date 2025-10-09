@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID } from "../wailsjs/go/main/App";
+import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData } from "../wailsjs/go/main/App";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
@@ -83,6 +83,7 @@ interface ProjectInfo {
   id: number;
   url: string;
   domain: string;
+  faviconPath: string;
   crawlDateTime: number;
   crawlDuration: number;
   pagesCrawled: number;
@@ -159,6 +160,53 @@ function SmallLoadingSpinner() {
   );
 }
 
+interface FaviconImageProps {
+  faviconPath: string;
+  alt: string;
+  className: string;
+  placeholderSize?: number;
+}
+
+function FaviconImage({ faviconPath, alt, className, placeholderSize = 20 }: FaviconImageProps) {
+  const [faviconSrc, setFaviconSrc] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    if (!faviconPath) {
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading(true);
+    setHasError(false);
+
+    GetFaviconData(faviconPath)
+      .then((dataUrl: string) => {
+        setFaviconSrc(dataUrl);
+        setIsLoading(false);
+      })
+      .catch((error: any) => {
+        console.error('Failed to load favicon:', error);
+        setHasError(true);
+        setIsLoading(false);
+      });
+  }, [faviconPath]);
+
+  if (isLoading || !faviconPath || hasError) {
+    return (
+      <div className={className.replace('favicon', 'favicon-placeholder')}>
+        <svg width={placeholderSize} height={placeholderSize} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <circle cx="12" cy="12" r="10"></circle>
+          <path d="M2 12h20"></path>
+        </svg>
+      </div>
+    );
+  }
+
+  return <img src={faviconSrc} alt={alt} className={className} />;
+}
+
 function App() {
   const [url, setUrl] = useState('');
   const [isCrawling, setIsCrawling] = useState(false);
@@ -174,7 +222,19 @@ function App() {
   const [showDeleteCrawlModal, setShowDeleteCrawlModal] = useState(false);
   const [showDeleteProjectModal, setShowDeleteProjectModal] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<number | null>(null);
+  const [faviconCache, setFaviconCache] = useState<Map<string, string>>(new Map());
   const inputRef = useRef<HTMLInputElement>(null);
+  const currentProjectRef = useRef<ProjectInfo | null>(null);
+  const urlRef = useRef<string>('');
+
+  // Keep refs in sync with state
+  useEffect(() => {
+    currentProjectRef.current = currentProject;
+  }, [currentProject]);
+
+  useEffect(() => {
+    urlRef.current = url;
+  }, [url]);
 
   useEffect(() => {
     // Load projects on start
@@ -186,6 +246,31 @@ function App() {
       setView('crawl');
       setResults([]);
       setUrlStatuses(new Map());
+      // Only clear project state if crawling a different domain
+      // Check if the URL being crawled belongs to a different domain than current project
+      let shouldClearProject = true;
+      const currentProj = currentProjectRef.current;
+      const currentUrl = urlRef.current;
+
+      if (currentProj && currentUrl) {
+        try {
+          let normalizedUrl = currentUrl.trim();
+          if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
+            normalizedUrl = 'https://' + normalizedUrl;
+          }
+          const urlObj = new URL(normalizedUrl);
+          shouldClearProject = currentProj.domain !== urlObj.hostname;
+        } catch {
+          // If URL parsing fails, clear the project to be safe
+          shouldClearProject = true;
+        }
+      }
+
+      if (shouldClearProject) {
+        setCurrentProject(null);
+      }
+      setAvailableCrawls([]);
+      setSelectedCrawl(null);
     });
 
     EventsOn("crawl:request", (data: any) => {
@@ -250,11 +335,13 @@ function App() {
       });
     });
 
-    EventsOn("crawl:completed", () => {
+    EventsOn("crawl:completed", async () => {
       setIsCrawling(false);
       setCurrentUrl('');
       // Reload projects after crawl completes
-      loadProjects();
+      await loadProjects();
+      // Load the project that was just crawled and set it as current
+      await loadCurrentProjectFromUrl(url);
     });
   }, []);
 
@@ -264,6 +351,49 @@ function App() {
       setProjects(projectList || []);
     } catch (error) {
       console.error('Failed to load projects:', error);
+    }
+  };
+
+  const loadCurrentProjectFromUrl = async (currentUrl: string) => {
+    try {
+      const projectList = await GetProjects();
+      if (!projectList) return;
+
+      // Normalize the current URL for comparison
+      let normalizedUrl = currentUrl.trim();
+      if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
+        normalizedUrl = 'https://' + normalizedUrl;
+      }
+
+      // Find the project matching the current URL or domain
+      const project = projectList.find(p => {
+        // Try exact URL match first
+        if (p.url === normalizedUrl) return true;
+        // Try matching by domain
+        try {
+          const urlObj = new URL(normalizedUrl);
+          return p.domain === urlObj.hostname;
+        } catch {
+          return false;
+        }
+      });
+
+      if (!project) return;
+
+      // Set as current project
+      setCurrentProject(project);
+
+      // Load crawls for this project
+      const crawls = await GetCrawls(project.id);
+      setAvailableCrawls(crawls);
+
+      // Load the latest crawl
+      if (project.latestCrawlId) {
+        const crawlData = await GetCrawlWithResults(project.latestCrawlId);
+        setSelectedCrawl(crawlData.crawlInfo);
+      }
+    } catch (error) {
+      console.error('Failed to load current project:', error);
     }
   };
 
@@ -454,6 +584,18 @@ function App() {
     return `${minutes}m ${remainingSeconds}s`;
   };
 
+  const getDomainName = (): string => {
+    if (currentProject?.domain) {
+      return currentProject.domain;
+    }
+    try {
+      return new URL(url).hostname;
+    } catch {
+      return url || 'Unknown Domain';
+    }
+  };
+
+
   const getStatusColor = (status: number): string => {
     if (status >= 200 && status < 300) return 'status-success';
     if (status >= 300 && status < 400) return 'status-redirect';
@@ -516,7 +658,15 @@ function App() {
                     onClick={() => handleProjectClick(project)}
                   >
                     <div className="project-header">
-                      <div className="project-domain">{project.url}</div>
+                      <div className="project-title-row">
+                        <FaviconImage
+                          faviconPath={project.faviconPath || ''}
+                          alt="Domain favicon"
+                          className="project-favicon"
+                          placeholderSize={16}
+                        />
+                        <div className="project-domain">{project.url}</div>
+                      </div>
                       <button
                         className="delete-project-button"
                         onClick={(e) => handleDeleteProject(project.id, e)}
@@ -574,37 +724,25 @@ function App() {
     <div className="app">
       <div className="crawl-screen">
         <div className="header">
-          <div className="header-content">
-            <div className="brand">
-              <img src={logo} alt="BlueSnake Logo" className="brand-logo" />
-              <h2 className="crawl-title">BlueSnake</h2>
-            </div>
-            <div className="header-actions">
-              <button className="icon-button" onClick={handleHome} title="Home">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-                  <polyline points="9 22 9 12 15 12 15 22"></polyline>
-                </svg>
-              </button>
-              <button className="icon-button" onClick={handleOpenConfig} title="Settings">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="4" y1="21" x2="4" y2="14"></line>
-                  <line x1="4" y1="10" x2="4" y2="3"></line>
-                  <line x1="12" y1="21" x2="12" y2="12"></line>
-                  <line x1="12" y1="8" x2="12" y2="3"></line>
-                  <line x1="20" y1="21" x2="20" y2="16"></line>
-                  <line x1="20" y1="12" x2="20" y2="3"></line>
-                  <line x1="1" y1="14" x2="7" y2="14"></line>
-                  <line x1="9" y1="8" x2="15" y2="8"></line>
-                  <line x1="17" y1="16" x2="23" y2="16"></line>
-                </svg>
-              </button>
-              <button className="new-crawl-button" onClick={handleNewCrawl} disabled={isCrawling}>
-                New Crawl
-              </button>
+          <div className="header-left">
+            <button className="icon-button" onClick={handleHome} title="Home">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                <polyline points="9 22 9 12 15 12 15 22"></polyline>
+              </svg>
+            </button>
+            <div className="domain-info">
+              <FaviconImage
+                faviconPath={currentProject?.faviconPath || ''}
+                alt="Domain favicon"
+                className="domain-favicon"
+                placeholderSize={20}
+              />
+              <h2 className="domain-name">{getDomainName()}</h2>
             </div>
           </div>
-          <div className="header-crawl-info">
+
+          <div className="header-center">
             {availableCrawls.length > 0 && selectedCrawl && (
               <div className="crawl-selector">
                 <label>Crawl:</label>
@@ -631,14 +769,34 @@ function App() {
                 )}
               </div>
             )}
-            {currentUrl && isCrawling && (
-              <div className="current-url">
-                <span className="current-label">Current:</span>
-                <span className="current-value">{currentUrl}</span>
-              </div>
-            )}
+          </div>
+
+          <div className="header-right">
+            <button className="icon-button" onClick={handleOpenConfig} title="Settings">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="4" y1="21" x2="4" y2="14"></line>
+                <line x1="4" y1="10" x2="4" y2="3"></line>
+                <line x1="12" y1="21" x2="12" y2="12"></line>
+                <line x1="12" y1="8" x2="12" y2="3"></line>
+                <line x1="20" y1="21" x2="20" y2="16"></line>
+                <line x1="20" y1="12" x2="20" y2="3"></line>
+                <line x1="1" y1="14" x2="7" y2="14"></line>
+                <line x1="9" y1="8" x2="15" y2="8"></line>
+                <line x1="17" y1="16" x2="23" y2="16"></line>
+              </svg>
+            </button>
+            <button className="new-crawl-button" onClick={handleNewCrawl} disabled={isCrawling}>
+              New Crawl
+            </button>
           </div>
         </div>
+
+        {currentUrl && isCrawling && (
+          <div className="current-url-bar">
+            <span className="current-label">Currently crawling:</span>
+            <span className="current-value">{currentUrl}</span>
+          </div>
+        )}
 
         <div className="results-container">
           <div className="results-header">

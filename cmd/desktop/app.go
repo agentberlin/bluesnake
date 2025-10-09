@@ -2,14 +2,22 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agentberlin/bluesnake"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+// Compile regex once for performance
+var duplicateSlashesRegex = regexp.MustCompile(`/+`)
 
 // App struct
 type App struct {
@@ -30,6 +38,7 @@ type ProjectInfo struct {
 	ID            uint      `json:"id"`
 	URL           string    `json:"url"`
 	Domain        string    `json:"domain"`
+	FaviconPath   string    `json:"faviconPath"`
 	CrawlDateTime int64     `json:"crawlDateTime"`
 	CrawlDuration int64     `json:"crawlDuration"`
 	PagesCrawled  int       `json:"pagesCrawled"`
@@ -59,6 +68,76 @@ type crawlStats struct {
 	domain       string
 	projectID    uint
 	crawlID      uint
+	queuedURLs   *sync.Map // Track URLs that have been queued to prevent duplicates
+}
+
+// normalizeURLForDedup normalizes a URL for deduplication to prevent crawling the same page multiple times
+// This handles common URL variations that point to the same resource
+// The url.Parse() + modifications + String() approach automatically handles edge cases like:
+// - Empty query strings: /path/? → /path/
+// - Empty fragments: /path/# → /path/
+// - Malformed URLs that Go's URL parser can clean up
+func normalizeURLForDedup(urlStr string) string {
+	// Parse the URL - this automatically normalizes many edge cases
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		// If parsing fails, return as-is
+		return urlStr
+	}
+
+	// 1. Remove fragment (#section) - fragments are client-side only and don't create new pages
+	// This also handles empty fragments like /path/#
+	parsedURL.Fragment = ""
+
+	// 2. Lowercase scheme and hostname (these are case-insensitive per RFC 3986)
+	parsedURL.Scheme = strings.ToLower(parsedURL.Scheme)
+	parsedURL.Host = strings.ToLower(parsedURL.Host)
+
+	// 3. Remove default ports (80 for http, 443 for https)
+	if (parsedURL.Scheme == "http" && parsedURL.Port() == "80") ||
+		(parsedURL.Scheme == "https" && parsedURL.Port() == "443") {
+		parsedURL.Host = parsedURL.Hostname() // Remove port from host
+	}
+
+	// 4. Normalize path: handle trailing slashes for directory-like paths
+	path := parsedURL.Path
+	if path != "" && path != "/" {
+		// Remove duplicate slashes: //foo → /foo
+		path = duplicateSlashesRegex.ReplaceAllString(path, "/")
+
+		// For paths not ending in a file extension, ensure trailing slash
+		if !strings.Contains(filepath.Base(path), ".") {
+			if !strings.HasSuffix(path, "/") {
+				path = path + "/"
+			}
+		}
+		parsedURL.Path = path
+	}
+
+	// 5. Normalize query string
+	if parsedURL.RawQuery != "" {
+		// Sort query parameters alphabetically for consistent comparison
+		// This treats ?a=1&b=2 and ?b=2&a=1 as the same URL
+		query := parsedURL.Query()
+		parsedURL.RawQuery = query.Encode() // Encode() sorts keys alphabetically
+	} else {
+		// Explicitly clear RawQuery to ensure empty query strings (trailing ?)
+		// are removed when String() reconstructs the URL
+		parsedURL.RawQuery = ""
+	}
+
+	// Reconstruct the URL - this will automatically:
+	// - Remove trailing ? if RawQuery is empty
+	// - Remove trailing # if Fragment is empty
+	// - Apply proper URL encoding
+	reconstructed := parsedURL.String()
+
+	// Edge case: Some URLs might still have trailing ? or # after reconstruction
+	// Strip them explicitly if they're at the end with nothing after them
+	reconstructed = strings.TrimSuffix(reconstructed, "?")
+	reconstructed = strings.TrimSuffix(reconstructed, "#")
+
+	return reconstructed
 }
 
 // normalizeURL normalizes a URL input and extracts the domain identifier
@@ -172,6 +251,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		domain:       domain,
 		projectID:    project.ID,
 		crawlID:      crawl.ID,
+		queuedURLs:   &sync.Map{},
 	}
 
 	// Get configuration for this domain
@@ -188,6 +268,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 	// Build collector options based on config
 	options := []bluesnake.CollectorOption{
 		bluesnake.AllowedDomains(domain),
+		bluesnake.Async(),
 	}
 
 	if config.JSRenderingEnabled {
@@ -225,8 +306,44 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		}
 
 		if strings.Contains(contentType, "text/html") {
+			// HTML content - will be processed by OnHTML handler
 			r.Request.Ctx.Put("isIndexable", isIndexable)
 			r.Request.Ctx.Put("status", fmt.Sprintf("%d", r.StatusCode))
+		} else {
+			// Non-HTML content (XML, JSON, PDF, images, etc.)
+			// Determine a descriptive title based on content type
+			title := "Unknown Resource"
+			if strings.Contains(contentType, "xml") || strings.Contains(contentType, "rss") || strings.Contains(contentType, "atom") {
+				title = "XML Feed"
+			} else if strings.Contains(contentType, "json") {
+				title = "JSON Resource"
+			} else if strings.Contains(contentType, "pdf") {
+				title = "PDF Document"
+			} else if strings.Contains(contentType, "image/") {
+				title = "Image"
+			} else if strings.Contains(contentType, "javascript") {
+				title = "JavaScript File"
+			} else if strings.Contains(contentType, "css") {
+				title = "Stylesheet"
+			}
+
+			result := CrawlResult{
+				URL:       r.Request.URL.String(),
+				Status:    r.StatusCode,
+				Title:     title,
+				Indexable: isIndexable,
+			}
+
+			// Increment pages crawled
+			stats.pagesCrawled++
+
+			// Save to database
+			if err := SaveCrawledUrl(stats.crawlID, result.URL, result.Status, result.Title, result.Indexable, ""); err != nil {
+				runtime.LogErrorf(a.ctx, "Failed to save crawled URL: %v", err)
+			}
+
+			// Emit result to frontend
+			runtime.EventsEmit(a.ctx, "crawl:result", result)
 		}
 	})
 
@@ -266,11 +383,28 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 	c.OnHTML("a[href]", func(e *bluesnake.HTMLElement) {
 		link := e.Request.AbsoluteURL(e.Attr("href"))
 		if link != "" {
-			c.Visit(link)
+			// Normalize URL for deduplication (handles trailing slashes, query params, etc.)
+			normalizedLink := normalizeURLForDedup(link)
+
+			// Use LoadOrStore to atomically check and mark URL as queued
+			// This prevents duplicate Visit() calls for the same URL
+			_, alreadyQueued := stats.queuedURLs.LoadOrStore(normalizedLink, true)
+
+			if !alreadyQueued {
+				// IMPORTANT: Visit the normalized URL, not the original!
+				// This ensures the UI and database get consistent normalized URLs
+				c.Visit(normalizedLink)
+			}
 		}
 	})
 
 	c.OnError(func(r *bluesnake.Response, err error) {
+		// Skip AlreadyVisitedError - these should not occur now that we're using
+		// LoadOrStore to prevent duplicate Visit() calls, but keep as a safety net.
+		if strings.Contains(err.Error(), "already visited") {
+			return
+		}
+
 		result := CrawlResult{
 			URL:   r.Request.URL.String(),
 			Error: err.Error(),
@@ -283,6 +417,9 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 
 		runtime.EventsEmit(a.ctx, "crawl:error", result)
 	})
+
+	// Mark the starting URL as queued (normalized)
+	stats.queuedURLs.Store(normalizeURLForDedup(parsedURL.String()), true)
 
 	c.Visit(parsedURL.String())
 	c.Wait()
@@ -340,6 +477,7 @@ func (a *App) GetProjects() ([]ProjectInfo, error) {
 				ID:            p.ID,
 				URL:           p.URL,
 				Domain:        p.Domain,
+				FaviconPath:   p.FaviconPath,
 				CrawlDateTime: latestCrawl.CrawlDateTime,
 				CrawlDuration: latestCrawl.CrawlDuration,
 				PagesCrawled:  latestCrawl.PagesCrawled,
@@ -419,4 +557,29 @@ func (a *App) DeleteCrawlByID(crawlID uint) error {
 // DeleteProjectByID deletes a project and all its crawls
 func (a *App) DeleteProjectByID(projectID uint) error {
 	return DeleteProject(projectID)
+}
+
+// GetFaviconData reads a favicon file and returns it as a base64 data URL
+func (a *App) GetFaviconData(faviconPath string) (string, error) {
+	if faviconPath == "" {
+		return "", fmt.Errorf("empty favicon path")
+	}
+
+	// Read the file
+	data, err := os.ReadFile(faviconPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read favicon: %v", err)
+	}
+
+	// Convert to base64 data URL
+	// Determine content type based on file extension
+	contentType := "image/png"
+	if strings.HasSuffix(strings.ToLower(faviconPath), ".jpg") || strings.HasSuffix(strings.ToLower(faviconPath), ".jpeg") {
+		contentType = "image/jpeg"
+	} else if strings.HasSuffix(strings.ToLower(faviconPath), ".ico") {
+		contentType = "image/x-icon"
+	}
+
+	base64Data := base64.StdEncoding.EncodeToString(data)
+	return fmt.Sprintf("data:%s;base64,%s", contentType, base64Data), nil
 }
