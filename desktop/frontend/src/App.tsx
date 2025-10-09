@@ -71,6 +71,14 @@ interface CrawlResult {
   error?: string;
 }
 
+type CrawlStatus = 'discovered' | 'crawling' | 'completed';
+
+interface UrlStatus {
+  url: string;
+  status: CrawlStatus;
+  result?: CrawlResult;
+}
+
 interface ProjectInfo {
   id: number;
   url: string;
@@ -137,6 +145,23 @@ function CircularProgress({ crawled, total }: CircularProgressProps) {
   );
 }
 
+function SmallLoadingSpinner() {
+  return (
+    <div className="small-loading-spinner">
+      <svg width="16" height="16" viewBox="0 0 16 16" className="spinner-svg">
+        <circle
+          className="spinner-circle"
+          cx="8"
+          cy="8"
+          r="6"
+          strokeWidth="2"
+          fill="none"
+        />
+      </svg>
+    </div>
+  );
+}
+
 function App() {
   const [url, setUrl] = useState('');
   const [isCrawling, setIsCrawling] = useState(false);
@@ -144,7 +169,7 @@ function App() {
   const [currentUrl, setCurrentUrl] = useState('');
   const [view, setView] = useState<View>('start');
   const [hasStarted, setHasStarted] = useState(false);
-  const [discoveredUrls, setDiscoveredUrls] = useState<Set<string>>(new Set());
+  const [urlStatuses, setUrlStatuses] = useState<Map<string, UrlStatus>>(new Map());
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [currentProject, setCurrentProject] = useState<ProjectInfo | null>(null);
   const [availableCrawls, setAvailableCrawls] = useState<CrawlInfo[]>([]);
@@ -163,12 +188,19 @@ function App() {
       setIsCrawling(true);
       setView('crawl');
       setResults([]);
-      setDiscoveredUrls(new Set());
+      setUrlStatuses(new Map());
     });
 
     EventsOn("crawl:request", (data: any) => {
       setCurrentUrl(data.url);
-      setDiscoveredUrls(prev => new Set(prev).add(data.url));
+      setUrlStatuses(prev => {
+        const newMap = new Map(prev);
+        newMap.set(data.url, {
+          url: data.url,
+          status: 'crawling'
+        });
+        return newMap;
+      });
     });
 
     EventsOn("crawl:result", (result: CrawlResult) => {
@@ -184,6 +216,16 @@ function App() {
         // Add new result
         return [...prev, result];
       });
+
+      setUrlStatuses(prev => {
+        const newMap = new Map(prev);
+        newMap.set(result.url, {
+          url: result.url,
+          status: 'completed',
+          result: result
+        });
+        return newMap;
+      });
     });
 
     EventsOn("crawl:error", (result: CrawlResult) => {
@@ -198,6 +240,16 @@ function App() {
         }
         // Add new result
         return [...prev, result];
+      });
+
+      setUrlStatuses(prev => {
+        const newMap = new Map(prev);
+        newMap.set(result.url, {
+          url: result.url,
+          status: 'completed',
+          result: result
+        });
+        return newMap;
       });
     });
 
@@ -241,7 +293,7 @@ function App() {
     setUrl('');
     setIsCrawling(false);
     setCurrentUrl('');
-    setDiscoveredUrls(new Set());
+    setUrlStatuses(new Map());
   };
 
   const handleNewCrawl = async () => {
@@ -578,27 +630,53 @@ function App() {
           </div>
 
           <div className="results-body">
-            {results.map((result, index) => (
+            {Array.from(urlStatuses.values()).map((urlStatus, index) => (
               <div key={index} className="result-row">
                 <div className="result-cell url-col">
-                  <span
-                    onClick={() => handleOpenUrl(result.url)}
-                    className="url-link"
-                    style={{ cursor: 'pointer' }}
-                  >
-                    {result.url}
-                  </span>
+                  {urlStatus.status === 'crawling' ? (
+                    <span className="url-shimmer">
+                      {urlStatus.url}
+                    </span>
+                  ) : urlStatus.result ? (
+                    <span
+                      onClick={() => handleOpenUrl(urlStatus.result!.url)}
+                      className="url-link"
+                      style={{ cursor: 'pointer' }}
+                    >
+                      {urlStatus.result.url}
+                    </span>
+                  ) : (
+                    <span>{urlStatus.url}</span>
+                  )}
                 </div>
-                <div className={`result-cell status-col ${getStatusColor(result.status)}`}>
-                  {result.error ? 'Error' : result.status}
+                <div className={`result-cell status-col ${urlStatus.result ? getStatusColor(urlStatus.result.status) : ''}`}>
+                  {urlStatus.status === 'crawling' ? (
+                    <SmallLoadingSpinner />
+                  ) : urlStatus.result ? (
+                    urlStatus.result.error ? 'Error' : urlStatus.result.status
+                  ) : (
+                    <SmallLoadingSpinner />
+                  )}
                 </div>
                 <div className="result-cell title-col">
-                  {result.error ? result.error : result.title || '(no title)'}
+                  {urlStatus.status === 'crawling' ? (
+                    <SmallLoadingSpinner />
+                  ) : urlStatus.result ? (
+                    urlStatus.result.error ? urlStatus.result.error : urlStatus.result.title || '(no title)'
+                  ) : (
+                    <SmallLoadingSpinner />
+                  )}
                 </div>
                 <div className="result-cell indexable-col">
-                  <span className={`indexable-badge ${result.indexable === 'Yes' ? 'indexable-yes' : 'indexable-no'}`}>
-                    {result.indexable}
-                  </span>
+                  {urlStatus.status === 'crawling' ? (
+                    <SmallLoadingSpinner />
+                  ) : urlStatus.result ? (
+                    <span className={`indexable-badge ${urlStatus.result.indexable === 'Yes' ? 'indexable-yes' : 'indexable-no'}`}>
+                      {urlStatus.result.indexable}
+                    </span>
+                  ) : (
+                    <SmallLoadingSpinner />
+                  )}
                 </div>
               </div>
             ))}
@@ -609,7 +687,7 @@ function App() {
           <div className="footer-content">
             {isCrawling && (
               <div className="status-indicator">
-                <CircularProgress crawled={results.length} total={discoveredUrls.size} />
+                <CircularProgress crawled={results.length} total={urlStatuses.size} />
                 <span className="status-text">Crawling...</span>
               </div>
             )}
