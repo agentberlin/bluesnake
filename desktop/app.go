@@ -27,12 +27,28 @@ type CrawlResult struct {
 
 // ProjectInfo represents project information for the frontend
 type ProjectInfo struct {
+	ID            uint      `json:"id"`
+	URL           string    `json:"url"`
+	Domain        string    `json:"domain"`
+	CrawlDateTime int64     `json:"crawlDateTime"`
+	CrawlDuration int64     `json:"crawlDuration"`
+	PagesCrawled  int       `json:"pagesCrawled"`
+	LatestCrawlID uint      `json:"latestCrawlId"`
+}
+
+// CrawlInfo represents crawl information for the frontend
+type CrawlInfo struct {
 	ID            uint   `json:"id"`
-	URL           string `json:"url"`
-	Domain        string `json:"domain"`
+	ProjectID     uint   `json:"projectId"`
 	CrawlDateTime int64  `json:"crawlDateTime"`
 	CrawlDuration int64  `json:"crawlDuration"`
 	PagesCrawled  int    `json:"pagesCrawled"`
+}
+
+// CrawlResultDetailed represents a crawl with all its URLs
+type CrawlResultDetailed struct {
+	CrawlInfo CrawlInfo      `json:"crawlInfo"`
+	Results   []CrawlResult  `json:"results"`
 }
 
 // crawlStats tracks crawl statistics
@@ -41,6 +57,54 @@ type crawlStats struct {
 	pagesCrawled int
 	url          string
 	domain       string
+	projectID    uint
+	crawlID      uint
+}
+
+// normalizeURL normalizes a URL input and extracts the domain identifier
+// Returns: (normalizedURL, domain, error)
+func normalizeURL(input string) (string, string, error) {
+	// Trim whitespace
+	input = strings.TrimSpace(input)
+
+	if input == "" {
+		return "", "", fmt.Errorf("empty URL")
+	}
+
+	// Add https:// if no protocol is present
+	if !strings.HasPrefix(input, "http://") && !strings.HasPrefix(input, "https://") {
+		input = "https://" + input
+	}
+
+	// Parse the URL
+	parsedURL, err := url.Parse(input)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid URL: %v", err)
+	}
+
+	// Extract hostname (includes subdomain, excludes port)
+	hostname := parsedURL.Hostname()
+	if hostname == "" {
+		return "", "", fmt.Errorf("no hostname in URL")
+	}
+
+	// Convert hostname to lowercase for case-insensitive comparison
+	hostname = strings.ToLower(hostname)
+
+	// Build normalized URL
+	// Keep port if it's non-standard (not 80 for http, not 443 for https)
+	normalizedURL := "https://" + hostname
+	if parsedURL.Port() != "" {
+		port := parsedURL.Port()
+		// Only keep port if it's not the default for https (443)
+		if port != "443" {
+			normalizedURL = "https://" + hostname + ":" + port
+			// Include port in domain identifier for non-standard ports
+			hostname = hostname + ":" + port
+		}
+	}
+
+	return normalizedURL, hostname, nil
 }
 
 // NewApp creates a new App application struct
@@ -61,28 +125,56 @@ func (a *App) startup(ctx context.Context) {
 
 // StartCrawl initiates a crawl for the given URL
 func (a *App) StartCrawl(urlStr string) error {
-	parsedURL, err := url.Parse(urlStr)
+	// Normalize the URL
+	normalizedURL, domain, err := normalizeURL(urlStr)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %v", err)
 	}
 
+	// Parse the normalized URL
+	parsedURL, err := url.Parse(normalizedURL)
+	if err != nil {
+		return fmt.Errorf("failed to parse normalized URL: %v", err)
+	}
+
 	// Run crawler in a goroutine to not block the UI
-	go a.runCrawler(parsedURL)
+	go a.runCrawler(parsedURL, normalizedURL, domain)
 
 	return nil
 }
 
-func (a *App) runCrawler(parsedURL *url.URL) {
+func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string) {
+	// Get or create project
+	project, err := GetOrCreateProject(normalizedURL, domain)
+	if err != nil {
+		runtime.LogErrorf(a.ctx, "Failed to get/create project: %v", err)
+		runtime.EventsEmit(a.ctx, "crawl:error", map[string]string{
+			"message": "Failed to create project",
+		})
+		return
+	}
+
+	// Create a new crawl
+	crawl, err := CreateCrawl(project.ID, time.Now().Unix(), 0, 0)
+	if err != nil {
+		runtime.LogErrorf(a.ctx, "Failed to create crawl: %v", err)
+		runtime.EventsEmit(a.ctx, "crawl:error", map[string]string{
+			"message": "Failed to create crawl record",
+		})
+		return
+	}
+
 	// Initialize crawl stats
 	stats := &crawlStats{
 		startTime:    time.Now(),
 		pagesCrawled: 0,
-		url:          parsedURL.String(),
-		domain:       parsedURL.Hostname(),
+		url:          normalizedURL,
+		domain:       domain,
+		projectID:    project.ID,
+		crawlID:      crawl.ID,
 	}
 
 	// Get configuration for this domain
-	domain := parsedURL.Hostname()
 	config, err := GetOrCreateConfig(domain)
 	if err != nil {
 		runtime.LogErrorf(a.ctx, "Failed to get config for domain %s: %v", domain, err)
@@ -162,6 +254,11 @@ func (a *App) runCrawler(parsedURL *url.URL) {
 		// Increment pages crawled
 		stats.pagesCrawled++
 
+		// Save to database
+		if err := SaveCrawledUrl(stats.crawlID, result.URL, result.Status, result.Title, result.Indexable, ""); err != nil {
+			runtime.LogErrorf(a.ctx, "Failed to save crawled URL: %v", err)
+		}
+
 		// Emit result to frontend
 		runtime.EventsEmit(a.ctx, "crawl:result", result)
 	})
@@ -178,6 +275,12 @@ func (a *App) runCrawler(parsedURL *url.URL) {
 			URL:   r.Request.URL.String(),
 			Error: err.Error(),
 		}
+
+		// Save error to database
+		if saveErr := SaveCrawledUrl(stats.crawlID, result.URL, 0, "", "No", err.Error()); saveErr != nil {
+			runtime.LogErrorf(a.ctx, "Failed to save crawl error: %v", saveErr)
+		}
+
 		runtime.EventsEmit(a.ctx, "crawl:error", result)
 	})
 
@@ -187,17 +290,9 @@ func (a *App) runCrawler(parsedURL *url.URL) {
 	// Calculate crawl duration
 	crawlDuration := time.Since(stats.startTime).Milliseconds()
 
-	// Save project to database
-err = SaveProject(
-		stats.url,
-		stats.domain,
-		stats.startTime.Unix(),
-		crawlDuration,
-		stats.pagesCrawled,
-	)
-
-	if err != nil {
-		runtime.LogErrorf(a.ctx, "Failed to save project: %v", err)
+	// Update crawl statistics in database
+	if err := UpdateCrawlStats(stats.crawlID, crawlDuration, stats.pagesCrawled); err != nil {
+		runtime.LogErrorf(a.ctx, "Failed to update crawl stats: %v", err)
 	}
 
 	// Send crawl complete event
@@ -208,27 +303,27 @@ err = SaveProject(
 
 // GetConfigForDomain retrieves the configuration for a specific domain
 func (a *App) GetConfigForDomain(urlStr string) (*Config, error) {
-	parsedURL, err := url.Parse(urlStr)
+	// Normalize the URL to extract domain
+	_, domain, err := normalizeURL(urlStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid URL: %v", err)
 	}
 
-	domain := parsedURL.Hostname()
 	return GetOrCreateConfig(domain)
 }
 
 // UpdateConfigForDomain updates the configuration for a specific domain
 func (a *App) UpdateConfigForDomain(urlStr string, jsRendering bool, parallelism int) error {
-	parsedURL, err := url.Parse(urlStr)
+	// Normalize the URL to extract domain
+	_, domain, err := normalizeURL(urlStr)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %v", err)
 	}
 
-	domain := parsedURL.Hostname()
 	return UpdateConfig(domain, jsRendering, parallelism)
 }
 
-// GetProjects returns all projects from the database
+// GetProjects returns all projects from the database with their latest crawl info
 func (a *App) GetProjects() ([]ProjectInfo, error) {
 	projects, err := GetAllProjects()
 	if err != nil {
@@ -236,17 +331,92 @@ func (a *App) GetProjects() ([]ProjectInfo, error) {
 	}
 
 	// Convert to ProjectInfo for frontend
-	projectInfos := make([]ProjectInfo, len(projects))
-	for i, p := range projects {
-		projectInfos[i] = ProjectInfo{
-			ID:            p.ID,
-			URL:           p.URL,
-			Domain:        p.Domain,
-			CrawlDateTime: p.CrawlDateTime,
-			CrawlDuration: p.CrawlDuration,
-			PagesCrawled:  p.PagesCrawled,
+	projectInfos := make([]ProjectInfo, 0)
+	for _, p := range projects {
+		// Get the latest crawl for this project
+		if len(p.Crawls) > 0 {
+			latestCrawl := p.Crawls[0]
+			projectInfos = append(projectInfos, ProjectInfo{
+				ID:            p.ID,
+				URL:           p.URL,
+				Domain:        p.Domain,
+				CrawlDateTime: latestCrawl.CrawlDateTime,
+				CrawlDuration: latestCrawl.CrawlDuration,
+				PagesCrawled:  latestCrawl.PagesCrawled,
+				LatestCrawlID: latestCrawl.ID,
+			})
 		}
 	}
 
 	return projectInfos, nil
+}
+
+// GetCrawls returns all crawls for a project
+func (a *App) GetCrawls(projectID uint) ([]CrawlInfo, error) {
+	crawls, err := GetProjectCrawls(projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to CrawlInfo for frontend
+	crawlInfos := make([]CrawlInfo, len(crawls))
+	for i, c := range crawls {
+		crawlInfos[i] = CrawlInfo{
+			ID:            c.ID,
+			ProjectID:     c.ProjectID,
+			CrawlDateTime: c.CrawlDateTime,
+			CrawlDuration: c.CrawlDuration,
+			PagesCrawled:  c.PagesCrawled,
+		}
+	}
+
+	return crawlInfos, nil
+}
+
+// GetCrawlWithResults returns a specific crawl with all its results
+func (a *App) GetCrawlWithResults(crawlID uint) (*CrawlResultDetailed, error) {
+	// Get crawl info
+	crawl, err := GetCrawlByID(crawlID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get crawled URLs
+	urls, err := GetCrawlResults(crawlID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to CrawlResult for frontend
+	results := make([]CrawlResult, len(urls))
+	for i, u := range urls {
+		results[i] = CrawlResult{
+			URL:       u.URL,
+			Status:    u.Status,
+			Title:     u.Title,
+			Indexable: u.Indexable,
+			Error:     u.Error,
+		}
+	}
+
+	return &CrawlResultDetailed{
+		CrawlInfo: CrawlInfo{
+			ID:            crawl.ID,
+			ProjectID:     crawl.ProjectID,
+			CrawlDateTime: crawl.CrawlDateTime,
+			CrawlDuration: crawl.CrawlDuration,
+			PagesCrawled:  crawl.PagesCrawled,
+		},
+		Results: results,
+	}, nil
+}
+
+// DeleteCrawlByID deletes a specific crawl
+func (a *App) DeleteCrawlByID(crawlID uint) error {
+	return DeleteCrawl(crawlID)
+}
+
+// DeleteProjectByID deletes a project and all its crawls
+func (a *App) DeleteProjectByID(projectID uint) error {
+	return DeleteProject(projectID)
 }

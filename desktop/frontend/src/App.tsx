@@ -1,9 +1,67 @@
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl, GetProjects } from "../wailsjs/go/main/App";
+import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID } from "../wailsjs/go/main/App";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
+
+interface CustomDropdownProps {
+  value: number;
+  options: CrawlInfo[];
+  onChange: (crawlId: number) => void;
+  disabled?: boolean;
+  formatOption: (crawl: CrawlInfo) => string;
+}
+
+function CustomDropdown({ value, options, onChange, disabled, formatOption }: CustomDropdownProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const selectedOption = options.find(opt => opt.id === value);
+
+  return (
+    <div className={`custom-dropdown ${disabled ? 'disabled' : ''}`} ref={dropdownRef}>
+      <div
+        className={`custom-dropdown-header ${isOpen ? 'open' : ''}`}
+        onClick={() => !disabled && setIsOpen(!isOpen)}
+      >
+        <span className="custom-dropdown-value">
+          {selectedOption ? formatOption(selectedOption) : 'Select crawl'}
+        </span>
+        <svg className="custom-dropdown-arrow" width="12" height="8" viewBox="0 0 12 8" fill="none">
+          <path d="M1 1.5L6 6.5L11 1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </div>
+      {isOpen && !disabled && (
+        <div className="custom-dropdown-menu">
+          {options.map((option) => (
+            <div
+              key={option.id}
+              className={`custom-dropdown-option ${option.id === value ? 'selected' : ''}`}
+              onClick={() => {
+                onChange(option.id);
+                setIsOpen(false);
+              }}
+            >
+              {formatOption(option)}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface CrawlResult {
   url: string;
@@ -20,6 +78,20 @@ interface ProjectInfo {
   crawlDateTime: number;
   crawlDuration: number;
   pagesCrawled: number;
+  latestCrawlId: number;
+}
+
+interface CrawlInfo {
+  id: number;
+  projectId: number;
+  crawlDateTime: number;
+  crawlDuration: number;
+  pagesCrawled: number;
+}
+
+interface CrawlResultDetailed {
+  crawlInfo: CrawlInfo;
+  results: CrawlResult[];
 }
 
 type View = 'start' | 'crawl' | 'config';
@@ -73,8 +145,13 @@ function App() {
   const [view, setView] = useState<View>('start');
   const [hasStarted, setHasStarted] = useState(false);
   const [discoveredUrls, setDiscoveredUrls] = useState<Set<string>>(new Set());
-  const [completedUrls, setCompletedUrls] = useState<Set<string>>(new Set());
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
+  const [currentProject, setCurrentProject] = useState<ProjectInfo | null>(null);
+  const [availableCrawls, setAvailableCrawls] = useState<CrawlInfo[]>([]);
+  const [selectedCrawl, setSelectedCrawl] = useState<CrawlInfo | null>(null);
+  const [showDeleteCrawlModal, setShowDeleteCrawlModal] = useState(false);
+  const [showDeleteProjectModal, setShowDeleteProjectModal] = useState(false);
+  const [projectToDelete, setProjectToDelete] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -87,7 +164,6 @@ function App() {
       setView('crawl');
       setResults([]);
       setDiscoveredUrls(new Set());
-      setCompletedUrls(new Set());
     });
 
     EventsOn("crawl:request", (data: any) => {
@@ -108,8 +184,6 @@ function App() {
         // Add new result
         return [...prev, result];
       });
-      // Mark URL as completed
-      setCompletedUrls(prev => new Set(prev).add(result.url));
     });
 
     EventsOn("crawl:error", (result: CrawlResult) => {
@@ -125,8 +199,6 @@ function App() {
         // Add new result
         return [...prev, result];
       });
-      // Mark URL as completed
-      setCompletedUrls(prev => new Set(prev).add(result.url));
     });
 
     EventsOn("crawl:completed", () => {
@@ -170,7 +242,6 @@ function App() {
     setIsCrawling(false);
     setCurrentUrl('');
     setDiscoveredUrls(new Set());
-    setCompletedUrls(new Set());
   };
 
   const handleNewCrawl = async () => {
@@ -192,9 +263,36 @@ function App() {
     setView('crawl');
   };
 
-  const handleProjectClick = async (projectUrl: string) => {
-    setUrl(projectUrl);
-    await handleStartCrawl();
+  const handleProjectClick = async (project: ProjectInfo) => {
+    setCurrentProject(project);
+    setUrl(project.url);
+
+    // Load all crawls for this project
+    try {
+      const crawls = await GetCrawls(project.id);
+      setAvailableCrawls(crawls);
+
+      // Load the latest crawl results
+      if (project.latestCrawlId) {
+        const crawlData = await GetCrawlWithResults(project.latestCrawlId);
+        setSelectedCrawl(crawlData.crawlInfo);
+        setResults(crawlData.results);
+      }
+
+      setView('crawl');
+    } catch (error) {
+      console.error('Failed to load project crawls:', error);
+    }
+  };
+
+  const handleCrawlSelect = async (crawlId: number) => {
+    try {
+      const crawlData = await GetCrawlWithResults(crawlId);
+      setSelectedCrawl(crawlData.crawlInfo);
+      setResults(crawlData.results);
+    } catch (error) {
+      console.error('Failed to load crawl:', error);
+    }
   };
 
   const formatDate = (timestamp: number): string => {
@@ -204,6 +302,77 @@ function App() {
       day: 'numeric',
       year: 'numeric'
     });
+  };
+
+  const formatDateTime = (timestamp: number): string => {
+    const date = new Date(timestamp * 1000);
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    });
+  };
+
+  const handleDeleteProject = (projectId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setProjectToDelete(projectId);
+    setShowDeleteProjectModal(true);
+  };
+
+  const confirmDeleteProject = async () => {
+    if (projectToDelete === null) return;
+
+    try {
+      await DeleteProjectByID(projectToDelete);
+      setShowDeleteProjectModal(false);
+      setProjectToDelete(null);
+      await loadProjects();
+
+      // If we deleted the current project, go back to home
+      if (currentProject && currentProject.id === projectToDelete) {
+        handleHome();
+      }
+    } catch (error) {
+      console.error('Failed to delete project:', error);
+    }
+  };
+
+  const handleDeleteCrawl = () => {
+    if (selectedCrawl) {
+      setShowDeleteCrawlModal(true);
+    }
+  };
+
+  const confirmDeleteCrawl = async () => {
+    if (!selectedCrawl || !currentProject) return;
+
+    try {
+      await DeleteCrawlByID(selectedCrawl.id);
+      setShowDeleteCrawlModal(false);
+
+      // Reload crawls for this project
+      const crawls = await GetCrawls(currentProject.id);
+      setAvailableCrawls(crawls);
+
+      // If there are still crawls, load the latest one
+      if (crawls.length > 0) {
+        const latestCrawl = crawls[0];
+        const crawlData = await GetCrawlWithResults(latestCrawl.id);
+        setSelectedCrawl(crawlData.crawlInfo);
+        setResults(crawlData.results);
+      } else {
+        // No more crawls, go back to home
+        handleHome();
+      }
+
+      // Reload projects to update the card
+      await loadProjects();
+    } catch (error) {
+      console.error('Failed to delete crawl:', error);
+    }
   };
 
   const formatDuration = (ms: number): string => {
@@ -273,12 +442,24 @@ function App() {
                   <div
                     key={project.id}
                     className="project-card"
-                    onClick={() => handleProjectClick(project.url)}
+                    onClick={() => handleProjectClick(project)}
                   >
                     <div className="project-header">
                       <div className="project-domain">{project.url}</div>
-                      <div className="project-date">{formatDate(project.crawlDateTime)}</div>
+                      <button
+                        className="delete-project-button"
+                        onClick={(e) => handleDeleteProject(project.id, e)}
+                        title="Delete project"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6"></polyline>
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                          <line x1="10" y1="11" x2="10" y2="17"></line>
+                          <line x1="14" y1="11" x2="14" y2="17"></line>
+                        </svg>
+                      </button>
                     </div>
+                    <div className="project-date">{formatDate(project.crawlDateTime)}</div>
                     <div className="project-stats">
                       <div className="project-stat">
                         <span className="project-stat-value">{project.pagesCrawled}</span>
@@ -295,6 +476,24 @@ function App() {
             </div>
           )}
         </div>
+
+        {/* Delete Project Modal */}
+        {showDeleteProjectModal && (
+          <div className="modal-overlay" onClick={() => setShowDeleteProjectModal(false)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <h3>Delete Project</h3>
+              <p>Are you sure you want to delete this project and all its crawls? This action cannot be undone.</p>
+              <div className="modal-actions">
+                <button className="modal-button cancel" onClick={() => setShowDeleteProjectModal(false)}>
+                  Cancel
+                </button>
+                <button className="modal-button delete" onClick={confirmDeleteProject}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -334,12 +533,40 @@ function App() {
               </button>
             </div>
           </div>
-          {currentUrl && (
-            <div className="current-url">
-              <span className="current-label">Current:</span>
-              <span className="current-value">{currentUrl}</span>
-            </div>
-          )}
+          <div className="header-crawl-info">
+            {availableCrawls.length > 0 && selectedCrawl && (
+              <div className="crawl-selector">
+                <label>Crawl:</label>
+                <CustomDropdown
+                  value={selectedCrawl.id}
+                  options={availableCrawls}
+                  onChange={handleCrawlSelect}
+                  disabled={isCrawling}
+                  formatOption={(crawl) => formatDateTime(crawl.crawlDateTime)}
+                />
+                {!isCrawling && availableCrawls.length > 1 && (
+                  <button
+                    className="delete-crawl-button"
+                    onClick={handleDeleteCrawl}
+                    title="Delete this crawl"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6"></polyline>
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                      <line x1="10" y1="11" x2="10" y2="17"></line>
+                      <line x1="14" y1="11" x2="14" y2="17"></line>
+                    </svg>
+                  </button>
+                )}
+              </div>
+            )}
+            {currentUrl && isCrawling && (
+              <div className="current-url">
+                <span className="current-label">Current:</span>
+                <span className="current-value">{currentUrl}</span>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="results-container">
@@ -382,7 +609,7 @@ function App() {
           <div className="footer-content">
             {isCrawling && (
               <div className="status-indicator">
-                <CircularProgress crawled={completedUrls.size} total={discoveredUrls.size} />
+                <CircularProgress crawled={results.length} total={discoveredUrls.size} />
                 <span className="status-text">Crawling...</span>
               </div>
             )}
@@ -407,6 +634,42 @@ function App() {
             </div>
           </div>
         </div>
+
+        {/* Delete Crawl Modal */}
+        {showDeleteCrawlModal && (
+          <div className="modal-overlay" onClick={() => setShowDeleteCrawlModal(false)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <h3>Delete Crawl</h3>
+              <p>Are you sure you want to delete this crawl? This action cannot be undone.</p>
+              <div className="modal-actions">
+                <button className="modal-button cancel" onClick={() => setShowDeleteCrawlModal(false)}>
+                  Cancel
+                </button>
+                <button className="modal-button delete" onClick={confirmDeleteCrawl}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Delete Project Modal */}
+        {showDeleteProjectModal && (
+          <div className="modal-overlay" onClick={() => setShowDeleteProjectModal(false)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <h3>Delete Project</h3>
+              <p>Are you sure you want to delete this project and all its crawls? This action cannot be undone.</p>
+              <div className="modal-actions">
+                <button className="modal-button cancel" onClick={() => setShowDeleteProjectModal(false)}>
+                  Cancel
+                </button>
+                <button className="modal-button delete" onClick={confirmDeleteProject}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

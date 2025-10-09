@@ -21,16 +21,38 @@ type Config struct {
 	UpdatedAt          int64  `gorm:"autoUpdateTime"`
 }
 
-// Project represents a crawled project with its metadata
+// Project represents a project (base URL) that can have multiple crawls
 type Project struct {
-	ID            uint   `gorm:"primaryKey"`
-	URL           string `gorm:"uniqueIndex;not null"`
-	Domain        string `gorm:"not null"`
-	CrawlDateTime int64  `gorm:"not null"` // Unix timestamp
-	CrawlDuration int64  `gorm:"not null"` // Duration in milliseconds
-	PagesCrawled  int    `gorm:"not null"`
-	CreatedAt     int64  `gorm:"autoCreateTime"`
-	UpdatedAt     int64  `gorm:"autoUpdateTime"`
+	ID        uint     `gorm:"primaryKey"`
+	URL       string   `gorm:"not null"` // Normalized URL for the project
+	Domain    string   `gorm:"uniqueIndex;not null"` // Domain identifier (includes subdomain)
+	Crawls    []Crawl  `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
+	CreatedAt int64    `gorm:"autoCreateTime"`
+	UpdatedAt int64    `gorm:"autoUpdateTime"`
+}
+
+// Crawl represents a single crawl session for a project
+type Crawl struct {
+	ID            uint          `gorm:"primaryKey"`
+	ProjectID     uint          `gorm:"not null;index"`
+	CrawlDateTime int64         `gorm:"not null"` // Unix timestamp
+	CrawlDuration int64         `gorm:"not null"` // Duration in milliseconds
+	PagesCrawled  int           `gorm:"not null"`
+	CrawledUrls   []CrawledUrl  `gorm:"foreignKey:CrawlID;constraint:OnDelete:CASCADE"`
+	CreatedAt     int64         `gorm:"autoCreateTime"`
+	UpdatedAt     int64         `gorm:"autoUpdateTime"`
+}
+
+// CrawledUrl represents a single URL that was crawled
+type CrawledUrl struct {
+	ID        uint   `gorm:"primaryKey"`
+	CrawlID   uint   `gorm:"not null;index"`
+	URL       string `gorm:"not null"`
+	Status    int    `gorm:"not null"`
+	Title     string `gorm:"type:text"`
+	Indexable string `gorm:"not null"`
+	Error     string `gorm:"type:text"`
+	CreatedAt int64  `gorm:"autoCreateTime"`
 }
 
 // InitDB initializes the database connection and creates tables
@@ -57,7 +79,7 @@ func InitDB() error {
 	db = database
 
 	// Auto migrate the schema
-	if err := db.AutoMigrate(&Config{}, &Project{}); err != nil {
+	if err := db.AutoMigrate(&Config{}, &Project{}, &Crawl{}, &CrawledUrl{}); err != nil {
 		return fmt.Errorf("failed to migrate database: %v", err)
 	}
 
@@ -124,43 +146,148 @@ func GetConfig(domain string) (*Config, error) {
 	return GetOrCreateConfig(domain)
 }
 
-// SaveProject saves or updates a project in the database
-func SaveProject(url string, domain string, crawlDateTime int64, crawlDuration int64, pagesCrawled int) error {
-	project := Project{
-		URL:           url,
-		Domain:        domain,
+// GetOrCreateProject gets or creates a project by domain
+func GetOrCreateProject(url string, domain string) (*Project, error) {
+	var project Project
+	result := db.Where("domain = ?", domain).First(&project)
+
+	if result.Error == gorm.ErrRecordNotFound {
+		// Create new project
+		project = Project{
+			URL:    url,
+			Domain: domain,
+		}
+		if err := db.Create(&project).Error; err != nil {
+			return nil, fmt.Errorf("failed to create project: %v", err)
+		}
+		return &project, nil
+	}
+
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get project: %v", result.Error)
+	}
+
+	// Update URL if it has changed (should be the normalized URL)
+	if project.URL != url {
+		project.URL = url
+		db.Save(&project)
+	}
+
+	return &project, nil
+}
+
+// CreateCrawl creates a new crawl for a project
+func CreateCrawl(projectID uint, crawlDateTime int64, crawlDuration int64, pagesCrawled int) (*Crawl, error) {
+	crawl := Crawl{
+		ProjectID:     projectID,
 		CrawlDateTime: crawlDateTime,
 		CrawlDuration: crawlDuration,
 		PagesCrawled:  pagesCrawled,
 	}
 
-	// Check if project exists
-	var existing Project
-	result := db.Where("url = ?", url).First(&existing)
-
-	if result.Error == gorm.ErrRecordNotFound {
-		// Create new project
-		return db.Create(&project).Error
+	if err := db.Create(&crawl).Error; err != nil {
+		return nil, fmt.Errorf("failed to create crawl: %v", err)
 	}
 
-	// Update existing project
-	existing.CrawlDateTime = crawlDateTime
-	existing.CrawlDuration = crawlDuration
-	existing.PagesCrawled = pagesCrawled
-	return db.Save(&existing).Error
+	return &crawl, nil
 }
 
-// GetAllProjects returns all projects ordered by most recent crawl
+// SaveCrawledUrl saves a crawled URL result
+func SaveCrawledUrl(crawlID uint, url string, status int, title string, indexable string, errorMsg string) error {
+	crawledUrl := CrawledUrl{
+		CrawlID:   crawlID,
+		URL:       url,
+		Status:    status,
+		Title:     title,
+		Indexable: indexable,
+		Error:     errorMsg,
+	}
+
+	return db.Create(&crawledUrl).Error
+}
+
+// UpdateCrawlStats updates the crawl statistics
+func UpdateCrawlStats(crawlID uint, crawlDuration int64, pagesCrawled int) error {
+	return db.Model(&Crawl{}).Where("id = ?", crawlID).Updates(map[string]interface{}{
+		"crawl_duration": crawlDuration,
+		"pages_crawled":  pagesCrawled,
+	}).Error
+}
+
+// GetAllProjects returns all projects with their latest crawl info
 func GetAllProjects() ([]Project, error) {
 	var projects []Project
-	result := db.Order("crawl_date_time DESC").Find(&projects)
+	// Preload the most recent crawl for each project
+	result := db.Preload("Crawls", func(db *gorm.DB) *gorm.DB {
+		return db.Order("crawl_date_time DESC").Limit(1)
+	}).Find(&projects)
+
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get projects: %v", result.Error)
 	}
+
 	return projects, nil
 }
 
-// DeleteProject deletes a project by URL
-func DeleteProject(url string) error {
-	return db.Where("url = ?", url).Delete(&Project{}).Error
+// GetProjectByID gets a project by ID
+func GetProjectByID(id uint) (*Project, error) {
+	var project Project
+	result := db.First(&project, id)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get project: %v", result.Error)
+	}
+	return &project, nil
+}
+
+// GetProjectCrawls returns all crawls for a project ordered by date
+func GetProjectCrawls(projectID uint) ([]Crawl, error) {
+	var crawls []Crawl
+	result := db.Where("project_id = ?", projectID).Order("crawl_date_time DESC").Find(&crawls)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get crawls: %v", result.Error)
+	}
+	return crawls, nil
+}
+
+// GetLatestCrawl gets the most recent crawl for a project
+func GetLatestCrawl(projectID uint) (*Crawl, error) {
+	var crawl Crawl
+	result := db.Where("project_id = ?", projectID).Order("crawl_date_time DESC").First(&crawl)
+	if result.Error != nil {
+		if result.Error == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get latest crawl: %v", result.Error)
+	}
+	return &crawl, nil
+}
+
+// GetCrawlResults gets all crawled URLs for a specific crawl
+func GetCrawlResults(crawlID uint) ([]CrawledUrl, error) {
+	var urls []CrawledUrl
+	result := db.Where("crawl_id = ?", crawlID).Order("id ASC").Find(&urls)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get crawl results: %v", result.Error)
+	}
+	return urls, nil
+}
+
+// GetCrawlByID gets a crawl by ID
+func GetCrawlByID(id uint) (*Crawl, error) {
+	var crawl Crawl
+	result := db.Preload("CrawledUrls").First(&crawl, id)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get crawl: %v", result.Error)
+	}
+	return &crawl, nil
+}
+
+// DeleteCrawl deletes a crawl and all its crawled URLs (cascade)
+func DeleteCrawl(crawlID uint) error {
+	return db.Delete(&Crawl{}, crawlID).Error
+}
+
+// DeleteProject deletes a project and all its crawls (cascade)
+func DeleteProject(projectID uint) error {
+	return db.Delete(&Project{}, projectID).Error
 }
