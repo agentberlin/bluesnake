@@ -132,17 +132,6 @@ function App() {
               <h2 className="crawl-title">BlueSnake</h2>
             </div>
             <div className="header-actions">
-              {isCrawling && (
-                <div className="status-indicator">
-                  <span className="pulse"></span>
-                  <span className="status-text">Crawling...</span>
-                </div>
-              )}
-              {!isCrawling && (
-                <div className="status-indicator completed">
-                  <span className="status-text">Completed</span>
-                </div>
-              )}
               <button className="new-crawl-button" onClick={handleNewCrawl}>
                 New Crawl
               </button>
@@ -193,19 +182,32 @@ function App() {
         </div>
 
         <div className="footer">
-          <div className="stats">
-            <span className="stat-item">
-              <span className="stat-label">Total:</span>
-              <span className="stat-value">{results.length}</span>
-            </span>
-            <span className="stat-item">
-              <span className="stat-label">Indexable:</span>
-              <span className="stat-value">{results.filter(r => r.indexable === 'Yes').length}</span>
-            </span>
-            <span className="stat-item">
-              <span className="stat-label">Non-indexable:</span>
-              <span className="stat-value">{results.filter(r => r.indexable === 'No').length}</span>
-            </span>
+          <div className="footer-content">
+            {isCrawling && (
+              <div className="status-indicator">
+                <span className="pulse"></span>
+                <span className="status-text">Crawling...</span>
+              </div>
+            )}
+            {!isCrawling && (
+              <div className="status-indicator completed">
+                <span className="status-text">Completed</span>
+              </div>
+            )}
+            <div className="stats">
+              <span className="stat-item">
+                <span className="stat-label">Total:</span>
+                <span className="stat-value">{results.length}</span>
+              </span>
+              <span className="stat-item">
+                <span className="stat-label">Indexable:</span>
+                <span className="stat-value">{results.filter(r => r.indexable === 'Yes').length}</span>
+              </span>
+              <span className="stat-item">
+                <span className="stat-label">Non-indexable:</span>
+                <span className="stat-value">{results.filter(r => r.indexable === 'No').length}</span>
+              </span>
+            </div>
           </div>
         </div>
       </div>

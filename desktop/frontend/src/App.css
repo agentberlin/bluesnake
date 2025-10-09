@@ -333,6 +333,12 @@
   background: #fafafa;
 }
 
+.footer-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .stats {
   display: flex;
   gap: 32px;
