@@ -13,12 +13,24 @@ var db *gorm.DB
 
 // Config represents the crawl configuration for a domain
 type Config struct {
-	ID                  uint   `gorm:"primaryKey"`
-	Domain              string `gorm:"uniqueIndex;not null"`
-	JSRenderingEnabled  bool   `gorm:"default:false"`
-	Parallelism         int    `gorm:"default:5"`
-	CreatedAt           int64  `gorm:"autoCreateTime"`
-	UpdatedAt           int64  `gorm:"autoUpdateTime"`
+	ID                 uint   `gorm:"primaryKey"`
+	Domain             string `gorm:"uniqueIndex;not null"`
+	JSRenderingEnabled bool   `gorm:"default:false"`
+	Parallelism        int    `gorm:"default:5"`
+	CreatedAt          int64  `gorm:"autoCreateTime"`
+	UpdatedAt          int64  `gorm:"autoUpdateTime"`
+}
+
+// Project represents a crawled project with its metadata
+type Project struct {
+	ID            uint   `gorm:"primaryKey"`
+	URL           string `gorm:"uniqueIndex;not null"`
+	Domain        string `gorm:"not null"`
+	CrawlDateTime int64  `gorm:"not null"` // Unix timestamp
+	CrawlDuration int64  `gorm:"not null"` // Duration in milliseconds
+	PagesCrawled  int    `gorm:"not null"`
+	CreatedAt     int64  `gorm:"autoCreateTime"`
+	UpdatedAt     int64  `gorm:"autoUpdateTime"`
 }
 
 // InitDB initializes the database connection and creates tables
@@ -45,7 +57,7 @@ func InitDB() error {
 	db = database
 
 	// Auto migrate the schema
-	if err := db.AutoMigrate(&Config{}); err != nil {
+	if err := db.AutoMigrate(&Config{}, &Project{}); err != nil {
 		return fmt.Errorf("failed to migrate database: %v", err)
 	}
 
@@ -110,4 +122,45 @@ func UpdateConfig(domain string, jsRendering bool, parallelism int) error {
 // GetConfig returns the configuration for a domain (for frontend)
 func GetConfig(domain string) (*Config, error) {
 	return GetOrCreateConfig(domain)
+}
+
+// SaveProject saves or updates a project in the database
+func SaveProject(url string, domain string, crawlDateTime int64, crawlDuration int64, pagesCrawled int) error {
+	project := Project{
+		URL:           url,
+		Domain:        domain,
+		CrawlDateTime: crawlDateTime,
+		CrawlDuration: crawlDuration,
+		PagesCrawled:  pagesCrawled,
+	}
+
+	// Check if project exists
+	var existing Project
+	result := db.Where("url = ?", url).First(&existing)
+
+	if result.Error == gorm.ErrRecordNotFound {
+		// Create new project
+		return db.Create(&project).Error
+	}
+
+	// Update existing project
+	existing.CrawlDateTime = crawlDateTime
+	existing.CrawlDuration = crawlDuration
+	existing.PagesCrawled = pagesCrawled
+	return db.Save(&existing).Error
+}
+
+// GetAllProjects returns all projects ordered by most recent crawl
+func GetAllProjects() ([]Project, error) {
+	var projects []Project
+	result := db.Order("crawl_date_time DESC").Find(&projects)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get projects: %v", result.Error)
+	}
+	return projects, nil
+}
+
+// DeleteProject deletes a project by URL
+func DeleteProject(url string) error {
+	return db.Where("url = ?", url).Delete(&Project{}).Error
 }

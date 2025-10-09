@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl } from "../wailsjs/go/main/App";
+import { StartCrawl, GetProjects } from "../wailsjs/go/main/App";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
@@ -13,7 +13,17 @@ interface CrawlResult {
   error?: string;
 }
 
+interface ProjectInfo {
+  id: number;
+  url: string;
+  domain: string;
+  crawlDateTime: number;
+  crawlDuration: number;
+  pagesCrawled: number;
+}
+
 type View = 'start' | 'crawl' | 'config';
+
 interface CircularProgressProps {
   crawled: number;
   total: number;
@@ -63,15 +73,21 @@ function App() {
   const [view, setView] = useState<View>('start');
   const [hasStarted, setHasStarted] = useState(false);
   const [discoveredUrls, setDiscoveredUrls] = useState<Set<string>>(new Set());
+  const [completedUrls, setCompletedUrls] = useState<Set<string>>(new Set());
+  const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    // Load projects on start
+    loadProjects();
+
     // Listen for crawl events
     EventsOn("crawl:started", (data: any) => {
       setIsCrawling(true);
       setView('crawl');
       setResults([]);
       setDiscoveredUrls(new Set());
+      setCompletedUrls(new Set());
     });
 
     EventsOn("crawl:request", (data: any) => {
@@ -80,18 +96,55 @@ function App() {
     });
 
     EventsOn("crawl:result", (result: CrawlResult) => {
-      setResults(prev => [...prev, result]);
+      setResults(prev => {
+        // Check if URL already exists in results
+        const existingIndex = prev.findIndex(r => r.url === result.url);
+        if (existingIndex !== -1) {
+          // Replace existing result
+          const newResults = [...prev];
+          newResults[existingIndex] = result;
+          return newResults;
+        }
+        // Add new result
+        return [...prev, result];
+      });
+      // Mark URL as completed
+      setCompletedUrls(prev => new Set(prev).add(result.url));
     });
 
     EventsOn("crawl:error", (result: CrawlResult) => {
-      setResults(prev => [...prev, result]);
+      setResults(prev => {
+        // Check if URL already exists in results
+        const existingIndex = prev.findIndex(r => r.url === result.url);
+        if (existingIndex !== -1) {
+          // Replace existing result
+          const newResults = [...prev];
+          newResults[existingIndex] = result;
+          return newResults;
+        }
+        // Add new result
+        return [...prev, result];
+      });
+      // Mark URL as completed
+      setCompletedUrls(prev => new Set(prev).add(result.url));
     });
 
     EventsOn("crawl:completed", () => {
       setIsCrawling(false);
       setCurrentUrl('');
+      // Reload projects after crawl completes
+      loadProjects();
     });
   }, []);
+
+  const loadProjects = async () => {
+    try {
+      const projectList = await GetProjects();
+      setProjects(projectList || []);
+    } catch (error) {
+      console.error('Failed to load projects:', error);
+    }
+  };
 
   const handleStartCrawl = async () => {
     if (!url.trim()) return;
@@ -117,6 +170,7 @@ function App() {
     setIsCrawling(false);
     setCurrentUrl('');
     setDiscoveredUrls(new Set());
+    setCompletedUrls(new Set());
   };
 
   const handleNewCrawl = async () => {
@@ -136,6 +190,28 @@ function App() {
 
   const handleCloseConfig = () => {
     setView('crawl');
+  };
+
+  const handleProjectClick = async (projectUrl: string) => {
+    setUrl(projectUrl);
+    await handleStartCrawl();
+  };
+
+  const formatDate = (timestamp: number): string => {
+    const date = new Date(timestamp * 1000);
+    return date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    });
+  };
+
+  const formatDuration = (ms: number): string => {
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes}m ${remainingSeconds}s`;
   };
 
   const getStatusColor = (status: number): string => {
@@ -188,6 +264,36 @@ function App() {
               </svg>
             </button>
           </div>
+
+          {projects.length > 0 && (
+            <div className="projects-section">
+              <h3 className="projects-title">Recent Projects</h3>
+              <div className="projects-grid">
+                {projects.map((project) => (
+                  <div
+                    key={project.id}
+                    className="project-card"
+                    onClick={() => handleProjectClick(project.url)}
+                  >
+                    <div className="project-header">
+                      <div className="project-domain">{project.url}</div>
+                      <div className="project-date">{formatDate(project.crawlDateTime)}</div>
+                    </div>
+                    <div className="project-stats">
+                      <div className="project-stat">
+                        <span className="project-stat-value">{project.pagesCrawled}</span>
+                        <span className="project-stat-label">pages</span>
+                      </div>
+                      <div className="project-stat">
+                        <span className="project-stat-value">{formatDuration(project.crawlDuration)}</span>
+                        <span className="project-stat-label">duration</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -276,7 +382,7 @@ function App() {
           <div className="footer-content">
             {isCrawling && (
               <div className="status-indicator">
-                <CircularProgress crawled={results.length} total={discoveredUrls.size} />
+                <CircularProgress crawled={completedUrls.size} total={discoveredUrls.size} />
                 <span className="status-text">Crawling...</span>
               </div>
             )}

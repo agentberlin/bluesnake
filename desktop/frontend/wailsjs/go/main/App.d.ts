@@ -4,6 +4,8 @@ import {main} from '../models';
 
 export function GetConfigForDomain(arg1:string):Promise<main.Config>;
 
+export function GetProjects():Promise<Array<main.ProjectInfo>>;
+
 export function StartCrawl(arg1:string):Promise<void>;
 
 export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number):Promise<void>;

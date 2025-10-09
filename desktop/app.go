@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/agentberlin/bluesnake"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -24,6 +25,24 @@ type CrawlResult struct {
 	Error      string `json:"error,omitempty"`
 }
 
+// ProjectInfo represents project information for the frontend
+type ProjectInfo struct {
+	ID            uint   `json:"id"`
+	URL           string `json:"url"`
+	Domain        string `json:"domain"`
+	CrawlDateTime int64  `json:"crawlDateTime"`
+	CrawlDuration int64  `json:"crawlDuration"`
+	PagesCrawled  int    `json:"pagesCrawled"`
+}
+
+// crawlStats tracks crawl statistics
+type crawlStats struct {
+	startTime    time.Time
+	pagesCrawled int
+	url          string
+	domain       string
+}
+
 // NewApp creates a new App application struct
 func NewApp() *App {
 	return &App{}
@@ -36,7 +55,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// Initialize database
 	if err := InitDB(); err != nil {
-		fmt.Printf("Failed to initialize database: %v\n", err)
+		runtime.LogErrorf(ctx, "Failed to initialize database: %v", err)
 	}
 }
 
@@ -54,11 +73,19 @@ func (a *App) StartCrawl(urlStr string) error {
 }
 
 func (a *App) runCrawler(parsedURL *url.URL) {
+	// Initialize crawl stats
+	stats := &crawlStats{
+		startTime:    time.Now(),
+		pagesCrawled: 0,
+		url:          parsedURL.String(),
+		domain:       parsedURL.Hostname(),
+	}
+
 	// Get configuration for this domain
 	domain := parsedURL.Hostname()
 	config, err := GetOrCreateConfig(domain)
 	if err != nil {
-		fmt.Printf("Failed to get config for domain %s: %v\n", domain, err)
+		runtime.LogErrorf(a.ctx, "Failed to get config for domain %s: %v", domain, err)
 		// Use defaults if config retrieval fails
 		config = &Config{
 			JSRenderingEnabled: false,
@@ -132,6 +159,9 @@ func (a *App) runCrawler(parsedURL *url.URL) {
 			Indexable: isIndexable,
 		}
 
+		// Increment pages crawled
+		stats.pagesCrawled++
+
 		// Emit result to frontend
 		runtime.EventsEmit(a.ctx, "crawl:result", result)
 	})
@@ -153,6 +183,22 @@ func (a *App) runCrawler(parsedURL *url.URL) {
 
 	c.Visit(parsedURL.String())
 	c.Wait()
+
+	// Calculate crawl duration
+	crawlDuration := time.Since(stats.startTime).Milliseconds()
+
+	// Save project to database
+err = SaveProject(
+		stats.url,
+		stats.domain,
+		stats.startTime.Unix(),
+		crawlDuration,
+		stats.pagesCrawled,
+	)
+
+	if err != nil {
+		runtime.LogErrorf(a.ctx, "Failed to save project: %v", err)
+	}
 
 	// Send crawl complete event
 	runtime.EventsEmit(a.ctx, "crawl:completed", map[string]string{
@@ -180,4 +226,27 @@ func (a *App) UpdateConfigForDomain(urlStr string, jsRendering bool, parallelism
 
 	domain := parsedURL.Hostname()
 	return UpdateConfig(domain, jsRendering, parallelism)
+}
+
+// GetProjects returns all projects from the database
+func (a *App) GetProjects() ([]ProjectInfo, error) {
+	projects, err := GetAllProjects()
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to ProjectInfo for frontend
+	projectInfos := make([]ProjectInfo, len(projects))
+	for i, p := range projects {
+		projectInfos[i] = ProjectInfo{
+			ID:            p.ID,
+			URL:           p.URL,
+			Domain:        p.Domain,
+			CrawlDateTime: p.CrawlDateTime,
+			CrawlDuration: p.CrawlDuration,
+			PagesCrawled:  p.PagesCrawled,
+		}
+	}
+
+	return projectInfos, nil
 }

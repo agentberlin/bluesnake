@@ -6,6 +6,10 @@ export function GetConfigForDomain(arg1) {
   return window['go']['main']['App']['GetConfigForDomain'](arg1);
 }
 
+export function GetProjects() {
+  return window['go']['main']['App']['GetProjects']();
+}
+
 export function StartCrawl(arg1) {
   return window['go']['main']['App']['StartCrawl'](arg1);
 }
