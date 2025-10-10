@@ -269,7 +269,7 @@ function App() {
         setUpdateInfo(info);
         setIsCheckingUpdate(false);
       })
-      .catch(error => {
+      .catch((error: any) => {
         console.error('Failed to check for updates:', error);
         setIsCheckingUpdate(false);
       });
