@@ -447,12 +447,15 @@ function App() {
     }
   };
 
-  const handleHome = () => {
+  const handleHome = async () => {
     setView('start');
     setResults([]);
     setUrl('');
     setIsCrawling(false);
     setCurrentCrawlId(null);
+
+    // Reload projects to show any newly created ones
+    await loadProjects();
   };
 
   const handleNewCrawl = async () => {
@@ -479,8 +482,58 @@ function App() {
     setView('config');
   };
 
-  const handleCloseConfig = () => {
-    setView('crawl');
+  const handleOpenConfigFromHome = async () => {
+    if (!url.trim()) return;
+
+    // Try to load the project if it exists
+    await loadCurrentProjectFromUrl(url);
+
+    setView('config');
+  };
+
+  const handleCloseConfig = async () => {
+    // If we came from home page with a URL, try to load the project and go to crawl page
+    if (url.trim()) {
+      await loadCurrentProjectFromUrl(url);
+
+      // Try to find the project - it might exist if user saved config after a previous crawl
+      const projectList = await GetProjects();
+      let normalizedUrl = url.trim();
+      if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
+        normalizedUrl = 'https://' + normalizedUrl;
+      }
+
+      const project = projectList?.find(p => {
+        if (p.url === normalizedUrl) return true;
+        try {
+          const urlObj = new URL(normalizedUrl);
+          return p.domain === urlObj.hostname;
+        } catch {
+          return false;
+        }
+      });
+
+      if (project) {
+        // Project exists - load its crawls
+        setCurrentProject(project);
+        const crawls = await GetCrawls(project.id);
+        setAvailableCrawls(crawls);
+      } else {
+        // Project doesn't exist yet (config was just saved for a new URL)
+        // Clear project state and show empty state
+        setCurrentProject(null);
+        setAvailableCrawls([]);
+        setResults([]);
+      }
+
+      // Always go to crawl view (will show empty state if no project/crawls)
+      setView('crawl');
+    } else if (currentProject) {
+      // If we already have a current project, stay on crawl page
+      setView('crawl');
+    } else {
+      setView('start');
+    }
   };
 
   const handleProjectClick = async (project: ProjectInfo) => {
@@ -688,9 +741,28 @@ function App() {
               autoFocus
             />
             <button
+              className="config-button"
+              onClick={handleOpenConfigFromHome}
+              disabled={!url.trim()}
+              title="Configure before crawling"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="4" y1="21" x2="4" y2="14"></line>
+                <line x1="4" y1="10" x2="4" y2="3"></line>
+                <line x1="12" y1="21" x2="12" y2="12"></line>
+                <line x1="12" y1="8" x2="12" y2="3"></line>
+                <line x1="20" y1="21" x2="20" y2="16"></line>
+                <line x1="20" y1="12" x2="20" y2="3"></line>
+                <line x1="1" y1="14" x2="7" y2="14"></line>
+                <line x1="9" y1="8" x2="15" y2="8"></line>
+                <line x1="17" y1="16" x2="23" y2="16"></line>
+              </svg>
+            </button>
+            <button
               className="go-button"
               onClick={handleNewCrawl}
               disabled={!url.trim()}
+              title="Start crawl now"
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -706,6 +778,7 @@ function App() {
                 {projects.map((project) => {
                   const activeCrawl = activeCrawls.get(project.id);
                   const isActivelyCrawling = !!activeCrawl;
+                  const hasNoCrawls = !isActivelyCrawling && project.latestCrawlId === 0;
 
                   return (
                     <div
@@ -744,6 +817,13 @@ function App() {
                               crawled={activeCrawl.pagesCrawled}
                               total={activeCrawl.totalDiscovered}
                             />
+                          </div>
+                        </>
+                      ) : hasNoCrawls ? (
+                        <>
+                          <div className="project-date">Not crawled yet</div>
+                          <div className="project-stats project-stats-empty">
+                            <span className="project-stat-empty">Configure and start crawl</span>
                           </div>
                         </>
                       ) : (
@@ -791,6 +871,8 @@ function App() {
   }
 
   // Crawl screen
+  const hasNoCrawls = availableCrawls.length === 0;
+
   return (
     <div className="app">
       <div className="crawl-screen">
@@ -813,136 +895,174 @@ function App() {
             </div>
           </div>
 
-          <div className="header-center">
-            {availableCrawls.length > 0 && selectedCrawl && (
-              <div className="crawl-selector">
-                <label>Crawl:</label>
-                <CustomDropdown
-                  value={selectedCrawl.id}
-                  options={availableCrawls}
-                  onChange={handleCrawlSelect}
-                  disabled={isCrawling}
-                  formatOption={(crawl) => formatDateTime(crawl.crawlDateTime)}
-                />
-                {!isCrawling && availableCrawls.length > 1 && (
-                  <button
-                    className="delete-crawl-button"
-                    onClick={handleDeleteCrawl}
-                    title="Delete this crawl"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="3 6 5 6 21 6"></polyline>
-                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                      <line x1="10" y1="11" x2="10" y2="17"></line>
-                      <line x1="14" y1="11" x2="14" y2="17"></line>
-                    </svg>
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="header-right">
-            <button className="icon-button" onClick={handleOpenConfig} title="Settings">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="4" y1="21" x2="4" y2="14"></line>
-                <line x1="4" y1="10" x2="4" y2="3"></line>
-                <line x1="12" y1="21" x2="12" y2="12"></line>
-                <line x1="12" y1="8" x2="12" y2="3"></line>
-                <line x1="20" y1="21" x2="20" y2="16"></line>
-                <line x1="20" y1="12" x2="20" y2="3"></line>
-                <line x1="1" y1="14" x2="7" y2="14"></line>
-                <line x1="9" y1="8" x2="15" y2="8"></line>
-                <line x1="17" y1="16" x2="23" y2="16"></line>
-              </svg>
-            </button>
-            {isCrawling && currentProject && (
-              <button
-                className="stop-crawl-button"
-                onClick={handleStopCrawl}
-                disabled={stoppingProjects.has(currentProject.id)}
-                title="Stop crawling"
-              >
-                {stoppingProjects.has(currentProject.id) ? 'Stopping...' : 'Stop Crawl'}
-              </button>
-            )}
-            <button className="new-crawl-button" onClick={handleNewCrawl} disabled={isCrawling}>
-              New Crawl
-            </button>
-          </div>
-        </div>
-
-        <div className="results-container">
-          <div className="results-header">
-            <div className="header-cell url-col">URL</div>
-            <div className="header-cell status-col">Status</div>
-            <div className="header-cell title-col">Title</div>
-            <div className="header-cell indexable-col">Indexable</div>
-          </div>
-
-          <div className="results-body">
-            {results.map((result, index) => {
-              const isInProgress = result.status === 0 && result.title === 'In progress...';
-              return (
-                <div key={index} className="result-row">
-                  <div className="result-cell url-col">
-                    <span
-                      onClick={() => !isInProgress && handleOpenUrl(result.url)}
-                      className="url-link"
-                      style={{ cursor: isInProgress ? 'default' : 'pointer', opacity: isInProgress ? 0.6 : 1 }}
+          {!hasNoCrawls && (
+            <div className="header-center">
+              {availableCrawls.length > 0 && selectedCrawl && (
+                <div className="crawl-selector">
+                  <label>Crawl:</label>
+                  <CustomDropdown
+                    value={selectedCrawl.id}
+                    options={availableCrawls}
+                    onChange={handleCrawlSelect}
+                    disabled={isCrawling}
+                    formatOption={(crawl) => formatDateTime(crawl.crawlDateTime)}
+                  />
+                  {!isCrawling && availableCrawls.length > 1 && (
+                    <button
+                      className="delete-crawl-button"
+                      onClick={handleDeleteCrawl}
+                      title="Delete this crawl"
                     >
-                      {result.url}
-                    </span>
-                  </div>
-                  <div className={`result-cell status-col ${getStatusColor(result.status)}`} style={{ opacity: isInProgress ? 0.6 : 1 }}>
-                    {isInProgress ? 'Queued' : (result.error ? 'Error' : result.status)}
-                  </div>
-                  <div className="result-cell title-col" style={{ opacity: isInProgress ? 0.6 : 1 }}>
-                    {result.error ? result.error : result.title || '(no title)'}
-                  </div>
-                  <div className="result-cell indexable-col" style={{ opacity: isInProgress ? 0.6 : 1 }}>
-                    <span className={`indexable-badge ${result.indexable === 'Yes' ? 'indexable-yes' : 'indexable-no'}`}>
-                      {result.indexable}
-                    </span>
-                  </div>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="3 6 5 6 21 6"></polyline>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        <line x1="10" y1="11" x2="10" y2="17"></line>
+                        <line x1="14" y1="11" x2="14" y2="17"></line>
+                      </svg>
+                    </button>
+                  )}
                 </div>
-              );
-            })}
-          </div>
+              )}
+            </div>
+          )}
+
+          {!hasNoCrawls && (
+            <div className="header-right">
+              <button className="icon-button" onClick={handleOpenConfig} title="Settings">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="4" y1="21" x2="4" y2="14"></line>
+                  <line x1="4" y1="10" x2="4" y2="3"></line>
+                  <line x1="12" y1="21" x2="12" y2="12"></line>
+                  <line x1="12" y1="8" x2="12" y2="3"></line>
+                  <line x1="20" y1="21" x2="20" y2="16"></line>
+                  <line x1="20" y1="12" x2="20" y2="3"></line>
+                  <line x1="1" y1="14" x2="7" y2="14"></line>
+                  <line x1="9" y1="8" x2="15" y2="8"></line>
+                  <line x1="17" y1="16" x2="23" y2="16"></line>
+                </svg>
+              </button>
+              {isCrawling && currentProject && (
+                <button
+                  className="stop-crawl-button"
+                  onClick={handleStopCrawl}
+                  disabled={stoppingProjects.has(currentProject.id)}
+                  title="Stop crawling"
+                >
+                  {stoppingProjects.has(currentProject.id) ? 'Stopping...' : 'Stop Crawl'}
+                </button>
+              )}
+              <button className="new-crawl-button" onClick={handleNewCrawl} disabled={isCrawling}>
+                New Crawl
+              </button>
+            </div>
+          )}
         </div>
 
-        <div className="footer">
-          <div className="footer-content">
-            {isCrawling && currentProject && (
-              <div className="status-indicator">
-                <CircularProgress
-                  crawled={results.filter(r => !(r.status === 0 && r.title === 'In progress...')).length}
-                  total={results.length}
-                />
-                <span className="status-text">Crawling...</span>
+        {hasNoCrawls ? (
+          <div className="empty-state-container">
+            <div className="empty-state-content">
+              <h3 className="empty-state-title">No crawls yet</h3>
+              <p className="empty-state-description">Configure your crawl settings and start crawling</p>
+              <div className="empty-state-actions">
+                <button className="empty-state-button secondary" onClick={handleOpenConfig}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="4" y1="21" x2="4" y2="14"></line>
+                    <line x1="4" y1="10" x2="4" y2="3"></line>
+                    <line x1="12" y1="21" x2="12" y2="12"></line>
+                    <line x1="12" y1="8" x2="12" y2="3"></line>
+                    <line x1="20" y1="21" x2="20" y2="16"></line>
+                    <line x1="20" y1="12" x2="20" y2="3"></line>
+                    <line x1="1" y1="14" x2="7" y2="14"></line>
+                    <line x1="9" y1="8" x2="15" y2="8"></line>
+                    <line x1="17" y1="16" x2="23" y2="16"></line>
+                  </svg>
+                  Settings
+                </button>
+                <button className="empty-state-button primary" onClick={handleNewCrawl}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                    <polyline points="12 5 19 12 12 19"></polyline>
+                  </svg>
+                  Start Crawl
+                </button>
               </div>
-            )}
-            {!isCrawling && (
-              <div className="status-indicator completed">
-                <span className="status-text">Completed</span>
-              </div>
-            )}
-            <div className="stats">
-              <span className="stat-item">
-                <span className="stat-label">Total:</span>
-                <span className="stat-value">{results.length}</span>
-              </span>
-              <span className="stat-item">
-                <span className="stat-label">Indexable:</span>
-                <span className="stat-value">{results.filter(r => r.indexable === 'Yes').length}</span>
-              </span>
-              <span className="stat-item">
-                <span className="stat-label">Non-indexable:</span>
-                <span className="stat-value">{results.filter(r => r.indexable === 'No').length}</span>
-              </span>
             </div>
           </div>
-        </div>
+        ) : (
+          <div className="results-container">
+            <div className="results-header">
+              <div className="header-cell url-col">URL</div>
+              <div className="header-cell status-col">Status</div>
+              <div className="header-cell title-col">Title</div>
+              <div className="header-cell indexable-col">Indexable</div>
+            </div>
+
+            <div className="results-body">
+              {results.map((result, index) => {
+                const isInProgress = result.status === 0 && result.title === 'In progress...';
+                return (
+                  <div key={index} className="result-row">
+                    <div className="result-cell url-col">
+                      <span
+                        onClick={() => !isInProgress && handleOpenUrl(result.url)}
+                        className="url-link"
+                        style={{ cursor: isInProgress ? 'default' : 'pointer', opacity: isInProgress ? 0.6 : 1 }}
+                      >
+                        {result.url}
+                      </span>
+                    </div>
+                    <div className={`result-cell status-col ${getStatusColor(result.status)}`} style={{ opacity: isInProgress ? 0.6 : 1 }}>
+                      {isInProgress ? 'Queued' : (result.error ? 'Error' : result.status)}
+                    </div>
+                    <div className="result-cell title-col" style={{ opacity: isInProgress ? 0.6 : 1 }}>
+                      {result.error ? result.error : result.title || '(no title)'}
+                    </div>
+                    <div className="result-cell indexable-col" style={{ opacity: isInProgress ? 0.6 : 1 }}>
+                      <span className={`indexable-badge ${result.indexable === 'Yes' ? 'indexable-yes' : 'indexable-no'}`}>
+                        {result.indexable}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {!hasNoCrawls && (
+          <div className="footer">
+            <div className="footer-content">
+              {isCrawling && currentProject && (
+                <div className="status-indicator">
+                  <CircularProgress
+                    crawled={results.filter(r => !(r.status === 0 && r.title === 'In progress...')).length}
+                    total={results.length}
+                  />
+                  <span className="status-text">Crawling...</span>
+                </div>
+              )}
+              {!isCrawling && (
+                <div className="status-indicator completed">
+                  <span className="status-text">Completed</span>
+                </div>
+              )}
+              <div className="stats">
+                <span className="stat-item">
+                  <span className="stat-label">Total:</span>
+                  <span className="stat-value">{results.length}</span>
+                </span>
+                <span className="stat-item">
+                  <span className="stat-label">Indexable:</span>
+                  <span className="stat-value">{results.filter(r => r.indexable === 'Yes').length}</span>
+                </span>
+                <span className="stat-item">
+                  <span className="stat-label">Non-indexable:</span>
+                  <span className="stat-value">{results.filter(r => r.indexable === 'No').length}</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Delete Crawl Modal */}
         {showDeleteCrawlModal && (

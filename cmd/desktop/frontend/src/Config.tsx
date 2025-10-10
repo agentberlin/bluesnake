@@ -59,8 +59,23 @@ function Config({ url, onClose }: ConfigProps) {
       const mechanisms = config.discoveryMechanisms || ["spider"];
       setSitemapEnabled(mechanisms.includes("sitemap"));
     } catch (err) {
-      setError('Failed to load configuration');
-      console.error('Error loading config:', err);
+      // Project doesn't exist yet - use defaults and extract domain from URL
+      console.log('Project not found, using default configuration');
+      try {
+        let normalizedUrl = url.trim();
+        if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
+          normalizedUrl = 'https://' + normalizedUrl;
+        }
+        const urlObj = new URL(normalizedUrl);
+        setDomain(urlObj.hostname);
+      } catch (urlErr) {
+        setDomain(url);
+      }
+
+      // Set default values
+      setJsRendering(false);
+      setParallelism(5);
+      setSitemapEnabled(false);
     } finally {
       setLoading(false);
     }
