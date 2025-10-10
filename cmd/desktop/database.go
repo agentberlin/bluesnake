@@ -37,6 +37,7 @@ type Config struct {
 	Domain              string   `gorm:"not null"`
 	JSRenderingEnabled  bool     `gorm:"default:false"`
 	Parallelism         int      `gorm:"default:5"`
+	UserAgent           string   `gorm:"type:text;default:'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)'"`
 	DiscoveryMechanisms string   `gorm:"type:text;default:'[\"spider\"]'"` // JSON array
 	SitemapURLs         string   `gorm:"type:text"`                        // JSON array, nullable
 	Project             *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
@@ -175,6 +176,7 @@ func GetOrCreateConfig(projectID uint, domain string) (*Config, error) {
 			Domain:              domain,
 			JSRenderingEnabled:  false,
 			Parallelism:         5,
+			UserAgent:           "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)",
 			DiscoveryMechanisms: "[\"spider\"]", // Default to spider mode
 			SitemapURLs:         "",             // Empty = use defaults when sitemap enabled
 		}
@@ -194,7 +196,7 @@ func GetOrCreateConfig(projectID uint, domain string) (*Config, error) {
 }
 
 // UpdateConfig updates the configuration for a project
-func UpdateConfig(projectID uint, jsRendering bool, parallelism int, discoveryMechanisms []string, sitemapURLs []string) error {
+func UpdateConfig(projectID uint, jsRendering bool, parallelism int, userAgent string, discoveryMechanisms []string, sitemapURLs []string) error {
 	var config Config
 
 	result := db.Where("project_id = ?", projectID).First(&config)
@@ -206,6 +208,7 @@ func UpdateConfig(projectID uint, jsRendering bool, parallelism int, discoveryMe
 	// Update existing config
 	config.JSRenderingEnabled = jsRendering
 	config.Parallelism = parallelism
+	config.UserAgent = userAgent
 
 	// Update discovery mechanisms
 	if err := config.SetDiscoveryMechanismsArray(discoveryMechanisms); err != nil {

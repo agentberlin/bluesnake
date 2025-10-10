@@ -4,6 +4,7 @@ export namespace main {
 	    domain: string;
 	    jsRenderingEnabled: boolean;
 	    parallelism: number;
+	    userAgent: string;
 	    discoveryMechanisms: string[];
 	    sitemapURLs: string[];
 	
@@ -16,6 +17,7 @@ export namespace main {
 	        this.domain = source["domain"];
 	        this.jsRenderingEnabled = source["jsRenderingEnabled"];
 	        this.parallelism = source["parallelism"];
+	        this.userAgent = source["userAgent"];
 	        this.discoveryMechanisms = source["discoveryMechanisms"];
 	        this.sitemapURLs = source["sitemapURLs"];
 	    }

@@ -386,6 +386,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		config = &Config{
 			JSRenderingEnabled:  false,
 			Parallelism:         5,
+			UserAgent:           "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)",
 			DiscoveryMechanisms: "[\"spider\"]",
 			SitemapURLs:         "",
 		}
@@ -400,6 +401,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 	// Build crawler configuration based on database config
 	crawlerConfig := &bluesnake.CollectorConfig{
 		Context:              crawlCtx, // Pass context for proper cancellation support
+		UserAgent:            config.UserAgent,
 		AllowedDomains:       []string{domain},
 		Async:                true,
 		EnableRendering:      config.JSRenderingEnabled,
@@ -526,6 +528,7 @@ type ConfigResponse struct {
 	Domain              string   `json:"domain"`
 	JSRenderingEnabled  bool     `json:"jsRenderingEnabled"`
 	Parallelism         int      `json:"parallelism"`
+	UserAgent           string   `json:"userAgent"`
 	DiscoveryMechanisms []string `json:"discoveryMechanisms"`
 	SitemapURLs         []string `json:"sitemapURLs"`
 }
@@ -554,6 +557,7 @@ func (a *App) GetConfigForDomain(urlStr string) (*ConfigResponse, error) {
 		Domain:              config.Domain,
 		JSRenderingEnabled:  config.JSRenderingEnabled,
 		Parallelism:         config.Parallelism,
+		UserAgent:           config.UserAgent,
 		DiscoveryMechanisms: config.GetDiscoveryMechanismsArray(),
 		SitemapURLs:         config.GetSitemapURLsArray(),
 	}, nil
@@ -564,6 +568,7 @@ func (a *App) UpdateConfigForDomain(
 	urlStr string,
 	jsRendering bool,
 	parallelism int,
+	userAgent string,
 	spiderEnabled bool,
 	sitemapEnabled bool,
 	sitemapURLs []string,
@@ -594,7 +599,7 @@ func (a *App) UpdateConfigForDomain(
 		mechanisms = []string{"spider"}
 	}
 
-	return UpdateConfig(project.ID, jsRendering, parallelism, mechanisms, sitemapURLs)
+	return UpdateConfig(project.ID, jsRendering, parallelism, userAgent, mechanisms, sitemapURLs)
 }
 
 // GetProjects returns all projects from the database with their latest crawl info

@@ -24,4 +24,4 @@ export function StartCrawl(arg1:string):Promise<void>;
 
 export function StopCrawl(arg1:number):Promise<void>;
 
-export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number,arg4:boolean,arg5:boolean,arg6:Array<string>):Promise<void>;
+export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number,arg4:string,arg5:boolean,arg6:boolean,arg7:Array<string>):Promise<void>;
