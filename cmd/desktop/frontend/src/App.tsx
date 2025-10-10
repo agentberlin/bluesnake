@@ -1,3 +1,17 @@
+// Copyright 2025 Agentic World, LLC (Sherin Thomas)
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
 import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData } from "../wailsjs/go/main/App";
@@ -320,9 +334,25 @@ function App() {
         const activeCrawl = crawls.find((c: CrawlProgress) => c.projectId === currentProject.id);
 
         if (activeCrawl) {
-          // Active crawl - get data from database
+          // Active crawl - get crawled data from database
           const crawlData = await GetActiveCrawlData(currentProject.id);
-          setResults(crawlData.results);
+
+          // Create a set of crawled URLs for quick lookup
+          const crawledUrlSet = new Set(crawlData.results.map(r => r.url));
+
+          // Add discovered URLs that haven't been crawled yet as "queued" items
+          const queuedResults: CrawlResult[] = activeCrawl.discoveredUrls
+            .filter(url => !crawledUrlSet.has(url))
+            .map(url => ({
+              url,
+              status: 0,
+              title: 'In progress...',
+              indexable: '-',
+              error: undefined
+            }));
+
+          // Combine crawled results with queued URLs
+          setResults([...crawlData.results, ...queuedResults]);
           setIsCrawling(true);
           setCurrentCrawlId(activeCrawl.crawlId);
         } else {

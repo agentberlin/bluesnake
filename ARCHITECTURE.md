@@ -29,6 +29,116 @@ bluesnake/
 
 ---
 
+## Responsibility Division: What Goes Where?
+
+This section provides clear guidance on where different types of functionality should be implemented.
+
+### BlueSnake Package Responsibilities (Core Crawling Library)
+
+**✅ What BELONGS in bluesnake package:**
+- Low-level HTTP request/response handling
+- HTML/XML parsing and element extraction
+- URL normalization and deduplication
+- Domain filtering and robots.txt checking
+- Rate limiting and parallelism control
+- JavaScript rendering with chromedp
+- Request/response lifecycle callbacks
+- **High-level crawler API with page-level callbacks** (NEW in v1)
+- Link discovery and crawl queue management
+- Content-type detection and handling
+- Error handling for network/parsing issues
+- In-memory URL deduplication during active crawls
+- Cookie and session management
+
+**❌ What DOES NOT belong in bluesnake package:**
+- Database operations (SQLite, PostgreSQL, etc.)
+- UI/frontend code
+- Persistent storage of crawl results
+- User authentication or authorization
+- Application-specific business logic
+- Configuration persistence (save/load from files/DB)
+- Favicon fetching or asset management
+- Project/domain organization
+- Historical crawl comparison
+- Analytics or reporting logic
+
+### Desktop Application Responsibilities (cmd/desktop/)
+
+**✅ What BELONGS in desktop app:**
+- Database schema and GORM models
+- SQLite operations (save, query, delete)
+- Wails UI integration and event handling
+- Project and domain organization
+- Favicon downloading and caching
+- User configuration persistence (JS rendering, parallelism)
+- Crawl history and comparison
+- UI state management (React)
+- Export functionality (CSV, JSON)
+- Analytics and reporting
+- **Callbacks that save crawler results to database** (NEW in v1)
+- **UI polling for real-time updates** (NEW in v1)
+
+**❌ What DOES NOT belong in desktop app:**
+- Low-level HTTP handling
+- HTML parsing logic
+- URL normalization algorithms
+- Robots.txt parsing
+- Rate limiting implementation
+- Link extraction logic
+- Chromedp rendering code
+
+### High-Level Crawler API (New in v1)
+
+The new `Crawler` type in the bluesnake package provides a simplified, high-level API that sits on top of the low-level `Collector`:
+
+```go
+// In bluesnake package
+type Crawler struct {
+    Collector *Collector  // Low-level collector (exported for advanced usage)
+    // ... internal fields
+}
+
+// Callbacks for high-level crawling
+type OnPageCrawledFunc func(*PageResult)
+type OnCrawlCompleteFunc func(wasStopped bool, totalPages int, totalDiscovered int)
+```
+
+**Design Philosophy:**
+- **BlueSnake handles:** All crawling logic, URL discovery, and aggregation
+- **Desktop app handles:** What to do with the results (save to DB, update UI)
+
+**Example Desktop App Usage:**
+```go
+crawler := bluesnake.NewCrawler(
+    bluesnake.AllowedDomains(domain),
+    bluesnake.Async(),
+)
+
+// Desktop app only needs to implement these callbacks
+crawler.SetOnPageCrawled(func(result *bluesnake.PageResult) {
+    // Save to database
+    SaveCrawledUrl(crawlID, result.URL, result.Status, result.Title, ...)
+})
+
+crawler.SetOnCrawlComplete(func(wasStopped bool, totalPages, totalDiscovered int) {
+    // Update database with final stats
+    UpdateCrawlStats(crawlID, duration, totalPages)
+    // Emit UI event
+    runtime.EventsEmit(ctx, "crawl:completed")
+})
+
+crawler.Start(url)
+crawler.Wait()
+```
+
+This design ensures:
+- Clean separation of concerns
+- Bluesnake can be used in any context (CLI, web server, desktop app)
+- Desktop app focuses on UI/DB logic, not crawling mechanics
+- Easy to test each layer independently
+
+---
+
 ## Part 1: BlueSnake Crawler Package
 
 ### Architecture Overview
@@ -225,11 +335,14 @@ DeleteProjectByID(projectID uint) error
    - Extracts domain for project identification
    - Handles non-standard ports
 
-2. **Crawler Integration:**
-   - Creates new `bluesnake.Collector` instance for each crawl
+2. **Crawler Integration (using High-Level API):**
+   - Creates new `bluesnake.Crawler` instance for each crawl
    - Configures with domain-specific settings from database
+   - Sets up two simple callbacks:
+     - `OnPageCrawled`: Saves each crawled page to database
+     - `OnCrawlComplete`: Updates final statistics and emits completion event
    - Runs in goroutine to prevent UI blocking
-   - Uses callbacks to emit events to frontend
+   - Desktop app only handles DB/UI logic - all crawling is in bluesnake package
 
 3. **Event Emission:**
    ```go
@@ -603,8 +716,9 @@ EventsOn("crawl:started", () => {
 │  ┌───────────────┴─────────────────────┐   │
 │  │   Crawler Integration (app.go)      │   │
 │  │                                     │   │
-│  │   Creates Collector instance        │   │
-│  │   Registers callbacks               │   │
+│  │   Creates Crawler instance          │   │
+│  │   Sets OnPageCrawled callback       │   │
+│  │   Sets OnCrawlComplete callback     │   │
 │  │   Emits events to frontend          │   │
 │  └───────────────┬─────────────────────┘   │
 │                  │ Uses                     │
@@ -615,11 +729,23 @@ EventsOn("crawl:started", () => {
 │     BlueSnake Crawler Package               │
 │                                             │
 │  ┌─────────────────────────────────────┐   │
-│  │  InMemoryStorage (temporary)        │   │
+│  │  High-Level Crawler                 │   │
 │  │                                     │   │
-│  │  • Visited URLs (hash-based)       │   │
-│  │  • Cookies (in-memory jar)         │   │
-│  │  • Cleared after crawl completes   │   │
+│  │  • Aggregates page results          │   │
+│  │  • Tracks discovered URLs           │   │
+│  │  • Calls OnPageCrawled for each pg  │   │
+│  │  • Calls OnCrawlComplete when done  │   │
+│  └─────────────────────────────────────┘   │
+│                  │                          │
+│                  ▼                          │
+│  ┌─────────────────────────────────────┐   │
+│  │  Low-Level Collector                │   │
+│  │                                     │   │
+│  │  • HTTP requests/responses          │   │
+│  │  • HTML parsing                     │   │
+│  │  • Link extraction                  │   │
+│  │  • URL deduplication                │   │
+│  │  • InMemoryStorage (temporary)      │   │
 │  └─────────────────────────────────────┘   │
 │                                             │
 │  • No persistence                           │
@@ -707,33 +833,41 @@ Frontend (React)                Backend (Go)                    Crawler         
      - EnableJSRendering (if configured)
      - Parallelism via LimitRule
 
-3. **Crawler Setup:**
-   - Callbacks registered:
-     - `OnRequest`: Emit "crawl:request" event
-     - `OnResponse`: Check HTTP headers, indexability
-     - `OnHTML("title")`: Extract title, save to DB, emit result
-     - `OnHTML("a[href]")`: Find links, queue visits
-     - `OnError`: Save error to DB, emit error event
+3. **Crawler Setup (High-Level API):**
+   - Desktop app sets two callbacks:
+     - `SetOnPageCrawled`: Called after each page is crawled with complete result
+     - `SetOnCrawlComplete`: Called when crawl finishes
+   - Bluesnake crawler internally sets up low-level callbacks:
+     - `OnResponse`: Detects content type, checks indexability
+     - `OnHTML("html")`: Extracts title from HTML pages
+     - `OnHTML("a[href]")`: Discovers and queues links
+     - `OnError`: Captures errors for failed URLs
 
 4. **Crawling:**
-   - `Visit(url)` initiates crawl
-   - Crawler internally:
+   - `crawler.Start(url)` initiates crawl
+   - Bluesnake crawler internally:
      - Checks if URL visited (InMemoryStorage)
      - Makes HTTP request
-     - Calls OnResponse callback
      - Parses HTML (with chromedp if enabled)
-     - Calls OnHTML callbacks
+     - Extracts title, links, and metadata
+     - Aggregates all data into PageResult
+     - Calls desktop app's `OnPageCrawled` callback
      - Discovers new links, queues them
-   - Desktop app callbacks:
-     - Save each result to database
-     - Emit events to update UI in real-time
+   - Desktop app `OnPageCrawled` callback:
+     - Saves complete PageResult to database
+     - Updates in-memory tracking for UI
 
 5. **Completion:**
-   - `Wait()` blocks until all requests complete
-   - Calculate crawl duration
-   - Update crawl statistics in database
-   - Emit "crawl:completed" event
-   - UI updates to show final state
+   - `crawler.Wait()` blocks until all requests complete
+   - Bluesnake calls desktop app's `OnCrawlComplete` callback with:
+     - `wasStopped`: Whether crawl was cancelled
+     - `totalPages`: Number of pages successfully crawled
+     - `totalDiscovered`: Total unique URLs discovered
+   - Desktop app `OnCrawlComplete` callback:
+     - Calculates crawl duration
+     - Updates crawl statistics in database
+     - Emits "crawl:completed" event
+   - UI updates to show final state via polling
 
 ---
 
