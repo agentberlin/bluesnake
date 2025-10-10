@@ -129,11 +129,11 @@ export namespace main {
 	    crawlDuration: number;
 	    pagesCrawled: number;
 	    latestCrawlId: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ProjectInfo(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -144,6 +144,24 @@ export namespace main {
 	        this.crawlDuration = source["crawlDuration"];
 	        this.pagesCrawled = source["pagesCrawled"];
 	        this.latestCrawlId = source["latestCrawlId"];
+	    }
+	}
+	export class UpdateInfo {
+	    currentVersion: string;
+	    latestVersion: string;
+	    updateAvailable: boolean;
+	    downloadUrl: string;
+
+	    static createFrom(source: any = {}) {
+	        return new UpdateInfo(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.currentVersion = source["currentVersion"];
+	        this.latestVersion = source["latestVersion"];
+	        this.updateAvailable = source["updateAvailable"];
+	        this.downloadUrl = source["downloadUrl"];
 	    }
 	}
 

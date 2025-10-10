@@ -14,10 +14,11 @@
 
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData } from "../wailsjs/go/main/App";
+import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData, CheckForUpdate, DownloadAndInstallUpdate } from "../wailsjs/go/main/App";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
+import { main } from "../wailsjs/go/models";
 
 interface CustomDropdownProps {
   value: number;
@@ -242,6 +243,9 @@ function App() {
   const [activeCrawls, setActiveCrawls] = useState<Map<number, CrawlProgress>>(new Map());
   const [stoppingProjects, setStoppingProjects] = useState<Set<number>>(new Set());
   const inputRef = useRef<HTMLInputElement>(null);
+  const [updateInfo, setUpdateInfo] = useState<main.UpdateInfo | null>(null);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
 
   useEffect(() => {
     // Load projects on start
@@ -257,6 +261,18 @@ function App() {
     }).catch(error => {
       console.error('Failed to get active crawls:', error);
     });
+
+    // Check for updates on startup
+    setIsCheckingUpdate(true);
+    CheckForUpdate()
+      .then((info: main.UpdateInfo) => {
+        setUpdateInfo(info);
+        setIsCheckingUpdate(false);
+      })
+      .catch(error => {
+        console.error('Failed to check for updates:', error);
+        setIsCheckingUpdate(false);
+      });
 
     // We decided to not rely on events for data update because at the scale we are operating at,
     // events add more complexity and we needed to make the system more reliable before getting
@@ -713,6 +729,20 @@ function App() {
     }
   };
 
+  const handleUpdate = async () => {
+    if (!updateInfo?.updateAvailable) return;
+
+    try {
+      setIsUpdating(true);
+      await DownloadAndInstallUpdate();
+      // App will quit and restart after update
+    } catch (error) {
+      console.error('Failed to update:', error);
+      setIsUpdating(false);
+      alert('Failed to install update. Please try again later.');
+    }
+  };
+
   // Config page
   if (view === 'config') {
     return <Config url={url} onClose={handleCloseConfig} />;
@@ -848,6 +878,32 @@ function App() {
             </div>
           )}
         </div>
+
+        {/* Update Button - bottom right, only shown when update is available */}
+        {updateInfo?.updateAvailable && (
+          <div className="update-button-container">
+            <button
+              className="update-button"
+              onClick={handleUpdate}
+              disabled={isUpdating}
+              title={`Update to ${updateInfo.latestVersion}`}
+            >
+              {isUpdating ? (
+                <>
+                  <SmallLoadingSpinner />
+                  <span>Updating...</span>
+                </>
+              ) : (
+                <>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/>
+                  </svg>
+                  <span>Update Available ({updateInfo.latestVersion})</span>
+                </>
+              )}
+            </button>
+          </div>
+        )}
 
         {/* Delete Project Modal */}
         {showDeleteProjectModal && (

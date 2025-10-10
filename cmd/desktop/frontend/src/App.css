@@ -1076,3 +1076,59 @@
     stroke-dashoffset: 0;
   }
 }
+
+/* Update Button */
+.update-button-container {
+  position: fixed;
+  bottom: 32px;
+  right: 32px;
+  z-index: 999;
+  animation: slideInUp 0.4s ease;
+}
+
+@keyframes slideInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.update-button {
+  padding: 12px 20px;
+  font-size: 13px;
+  font-weight: 400;
+  background: #2196f3;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 4px 16px rgba(33, 150, 243, 0.3);
+}
+
+.update-button:hover:not(:disabled) {
+  background: #1976d2;
+  box-shadow: 0 6px 20px rgba(33, 150, 243, 0.4);
+  transform: translateY(-2px);
+}
+
+.update-button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.update-button svg {
+  flex-shrink: 0;
+}
+
+.update-button span {
+  white-space: nowrap;
+}
