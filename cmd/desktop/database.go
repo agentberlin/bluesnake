@@ -15,6 +15,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,14 +32,68 @@ var db *gorm.DB
 
 // Config represents the crawl configuration for a domain
 type Config struct {
-	ID                 uint     `gorm:"primaryKey"`
-	ProjectID          uint     `gorm:"uniqueIndex;not null"`
-	Domain             string   `gorm:"not null"`
-	JSRenderingEnabled bool     `gorm:"default:false"`
-	Parallelism        int      `gorm:"default:5"`
-	Project            *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
-	CreatedAt          int64    `gorm:"autoCreateTime"`
-	UpdatedAt          int64    `gorm:"autoUpdateTime"`
+	ID                  uint     `gorm:"primaryKey"`
+	ProjectID           uint     `gorm:"uniqueIndex;not null"`
+	Domain              string   `gorm:"not null"`
+	JSRenderingEnabled  bool     `gorm:"default:false"`
+	Parallelism         int      `gorm:"default:5"`
+	DiscoveryMechanisms string   `gorm:"type:text;default:'[\"spider\"]'"` // JSON array
+	SitemapURLs         string   `gorm:"type:text"`                        // JSON array, nullable
+	Project             *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
+	CreatedAt           int64    `gorm:"autoCreateTime"`
+	UpdatedAt           int64    `gorm:"autoUpdateTime"`
+}
+
+// GetDiscoveryMechanismsArray deserializes the DiscoveryMechanisms JSON to []string
+func (c *Config) GetDiscoveryMechanismsArray() []string {
+	if c.DiscoveryMechanisms == "" {
+		return []string{"spider"} // Default
+	}
+	var mechanisms []string
+	if err := json.Unmarshal([]byte(c.DiscoveryMechanisms), &mechanisms); err != nil {
+		return []string{"spider"} // Default on error
+	}
+	return mechanisms
+}
+
+// SetDiscoveryMechanismsArray serializes []string to JSON for DiscoveryMechanisms
+func (c *Config) SetDiscoveryMechanismsArray(mechanisms []string) error {
+	data, err := json.Marshal(mechanisms)
+	if err != nil {
+		return err
+	}
+	c.DiscoveryMechanisms = string(data)
+	return nil
+}
+
+// GetSitemapURLsArray deserializes the SitemapURLs JSON to []string
+// Returns nil if empty (which means use defaults)
+func (c *Config) GetSitemapURLsArray() []string {
+	if c.SitemapURLs == "" || c.SitemapURLs == "null" {
+		return nil // nil means use defaults
+	}
+	var urls []string
+	if err := json.Unmarshal([]byte(c.SitemapURLs), &urls); err != nil {
+		return nil // Return nil on error
+	}
+	if len(urls) == 0 {
+		return nil // Empty array = nil (use defaults)
+	}
+	return urls
+}
+
+// SetSitemapURLsArray serializes []string to JSON for SitemapURLs
+func (c *Config) SetSitemapURLsArray(urls []string) error {
+	if urls == nil || len(urls) == 0 {
+		c.SitemapURLs = "" // Empty = use defaults
+		return nil
+	}
+	data, err := json.Marshal(urls)
+	if err != nil {
+		return err
+	}
+	c.SitemapURLs = string(data)
+	return nil
 }
 
 // Project represents a project (base URL) that can have multiple crawls
@@ -116,10 +171,12 @@ func GetOrCreateConfig(projectID uint, domain string) (*Config, error) {
 	if result.Error == gorm.ErrRecordNotFound {
 		// Create new config with defaults
 		config = Config{
-			ProjectID:          projectID,
-			Domain:             domain,
-			JSRenderingEnabled: false,
-			Parallelism:        5,
+			ProjectID:           projectID,
+			Domain:              domain,
+			JSRenderingEnabled:  false,
+			Parallelism:         5,
+			DiscoveryMechanisms: "[\"spider\"]", // Default to spider mode
+			SitemapURLs:         "",             // Empty = use defaults when sitemap enabled
 		}
 
 		if err := db.Create(&config).Error; err != nil {
@@ -137,7 +194,7 @@ func GetOrCreateConfig(projectID uint, domain string) (*Config, error) {
 }
 
 // UpdateConfig updates the configuration for a project
-func UpdateConfig(projectID uint, jsRendering bool, parallelism int) error {
+func UpdateConfig(projectID uint, jsRendering bool, parallelism int, discoveryMechanisms []string, sitemapURLs []string) error {
 	var config Config
 
 	result := db.Where("project_id = ?", projectID).First(&config)
@@ -149,6 +206,16 @@ func UpdateConfig(projectID uint, jsRendering bool, parallelism int) error {
 	// Update existing config
 	config.JSRenderingEnabled = jsRendering
 	config.Parallelism = parallelism
+
+	// Update discovery mechanisms
+	if err := config.SetDiscoveryMechanismsArray(discoveryMechanisms); err != nil {
+		return fmt.Errorf("failed to set discovery mechanisms: %v", err)
+	}
+
+	// Update sitemap URLs
+	if err := config.SetSitemapURLsArray(sitemapURLs); err != nil {
+		return fmt.Errorf("failed to set sitemap URLs: %v", err)
+	}
 
 	return db.Save(&config).Error
 }

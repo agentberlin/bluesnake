@@ -275,7 +275,7 @@ var newCollectorTests = map[string]func(*testing.T){
 			"foo",
 			"bar",
 		} {
-			c := NewCollector(UserAgent(ua))
+			c := NewCollector(&CollectorConfig{UserAgent: ua})
 
 			if got, want := c.UserAgent, ua; got != want {
 				t.Fatalf("c.UserAgent = %q, want %q", got, want)
@@ -288,7 +288,7 @@ var newCollectorTests = map[string]func(*testing.T){
 			34,
 			0,
 		} {
-			c := NewCollector(MaxDepth(depth))
+			c := NewCollector(&CollectorConfig{MaxDepth: depth})
 
 			if got, want := c.MaxDepth, depth; got != want {
 				t.Fatalf("c.MaxDepth = %d, want %d", got, want)
@@ -302,7 +302,7 @@ var newCollectorTests = map[string]func(*testing.T){
 			{},
 			nil,
 		} {
-			c := NewCollector(AllowedDomains(domains...))
+			c := NewCollector(&CollectorConfig{AllowedDomains: domains})
 
 			if got, want := c.AllowedDomains, domains; !reflect.DeepEqual(got, want) {
 				t.Fatalf("c.AllowedDomains = %q, want %q", got, want)
@@ -316,7 +316,7 @@ var newCollectorTests = map[string]func(*testing.T){
 			{},
 			nil,
 		} {
-			c := NewCollector(DisallowedDomains(domains...))
+			c := NewCollector(&CollectorConfig{DisallowedDomains: domains})
 
 			if got, want := c.DisallowedDomains, domains; !reflect.DeepEqual(got, want) {
 				t.Fatalf("c.DisallowedDomains = %q, want %q", got, want)
@@ -327,7 +327,7 @@ var newCollectorTests = map[string]func(*testing.T){
 		for _, filters := range [][]*regexp.Regexp{
 			{regexp.MustCompile(`.*not_allowed.*`)},
 		} {
-			c := NewCollector(DisallowedURLFilters(filters...))
+			c := NewCollector(&CollectorConfig{DisallowedURLFilters: filters})
 
 			if got, want := c.DisallowedURLFilters, filters; !reflect.DeepEqual(got, want) {
 				t.Fatalf("c.DisallowedURLFilters = %v, want %v", got, want)
@@ -341,7 +341,7 @@ var newCollectorTests = map[string]func(*testing.T){
 			{},
 			nil,
 		} {
-			c := NewCollector(URLFilters(filters...))
+			c := NewCollector(&CollectorConfig{URLFilters: filters})
 
 			if got, want := c.URLFilters, filters; !reflect.DeepEqual(got, want) {
 				t.Fatalf("c.URLFilters = %v, want %v", got, want)
@@ -349,7 +349,7 @@ var newCollectorTests = map[string]func(*testing.T){
 		}
 	},
 	"AllowURLRevisit": func(t *testing.T) {
-		c := NewCollector(AllowURLRevisit())
+		c := NewCollector(&CollectorConfig{AllowURLRevisit: true})
 
 		if !c.AllowURLRevisit {
 			t.Fatal("c.AllowURLRevisit = false, want true")
@@ -361,7 +361,7 @@ var newCollectorTests = map[string]func(*testing.T){
 			1024,
 			0,
 		} {
-			c := NewCollector(MaxBodySize(sizeInBytes))
+			c := NewCollector(&CollectorConfig{MaxBodySize: sizeInBytes})
 
 			if got, want := c.MaxBodySize, sizeInBytes; got != want {
 				t.Fatalf("c.MaxBodySize = %d, want %d", got, want)
@@ -373,7 +373,7 @@ var newCollectorTests = map[string]func(*testing.T){
 			"/tmp/",
 			"/var/cache/",
 		} {
-			c := NewCollector(CacheDir(path))
+			c := NewCollector(&CollectorConfig{CacheDir: path})
 
 			if got, want := c.CacheDir, path; got != want {
 				t.Fatalf("c.CacheDir = %q, want %q", got, want)
@@ -386,7 +386,7 @@ var newCollectorTests = map[string]func(*testing.T){
 			10 * time.Minute,
 			0,
 		} {
-			c := NewCollector(CacheExpiration(d))
+			c := NewCollector(&CollectorConfig{CacheExpiration: d})
 
 			if got, want := c.CacheExpiration, d; got != want {
 				t.Fatalf("c.CacheExpiration = %v, want %v", got, want)
@@ -394,19 +394,25 @@ var newCollectorTests = map[string]func(*testing.T){
 		}
 	},
 	"IgnoreRobotsTxt": func(t *testing.T) {
-		c := NewCollector(IgnoreRobotsTxt())
+		c := NewCollector(&CollectorConfig{IgnoreRobotsTxt: true})
 
 		if !c.IgnoreRobotsTxt {
 			t.Fatal("c.IgnoreRobotsTxt = false, want true")
 		}
 	},
 	"ID": func(t *testing.T) {
+		// Test ID=0 triggers auto-assignment
+		c0 := NewCollector(&CollectorConfig{ID: 0})
+		if c0.ID == 0 {
+			t.Fatal("c.ID = 0, expected auto-assignment to non-zero value")
+		}
+
+		// Test explicit non-zero IDs are preserved
 		for _, id := range []uint32{
-			0,
 			1,
 			2,
 		} {
-			c := NewCollector(ID(id))
+			c := NewCollector(&CollectorConfig{ID: id})
 
 			if got, want := c.ID, id; got != want {
 				t.Fatalf("c.ID = %d, want %d", got, want)
@@ -414,7 +420,7 @@ var newCollectorTests = map[string]func(*testing.T){
 		}
 	},
 	"DetectCharset": func(t *testing.T) {
-		c := NewCollector(DetectCharset())
+		c := NewCollector(&CollectorConfig{DetectCharset: true})
 
 		if !c.DetectCharset {
 			t.Fatal("c.DetectCharset = false, want true")
@@ -422,21 +428,21 @@ var newCollectorTests = map[string]func(*testing.T){
 	},
 	"Debugger": func(t *testing.T) {
 		d := &debug.LogDebugger{}
-		c := NewCollector(Debugger(d))
+		c := NewCollector(&CollectorConfig{Debugger: d})
 
 		if got, want := c.debugger, d; got != want {
 			t.Fatalf("c.debugger = %v, want %v", got, want)
 		}
 	},
 	"CheckHead": func(t *testing.T) {
-		c := NewCollector(CheckHead())
+		c := NewCollector(&CollectorConfig{CheckHead: true})
 
 		if !c.CheckHead {
 			t.Fatal("c.CheckHead = false, want true")
 		}
 	},
 	"Async": func(t *testing.T) {
-		c := NewCollector(Async())
+		c := NewCollector(&CollectorConfig{Async: true})
 
 		if !c.Async {
 			t.Fatal("c.Async = false, want true")
@@ -450,7 +456,7 @@ func TestNoAcceptHeader(t *testing.T) {
 	var receivedHeader string
 	// checks if Accept is enabled by default
 	func() {
-		c := NewCollector()
+		c := NewCollector(nil)
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedHeader = string(resp.Body)
@@ -463,7 +469,7 @@ func TestNoAcceptHeader(t *testing.T) {
 
 	// checks if Accept can be disabled
 	func() {
-		c := NewCollector()
+		c := NewCollector(nil)
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnRequest(func(r *Request) {
 			r.Headers.Del("Accept")
@@ -489,7 +495,7 @@ func TestNewCollector(t *testing.T) {
 func TestCollectorVisit(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	onRequestCalled := false
@@ -543,7 +549,7 @@ func TestCollectorVisit(t *testing.T) {
 func TestCollectorVisitWithAllowedDomains(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector(AllowedDomains("test.local"))
+	c := NewCollector(&CollectorConfig{AllowedDomains: []string{"test.local"}})
 	c.SetClient(&http.Client{Transport: mock})
 
 	err := c.Visit(testBaseURL + "/")
@@ -560,7 +566,7 @@ func TestCollectorVisitWithAllowedDomains(t *testing.T) {
 func TestCollectorVisitWithDisallowedDomains(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector(DisallowedDomains("test.local"))
+	c := NewCollector(&CollectorConfig{DisallowedDomains: []string{"test.local"}})
 	c.SetClient(&http.Client{Transport: mock})
 
 	err := c.Visit(testBaseURL + "/")
@@ -568,7 +574,7 @@ func TestCollectorVisitWithDisallowedDomains(t *testing.T) {
 		t.Errorf("c.Visit should return ErrForbiddenDomain, but got %v", err)
 	}
 
-	c2 := NewCollector(DisallowedDomains("example.com"))
+	c2 := NewCollector(&CollectorConfig{DisallowedDomains: []string{"example.com"}})
 	c2.SetClient(&http.Client{Transport: mock})
 
 	err = c2.Visit("http://example.com:8080")
@@ -586,7 +592,7 @@ func TestCollectorVisitResponseHeaders(t *testing.T) {
 
 	var onResponseHeadersCalled bool
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponseHeaders(func(r *Response) {
@@ -607,7 +613,7 @@ func TestCollectorVisitResponseHeaders(t *testing.T) {
 func TestCollectorOnHTML(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	titleCallbackCalled := false
@@ -651,7 +657,7 @@ func TestCollectorOnHTML(t *testing.T) {
 func TestCollectorContentSniffing(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	htmlCallbackCalled := false
@@ -679,7 +685,7 @@ func TestCollectorContentSniffing(t *testing.T) {
 func TestCollectorURLRevisit(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	visitCount := 0
@@ -714,7 +720,7 @@ func TestCollectorPostRevisit(t *testing.T) {
 	}
 	visitCount := 0
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponse(func(r *Response) {
@@ -748,7 +754,7 @@ func TestCollectorPostRevisit(t *testing.T) {
 func TestCollectorPostURLRevisitCheck(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	postValue := "hello"
@@ -811,7 +817,7 @@ func TestCollectorURLRevisitDomainDisallowed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := NewCollector(DisallowedDomains(parsedURL.Hostname()))
+	c := NewCollector(&CollectorConfig{DisallowedDomains: []string{parsedURL.Hostname()}})
 	c.SetClient(&http.Client{Transport: mock})
 	err = c.Visit(testBaseURL)
 	if got, want := err, ErrForbiddenDomain; got != want {
@@ -828,7 +834,7 @@ func TestCollectorPost(t *testing.T) {
 	mock := setupMockTransport()
 
 	postValue := "hello"
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponse(func(r *Response) {
@@ -846,7 +852,7 @@ func TestCollectorPostRaw(t *testing.T) {
 	mock := setupMockTransport()
 
 	postValue := "hello"
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponse(func(r *Response) {
@@ -865,7 +871,7 @@ func TestCollectorPostRawRevisit(t *testing.T) {
 	postData := "name=" + postValue
 	visitCount := 0
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponse(func(r *Response) {
@@ -898,7 +904,7 @@ func TestIssue594(t *testing.T) {
 	// assertions because it's meant to be used with race detector
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	// if timeout is set, this bug is not triggered
 	client := &http.Client{Timeout: 0 * time.Second, Transport: mock}
 	c.SetClient(client)
@@ -909,7 +915,7 @@ func TestIssue594(t *testing.T) {
 func TestBaseTag(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.OnHTML("a[href]", func(e *HTMLElement) {
 		u := e.Request.AbsoluteURL(e.Attr("href"))
@@ -919,7 +925,7 @@ func TestBaseTag(t *testing.T) {
 	})
 	c.Visit(testBaseURL + "/base")
 
-	c2 := NewCollector()
+	c2 := NewCollector(nil)
 	c2.SetClient(&http.Client{Transport: mock})
 	c2.OnXML("//a", func(e *XMLElement) {
 		u := e.Request.AbsoluteURL(e.Attr("href"))
@@ -933,7 +939,7 @@ func TestBaseTag(t *testing.T) {
 func TestBaseTagRelative(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.OnHTML("a[href]", func(e *HTMLElement) {
 		u := e.Request.AbsoluteURL(e.Attr("href"))
@@ -944,7 +950,7 @@ func TestBaseTagRelative(t *testing.T) {
 	})
 	c.Visit(testBaseURL + "/base_relative")
 
-	c2 := NewCollector()
+	c2 := NewCollector(nil)
 	c2.SetClient(&http.Client{Transport: mock})
 	c2.OnXML("//a", func(e *XMLElement) {
 		u := e.Request.AbsoluteURL(e.Attr("href"))
@@ -968,7 +974,7 @@ func TestTabsAndNewlines(t *testing.T) {
 		"/foobar/xy":         {},
 	}
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.OnResponse(func(res *Response) {
 		visited[res.Request.URL.EscapedPath()] = struct{}{}
@@ -993,7 +999,7 @@ func TestLonePercent(t *testing.T) {
 
 	var visitedPath string
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.OnResponse(func(res *Response) {
 		visitedPath = res.Request.URL.RequestURI()
@@ -1024,7 +1030,7 @@ func TestLonePercent(t *testing.T) {
 func TestRobotsWhenAllowed(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.IgnoreRobotsTxt = false
 
@@ -1044,7 +1050,7 @@ func TestRobotsWhenAllowed(t *testing.T) {
 func TestRobotsWhenDisallowed(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.IgnoreRobotsTxt = false
 
@@ -1061,7 +1067,7 @@ func TestRobotsWhenDisallowed(t *testing.T) {
 func TestRobotsWhenDisallowedWithQueryParameter(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.IgnoreRobotsTxt = false
 
@@ -1078,7 +1084,7 @@ func TestRobotsWhenDisallowedWithQueryParameter(t *testing.T) {
 func TestIgnoreRobotsWhenDisallowed(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.IgnoreRobotsTxt = true
 
@@ -1102,7 +1108,7 @@ func TestEnvSettings(t *testing.T) {
 	os.Setenv("COLLY_USER_AGENT", "test")
 	defer os.Unsetenv("COLLY_USER_AGENT")
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	valid := false
@@ -1130,7 +1136,7 @@ func TestUserAgent(t *testing.T) {
 	var receivedUserAgent string
 
 	func() {
-		c := NewCollector()
+		c := NewCollector(nil)
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
@@ -1141,7 +1147,7 @@ func TestUserAgent(t *testing.T) {
 		}
 	}()
 	func() {
-		c := NewCollector(UserAgent(exampleUserAgent1))
+		c := NewCollector(&CollectorConfig{UserAgent: exampleUserAgent1})
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
@@ -1152,7 +1158,7 @@ func TestUserAgent(t *testing.T) {
 		}
 	}()
 	func() {
-		c := NewCollector(UserAgent(exampleUserAgent1))
+		c := NewCollector(&CollectorConfig{UserAgent: exampleUserAgent1})
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
@@ -1164,7 +1170,7 @@ func TestUserAgent(t *testing.T) {
 		}
 	}()
 	func() {
-		c := NewCollector(UserAgent(exampleUserAgent1))
+		c := NewCollector(&CollectorConfig{UserAgent: exampleUserAgent1})
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
@@ -1176,7 +1182,7 @@ func TestUserAgent(t *testing.T) {
 		}
 	}()
 	func() {
-		c := NewCollector(UserAgent(exampleUserAgent1))
+		c := NewCollector(&CollectorConfig{UserAgent: exampleUserAgent1})
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
@@ -1190,7 +1196,7 @@ func TestUserAgent(t *testing.T) {
 		}
 	}()
 	func() {
-		c := NewCollector(UserAgent(exampleUserAgent1))
+		c := NewCollector(&CollectorConfig{UserAgent: exampleUserAgent1})
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
@@ -1214,9 +1220,7 @@ func TestHeaders(t *testing.T) {
 	var receivedHeader string
 
 	func() {
-		c := NewCollector(
-			Headers(map[string]string{"Host": exampleHostHeader}),
-		)
+		c := NewCollector(&CollectorConfig{Headers: map[string]string{"Host": exampleHostHeader}})
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedHeader = string(resp.Body)
@@ -1227,9 +1231,7 @@ func TestHeaders(t *testing.T) {
 		}
 	}()
 	func() {
-		c := NewCollector(
-			Headers(map[string]string{"Test": exampleTestHeader}),
-		)
+		c := NewCollector(&CollectorConfig{Headers: map[string]string{"Test": exampleTestHeader}})
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedHeader = string(resp.Body)
@@ -1245,9 +1247,7 @@ func TestParseHTTPErrorResponse(t *testing.T) {
 	contentCount := 0
 	mock := setupMockTransport()
 
-	c := NewCollector(
-		AllowURLRevisit(),
-	)
+	c := NewCollector(&CollectorConfig{AllowURLRevisit: true})
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnHTML("p", func(e *HTMLElement) {
@@ -1314,7 +1314,7 @@ func TestHTMLElement(t *testing.T) {
 func TestCollectorOnXMLWithHtml(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	titleCallbackCalled := false
@@ -1358,7 +1358,7 @@ func TestCollectorOnXMLWithHtml(t *testing.T) {
 func TestCollectorOnXMLWithXML(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	titleCallbackCalled := false
@@ -1402,10 +1402,7 @@ func TestCollectorOnXMLWithXML(t *testing.T) {
 func TestCollectorDepth(t *testing.T) {
 	mock := setupMockTransport()
 	maxDepth := 2
-	c1 := NewCollector(
-		MaxDepth(maxDepth),
-		AllowURLRevisit(),
-	)
+	c1 := NewCollector(&CollectorConfig{MaxDepth: maxDepth, AllowURLRevisit: true})
 	c1.SetClient(&http.Client{Transport: mock})
 	requestCount := 0
 	c1.OnResponse(func(resp *Response) {
@@ -1446,10 +1443,7 @@ func TestCollectorDepth(t *testing.T) {
 func TestCollectorRequests(t *testing.T) {
 	mock := setupMockTransport()
 	maxRequests := uint32(5)
-	c1 := NewCollector(
-		MaxRequests(maxRequests),
-		AllowURLRevisit(),
-	)
+	c1 := NewCollector(&CollectorConfig{MaxRequests: maxRequests, AllowURLRevisit: true})
 	c1.SetClient(&http.Client{Transport: mock})
 	requestCount := 0
 	c1.OnResponse(func(resp *Response) {
@@ -1465,7 +1459,7 @@ func TestCollectorRequests(t *testing.T) {
 func BenchmarkOnHTML(b *testing.B) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.OnHTML("p", func(_ *HTMLElement) {})
 
@@ -1477,7 +1471,7 @@ func BenchmarkOnHTML(b *testing.B) {
 func BenchmarkOnXML(b *testing.B) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.OnXML("//p", func(_ *XMLElement) {})
 
@@ -1489,7 +1483,7 @@ func BenchmarkOnXML(b *testing.B) {
 func BenchmarkOnResponse(b *testing.B) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.AllowURLRevisit = true
 	c.OnResponse(func(_ *Response) {})
@@ -1502,7 +1496,7 @@ func BenchmarkOnResponse(b *testing.B) {
 func TestCallbackDetachment(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.AllowURLRevisit = true
 
@@ -1541,7 +1535,7 @@ func TestCollectorPostRetry(t *testing.T) {
 	mock := setupMockTransport()
 
 	postValue := "hello"
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 	try := false
 	c.OnResponse(func(r *Response) {
@@ -1567,7 +1561,7 @@ func TestCollectorGetRetry(t *testing.T) {
 	mock := setupMockTransport()
 	try := false
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponse(func(r *Response) {
@@ -1592,7 +1586,7 @@ func TestCollectorPostRetryUnseekable(t *testing.T) {
 	mock := setupMockTransport()
 	try := false
 	postValue := "hello"
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponse(func(r *Response) {
@@ -1620,7 +1614,7 @@ func TestCheckRequestHeadersFunc(t *testing.T) {
 	mock := setupMockTransport()
 	try := false
 
-	c := NewCollector()
+	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnRequestHeaders(func(r *Request) {

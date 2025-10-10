@@ -22,9 +22,10 @@ interface ConfigProps {
 }
 
 interface ConfigData {
-  Domain: string;
-  JSRenderingEnabled: boolean;
-  Parallelism: number;
+  domain: string;
+  jsRenderingEnabled: boolean;
+  parallelism: number;
+  discoveryMechanisms: string[];  // Not exposed directly, derived from checkboxes
 }
 
 function Config({ url, onClose }: ConfigProps) {
@@ -34,6 +35,7 @@ function Config({ url, onClose }: ConfigProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [sitemapEnabled, setSitemapEnabled] = useState(false);
 
   useEffect(() => {
     if (url) {
@@ -46,9 +48,13 @@ function Config({ url, onClose }: ConfigProps) {
     setError('');
     try {
       const config: ConfigData = await GetConfigForDomain(url);
-      setDomain(config.Domain);
-      setJsRendering(config.JSRenderingEnabled);
-      setParallelism(config.Parallelism);
+      setDomain(config.domain);
+      setJsRendering(config.jsRenderingEnabled);
+      setParallelism(config.parallelism);
+
+      // Derive sitemap state from mechanisms (spider is always enabled)
+      const mechanisms = config.discoveryMechanisms || ["spider"];
+      setSitemapEnabled(mechanisms.includes("sitemap"));
     } catch (err) {
       setError('Failed to load configuration');
       console.error('Error loading config:', err);
@@ -60,8 +66,16 @@ function Config({ url, onClose }: ConfigProps) {
   const handleSave = async () => {
     setSaving(true);
     setError('');
+
     try {
-      await UpdateConfigForDomain(url, jsRendering, parallelism);
+      await UpdateConfigForDomain(
+        url,
+        jsRendering,
+        parallelism,
+        true, // Spider is always enabled
+        sitemapEnabled,
+        [] // No custom sitemap URLs in this version
+      );
       onClose();
     } catch (err) {
       setError('Failed to save configuration');
@@ -133,6 +147,38 @@ function Config({ url, onClose }: ConfigProps) {
                 <p className="config-hint">
                   Maximum number of links to process at the same time (default: 5)
                 </p>
+              </div>
+
+              <div className="config-field">
+                <label className="config-label-text">Discovery Mechanisms</label>
+
+                <label className="config-label">
+                  <input
+                    type="checkbox"
+                    checked={true}
+                    disabled={true}
+                    className="config-checkbox"
+                  />
+                  <div>
+                    <span className="checkbox-label">Spider</span>
+                    <p className="config-hint">Follow links discovered in HTML pages (always enabled)</p>
+                  </div>
+                </label>
+
+                <label className="config-label">
+                  <input
+                    type="checkbox"
+                    checked={sitemapEnabled}
+                    onChange={(e) => setSitemapEnabled(e.target.checked)}
+                    className="config-checkbox"
+                  />
+                  <div>
+                    <span className="checkbox-label">Sitemap</span>
+                    <p className="config-hint">
+                      Discover URLs from sitemap.xml at default location (/sitemap.xml). When enabled, Spider is automatically included for comprehensive crawling.
+                    </p>
+                  </div>
+                </label>
               </div>
 
               <div className="config-actions">

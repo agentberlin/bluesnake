@@ -46,6 +46,6 @@ export function StopCrawl(arg1) {
   return window['go']['main']['App']['StopCrawl'](arg1);
 }
 
-export function UpdateConfigForDomain(arg1, arg2, arg3) {
-  return window['go']['main']['App']['UpdateConfigForDomain'](arg1, arg2, arg3);
+export function UpdateConfigForDomain(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['UpdateConfigForDomain'](arg1, arg2, arg3, arg4, arg5, arg6);
 }

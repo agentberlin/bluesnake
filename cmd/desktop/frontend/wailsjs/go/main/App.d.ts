@@ -10,7 +10,7 @@ export function GetActiveCrawlData(arg1:number):Promise<main.CrawlResultDetailed
 
 export function GetActiveCrawls():Promise<Array<main.CrawlProgress>>;
 
-export function GetConfigForDomain(arg1:string):Promise<main.Config>;
+export function GetConfigForDomain(arg1:string):Promise<main.ConfigResponse>;
 
 export function GetCrawlWithResults(arg1:number):Promise<main.CrawlResultDetailed>;
 
@@ -24,4 +24,4 @@ export function StartCrawl(arg1:string):Promise<void>;
 
 export function StopCrawl(arg1:number):Promise<void>;
 
-export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number):Promise<void>;
+export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number,arg4:boolean,arg5:boolean,arg6:Array<string>):Promise<void>;

@@ -56,9 +56,7 @@ func TestQueue(t *testing.T) {
 		put()
 		storage.AddRequest([]byte("error request"))
 	}
-	c := bluesnake.NewCollector(
-		bluesnake.AllowURLRevisit(),
-	)
+	c := bluesnake.NewCollector(&bluesnake.CollectorConfig{AllowURLRevisit: true})
 	c.OnRequest(func(req *bluesnake.Request) {
 		atomic.AddUint32(&requests, 1)
 	})
