@@ -220,7 +220,10 @@ func (q *Queue) loop(c *bluesnake.Collector, requestc chan<- *bluesnake.Request,
 
 func independentRunner(requestc <-chan *bluesnake.Request, complete chan<- struct{}) {
 	for req := range requestc {
-		req.Do()
+		if req == nil {
+			panic("nil request in independentRunner")
+		}
+		_ = req.Do() // Ignore error - it will be handled by OnError callback
 		complete <- struct{}{}
 	}
 }
