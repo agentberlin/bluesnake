@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData } from "../wailsjs/go/main/App";
+import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData } from "../wailsjs/go/main/App";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
@@ -71,14 +71,6 @@ interface CrawlResult {
   error?: string;
 }
 
-type CrawlStatus = 'discovered' | 'crawling' | 'completed';
-
-interface UrlStatus {
-  url: string;
-  status: CrawlStatus;
-  result?: CrawlResult;
-}
-
 interface ProjectInfo {
   id: number;
   url: string;
@@ -96,6 +88,17 @@ interface CrawlInfo {
   crawlDateTime: number;
   crawlDuration: number;
   pagesCrawled: number;
+}
+
+interface CrawlProgress {
+  projectId: number;
+  crawlId: number;
+  domain: string;
+  url: string;
+  pagesCrawled: number;
+  totalDiscovered: number;
+  discoveredUrls: string[];
+  isCrawling: boolean;
 }
 
 
@@ -211,137 +214,57 @@ function App() {
   const [url, setUrl] = useState('');
   const [isCrawling, setIsCrawling] = useState(false);
   const [results, setResults] = useState<CrawlResult[]>([]);
-  const [currentUrl, setCurrentUrl] = useState('');
   const [view, setView] = useState<View>('start');
   const [hasStarted, setHasStarted] = useState(false);
-  const [urlStatuses, setUrlStatuses] = useState<Map<string, UrlStatus>>(new Map());
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [currentProject, setCurrentProject] = useState<ProjectInfo | null>(null);
   const [availableCrawls, setAvailableCrawls] = useState<CrawlInfo[]>([]);
   const [selectedCrawl, setSelectedCrawl] = useState<CrawlInfo | null>(null);
+  const [currentCrawlId, setCurrentCrawlId] = useState<number | null>(null);
   const [showDeleteCrawlModal, setShowDeleteCrawlModal] = useState(false);
   const [showDeleteProjectModal, setShowDeleteProjectModal] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<number | null>(null);
   const [faviconCache, setFaviconCache] = useState<Map<string, string>>(new Map());
+  const [activeCrawls, setActiveCrawls] = useState<Map<number, CrawlProgress>>(new Map());
+  const [stoppingProjects, setStoppingProjects] = useState<Set<number>>(new Set());
   const inputRef = useRef<HTMLInputElement>(null);
-  const currentProjectRef = useRef<ProjectInfo | null>(null);
-  const urlRef = useRef<string>('');
-
-  // Keep refs in sync with state
-  useEffect(() => {
-    currentProjectRef.current = currentProject;
-  }, [currentProject]);
-
-  useEffect(() => {
-    urlRef.current = url;
-  }, [url]);
 
   useEffect(() => {
     // Load projects on start
     loadProjects();
 
-    // Listen for crawl events
-    EventsOn("crawl:started", (data: any) => {
-      setIsCrawling(true);
-      setView('crawl');
-      setResults([]);
-      setUrlStatuses(new Map());
-      // Only clear project state if crawling a different domain
-      // Check if the URL being crawled belongs to a different domain than current project
-      let shouldClearProject = true;
-      const currentProj = currentProjectRef.current;
-      const currentUrl = urlRef.current;
-
-      if (currentProj && currentUrl) {
-        try {
-          let normalizedUrl = currentUrl.trim();
-          if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
-            normalizedUrl = 'https://' + normalizedUrl;
-          }
-          const urlObj = new URL(normalizedUrl);
-          shouldClearProject = currentProj.domain !== urlObj.hostname;
-        } catch {
-          // If URL parsing fails, clear the project to be safe
-          shouldClearProject = true;
-        }
-      }
-
-      if (shouldClearProject) {
-        setCurrentProject(null);
-      }
-      setAvailableCrawls([]);
-      setSelectedCrawl(null);
+    // Discover any active crawls (e.g., if app restarted during a crawl)
+    GetActiveCrawls().then(crawls => {
+      const crawlsMap = new Map<number, CrawlProgress>();
+      crawls.forEach((crawl: CrawlProgress) => {
+        crawlsMap.set(crawl.projectId, crawl);
+      });
+      setActiveCrawls(crawlsMap);
+    }).catch(error => {
+      console.error('Failed to get active crawls:', error);
     });
 
-    EventsOn("crawl:request", (data: any) => {
-      setCurrentUrl(data.url);
-      setUrlStatuses(prev => {
-        const newMap = new Map(prev);
-        newMap.set(data.url, {
-          url: data.url,
-          status: 'crawling'
-        });
-        return newMap;
-      });
+    // We decided to not rely on events for data update because at the scale we are operating at,
+    // events add more complexity and we needed to make the system more reliable before getting
+    // into complication. When we do need to rely on the payload from events, in the future
+    // (fetching all the crawl url every 500 ms is not good because there are millions of them),
+    // we'll implement events. For now, events are indicational only - they trigger data refresh
+    // via polling, but don't carry any payload.
+
+    // Listen for crawl events (indicational only)
+    EventsOn("crawl:started", () => {
+      // Just trigger a refresh - polling will handle the updates
+      loadProjects();
     });
 
-    EventsOn("crawl:result", (result: CrawlResult) => {
-      setResults(prev => {
-        // Check if URL already exists in results
-        const existingIndex = prev.findIndex(r => r.url === result.url);
-        if (existingIndex !== -1) {
-          // Replace existing result
-          const newResults = [...prev];
-          newResults[existingIndex] = result;
-          return newResults;
-        }
-        // Add new result
-        return [...prev, result];
-      });
-
-      setUrlStatuses(prev => {
-        const newMap = new Map(prev);
-        newMap.set(result.url, {
-          url: result.url,
-          status: 'completed',
-          result: result
-        });
-        return newMap;
-      });
+    EventsOn("crawl:completed", () => {
+      // Just trigger a refresh - polling will handle the updates
+      loadProjects();
     });
 
-    EventsOn("crawl:error", (result: CrawlResult) => {
-      setResults(prev => {
-        // Check if URL already exists in results
-        const existingIndex = prev.findIndex(r => r.url === result.url);
-        if (existingIndex !== -1) {
-          // Replace existing result
-          const newResults = [...prev];
-          newResults[existingIndex] = result;
-          return newResults;
-        }
-        // Add new result
-        return [...prev, result];
-      });
-
-      setUrlStatuses(prev => {
-        const newMap = new Map(prev);
-        newMap.set(result.url, {
-          url: result.url,
-          status: 'completed',
-          result: result
-        });
-        return newMap;
-      });
-    });
-
-    EventsOn("crawl:completed", async () => {
-      setIsCrawling(false);
-      setCurrentUrl('');
-      // Reload projects after crawl completes
-      await loadProjects();
-      // Load the project that was just crawled and set it as current
-      await loadCurrentProjectFromUrl(url);
+    EventsOn("crawl:stopped", () => {
+      // Just trigger a refresh - polling will handle the updates
+      loadProjects();
     });
   }, []);
 
@@ -353,6 +276,86 @@ function App() {
       console.error('Failed to load projects:', error);
     }
   };
+
+  // Home page polling: Poll for project data when on home page and there are active crawls
+  useEffect(() => {
+    if (view !== 'start') return;
+
+    const pollHomeData = async () => {
+      try {
+        // Load projects
+        const projectList = await GetProjects();
+        setProjects(projectList || []);
+
+        // Load active crawls
+        const crawls = await GetActiveCrawls();
+        const crawlsMap = new Map<number, CrawlProgress>();
+        crawls.forEach((crawl: CrawlProgress) => {
+          crawlsMap.set(crawl.projectId, crawl);
+        });
+        setActiveCrawls(crawlsMap);
+      } catch (error) {
+        console.error('Failed to poll home data:', error);
+      }
+    };
+
+    // Initial load
+    pollHomeData();
+
+    // Poll every 500ms if there are active crawls
+    if (activeCrawls.size > 0) {
+      const interval = setInterval(pollHomeData, 500);
+      return () => clearInterval(interval);
+    }
+  }, [view, activeCrawls.size]);
+
+  // Crawl page polling: Poll for crawl data when on crawl page and crawl is active or stopping
+  useEffect(() => {
+    if (view !== 'crawl' || !currentProject) return;
+
+    const pollCrawlData = async () => {
+      try {
+        // Check if this project has an active crawl
+        const crawls = await GetActiveCrawls();
+        const activeCrawl = crawls.find((c: CrawlProgress) => c.projectId === currentProject.id);
+
+        if (activeCrawl) {
+          // Active crawl - get data from database
+          const crawlData = await GetActiveCrawlData(currentProject.id);
+          setResults(crawlData.results);
+          setIsCrawling(true);
+          setCurrentCrawlId(activeCrawl.crawlId);
+        } else {
+          // No active crawl - get data from database if we have a crawl ID
+          if (currentCrawlId) {
+            const crawlData = await GetCrawlWithResults(currentCrawlId);
+            setResults(crawlData.results);
+          }
+          setIsCrawling(false);
+
+          // Clear from stopping projects if it was there
+          setStoppingProjects(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(currentProject.id);
+            return newSet;
+          });
+        }
+      } catch (error) {
+        console.error('Failed to poll crawl data:', error);
+      }
+    };
+
+    // Initial load
+    pollCrawlData();
+
+    // Poll at different intervals: 500ms when stopping, 2s when crawling
+    const isStoppingProject = currentProject && stoppingProjects.has(currentProject.id);
+    if (isCrawling || isStoppingProject) {
+      const pollInterval = isStoppingProject ? 500 : 2000;
+      const interval = setInterval(pollCrawlData, pollInterval);
+      return () => clearInterval(interval);
+    }
+  }, [view, currentProject, isCrawling, stoppingProjects, currentCrawlId]);
 
   const loadCurrentProjectFromUrl = async (currentUrl: string) => {
     try {
@@ -410,7 +413,7 @@ function App() {
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
-      handleStartCrawl();
+      handleNewCrawl();
     }
   };
 
@@ -419,8 +422,7 @@ function App() {
     setResults([]);
     setUrl('');
     setIsCrawling(false);
-    setCurrentUrl('');
-    setUrlStatuses(new Map());
+    setCurrentCrawlId(null);
   };
 
   const handleNewCrawl = async () => {
@@ -428,6 +430,15 @@ function App() {
 
     try {
       await StartCrawl(url);
+
+      // Immediately load the project and navigate to crawl view
+      await loadCurrentProjectFromUrl(url);
+
+      // Set crawling state to start polling
+      setIsCrawling(true);
+
+      // Navigate to crawl view
+      setView('crawl');
     } catch (error) {
       console.error('Failed to start crawl:', error);
       setIsCrawling(false);
@@ -448,25 +459,23 @@ function App() {
 
     // Load all crawls for this project
     try {
+      // Check if there's an active crawl for this project
+      const activeCrawl = activeCrawls.get(project.id);
+      const crawlIdToLoad = activeCrawl ? activeCrawl.crawlId : project.latestCrawlId;
+      const isActiveCrawl = !!activeCrawl;
+
+      // Set the current crawl ID for tracking
+      setCurrentCrawlId(crawlIdToLoad);
+      setIsCrawling(isActiveCrawl);
+
       const crawls = await GetCrawls(project.id);
       setAvailableCrawls(crawls);
 
-      // Load the latest crawl results
-      if (project.latestCrawlId) {
-        const crawlData = await GetCrawlWithResults(project.latestCrawlId);
+      // Load the crawl results (either active or latest completed)
+      if (crawlIdToLoad) {
+        const crawlData = await GetCrawlWithResults(crawlIdToLoad);
         setSelectedCrawl(crawlData.crawlInfo);
         setResults(crawlData.results);
-
-        // Populate urlStatuses from the results
-        const newUrlStatuses = new Map<string, UrlStatus>();
-        crawlData.results.forEach((result: CrawlResult) => {
-          newUrlStatuses.set(result.url, {
-            url: result.url,
-            status: 'completed',
-            result: result
-          });
-        });
-        setUrlStatuses(newUrlStatuses);
       }
 
       setView('crawl');
@@ -477,20 +486,17 @@ function App() {
 
   const handleCrawlSelect = async (crawlId: number) => {
     try {
+      // Set the current crawl ID for tracking
+      setCurrentCrawlId(crawlId);
+
+      // Check if this is an active crawl
+      const isActive = !!(currentProject && activeCrawls.has(currentProject.id) &&
+                       activeCrawls.get(currentProject.id)?.crawlId === crawlId);
+      setIsCrawling(isActive);
+
       const crawlData = await GetCrawlWithResults(crawlId);
       setSelectedCrawl(crawlData.crawlInfo);
       setResults(crawlData.results);
-
-      // Populate urlStatuses from the results
-      const newUrlStatuses = new Map<string, UrlStatus>();
-      crawlData.results.forEach((result: CrawlResult) => {
-        newUrlStatuses.set(result.url, {
-          url: result.url,
-          status: 'completed',
-          result: result
-        });
-      });
-      setUrlStatuses(newUrlStatuses);
     } catch (error) {
       console.error('Failed to load crawl:', error);
     }
@@ -608,6 +614,22 @@ function App() {
     BrowserOpenURL(url);
   };
 
+  const handleStopCrawl = async () => {
+    if (!currentProject) return;
+
+    try {
+      setStoppingProjects(prev => new Set(prev).add(currentProject.id));
+      await StopCrawl(currentProject.id);
+    } catch (error) {
+      console.error('Failed to stop crawl:', error);
+      setStoppingProjects(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(currentProject.id);
+        return newSet;
+      });
+    }
+  };
+
   // Config page
   if (view === 'config') {
     return <Config url={url} onClose={handleCloseConfig} />;
@@ -621,8 +643,8 @@ function App() {
           <div className="logo-container">
             <img src={logo} alt="BlueSnake Logo" className="logo-image" />
           </div>
-          <h1 className="title">BlueSnake</h1>
-          <p className="subtitle">Web Crawler</p>
+          <h1 className="title">Blue Snake</h1>
+          <p className="subtitle">World's #1 AI Native Web Crawler</p>
 
           <div className="input-container">
             <input
@@ -637,7 +659,7 @@ function App() {
             />
             <button
               className="go-button"
-              onClick={handleStartCrawl}
+              onClick={handleNewCrawl}
               disabled={!url.trim()}
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -651,48 +673,67 @@ function App() {
             <div className="projects-section">
               <h3 className="projects-title">Recent Projects</h3>
               <div className="projects-grid">
-                {projects.map((project) => (
-                  <div
-                    key={project.id}
-                    className="project-card"
-                    onClick={() => handleProjectClick(project)}
-                  >
-                    <div className="project-header">
-                      <div className="project-title-row">
-                        <FaviconImage
-                          faviconPath={project.faviconPath || ''}
-                          alt="Domain favicon"
-                          className="project-favicon"
-                          placeholderSize={16}
-                        />
-                        <div className="project-domain">{project.url}</div>
+                {projects.map((project) => {
+                  const activeCrawl = activeCrawls.get(project.id);
+                  const isActivelyCrawling = !!activeCrawl;
+
+                  return (
+                    <div
+                      key={project.id}
+                      className="project-card"
+                      onClick={() => handleProjectClick(project)}
+                    >
+                      <div className="project-header">
+                        <div className="project-title-row">
+                          <FaviconImage
+                            faviconPath={project.faviconPath || ''}
+                            alt="Domain favicon"
+                            className="project-favicon"
+                            placeholderSize={16}
+                          />
+                          <div className="project-domain">{project.url}</div>
+                        </div>
+                        <button
+                          className="delete-project-button"
+                          onClick={(e) => handleDeleteProject(project.id, e)}
+                          title="Delete project"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 2 0 0 1 2 2v2"></path>
+                            <line x1="10" y1="11" x2="10" y2="17"></line>
+                            <line x1="14" y1="11" x2="14" y2="17"></line>
+                          </svg>
+                        </button>
                       </div>
-                      <button
-                        className="delete-project-button"
-                        onClick={(e) => handleDeleteProject(project.id, e)}
-                        title="Delete project"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <polyline points="3 6 5 6 21 6"></polyline>
-                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                          <line x1="10" y1="11" x2="10" y2="17"></line>
-                          <line x1="14" y1="11" x2="14" y2="17"></line>
-                        </svg>
-                      </button>
+                      {isActivelyCrawling ? (
+                        <>
+                          <div className="project-date">Currently crawling...</div>
+                          <div className="project-stats">
+                            <CircularProgress
+                              crawled={activeCrawl.pagesCrawled}
+                              total={activeCrawl.totalDiscovered}
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="project-date">{formatDate(project.crawlDateTime)}</div>
+                          <div className="project-stats">
+                            <div className="project-stat">
+                              <span className="project-stat-value">{project.pagesCrawled}</span>
+                              <span className="project-stat-label">pages</span>
+                            </div>
+                            <div className="project-stat">
+                              <span className="project-stat-value">{formatDuration(project.crawlDuration)}</span>
+                              <span className="project-stat-label">duration</span>
+                            </div>
+                          </div>
+                        </>
+                      )}
                     </div>
-                    <div className="project-date">{formatDate(project.crawlDateTime)}</div>
-                    <div className="project-stats">
-                      <div className="project-stat">
-                        <span className="project-stat-value">{project.pagesCrawled}</span>
-                        <span className="project-stat-label">pages</span>
-                      </div>
-                      <div className="project-stat">
-                        <span className="project-stat-value">{formatDuration(project.crawlDuration)}</span>
-                        <span className="project-stat-label">duration</span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -785,18 +826,21 @@ function App() {
                 <line x1="17" y1="16" x2="23" y2="16"></line>
               </svg>
             </button>
+            {isCrawling && currentProject && (
+              <button
+                className="stop-crawl-button"
+                onClick={handleStopCrawl}
+                disabled={stoppingProjects.has(currentProject.id)}
+                title="Stop crawling"
+              >
+                {stoppingProjects.has(currentProject.id) ? 'Stopping...' : 'Stop Crawl'}
+              </button>
+            )}
             <button className="new-crawl-button" onClick={handleNewCrawl} disabled={isCrawling}>
               New Crawl
             </button>
           </div>
         </div>
-
-        {currentUrl && isCrawling && (
-          <div className="current-url-bar">
-            <span className="current-label">Currently crawling:</span>
-            <span className="current-value">{currentUrl}</span>
-          </div>
-        )}
 
         <div className="results-container">
           <div className="results-header">
@@ -807,64 +851,44 @@ function App() {
           </div>
 
           <div className="results-body">
-            {Array.from(urlStatuses.values()).map((urlStatus, index) => (
-              <div key={index} className="result-row">
-                <div className="result-cell url-col">
-                  {urlStatus.status === 'crawling' ? (
-                    <span className="url-shimmer">
-                      {urlStatus.url}
-                    </span>
-                  ) : urlStatus.result ? (
+            {results.map((result, index) => {
+              const isInProgress = result.status === 0 && result.title === 'In progress...';
+              return (
+                <div key={index} className="result-row">
+                  <div className="result-cell url-col">
                     <span
-                      onClick={() => handleOpenUrl(urlStatus.result!.url)}
+                      onClick={() => !isInProgress && handleOpenUrl(result.url)}
                       className="url-link"
-                      style={{ cursor: 'pointer' }}
+                      style={{ cursor: isInProgress ? 'default' : 'pointer', opacity: isInProgress ? 0.6 : 1 }}
                     >
-                      {urlStatus.result.url}
+                      {result.url}
                     </span>
-                  ) : (
-                    <span>{urlStatus.url}</span>
-                  )}
-                </div>
-                <div className={`result-cell status-col ${urlStatus.result ? getStatusColor(urlStatus.result.status) : ''}`}>
-                  {urlStatus.status === 'crawling' ? (
-                    <SmallLoadingSpinner />
-                  ) : urlStatus.result ? (
-                    urlStatus.result.error ? 'Error' : urlStatus.result.status
-                  ) : (
-                    <SmallLoadingSpinner />
-                  )}
-                </div>
-                <div className="result-cell title-col">
-                  {urlStatus.status === 'crawling' ? (
-                    <SmallLoadingSpinner />
-                  ) : urlStatus.result ? (
-                    urlStatus.result.error ? urlStatus.result.error : urlStatus.result.title || '(no title)'
-                  ) : (
-                    <SmallLoadingSpinner />
-                  )}
-                </div>
-                <div className="result-cell indexable-col">
-                  {urlStatus.status === 'crawling' ? (
-                    <SmallLoadingSpinner />
-                  ) : urlStatus.result ? (
-                    <span className={`indexable-badge ${urlStatus.result.indexable === 'Yes' ? 'indexable-yes' : 'indexable-no'}`}>
-                      {urlStatus.result.indexable}
+                  </div>
+                  <div className={`result-cell status-col ${getStatusColor(result.status)}`} style={{ opacity: isInProgress ? 0.6 : 1 }}>
+                    {isInProgress ? 'Queued' : (result.error ? 'Error' : result.status)}
+                  </div>
+                  <div className="result-cell title-col" style={{ opacity: isInProgress ? 0.6 : 1 }}>
+                    {result.error ? result.error : result.title || '(no title)'}
+                  </div>
+                  <div className="result-cell indexable-col" style={{ opacity: isInProgress ? 0.6 : 1 }}>
+                    <span className={`indexable-badge ${result.indexable === 'Yes' ? 'indexable-yes' : 'indexable-no'}`}>
+                      {result.indexable}
                     </span>
-                  ) : (
-                    <SmallLoadingSpinner />
-                  )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
         <div className="footer">
           <div className="footer-content">
-            {isCrawling && (
+            {isCrawling && currentProject && (
               <div className="status-indicator">
-                <CircularProgress crawled={results.length} total={urlStatuses.size} />
+                <CircularProgress
+                  crawled={results.filter(r => !(r.status === 0 && r.title === 'In progress...')).length}
+                  total={results.length}
+                />
                 <span className="status-text">Crawling...</span>
               </div>
             )}
