@@ -610,22 +610,26 @@ func (a *App) GetProjects() ([]ProjectInfo, error) {
 	}
 
 	// Convert to ProjectInfo for frontend
-	projectInfos := make([]ProjectInfo, 0)
+	projectInfos := make([]ProjectInfo, 0, len(projects))
 	for _, p := range projects {
-		// Get the latest crawl for this project
+		projectInfo := ProjectInfo{
+			ID:          p.ID,
+			URL:         p.URL,
+			Domain:      p.Domain,
+			FaviconPath: p.FaviconPath,
+		}
+
+		// Get the latest crawl for this project if it exists
 		if len(p.Crawls) > 0 {
 			latestCrawl := p.Crawls[0]
-			projectInfos = append(projectInfos, ProjectInfo{
-				ID:            p.ID,
-				URL:           p.URL,
-				Domain:        p.Domain,
-				FaviconPath:   p.FaviconPath,
-				CrawlDateTime: latestCrawl.CrawlDateTime,
-				CrawlDuration: latestCrawl.CrawlDuration,
-				PagesCrawled:  latestCrawl.PagesCrawled,
-				LatestCrawlID: latestCrawl.ID,
-			})
+			projectInfo.CrawlDateTime = latestCrawl.CrawlDateTime
+			projectInfo.CrawlDuration = latestCrawl.CrawlDuration
+			projectInfo.PagesCrawled = latestCrawl.PagesCrawled
+			projectInfo.LatestCrawlID = latestCrawl.ID
 		}
+		// If no crawls, fields will be zero values (0 for int64/uint)
+
+		projectInfos = append(projectInfos, projectInfo)
 	}
 
 	return projectInfos, nil
