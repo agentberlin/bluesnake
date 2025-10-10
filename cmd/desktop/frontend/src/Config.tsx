@@ -25,12 +25,14 @@ interface ConfigData {
   domain: string;
   jsRenderingEnabled: boolean;
   parallelism: number;
+  userAgent: string;
   discoveryMechanisms: string[];  // Not exposed directly, derived from checkboxes
 }
 
 function Config({ url, onClose }: ConfigProps) {
   const [jsRendering, setJsRendering] = useState(false);
   const [parallelism, setParallelism] = useState(5);
+  const [userAgent, setUserAgent] = useState('bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)');
   const [domain, setDomain] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -51,6 +53,7 @@ function Config({ url, onClose }: ConfigProps) {
       setDomain(config.domain);
       setJsRendering(config.jsRenderingEnabled);
       setParallelism(config.parallelism);
+      setUserAgent(config.userAgent || 'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)');
 
       // Derive sitemap state from mechanisms (spider is always enabled)
       const mechanisms = config.discoveryMechanisms || ["spider"];
@@ -72,6 +75,7 @@ function Config({ url, onClose }: ConfigProps) {
         url,
         jsRendering,
         parallelism,
+        userAgent,
         true, // Spider is always enabled
         sitemapEnabled,
         [] // No custom sitemap URLs in this version
@@ -146,6 +150,22 @@ function Config({ url, onClose }: ConfigProps) {
                 />
                 <p className="config-hint">
                   Maximum number of links to process at the same time (default: 5)
+                </p>
+              </div>
+
+              <div className="config-field">
+                <label className="config-label-text">
+                  User Agent
+                </label>
+                <input
+                  type="text"
+                  value={userAgent}
+                  onChange={(e) => setUserAgent(e.target.value)}
+                  className="config-number-input"
+                  placeholder="bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)"
+                />
+                <p className="config-hint">
+                  Custom User-Agent string for HTTP requests (default: bluesnake/1.0)
                 </p>
               </div>
 
