@@ -83,6 +83,25 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Update version in Go code
+        shell: bash
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          echo "Updating version.go to $VERSION"
+
+          # Update the version constant in version.go
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            # macOS
+            sed -i '' "s/const CurrentVersion = .*/const CurrentVersion = \"$VERSION\"/" cmd/desktop/version.go
+          else
+            # Linux/Windows (Git Bash)
+            sed -i "s/const CurrentVersion = .*/const CurrentVersion = \"$VERSION\"/" cmd/desktop/version.go
+          fi
+
+          # Verify the change
+          echo "Updated version.go:"
+          grep "CurrentVersion" cmd/desktop/version.go
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:

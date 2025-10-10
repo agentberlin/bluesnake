@@ -49,3 +49,11 @@ export function StopCrawl(arg1) {
 export function UpdateConfigForDomain(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
   return window['go']['main']['App']['UpdateConfigForDomain'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
+
+export function CheckForUpdate() {
+  return window['go']['main']['App']['CheckForUpdate']();
+}
+
+export function DownloadAndInstallUpdate() {
+  return window['go']['main']['App']['DownloadAndInstallUpdate']();
+}
