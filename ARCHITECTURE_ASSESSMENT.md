@@ -1059,7 +1059,7 @@ func (Page) TableName() string {
 1. Add `SaveLink()` method to database package
 2. Add link extraction callback to crawler:
    ```go
-   c.OnHTML("a[href]", func(e *colly.HTMLElement) {
+   c.OnHTML("a[href]", func(e *bluesnake.HTMLElement) {
        link := &models.Link{
            CrawlID:    crawlID,
            FromPageID: currentPageID,
@@ -1074,9 +1074,9 @@ func (Page) TableName() string {
    ```
 3. Add canonical/hreflang/pagination link extraction:
    ```go
-   c.OnHTML("link[rel=canonical]", func(e *colly.HTMLElement) { ... })
-   c.OnHTML("link[rel=alternate][hreflang]", func(e *colly.HTMLElement) { ... })
-   c.OnHTML("link[rel=next], link[rel=prev]", func(e *colly.HTMLElement) { ... })
+   c.OnHTML("link[rel=canonical]", func(e *bluesnake.HTMLElement) { ... })
+   c.OnHTML("link[rel=alternate][hreflang]", func(e *bluesnake.HTMLElement) { ... })
+   c.OnHTML("link[rel=next], link[rel=prev]", func(e *bluesnake.HTMLElement) { ... })
    ```
 4. Add query methods: `GetInlinks()`, `GetOutlinks()`, `GetLinksByType()`
 5. Update UI to show link data
@@ -1092,15 +1092,15 @@ func (Page) TableName() string {
 **Tasks:**
 1. Expand page data extraction in callbacks:
    ```go
-   c.OnHTML("meta[name=description]", func(e *colly.HTMLElement) {
+   c.OnHTML("meta[name=description]", func(e *bluesnake.HTMLElement) {
        page.MetaDescription = e.Attr("content")
    })
 
-   c.OnHTML("h1", func(e *colly.HTMLElement) {
+   c.OnHTML("h1", func(e *bluesnake.HTMLElement) {
        page.H1 = e.Text
    })
 
-   c.OnHTML("h2", func(e *colly.HTMLElement) {
+   c.OnHTML("h2", func(e *bluesnake.HTMLElement) {
        page.H2s = append(page.H2s, e.Text)  // Store as array
    })
    ```
@@ -1108,7 +1108,7 @@ func (Page) TableName() string {
 3. Add content hash calculation (SHA256 of normalized text)
 4. Add HTTP header capture:
    ```go
-   c.OnResponse(func(r *colly.Response) {
+   c.OnResponse(func(r *bluesnake.Response) {
        for key, values := range r.Headers {
            for _, value := range values {
                header := &models.HTTPHeader{
@@ -1590,9 +1590,9 @@ func TestCrawlFlow(t *testing.T) {
     defer ts.Close()
 
     // Run crawler
-    c := colly.NewCollector()
+    c := bluesnake.NewCollector()
     var pages []*models.Page
-    c.OnHTML("title", func(e *colly.HTMLElement) {
+    c.OnHTML("title", func(e *bluesnake.HTMLElement) {
         page := &models.Page{
             URL:   e.Request.URL.String(),
             Title: e.Text,

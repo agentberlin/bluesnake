@@ -9,7 +9,7 @@ DESKTOP_DIR="$REPO_ROOT/cmd/desktop"
 
 echo "🔨 Building BlueSnake..."
 cd "$DESKTOP_DIR"
-wails build --clean
+wails build --clean -tags desktop
 
 echo "📦 Installing to ~/Applications..."
 # Create ~/Applications if it doesn't exist

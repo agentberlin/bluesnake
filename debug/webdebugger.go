@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-// WebDebugger is a web based debugging frontend for colly
+// WebDebugger is a web based debugging frontend for BlueSnake
 type WebDebugger struct {
 	// Address is the address of the web server. It is 127.0.0.1:7676 by default.
 	Address         string
@@ -90,14 +90,14 @@ func (w *WebDebugger) indexHandler(wr http.ResponseWriter, r *http.Request) {
 	wr.Write([]byte(`<!DOCTYPE html>
 <html>
 <head>
- <title>Colly Debugger WebUI</title>
+ <title>BlueSnake Debugger WebUI</title>
  <script src="https://code.jquery.com/jquery-latest.min.js" type="text/javascript"></script>
  <link rel="stylesheet" type="text/css" href="https://semantic-ui.com/dist/semantic.min.css">
 </head>
 <body>
 <div class="ui inverted vertical masthead center aligned segment" id="menu">
  <div class="ui tiny secondary inverted menu">
-   <a class="item" href="/"><b>Colly WebDebugger</b></a>
+   <a class="item" href="/"><b>BlueSnake WebDebugger</b></a>
  </div>
 </div>
 <div class="ui grid container">
