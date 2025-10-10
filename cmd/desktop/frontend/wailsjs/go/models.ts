@@ -129,11 +129,11 @@ export namespace main {
 	    crawlDuration: number;
 	    pagesCrawled: number;
 	    latestCrawlId: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ProjectInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -151,11 +151,11 @@ export namespace main {
 	    latestVersion: string;
 	    updateAvailable: boolean;
 	    downloadUrl: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new UpdateInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.currentVersion = source["currentVersion"];
