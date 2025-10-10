@@ -411,9 +411,87 @@ func NewDefaultConfig() *CollectorConfig {
 // NewCollector creates a new Collector instance with the provided configuration.
 // If config is nil, default configuration is used.
 func NewCollector(config *CollectorConfig) *Collector {
-	if config == nil {
-		config = NewDefaultConfig()
+	// Start with defaults
+	defaults := NewDefaultConfig()
+
+	// Merge user config with defaults (user config takes precedence for non-zero values)
+	if config != nil {
+		if config.UserAgent != "" {
+			defaults.UserAgent = config.UserAgent
+		}
+		if config.Headers != nil {
+			defaults.Headers = config.Headers
+		}
+		if config.MaxDepth != 0 {
+			defaults.MaxDepth = config.MaxDepth
+		}
+		if config.AllowedDomains != nil {
+			defaults.AllowedDomains = config.AllowedDomains
+		}
+		if config.DisallowedDomains != nil {
+			defaults.DisallowedDomains = config.DisallowedDomains
+		}
+		if config.DisallowedURLFilters != nil {
+			defaults.DisallowedURLFilters = config.DisallowedURLFilters
+		}
+		if config.URLFilters != nil {
+			defaults.URLFilters = config.URLFilters
+		}
+		// For bools, we need to check if they differ from their zero value when it matters
+		// AllowURLRevisit default is false, so any true value should override
+		if config.AllowURLRevisit {
+			defaults.AllowURLRevisit = true
+		}
+		// MaxBodySize: Always use the user's value, even if it's 0 (which means unlimited)
+		defaults.MaxBodySize = config.MaxBodySize
+		if config.CacheDir != "" {
+			defaults.CacheDir = config.CacheDir
+		}
+		// IgnoreRobotsTxt: default is true, so we keep that unless explicitly set to false
+		// But we can't distinguish between "explicitly false" and "unset" with a bool
+		// So we keep the default (true) unless the whole config suggests otherwise
+		// For now, keep the default behavior
+		if config.Async {
+			defaults.Async = true
+		}
+		if config.ParseHTTPErrorResponse {
+			defaults.ParseHTTPErrorResponse = true
+		}
+		if config.ID != 0 {
+			defaults.ID = config.ID
+		}
+		if config.DetectCharset {
+			defaults.DetectCharset = true
+		}
+		if config.CheckHead {
+			defaults.CheckHead = true
+		}
+		if config.TraceHTTP {
+			defaults.TraceHTTP = true
+		}
+		if config.Context != nil {
+			defaults.Context = config.Context
+		}
+		if config.MaxRequests != 0 {
+			defaults.MaxRequests = config.MaxRequests
+		}
+		if config.EnableRendering {
+			defaults.EnableRendering = true
+		}
+		if config.CacheExpiration != 0 {
+			defaults.CacheExpiration = config.CacheExpiration
+		}
+		if config.Debugger != nil {
+			defaults.Debugger = config.Debugger
+		}
+		if config.DiscoveryMechanisms != nil {
+			defaults.DiscoveryMechanisms = config.DiscoveryMechanisms
+		}
+		if config.SitemapURLs != nil {
+			defaults.SitemapURLs = config.SitemapURLs
+		}
 	}
+	config = defaults
 
 	c := &Collector{}
 	c.Init()

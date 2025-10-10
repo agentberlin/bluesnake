@@ -159,16 +159,26 @@ func (r *Request) PostMultipart(URL string, requestData map[string][]byte) error
 
 // Retry submits HTTP request again with the same parameters
 func (r *Request) Retry() error {
-	r.Headers.Del("Cookie")
+	if r.Headers != nil {
+		r.Headers.Del("Cookie")
+	}
 	if _, ok := r.Body.(io.ReadSeeker); r.Body != nil && !ok {
 		return ErrRetryBodyUnseekable
 	}
-	return r.collector.scrape(r.URL.String(), r.Method, r.Depth, r.Body, r.Ctx, *r.Headers, false)
+	var hdr http.Header
+	if r.Headers != nil {
+		hdr = *r.Headers
+	}
+	return r.collector.scrape(r.URL.String(), r.Method, r.Depth, r.Body, r.Ctx, hdr, false)
 }
 
 // Do submits the request
 func (r *Request) Do() error {
-	return r.collector.scrape(r.URL.String(), r.Method, r.Depth, r.Body, r.Ctx, *r.Headers, !r.collector.AllowURLRevisit)
+	var hdr http.Header
+	if r.Headers != nil {
+		hdr = *r.Headers
+	}
+	return r.collector.scrape(r.URL.String(), r.Method, r.Depth, r.Body, r.Ctx, hdr, !r.collector.AllowURLRevisit)
 }
 
 // Marshal serializes the Request

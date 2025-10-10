@@ -545,3 +545,99 @@ func TestDiscoveryMechanism_NoSitemap(t *testing.T) {
 
 	t.Logf("Missing sitemap handled gracefully: %d page crawled", len(crawledPages))
 }
+
+// TestCrawlerUserAgent tests that the UserAgent configuration is correctly applied
+func TestCrawlerUserAgent(t *testing.T) {
+	const customUserAgent = "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)"
+	const defaultUserAgent = "bluesnake - https://github.com/agentberlin/bluesnake"
+
+	tests := []struct {
+		name              string
+		configuredUA      string
+		expectedUA        string
+		shouldSetUA       bool
+	}{
+		{
+			name:         "Default UserAgent",
+			configuredUA: "",
+			expectedUA:   defaultUserAgent,
+			shouldSetUA:  false,
+		},
+		{
+			name:         "Custom UserAgent",
+			configuredUA: customUserAgent,
+			expectedUA:   customUserAgent,
+			shouldSetUA:  true,
+		},
+		{
+			name:         "Another Custom UserAgent",
+			configuredUA: "MyCustomCrawler/2.0",
+			expectedUA:   "MyCustomCrawler/2.0",
+			shouldSetUA:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := NewMockTransport()
+
+			// Register a page that echoes back the User-Agent header
+			mock.RegisterResponse("https://example.com/", &MockResponse{
+				StatusCode: 200,
+				BodyFunc: func(req *http.Request) string {
+					return req.Header.Get("User-Agent")
+				},
+			})
+
+			var mu sync.Mutex
+			var receivedUserAgent string
+
+			// Create crawler with optional custom user agent
+			var crawler *Crawler
+			if tt.shouldSetUA {
+				crawler = NewCrawler(&CollectorConfig{
+					AllowedDomains: []string{"example.com"},
+					UserAgent:      tt.configuredUA,
+				})
+			} else {
+				// Pass nil to use default config with default UserAgent
+				crawler = NewCrawler(nil)
+				// Set allowed domains manually since we're using nil config
+				crawler.Collector.AllowedDomains = []string{"example.com"}
+			}
+
+			crawler.Collector.WithTransport(mock)
+
+			// Capture the user agent from the response
+			crawler.SetOnPageCrawled(func(result *PageResult) {
+				mu.Lock()
+				defer mu.Unlock()
+				// The body contains the User-Agent header that was sent
+				receivedUserAgent = result.Title // Title will be empty, but we can check the raw response
+			})
+
+			// Use OnResponse to get the actual response body
+			crawler.Collector.OnResponse(func(r *Response) {
+				mu.Lock()
+				defer mu.Unlock()
+				receivedUserAgent = string(r.Body)
+			})
+
+			err := crawler.Start("https://example.com/")
+			if err != nil {
+				t.Fatalf("Failed to start crawler: %v", err)
+			}
+
+			crawler.Wait()
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if receivedUserAgent != tt.expectedUA {
+				t.Errorf("Expected User-Agent %q, got %q", tt.expectedUA, receivedUserAgent)
+			}
+
+			t.Logf("✓ User-Agent correctly set to: %q", receivedUserAgent)
+		})
+	}
+}

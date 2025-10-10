@@ -151,7 +151,9 @@ func (h *httpBackend) Cache(request *http.Request, bodySize int, checkRequestHea
 		resp := new(Response)
 		err := gob.NewDecoder(file).Decode(resp)
 		file.Close()
-		checkResponseHeadersFunc(request, resp.StatusCode, *resp.Headers)
+		if resp.Headers != nil {
+			checkResponseHeadersFunc(request, resp.StatusCode, *resp.Headers)
+		}
 		if resp.StatusCode < 500 {
 			return resp, err
 		}
