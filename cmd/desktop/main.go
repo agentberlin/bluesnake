@@ -1,3 +1,5 @@
+//go:build desktop
+
 // Copyright 2025 Agentic World, LLC (Sherin Thomas)
 //
 // Licensed under the Apache License, Version 2.0 (the "License");

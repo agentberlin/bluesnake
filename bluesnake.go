@@ -165,7 +165,7 @@ type Collector struct {
 	// be sure all requests have been finished.
 	Async bool
 	// ParseHTTPErrorResponse allows parsing HTTP responses with non 2xx status codes.
-	// By default, Colly parses only successful HTTP responses. Set ParseHTTPErrorResponse
+	// By default, BlueSnake parses only successful HTTP responses. Set ParseHTTPErrorResponse
 	// to true to enable it.
 	ParseHTTPErrorResponse bool
 	// ID is the unique identifier of a collector
@@ -1609,10 +1609,10 @@ func (c *Collector) checkRedirectFunc() func(req *http.Request, via []*http.Requ
 
 func (c *Collector) parseSettingsFromEnv() {
 	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, "COLLY_") {
+		if !strings.HasPrefix(e, "BLUESNAKE_") {
 			continue
 		}
-		pair := strings.SplitN(e[6:], "=", 2)
+		pair := strings.SplitN(e[10:], "=", 2)
 		if f, ok := envMap[pair[0]]; ok {
 			f(c, pair[1])
 		} else {

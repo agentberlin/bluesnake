@@ -487,7 +487,7 @@ func TestHTMLElement(t *testing.T) {
 		Ctx: ctx,
 	}
 
-	in := `<a href="http://go-bluesnake.org">Colly</a>`
+	in := `<a href="http://go-bluesnake.org">BlueSnake</a>`
 	sel := "a[href]"
 	doc, err := goquery.NewDocumentFromReader(bytes.NewBuffer([]byte(in)))
 	if err != nil {
@@ -509,8 +509,8 @@ func TestHTMLElement(t *testing.T) {
 	if v.Name != "a" {
 		t.Errorf("element tag mismatch. got %s, expected %s.\n", v.Name, "a")
 	}
-	if v.Text != "Colly" {
-		t.Errorf("element content mismatch. got %s, expected %s.\n", v.Text, "Colly")
+	if v.Text != "BlueSnake" {
+		t.Errorf("element content mismatch. got %s, expected %s.\n", v.Text, "BlueSnake")
 	}
 	if v.Attr("href") != "http://go-bluesnake.org" {
 		t.Errorf("element href mismatch. got %s, expected %s.\n", v.Attr("href"), "http://go-bluesnake.org")

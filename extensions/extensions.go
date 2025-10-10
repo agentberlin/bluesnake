@@ -12,5 +12,5 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package extensions implements various helper addons for Colly
+// Package extensions implements various helper addons for BlueSnake
 package extensions

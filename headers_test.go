@@ -26,8 +26,8 @@ import (
 func TestEnvSettings(t *testing.T) {
 	mock := setupMockTransport()
 
-	os.Setenv("COLLY_USER_AGENT", "test")
-	defer os.Unsetenv("COLLY_USER_AGENT")
+	os.Setenv("BLUESNAKE_USER_AGENT", "test")
+	defer os.Unsetenv("BLUESNAKE_USER_AGENT")
 
 	c := NewCollector(nil)
 	c.SetClient(&http.Client{Transport: mock})

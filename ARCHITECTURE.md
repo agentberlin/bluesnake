@@ -144,7 +144,7 @@ This design ensures:
 
 ### Architecture Overview
 
-The crawler package (based on Colly) provides a powerful, callback-driven web scraping framework implemented in Go.
+The crawler package provides a powerful, callback-driven web scraping framework implemented in Go.
 
 ### Core Components
 
