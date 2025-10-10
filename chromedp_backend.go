@@ -1,10 +1,10 @@
-// Copyright 2018 Adam Tauber
+// Copyright 2025 Agentic World, LLC (Sherin Thomas)
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//      http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,10 +25,9 @@ import (
 
 // chromedpRenderer handles browser-based page rendering
 type chromedpRenderer struct {
-	allocCtx   context.Context
+	allocCtx    context.Context
 	allocCancel context.CancelFunc
-	mu         sync.Mutex
-	timeout    time.Duration
+	timeout     time.Duration
 }
 
 var (
@@ -67,10 +66,10 @@ func (r *chromedpRenderer) Close() {
 }
 
 // RenderPage renders a page using headless Chrome and returns the HTML
+// NOTE: This function has no internal rate limiting. Parallelism is controlled by
+// the LimitRule in http_backend.go. Setting very high parallelism (>10) may cause
+// high memory/CPU usage as each browser context consumes ~100-200MB RAM.
 func (r *chromedpRenderer) RenderPage(url string) (string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	// Create a new browser context
 	ctx, cancel := chromedp.NewContext(r.allocCtx)
 	defer cancel()

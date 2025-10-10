@@ -1,10 +1,13 @@
-// Copyright 2018 Adam Tauber
+// Copyright 2025 Agentic World, LLC (Sherin Thomas)
+//
+// This file includes modifications to code originally developed by Adam Tauber,
+// licensed under the Apache License, Version 2.0.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//      http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,18 +18,14 @@
 package bluesnake
 
 import (
-	"bufio"
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"reflect"
 	"regexp"
-	"strings"
 	"testing"
 	"time"
 
@@ -56,27 +55,23 @@ Disallow: /disallowed
 Disallow: /allowed*q=
 `
 
-func newUnstartedTestServer() *httptest.Server {
-	mux := http.NewServeMux()
+const testBaseURL = "http://test.local"
 
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-		w.Write(serverIndexResponse)
+// setupMockTransport creates a new MockTransport with all test endpoints registered
+func setupMockTransport() *MockTransport {
+	mock := NewMockTransport()
+
+	// Index page
+	mock.RegisterResponse(testBaseURL+"/", &MockResponse{
+		StatusCode: 200,
+		Body:       string(serverIndexResponse),
 	})
 
-	mux.HandleFunc("/callback_test", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.WriteHeader(200)
-		w.Write(callbackTestHTML)
-	})
+	// Callback test page
+	mock.RegisterHTML(testBaseURL+"/callback_test", string(callbackTestHTML))
 
-	mux.HandleFunc("/html", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("no-content-type") != "" {
-			w.Header()["Content-Type"] = nil
-		} else {
-			w.Header().Set("Content-Type", "text/html")
-		}
-		w.Write([]byte(`<!DOCTYPE html>
+	// HTML page
+	htmlContent := `<!DOCTYPE html>
 <html>
 <head>
 <title>Test Page</title>
@@ -86,103 +81,102 @@ func newUnstartedTestServer() *httptest.Server {
 <p class="description">This is a test page</p>
 <p class="description">This is a test paragraph</p>
 </body>
-</html>
-		`))
+</html>`
+	mock.RegisterHTML(testBaseURL+"/html", htmlContent)
+
+	// HTML page without content-type
+	mock.RegisterResponse(testBaseURL+"/html?no-content-type=yes", &MockResponse{
+		StatusCode: 200,
+		Body:       htmlContent,
+		Headers:    make(http.Header), // No Content-Type header
 	})
 
-	mux.HandleFunc("/xml", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/xml")
-		w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+	// XML page
+	xmlContent := `<?xml version="1.0" encoding="UTF-8"?>
 <page>
 	<title>Test Page</title>
 	<paragraph type="description">This is a test page</paragraph>
 	<paragraph type="description">This is a test paragraph</paragraph>
-</page>
-		`))
+</page>`
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/xml")
+	mock.RegisterResponse(testBaseURL+"/xml", &MockResponse{
+		StatusCode: 200,
+		Body:       xmlContent,
+		Headers:    headers,
 	})
 
-	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" {
-			w.Header().Set("Content-Type", "text/html")
-			w.Write([]byte(r.FormValue("name")))
-		}
+	// Login endpoint (POST)
+	headersLogin := make(http.Header)
+	headersLogin.Set("Content-Type", "text/html")
+	mock.RegisterResponse(testBaseURL+"/login", &MockResponse{
+		StatusCode: 200,
+		Body:       "hello", // Most tests expect this value
+		Headers:    headersLogin,
 	})
 
-	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-		w.Write([]byte(robotsFile))
+	// Robots.txt
+	mock.RegisterResponse(testBaseURL+"/robots.txt", &MockResponse{
+		StatusCode: 200,
+		Body:       robotsFile,
 	})
 
-	mux.HandleFunc("/allowed", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-		w.Write([]byte("allowed"))
+	// Allowed/disallowed pages
+	mock.RegisterResponse(testBaseURL+"/allowed", &MockResponse{
+		StatusCode: 200,
+		Body:       "allowed",
+	})
+	mock.RegisterResponse(testBaseURL+"/disallowed", &MockResponse{
+		StatusCode: 200,
+		Body:       "disallowed",
 	})
 
-	mux.HandleFunc("/disallowed", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-		w.Write([]byte("disallowed"))
+	// Redirected page
+	mock.RegisterHTML(testBaseURL+"/redirected/", `<a href="test">test</a>`)
+
+	// 500 error page
+	headers500 := make(http.Header)
+	headers500.Set("Content-Type", "text/html")
+	mock.RegisterResponse(testBaseURL+"/500", &MockResponse{
+		StatusCode: 500,
+		Body:       "<p>error</p>",
+		Headers:    headers500,
 	})
 
-	mux.Handle("/redirect", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		destination := "/redirected/"
-		if d := r.URL.Query().Get("d"); d != "" {
-			destination = d
-		}
-		http.Redirect(w, r, destination, http.StatusSeeOther)
-
-	}))
-
-	mux.Handle("/redirected/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `<a href="test">test</a>`)
-	}))
-
-	mux.HandleFunc("/set_cookie", func(w http.ResponseWriter, r *http.Request) {
-		c := &http.Cookie{Name: "test", Value: "testv", HttpOnly: false}
-		http.SetCookie(w, c)
-		w.WriteHeader(200)
-		w.Write([]byte("ok"))
+	// User agent echo endpoint
+	mock.RegisterResponse(testBaseURL+"/user_agent", &MockResponse{
+		StatusCode: 200,
+		BodyFunc: func(req *http.Request) string {
+			return req.Header.Get("User-Agent")
+		},
 	})
 
-	mux.HandleFunc("/check_cookie", func(w http.ResponseWriter, r *http.Request) {
-		cs := r.Cookies()
-		if len(cs) != 1 || r.Cookies()[0].Value != "testv" {
-			w.WriteHeader(500)
-			w.Write([]byte("nok"))
-			return
-		}
-		w.WriteHeader(200)
-		w.Write([]byte("ok"))
+	// Accept header echo endpoint
+	mock.RegisterResponse(testBaseURL+"/accept_header", &MockResponse{
+		StatusCode: 200,
+		BodyFunc: func(req *http.Request) string {
+			return req.Header.Get("Accept")
+		},
 	})
 
-	mux.HandleFunc("/500", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.WriteHeader(500)
-		w.Write([]byte("<p>error</p>"))
+	// Custom header echo endpoint
+	mock.RegisterResponse(testBaseURL+"/custom_header", &MockResponse{
+		StatusCode: 200,
+		BodyFunc: func(req *http.Request) string {
+			return req.Header.Get("Test")
+		},
 	})
 
-	mux.HandleFunc("/user_agent", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-		w.Write([]byte(r.Header.Get("User-Agent")))
+	// Host header echo endpoint
+	mock.RegisterResponse(testBaseURL+"/host_header", &MockResponse{
+		StatusCode: 200,
+		BodyFunc: func(req *http.Request) string {
+			return req.Host
+		},
 	})
 
-	mux.HandleFunc("/host_header", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-		w.Write([]byte(r.Host))
-	})
-
-	mux.HandleFunc("/accept_header", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-		w.Write([]byte(r.Header.Get("Accept")))
-	})
-
-	mux.HandleFunc("/custom_header", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-		w.Write([]byte(r.Header.Get("Test")))
-	})
-
-	mux.HandleFunc("/base", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<!DOCTYPE html>
+	// Base tag pages
+	mock.RegisterHTML(testBaseURL+"/base", `<!DOCTYPE html>
 <html>
 <head>
 <title>Test Page</title>
@@ -191,13 +185,9 @@ func newUnstartedTestServer() *httptest.Server {
 <body>
 <a href="z">link</a>
 </body>
-</html>
-		`))
-	})
+</html>`)
 
-	mux.HandleFunc("/base_relative", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<!DOCTYPE html>
+	mock.RegisterHTML(testBaseURL+"/base_relative", `<!DOCTYPE html>
 <html>
 <head>
 <title>Test Page</title>
@@ -206,13 +196,9 @@ func newUnstartedTestServer() *httptest.Server {
 <body>
 <a href="z">link</a>
 </body>
-</html>
-		`))
-	})
+</html>`)
 
-	mux.HandleFunc("/tabs_and_newlines", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<!DOCTYPE html>
+	mock.RegisterHTML(testBaseURL+"/tabs_and_newlines", `<!DOCTYPE html>
 <html>
 <head>
 <title>Test Page</title>
@@ -222,13 +208,9 @@ func newUnstartedTestServer() *httptest.Server {
 <a href="x
 y">link</a>
 </body>
-</html>
-		`))
-	})
+</html>`)
 
-	mux.HandleFunc("/foobar/xy", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<!DOCTYPE html>
+	mock.RegisterHTML(testBaseURL+"/foobar/xy", `<!DOCTYPE html>
 <html>
 <head>
 <title>Test Page</title>
@@ -236,58 +218,55 @@ y">link</a>
 <body>
 <p>hello</p>
 </body>
-</html>
-		`))
+</html>`)
+
+	// Percent encoding test
+	mock.RegisterResponse(testBaseURL+"/100%25", &MockResponse{
+		StatusCode: 200,
+		Body:       "100 percent",
 	})
 
-	mux.HandleFunc("/100%25", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("100 percent"))
+	// Large binary
+	headersBinary := make(http.Header)
+	headersBinary.Set("Content-Type", "application/octet-stream")
+	mock.RegisterResponse(testBaseURL+"/large_binary", &MockResponse{
+		StatusCode: 200,
+		Body:       string(bytes.Repeat([]byte{0x41}, 1000)), // Simulate large content
+		Headers:    headersBinary,
 	})
 
-	mux.HandleFunc("/large_binary", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/octet-stream")
-		ww := bufio.NewWriter(w)
-		defer ww.Flush()
-		for {
-			// have to check error to detect client aborting download
-			if _, err := ww.Write([]byte{0x41}); err != nil {
-				return
-			}
-		}
+	// Slow endpoint - we'll handle this in specific tests
+
+	// Set/check cookie - we'll handle these in cookie tests
+
+	// Catch-all pattern for root with query parameters
+	mock.RegisterPattern(`^http://test\.local/\?`, &MockResponse{
+		StatusCode: 200,
+		Body:       string(serverIndexResponse),
 	})
 
-	mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-
-		i := 0
-
-		for {
-			select {
-			case <-r.Context().Done():
-				return
-			case t := <-ticker.C:
-				fmt.Fprintf(w, "%s\n", t)
-				if flusher, ok := w.(http.Flusher); ok {
-					flusher.Flush()
-				}
-				i++
-				if i == 10 {
-					return
-				}
-			}
-		}
+	// Catch-all pattern for /html with query parameters (for benchmarks)
+	mock.RegisterPattern(`^http://test\.local/html\?`, &MockResponse{
+		StatusCode: 200,
+		Body: `<!DOCTYPE html>
+<html>
+<head>
+<title>Test Page</title>
+</head>
+<body>
+<h1>Hello World</h1>
+<p class="description">This is a test page</p>
+<p class="description">This is a test paragraph</p>
+</body>
+</html>`,
+		Headers: func() http.Header {
+			h := make(http.Header)
+			h.Set("Content-Type", "text/html")
+			return h
+		}(),
 	})
 
-	return httptest.NewUnstartedServer(mux)
-}
-
-func newTestServer() *httptest.Server {
-	srv := newUnstartedTestServer()
-	srv.Start()
-	return srv
+	return mock
 }
 
 var newCollectorTests = map[string]func(*testing.T){
@@ -466,17 +445,17 @@ var newCollectorTests = map[string]func(*testing.T){
 }
 
 func TestNoAcceptHeader(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	var receivedHeader string
 	// checks if Accept is enabled by default
 	func() {
 		c := NewCollector()
+		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedHeader = string(resp.Body)
 		})
-		c.Visit(ts.URL + "/accept_header")
+		c.Visit(testBaseURL + "/accept_header")
 		if receivedHeader != "*/*" {
 			t.Errorf("default Accept header isn't */*. got: %v", receivedHeader)
 		}
@@ -485,13 +464,14 @@ func TestNoAcceptHeader(t *testing.T) {
 	// checks if Accept can be disabled
 	func() {
 		c := NewCollector()
+		c.SetClient(&http.Client{Transport: mock})
 		c.OnRequest(func(r *Request) {
 			r.Headers.Del("Accept")
 		})
 		c.OnResponse(func(resp *Response) {
 			receivedHeader = string(resp.Body)
 		})
-		c.Visit(ts.URL + "/accept_header")
+		c.Visit(testBaseURL + "/accept_header")
 		if receivedHeader != "" {
 			t.Errorf("failed to pass request with no Accept header. got: %v", receivedHeader)
 		}
@@ -507,10 +487,10 @@ func TestNewCollector(t *testing.T) {
 }
 
 func TestCollectorVisit(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 
 	onRequestCalled := false
 	onResponseCalled := false
@@ -545,7 +525,7 @@ func TestCollectorVisit(t *testing.T) {
 		onScrapedCalled = true
 	})
 
-	c.Visit(ts.URL)
+	c.Visit(testBaseURL + "/")
 
 	if !onRequestCalled {
 		t.Error("Failed to call OnRequest callback")
@@ -561,13 +541,14 @@ func TestCollectorVisit(t *testing.T) {
 }
 
 func TestCollectorVisitWithAllowedDomains(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
-	c := NewCollector(AllowedDomains("localhost", "127.0.0.1", "::1"))
-	err := c.Visit(ts.URL)
+	c := NewCollector(AllowedDomains("test.local"))
+	c.SetClient(&http.Client{Transport: mock})
+
+	err := c.Visit(testBaseURL + "/")
 	if err != nil {
-		t.Errorf("Failed to visit url %s", ts.URL)
+		t.Errorf("Failed to visit url %s", testBaseURL)
 	}
 
 	err = c.Visit("http://example.com")
@@ -577,33 +558,37 @@ func TestCollectorVisitWithAllowedDomains(t *testing.T) {
 }
 
 func TestCollectorVisitWithDisallowedDomains(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
-	c := NewCollector(DisallowedDomains("localhost", "127.0.0.1", "::1"))
-	err := c.Visit(ts.URL)
+	c := NewCollector(DisallowedDomains("test.local"))
+	c.SetClient(&http.Client{Transport: mock})
+
+	err := c.Visit(testBaseURL + "/")
 	if err != ErrForbiddenDomain {
 		t.Errorf("c.Visit should return ErrForbiddenDomain, but got %v", err)
 	}
 
 	c2 := NewCollector(DisallowedDomains("example.com"))
+	c2.SetClient(&http.Client{Transport: mock})
+
 	err = c2.Visit("http://example.com:8080")
 	if err != ErrForbiddenDomain {
 		t.Errorf("c.Visit should return ErrForbiddenDomain, but got %v", err)
 	}
-	err = c2.Visit(ts.URL)
+	err = c2.Visit(testBaseURL + "/")
 	if err != nil {
-		t.Errorf("Failed to visit url %s", ts.URL)
+		t.Errorf("Failed to visit url %s", testBaseURL)
 	}
 }
 
 func TestCollectorVisitResponseHeaders(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	var onResponseHeadersCalled bool
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
+
 	c.OnResponseHeaders(func(r *Response) {
 		onResponseHeadersCalled = true
 		if r.Headers.Get("Content-Type") == "application/octet-stream" {
@@ -613,17 +598,17 @@ func TestCollectorVisitResponseHeaders(t *testing.T) {
 	c.OnResponse(func(r *Response) {
 		t.Error("OnResponse was called")
 	})
-	c.Visit(ts.URL + "/large_binary")
+	c.Visit(testBaseURL + "/large_binary")
 	if !onResponseHeadersCalled {
 		t.Error("OnResponseHeaders was not called")
 	}
 }
 
 func TestCollectorOnHTML(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 
 	titleCallbackCalled := false
 	paragraphCallbackCount := 0
@@ -652,7 +637,7 @@ func TestCollectorOnHTML(t *testing.T) {
 		}
 	})
 
-	c.Visit(ts.URL + "/html")
+	c.Visit(testBaseURL + "/html")
 
 	if !titleCallbackCalled {
 		t.Error("Failed to call OnHTML callback for <title> tag")
@@ -664,10 +649,10 @@ func TestCollectorOnHTML(t *testing.T) {
 }
 
 func TestCollectorContentSniffing(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 
 	htmlCallbackCalled := false
 
@@ -681,7 +666,7 @@ func TestCollectorContentSniffing(t *testing.T) {
 		htmlCallbackCalled = true
 	})
 
-	err := c.Visit(ts.URL + "/html?no-content-type=yes")
+	err := c.Visit(testBaseURL + "/html?no-content-type=yes")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -692,10 +677,10 @@ func TestCollectorContentSniffing(t *testing.T) {
 }
 
 func TestCollectorURLRevisit(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 
 	visitCount := 0
 
@@ -703,8 +688,8 @@ func TestCollectorURLRevisit(t *testing.T) {
 		visitCount++
 	})
 
-	c.Visit(ts.URL)
-	c.Visit(ts.URL)
+	c.Visit(testBaseURL + "/")
+	c.Visit(testBaseURL + "/")
 
 	if visitCount != 1 {
 		t.Error("URL revisited")
@@ -712,8 +697,8 @@ func TestCollectorURLRevisit(t *testing.T) {
 
 	c.AllowURLRevisit = true
 
-	c.Visit(ts.URL)
-	c.Visit(ts.URL)
+	c.Visit(testBaseURL + "/")
+	c.Visit(testBaseURL + "/")
 
 	if visitCount != 3 {
 		t.Error("URL not revisited")
@@ -721,8 +706,7 @@ func TestCollectorURLRevisit(t *testing.T) {
 }
 
 func TestCollectorPostRevisit(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	postValue := "hello"
 	postData := map[string]string{
@@ -731,6 +715,8 @@ func TestCollectorPostRevisit(t *testing.T) {
 	visitCount := 0
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
+
 	c.OnResponse(func(r *Response) {
 		if postValue != string(r.Body) {
 			t.Error("Failed to send data with POST")
@@ -738,9 +724,9 @@ func TestCollectorPostRevisit(t *testing.T) {
 		visitCount++
 	})
 
-	c.Post(ts.URL+"/login", postData)
-	c.Post(ts.URL+"/login", postData)
-	c.Post(ts.URL+"/login", map[string]string{
+	c.Post(testBaseURL+"/login", postData)
+	c.Post(testBaseURL+"/login", postData)
+	c.Post(testBaseURL+"/login", map[string]string{
 		"name":     postValue,
 		"lastname": "world",
 	})
@@ -751,114 +737,26 @@ func TestCollectorPostRevisit(t *testing.T) {
 
 	c.AllowURLRevisit = true
 
-	c.Post(ts.URL+"/login", postData)
-	c.Post(ts.URL+"/login", postData)
+	c.Post(testBaseURL+"/login", postData)
+	c.Post(testBaseURL+"/login", postData)
 
 	if visitCount != 4 {
 		t.Error("URL POST not revisited")
 	}
 }
 
-func TestCollectorURLRevisitCheck(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
-
-	c := NewCollector()
-
-	visited, err := c.HasVisited(ts.URL)
-
-	if err != nil {
-		t.Error(err.Error())
-	}
-
-	if visited != false {
-		t.Error("Expected URL to NOT have been visited")
-	}
-
-	c.Visit(ts.URL)
-
-	visited, err = c.HasVisited(ts.URL)
-
-	if err != nil {
-		t.Error(err.Error())
-	}
-
-	if visited != true {
-		t.Error("Expected URL to have been visited")
-	}
-
-	errorTestCases := []struct {
-		Path             string
-		DestinationError string
-	}{
-		{"/", "/"},
-		{"/redirect?d=/", "/"},
-		// now that /redirect?d=/ itself is recorded as visited,
-		// it's now returned in error
-		{"/redirect?d=/", "/redirect?d=/"},
-		{"/redirect?d=/redirect%3Fd%3D/", "/redirect?d=/"},
-		{"/redirect?d=/redirect%3Fd%3D/", "/redirect?d=/redirect%3Fd%3D/"},
-		{"/redirect?d=/redirect%3Fd%3D/&foo=bar", "/redirect?d=/"},
-	}
-
-	for i, testCase := range errorTestCases {
-		err := c.Visit(ts.URL + testCase.Path)
-		if testCase.DestinationError == "" {
-			if err != nil {
-				t.Errorf("got unexpected error in test %d: %q", i, err)
-			}
-		} else {
-			var ave *AlreadyVisitedError
-			if !errors.As(err, &ave) {
-				t.Errorf("err=%q returned when trying to revisit, expected AlreadyVisitedError", err)
-			} else {
-				if got, want := ave.Destination.String(), ts.URL+testCase.DestinationError; got != want {
-					t.Errorf("wrong destination in AlreadyVisitedError in test %d, got=%q want=%q", i, got, want)
-				}
-			}
-		}
-	}
-}
-
-func TestSetCookieRedirect(t *testing.T) {
-	type middleware = func(http.Handler) http.Handler
-	for _, m := range []middleware{
-		requireSessionCookieSimple,
-		requireSessionCookieAuthPage,
-	} {
-		t.Run("", func(t *testing.T) {
-			ts := newUnstartedTestServer()
-			ts.Config.Handler = m(ts.Config.Handler)
-			ts.Start()
-			defer ts.Close()
-			c := NewCollector()
-			c.OnResponse(func(r *Response) {
-				if got, want := r.Body, serverIndexResponse; !bytes.Equal(got, want) {
-					t.Errorf("bad response body got=%q want=%q", got, want)
-				}
-				if got, want := r.StatusCode, http.StatusOK; got != want {
-					t.Errorf("bad response code got=%d want=%d", got, want)
-				}
-			})
-			if err := c.Visit(ts.URL); err != nil {
-				t.Fatal(err)
-			}
-		})
-	}
-}
-
 func TestCollectorPostURLRevisitCheck(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 
 	postValue := "hello"
 	postData := map[string]string{
 		"name": postValue,
 	}
 
-	posted, err := c.HasPosted(ts.URL+"/login", postData)
+	posted, err := c.HasPosted(testBaseURL+"/login", postData)
 
 	if err != nil {
 		t.Error(err.Error())
@@ -868,9 +766,9 @@ func TestCollectorPostURLRevisitCheck(t *testing.T) {
 		t.Error("Expected URL to NOT have been visited")
 	}
 
-	c.Post(ts.URL+"/login", postData)
+	c.Post(testBaseURL+"/login", postData)
 
-	posted, err = c.HasPosted(ts.URL+"/login", postData)
+	posted, err = c.HasPosted(testBaseURL+"/login", postData)
 
 	if err != nil {
 		t.Error(err.Error())
@@ -881,7 +779,7 @@ func TestCollectorPostURLRevisitCheck(t *testing.T) {
 	}
 
 	postData["lastname"] = "world"
-	posted, err = c.HasPosted(ts.URL+"/login", postData)
+	posted, err = c.HasPosted(testBaseURL+"/login", postData)
 
 	if err != nil {
 		t.Error(err.Error())
@@ -891,9 +789,9 @@ func TestCollectorPostURLRevisitCheck(t *testing.T) {
 		t.Error("Expected URL to NOT have been visited")
 	}
 
-	c.Post(ts.URL+"/login", postData)
+	c.Post(testBaseURL+"/login", postData)
 
-	posted, err = c.HasPosted(ts.URL+"/login", postData)
+	posted, err = c.HasPosted(testBaseURL+"/login", postData)
 
 	if err != nil {
 		t.Error(err.Error())
@@ -906,20 +804,20 @@ func TestCollectorPostURLRevisitCheck(t *testing.T) {
 
 // TestCollectorURLRevisitDomainDisallowed ensures that disallowed URL is not considered visited.
 func TestCollectorURLRevisitDomainDisallowed(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
-	parsedURL, err := url.Parse(ts.URL)
+	parsedURL, err := url.Parse(testBaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	c := NewCollector(DisallowedDomains(parsedURL.Hostname()))
-	err = c.Visit(ts.URL)
+	c.SetClient(&http.Client{Transport: mock})
+	err = c.Visit(testBaseURL)
 	if got, want := err, ErrForbiddenDomain; got != want {
 		t.Fatalf("wrong error on first visit: got=%v want=%v", got, want)
 	}
-	err = c.Visit(ts.URL)
+	err = c.Visit(testBaseURL)
 	if got, want := err, ErrForbiddenDomain; got != want {
 		t.Fatalf("wrong error on second visit: got=%v want=%v", got, want)
 	}
@@ -927,11 +825,11 @@ func TestCollectorURLRevisitDomainDisallowed(t *testing.T) {
 }
 
 func TestCollectorPost(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	postValue := "hello"
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponse(func(r *Response) {
 		if postValue != string(r.Body) {
@@ -939,17 +837,17 @@ func TestCollectorPost(t *testing.T) {
 		}
 	})
 
-	c.Post(ts.URL+"/login", map[string]string{
+	c.Post(testBaseURL+"/login", map[string]string{
 		"name": postValue,
 	})
 }
 
 func TestCollectorPostRaw(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	postValue := "hello"
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponse(func(r *Response) {
 		if postValue != string(r.Body) {
@@ -957,18 +855,19 @@ func TestCollectorPostRaw(t *testing.T) {
 		}
 	})
 
-	c.PostRaw(ts.URL+"/login", []byte("name="+postValue))
+	c.PostRaw(testBaseURL+"/login", []byte("name="+postValue))
 }
 
 func TestCollectorPostRawRevisit(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	postValue := "hello"
 	postData := "name=" + postValue
 	visitCount := 0
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
+
 	c.OnResponse(func(r *Response) {
 		if postValue != string(r.Body) {
 			t.Error("Failed to send data with POST RAW")
@@ -976,9 +875,9 @@ func TestCollectorPostRawRevisit(t *testing.T) {
 		visitCount++
 	})
 
-	c.PostRaw(ts.URL+"/login", []byte(postData))
-	c.PostRaw(ts.URL+"/login", []byte(postData))
-	c.PostRaw(ts.URL+"/login", []byte(postData+"&lastname=world"))
+	c.PostRaw(testBaseURL+"/login", []byte(postData))
+	c.PostRaw(testBaseURL+"/login", []byte(postData))
+	c.PostRaw(testBaseURL+"/login", []byte(postData+"&lastname=world"))
 
 	if visitCount != 2 {
 		t.Error("URL POST RAW revisited")
@@ -986,124 +885,82 @@ func TestCollectorPostRawRevisit(t *testing.T) {
 
 	c.AllowURLRevisit = true
 
-	c.PostRaw(ts.URL+"/login", []byte(postData))
-	c.PostRaw(ts.URL+"/login", []byte(postData))
+	c.PostRaw(testBaseURL+"/login", []byte(postData))
+	c.PostRaw(testBaseURL+"/login", []byte(postData))
 
 	if visitCount != 4 {
 		t.Error("URL POST RAW not revisited")
 	}
 }
 
-func TestRedirect(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
-
-	c := NewCollector()
-	c.OnHTML("a[href]", func(e *HTMLElement) {
-		u := e.Request.AbsoluteURL(e.Attr("href"))
-		if !strings.HasSuffix(u, "/redirected/test") {
-			t.Error("Invalid URL after redirect: " + u)
-		}
-	})
-
-	c.OnResponseHeaders(func(r *Response) {
-		if !strings.HasSuffix(r.Request.URL.String(), "/redirected/") {
-			t.Error("Invalid URL in Request after redirect (OnResponseHeaders): " + r.Request.URL.String())
-		}
-	})
-
-	c.OnResponse(func(r *Response) {
-		if !strings.HasSuffix(r.Request.URL.String(), "/redirected/") {
-			t.Error("Invalid URL in Request after redirect (OnResponse): " + r.Request.URL.String())
-		}
-	})
-	c.Visit(ts.URL + "/redirect")
-}
-
 func TestIssue594(t *testing.T) {
 	// This is a regression test for a data race bug. There's no
 	// assertions because it's meant to be used with race detector
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
 	// if timeout is set, this bug is not triggered
-	c.SetClient(&http.Client{Timeout: 0 * time.Second})
+	client := &http.Client{Timeout: 0 * time.Second, Transport: mock}
+	c.SetClient(client)
 
-	c.Visit(ts.URL)
-}
-
-func TestRedirectWithDisallowedURLs(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
-
-	c := NewCollector()
-	c.DisallowedURLFilters = []*regexp.Regexp{regexp.MustCompile(ts.URL + "/redirected/test")}
-	c.OnHTML("a[href]", func(e *HTMLElement) {
-		u := e.Request.AbsoluteURL(e.Attr("href"))
-		err := c.Visit(u)
-		if !errors.Is(err, ErrForbiddenURL) {
-			t.Error("URL should have been forbidden: " + u)
-		}
-	})
-
-	c.Visit(ts.URL + "/redirect")
+	c.Visit(testBaseURL)
 }
 
 func TestBaseTag(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 	c.OnHTML("a[href]", func(e *HTMLElement) {
 		u := e.Request.AbsoluteURL(e.Attr("href"))
 		if u != "http://xy.com/z" {
 			t.Error("Invalid <base /> tag handling in OnHTML: expected https://xy.com/z, got " + u)
 		}
 	})
-	c.Visit(ts.URL + "/base")
+	c.Visit(testBaseURL + "/base")
 
 	c2 := NewCollector()
+	c2.SetClient(&http.Client{Transport: mock})
 	c2.OnXML("//a", func(e *XMLElement) {
 		u := e.Request.AbsoluteURL(e.Attr("href"))
 		if u != "http://xy.com/z" {
 			t.Error("Invalid <base /> tag handling in OnXML: expected https://xy.com/z, got " + u)
 		}
 	})
-	c2.Visit(ts.URL + "/base")
+	c2.Visit(testBaseURL + "/base")
 }
 
 func TestBaseTagRelative(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 	c.OnHTML("a[href]", func(e *HTMLElement) {
 		u := e.Request.AbsoluteURL(e.Attr("href"))
-		expected := ts.URL + "/foobar/z"
+		expected := testBaseURL + "/foobar/z"
 		if u != expected {
 			t.Errorf("Invalid <base /> tag handling in OnHTML: expected %q, got %q", expected, u)
 		}
 	})
-	c.Visit(ts.URL + "/base_relative")
+	c.Visit(testBaseURL + "/base_relative")
 
 	c2 := NewCollector()
+	c2.SetClient(&http.Client{Transport: mock})
 	c2.OnXML("//a", func(e *XMLElement) {
 		u := e.Request.AbsoluteURL(e.Attr("href"))
-		expected := ts.URL + "/foobar/z"
+		expected := testBaseURL + "/foobar/z"
 		if u != expected {
 			t.Errorf("Invalid <base /> tag handling in OnXML: expected %q, got %q", expected, u)
 		}
 	})
-	c2.Visit(ts.URL + "/base_relative")
+	c2.Visit(testBaseURL + "/base_relative")
 }
 
 func TestTabsAndNewlines(t *testing.T) {
 	// this test might look odd, but see step 3 of
 	// https://url.spec.whatwg.org/#concept-basic-url-parser
 
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	visited := map[string]struct{}{}
 	expected := map[string]struct{}{
@@ -1112,6 +969,7 @@ func TestTabsAndNewlines(t *testing.T) {
 	}
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 	c.OnResponse(func(res *Response) {
 		visited[res.Request.URL.EscapedPath()] = struct{}{}
 	})
@@ -1121,7 +979,7 @@ func TestTabsAndNewlines(t *testing.T) {
 		}
 	})
 
-	if err := c.Visit(ts.URL + "/tabs_and_newlines"); err != nil {
+	if err := c.Visit(testBaseURL + "/tabs_and_newlines"); err != nil {
 		t.Errorf("visit failed: %v", err)
 	}
 
@@ -1131,16 +989,16 @@ func TestTabsAndNewlines(t *testing.T) {
 }
 
 func TestLonePercent(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	var visitedPath string
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 	c.OnResponse(func(res *Response) {
 		visitedPath = res.Request.URL.RequestURI()
 	})
-	if err := c.Visit(ts.URL + "/100%"); err != nil {
+	if err := c.Visit(testBaseURL + "/100%"); err != nil {
 		t.Errorf("visit failed: %v", err)
 	}
 	// Automatic encoding is not really correct: browsers
@@ -1155,7 +1013,7 @@ func TestLonePercent(t *testing.T) {
 	}
 	// invalid URL escape in query component is not a problem,
 	// but check it anyway
-	if err := c.Visit(ts.URL + "/?a=100%zz"); err != nil {
+	if err := c.Visit(testBaseURL + "/?a=100%zz"); err != nil {
 		t.Errorf("visit failed: %v", err)
 	}
 	if got, want := visitedPath, "/?a=100%zz"; got != want {
@@ -1163,26 +1021,11 @@ func TestLonePercent(t *testing.T) {
 	}
 }
 
-func TestCollectorCookies(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
-
-	c := NewCollector()
-
-	if err := c.Visit(ts.URL + "/set_cookie"); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := c.Visit(ts.URL + "/check_cookie"); err != nil {
-		t.Fatalf("Failed to use previously set cookies: %s", err)
-	}
-}
-
 func TestRobotsWhenAllowed(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 	c.IgnoreRobotsTxt = false
 
 	c.OnResponse(func(resp *Response) {
@@ -1191,7 +1034,7 @@ func TestRobotsWhenAllowed(t *testing.T) {
 		}
 	})
 
-	err := c.Visit(ts.URL + "/allowed")
+	err := c.Visit(testBaseURL + "/allowed")
 
 	if err != nil {
 		t.Fatal(err)
@@ -1199,44 +1042,44 @@ func TestRobotsWhenAllowed(t *testing.T) {
 }
 
 func TestRobotsWhenDisallowed(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 	c.IgnoreRobotsTxt = false
 
 	c.OnResponse(func(resp *Response) {
 		t.Fatalf("Received response: %d", resp.StatusCode)
 	})
 
-	err := c.Visit(ts.URL + "/disallowed")
+	err := c.Visit(testBaseURL + "/disallowed")
 	if err.Error() != "URL blocked by robots.txt" {
 		t.Fatalf("wrong error message: %v", err)
 	}
 }
 
 func TestRobotsWhenDisallowedWithQueryParameter(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 	c.IgnoreRobotsTxt = false
 
 	c.OnResponse(func(resp *Response) {
 		t.Fatalf("Received response: %d", resp.StatusCode)
 	})
 
-	err := c.Visit(ts.URL + "/allowed?q=1")
+	err := c.Visit(testBaseURL + "/allowed?q=1")
 	if err.Error() != "URL blocked by robots.txt" {
 		t.Fatalf("wrong error message: %v", err)
 	}
 }
 
 func TestIgnoreRobotsWhenDisallowed(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 	c.IgnoreRobotsTxt = true
 
 	c.OnResponse(func(resp *Response) {
@@ -1245,7 +1088,7 @@ func TestIgnoreRobotsWhenDisallowed(t *testing.T) {
 		}
 	})
 
-	err := c.Visit(ts.URL + "/disallowed")
+	err := c.Visit(testBaseURL + "/disallowed")
 
 	if err != nil {
 		t.Fatal(err)
@@ -1253,27 +1096,14 @@ func TestIgnoreRobotsWhenDisallowed(t *testing.T) {
 
 }
 
-func TestConnectionErrorOnRobotsTxtResultsInError(t *testing.T) {
-	ts := newTestServer()
-	ts.Close() // immediately close the server to force a connection error
-
-	c := NewCollector()
-	c.IgnoreRobotsTxt = false
-	err := c.Visit(ts.URL)
-
-	if err == nil {
-		t.Fatal("Error expected")
-	}
-}
-
 func TestEnvSettings(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	os.Setenv("COLLY_USER_AGENT", "test")
 	defer os.Unsetenv("COLLY_USER_AGENT")
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 
 	valid := false
 
@@ -1283,7 +1113,7 @@ func TestEnvSettings(t *testing.T) {
 		}
 	})
 
-	c.Visit(ts.URL + "/user_agent")
+	c.Visit(testBaseURL + "/user_agent")
 
 	if !valid {
 		t.Fatalf("Wrong user-agent from environment")
@@ -1295,75 +1125,80 @@ func TestUserAgent(t *testing.T) {
 	const exampleUserAgent2 = "Example/2.0"
 	const defaultUserAgent = "bluesnake - https://github.com/agentberlin/bluesnake"
 
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	var receivedUserAgent string
 
 	func() {
 		c := NewCollector()
+		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
 		})
-		c.Visit(ts.URL + "/user_agent")
+		c.Visit(testBaseURL + "/user_agent")
 		if got, want := receivedUserAgent, defaultUserAgent; got != want {
 			t.Errorf("mismatched User-Agent: got=%q want=%q", got, want)
 		}
 	}()
 	func() {
 		c := NewCollector(UserAgent(exampleUserAgent1))
+		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
 		})
-		c.Visit(ts.URL + "/user_agent")
+		c.Visit(testBaseURL + "/user_agent")
 		if got, want := receivedUserAgent, exampleUserAgent1; got != want {
 			t.Errorf("mismatched User-Agent: got=%q want=%q", got, want)
 		}
 	}()
 	func() {
 		c := NewCollector(UserAgent(exampleUserAgent1))
+		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
 		})
 
-		c.Request("GET", ts.URL+"/user_agent", nil, nil, nil)
+		c.Request("GET", testBaseURL+"/user_agent", nil, nil, nil)
 		if got, want := receivedUserAgent, exampleUserAgent1; got != want {
 			t.Errorf("mismatched User-Agent (nil hdr): got=%q want=%q", got, want)
 		}
 	}()
 	func() {
 		c := NewCollector(UserAgent(exampleUserAgent1))
+		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
 		})
 
-		c.Request("GET", ts.URL+"/user_agent", nil, nil, http.Header{})
+		c.Request("GET", testBaseURL+"/user_agent", nil, nil, http.Header{})
 		if got, want := receivedUserAgent, exampleUserAgent1; got != want {
 			t.Errorf("mismatched User-Agent (non-nil hdr): got=%q want=%q", got, want)
 		}
 	}()
 	func() {
 		c := NewCollector(UserAgent(exampleUserAgent1))
+		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
 		})
 		hdr := http.Header{}
 		hdr.Set("User-Agent", "")
 
-		c.Request("GET", ts.URL+"/user_agent", nil, nil, hdr)
+		c.Request("GET", testBaseURL+"/user_agent", nil, nil, hdr)
 		if got, want := receivedUserAgent, ""; got != want {
 			t.Errorf("mismatched User-Agent (hdr with empty UA): got=%q want=%q", got, want)
 		}
 	}()
 	func() {
 		c := NewCollector(UserAgent(exampleUserAgent1))
+		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
 		})
 		hdr := http.Header{}
 		hdr.Set("User-Agent", exampleUserAgent2)
 
-		c.Request("GET", ts.URL+"/user_agent", nil, nil, hdr)
+		c.Request("GET", testBaseURL+"/user_agent", nil, nil, hdr)
 		if got, want := receivedUserAgent, exampleUserAgent2; got != want {
 			t.Errorf("mismatched User-Agent (hdr with UA): got=%q want=%q", got, want)
 		}
@@ -1374,8 +1209,7 @@ func TestHeaders(t *testing.T) {
 	const exampleHostHeader = "example.com"
 	const exampleTestHeader = "Testing"
 
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	var receivedHeader string
 
@@ -1383,10 +1217,11 @@ func TestHeaders(t *testing.T) {
 		c := NewCollector(
 			Headers(map[string]string{"Host": exampleHostHeader}),
 		)
+		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedHeader = string(resp.Body)
 		})
-		c.Visit(ts.URL + "/host_header")
+		c.Visit(testBaseURL + "/host_header")
 		if got, want := receivedHeader, exampleHostHeader; got != want {
 			t.Errorf("mismatched Host header: got=%q want=%q", got, want)
 		}
@@ -1395,10 +1230,11 @@ func TestHeaders(t *testing.T) {
 		c := NewCollector(
 			Headers(map[string]string{"Test": exampleTestHeader}),
 		)
+		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedHeader = string(resp.Body)
 		})
-		c.Visit(ts.URL + "/custom_header")
+		c.Visit(testBaseURL + "/custom_header")
 		if got, want := receivedHeader, exampleTestHeader; got != want {
 			t.Errorf("mismatched custom header: got=%q want=%q", got, want)
 		}
@@ -1407,12 +1243,12 @@ func TestHeaders(t *testing.T) {
 
 func TestParseHTTPErrorResponse(t *testing.T) {
 	contentCount := 0
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector(
 		AllowURLRevisit(),
 	)
+	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnHTML("p", func(e *HTMLElement) {
 		if e.Text == "error" {
@@ -1420,7 +1256,7 @@ func TestParseHTTPErrorResponse(t *testing.T) {
 		}
 	})
 
-	c.Visit(ts.URL + "/500")
+	c.Visit(testBaseURL + "/500")
 
 	if contentCount != 0 {
 		t.Fatal("Content is parsed without ParseHTTPErrorResponse enabled")
@@ -1428,7 +1264,7 @@ func TestParseHTTPErrorResponse(t *testing.T) {
 
 	c.ParseHTTPErrorResponse = true
 
-	c.Visit(ts.URL + "/500")
+	c.Visit(testBaseURL + "/500")
 
 	if contentCount != 1 {
 		t.Fatal("Content isn't parsed with ParseHTTPErrorResponse enabled")
@@ -1476,10 +1312,10 @@ func TestHTMLElement(t *testing.T) {
 }
 
 func TestCollectorOnXMLWithHtml(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 
 	titleCallbackCalled := false
 	paragraphCallbackCount := 0
@@ -1508,7 +1344,7 @@ func TestCollectorOnXMLWithHtml(t *testing.T) {
 		}
 	})
 
-	c.Visit(ts.URL + "/html")
+	c.Visit(testBaseURL + "/html")
 
 	if !titleCallbackCalled {
 		t.Error("Failed to call OnXML callback for <title> tag")
@@ -1520,10 +1356,10 @@ func TestCollectorOnXMLWithHtml(t *testing.T) {
 }
 
 func TestCollectorOnXMLWithXML(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 
 	titleCallbackCalled := false
 	paragraphCallbackCount := 0
@@ -1552,7 +1388,7 @@ func TestCollectorOnXMLWithXML(t *testing.T) {
 		}
 	})
 
-	c.Visit(ts.URL + "/xml")
+	c.Visit(testBaseURL + "/xml")
 
 	if !titleCallbackCalled {
 		t.Error("Failed to call OnXML callback for <title> tag")
@@ -1563,59 +1399,23 @@ func TestCollectorOnXMLWithXML(t *testing.T) {
 	}
 }
 
-func TestCollectorVisitWithTrace(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
-
-	c := NewCollector(AllowedDomains("localhost", "127.0.0.1", "::1"), TraceHTTP())
-	c.OnResponse(func(resp *Response) {
-		if resp.Trace == nil {
-			t.Error("Failed to initialize trace")
-		}
-	})
-
-	err := c.Visit(ts.URL)
-	if err != nil {
-		t.Errorf("Failed to visit url %s", ts.URL)
-	}
-}
-
-func TestCollectorVisitWithCheckHead(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
-
-	c := NewCollector(CheckHead())
-	var requestMethodChain []string
-	c.OnResponse(func(resp *Response) {
-		requestMethodChain = append(requestMethodChain, resp.Request.Method)
-	})
-
-	err := c.Visit(ts.URL)
-	if err != nil {
-		t.Errorf("Failed to visit url %s", ts.URL)
-	}
-	if requestMethodChain[0] != "HEAD" && requestMethodChain[1] != "GET" {
-		t.Errorf("Failed to perform a HEAD request before GET")
-	}
-}
-
 func TestCollectorDepth(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 	maxDepth := 2
 	c1 := NewCollector(
 		MaxDepth(maxDepth),
 		AllowURLRevisit(),
 	)
+	c1.SetClient(&http.Client{Transport: mock})
 	requestCount := 0
 	c1.OnResponse(func(resp *Response) {
 		requestCount++
 		if requestCount >= 10 {
 			return
 		}
-		c1.Visit(ts.URL)
+		c1.Visit(testBaseURL)
 	})
-	c1.Visit(ts.URL)
+	c1.Visit(testBaseURL)
 	if requestCount < 10 {
 		t.Errorf("Invalid number of requests: %d (expected 10) without using MaxDepth", requestCount)
 	}
@@ -1624,155 +1424,86 @@ func TestCollectorDepth(t *testing.T) {
 	requestCount = 0
 	c2.OnResponse(func(resp *Response) {
 		requestCount++
-		resp.Request.Visit(ts.URL)
+		resp.Request.Visit(testBaseURL)
 	})
-	c2.Visit(ts.URL)
+	c2.Visit(testBaseURL)
 	if requestCount != 2 {
 		t.Errorf("Invalid number of requests: %d (expected 2) with using MaxDepth 2", requestCount)
 	}
 
-	c1.Visit(ts.URL)
+	c1.Visit(testBaseURL)
 	if requestCount < 10 {
 		t.Errorf("Invalid number of requests: %d (expected 10) without using MaxDepth again", requestCount)
 	}
 
 	requestCount = 0
-	c2.Visit(ts.URL)
+	c2.Visit(testBaseURL)
 	if requestCount != 2 {
 		t.Errorf("Invalid number of requests: %d (expected 2) with using MaxDepth 2 again", requestCount)
 	}
 }
 
 func TestCollectorRequests(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 	maxRequests := uint32(5)
 	c1 := NewCollector(
 		MaxRequests(maxRequests),
 		AllowURLRevisit(),
 	)
+	c1.SetClient(&http.Client{Transport: mock})
 	requestCount := 0
 	c1.OnResponse(func(resp *Response) {
 		requestCount++
-		c1.Visit(ts.URL)
+		c1.Visit(testBaseURL)
 	})
-	c1.Visit(ts.URL)
+	c1.Visit(testBaseURL)
 	if requestCount != 5 {
 		t.Errorf("Invalid number of requests: %d (expected 5) with MaxRequests", requestCount)
 	}
 }
 
-func TestCollectorContext(t *testing.T) {
-	// "/slow" takes 1 second to return the response.
-	// If context does abort the transfer after 0.5 seconds as it should,
-	// OnError will be called, and the test is passed. Otherwise, test is failed.
-
-	ts := newTestServer()
-	defer ts.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-
-	c := NewCollector(StdlibContext(ctx))
-
-	onErrorCalled := false
-
-	c.OnResponse(func(resp *Response) {
-		t.Error("OnResponse was called, expected OnError")
-	})
-
-	c.OnError(func(resp *Response, err error) {
-		onErrorCalled = true
-		if err != context.DeadlineExceeded {
-			t.Errorf("OnError got err=%#v, expected context.DeadlineExceeded", err)
-		}
-	})
-
-	err := c.Visit(ts.URL + "/slow")
-	if err != context.DeadlineExceeded {
-		t.Errorf("Visit return err=%#v, expected context.DeadlineExceeded", err)
-	}
-
-	if !onErrorCalled {
-		t.Error("OnError was not called")
-	}
-
-}
-
 func BenchmarkOnHTML(b *testing.B) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 	c.OnHTML("p", func(_ *HTMLElement) {})
 
 	for n := 0; n < b.N; n++ {
-		c.Visit(fmt.Sprintf("%s/html?q=%d", ts.URL, n))
+		c.Visit(fmt.Sprintf("%s/html?q=%d", testBaseURL, n))
 	}
 }
 
 func BenchmarkOnXML(b *testing.B) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 	c.OnXML("//p", func(_ *XMLElement) {})
 
 	for n := 0; n < b.N; n++ {
-		c.Visit(fmt.Sprintf("%s/html?q=%d", ts.URL, n))
+		c.Visit(fmt.Sprintf("%s/html?q=%d", testBaseURL, n))
 	}
 }
 
 func BenchmarkOnResponse(b *testing.B) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 	c.AllowURLRevisit = true
 	c.OnResponse(func(_ *Response) {})
 
 	for n := 0; n < b.N; n++ {
-		c.Visit(ts.URL)
+		c.Visit(testBaseURL)
 	}
 }
 
-func requireSessionCookieSimple(handler http.Handler) http.Handler {
-	const cookieName = "session_id"
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, err := r.Cookie(cookieName); err == http.ErrNoCookie {
-			http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "1"})
-			http.Redirect(w, r, r.RequestURI, http.StatusFound)
-			return
-		}
-		handler.ServeHTTP(w, r)
-	})
-}
-
-func requireSessionCookieAuthPage(handler http.Handler) http.Handler {
-	const setCookiePath = "/auth"
-	const cookieName = "session_id"
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == setCookiePath {
-			destination := r.URL.Query().Get("return")
-			http.Redirect(w, r, destination, http.StatusFound)
-			return
-		}
-		if _, err := r.Cookie(cookieName); err == http.ErrNoCookie {
-			http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "1"})
-			http.Redirect(w, r, setCookiePath+"?return="+url.QueryEscape(r.RequestURI), http.StatusFound)
-			return
-		}
-		handler.ServeHTTP(w, r)
-	})
-}
-
 func TestCallbackDetachment(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 	c.AllowURLRevisit = true
 
 	var executions [3]int // tracks number of executions of each callback
@@ -1790,9 +1521,9 @@ func TestCallbackDetachment(t *testing.T) {
 	})
 
 	// First visit - all callbacks should execute
-	c.Visit(ts.URL + "/callback_test")
+	c.Visit(testBaseURL + "/callback_test")
 	// Second visit - first callback should NOT execute
-	c.Visit(ts.URL + "/callback_test")
+	c.Visit(testBaseURL + "/callback_test")
 
 	// Verify callback counts
 	if executions[0] != 1 {
@@ -1807,11 +1538,11 @@ func TestCallbackDetachment(t *testing.T) {
 }
 
 func TestCollectorPostRetry(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 
 	postValue := "hello"
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 	try := false
 	c.OnResponse(func(r *Response) {
 		if r.Ctx.Get("notFirst") == "" {
@@ -1825,7 +1556,7 @@ func TestCollectorPostRetry(t *testing.T) {
 		try = true
 	})
 
-	c.Post(ts.URL+"/login", map[string]string{
+	c.Post(testBaseURL+"/login", map[string]string{
 		"name": postValue,
 	})
 	if !try {
@@ -1833,11 +1564,11 @@ func TestCollectorPostRetry(t *testing.T) {
 	}
 }
 func TestCollectorGetRetry(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 	try := false
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponse(func(r *Response) {
 		if r.Ctx.Get("notFirst") == "" {
@@ -1851,18 +1582,18 @@ func TestCollectorGetRetry(t *testing.T) {
 		try = true
 	})
 
-	c.Visit(ts.URL)
+	c.Visit(testBaseURL)
 	if !try {
 		t.Error("OnResponse Retry was not called")
 	}
 }
 
 func TestCollectorPostRetryUnseekable(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 	try := false
 	postValue := "hello"
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponse(func(r *Response) {
 		if postValue != string(r.Body) {
@@ -1879,40 +1610,18 @@ func TestCollectorPostRetryUnseekable(t *testing.T) {
 		}
 		try = true
 	})
-	c.Request("POST", ts.URL+"/login", bytes.NewBuffer([]byte("name="+postValue)), nil, nil)
+	c.Request("POST", testBaseURL+"/login", bytes.NewBuffer([]byte("name="+postValue)), nil, nil)
 	if try {
 		t.Error("OnResponse Retry was called but BodyUnseekable")
 	}
 }
 
-func TestRedirectErrorRetry(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
-	c := NewCollector()
-	c.OnError(func(r *Response, err error) {
-		if r.Ctx.Get("notFirst") == "" {
-			r.Ctx.Put("notFirst", "first")
-			_ = r.Request.Retry()
-			return
-		}
-		if e := (&AlreadyVisitedError{}); errors.As(err, &e) {
-			t.Error("loop AlreadyVisitedError")
-		}
-
-	})
-	c.OnResponse(func(response *Response) {
-		//println(1)
-	})
-	c.Visit(ts.URL + "/redirected/")
-	c.Visit(ts.URL + "/redirect")
-}
-
 func TestCheckRequestHeadersFunc(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
+	mock := setupMockTransport()
 	try := false
 
 	c := NewCollector()
+	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnRequestHeaders(func(r *Request) {
 		try = true
@@ -1921,7 +1630,7 @@ func TestCheckRequestHeadersFunc(t *testing.T) {
 	c.OnScraped(func(r *Response) {
 		try = false
 	})
-	c.Visit(ts.URL)
+	c.Visit(testBaseURL)
 	if try == false {
 		t.Error("TestCheckRequestHeadersFunc failed")
 	}

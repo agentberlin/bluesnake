@@ -1,10 +1,13 @@
-// Copyright 2018 Adam Tauber
+// Copyright 2025 Agentic World, LLC (Sherin Thomas)
+//
+// This file includes modifications to code originally developed by Adam Tauber,
+// licensed under the Apache License, Version 2.0.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//      http://www.apache.org/licenses/LICENSE-2.0
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -12,7 +15,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package colly implements a HTTP scraping framework
 package bluesnake
 
 import (
@@ -39,10 +41,10 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/antchfx/htmlquery"
-	"github.com/antchfx/xmlquery"
 	"github.com/agentberlin/bluesnake/debug"
 	"github.com/agentberlin/bluesnake/storage"
+	"github.com/antchfx/htmlquery"
+	"github.com/antchfx/xmlquery"
 	"github.com/kennygrant/sanitize"
 	whatwgUrl "github.com/nlnwa/whatwg-url/url"
 	"github.com/temoto/robotstxt"
@@ -492,6 +494,19 @@ func CacheExpiration(d time.Duration) CollectorOption {
 func EnableJSRendering() CollectorOption {
 	return func(c *Collector) {
 		c.EnableRendering = true
+	}
+}
+
+// WithMockTransport sets a mock HTTP transport for testing purposes.
+// This allows you to mock HTTP responses without needing a real HTTP server.
+// Example:
+//
+//	mock := bluesnake.NewMockTransport()
+//	mock.RegisterHTML("https://example.com/", `<html><body>Test</body></html>`)
+//	c := bluesnake.NewCollector(bluesnake.WithMockTransport(mock))
+func WithMockTransport(transport *MockTransport) CollectorOption {
+	return func(c *Collector) {
+		c.backend.Client.Transport = transport
 	}
 }
 
