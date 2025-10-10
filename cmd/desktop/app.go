@@ -21,7 +21,34 @@ var duplicateSlashesRegex = regexp.MustCompile(`/+`)
 
 // App struct
 type App struct {
-	ctx context.Context
+	ctx          context.Context
+	activeCrawls map[uint]*activeCrawl // Map of projectID -> active crawl info
+	crawlsMutex  sync.RWMutex          // Protects activeCrawls map
+}
+
+// activeCrawl tracks an ongoing crawl
+type activeCrawl struct {
+	projectID   uint
+	crawlID     uint
+	domain      string
+	url         string
+	cancel      context.CancelFunc
+	stopChan    chan struct{} // Signal to stop the crawl
+	stopped     bool          // Whether the crawl was stopped
+	stats       *crawlStats
+	statusMutex sync.RWMutex  // Protects stats reads/writes
+}
+
+// CrawlProgress represents the progress of an active crawl
+type CrawlProgress struct {
+	ProjectID        uint     `json:"projectId"`
+	CrawlID          uint     `json:"crawlId"`
+	Domain           string   `json:"domain"`
+	URL              string   `json:"url"`
+	PagesCrawled     int      `json:"pagesCrawled"`
+	TotalDiscovered  int      `json:"totalDiscovered"`  // Total URLs discovered (both crawled and queued)
+	DiscoveredURLs   []string `json:"discoveredUrls"`   // URLs discovered but not yet crawled
+	IsCrawling       bool     `json:"isCrawling"`
 }
 
 // CrawlResult represents a single crawl result
@@ -69,6 +96,7 @@ type crawlStats struct {
 	projectID    uint
 	crawlID      uint
 	queuedURLs   *sync.Map // Track URLs that have been queued to prevent duplicates
+	crawledURLs  *sync.Map // Track URLs that have been crawled (for discovered URLs list)
 }
 
 // normalizeURLForDedup normalizes a URL for deduplication to prevent crawling the same page multiple times
@@ -188,7 +216,9 @@ func normalizeURL(input string) (string, string, error) {
 
 // NewApp creates a new App application struct
 func NewApp() *App {
-	return &App{}
+	return &App{
+		activeCrawls: make(map[uint]*activeCrawl),
+	}
 }
 
 // startup is called when the app starts. The context is saved
@@ -200,6 +230,155 @@ func (a *App) startup(ctx context.Context) {
 	if err := InitDB(); err != nil {
 		runtime.LogErrorf(ctx, "Failed to initialize database: %v", err)
 	}
+}
+
+// GetActiveCrawls returns the progress of all active crawls
+func (a *App) GetActiveCrawls() []CrawlProgress {
+	a.crawlsMutex.RLock()
+	defer a.crawlsMutex.RUnlock()
+
+	progress := make([]CrawlProgress, 0, len(a.activeCrawls))
+	for _, ac := range a.activeCrawls {
+		ac.statusMutex.RLock()
+		totalDiscovered := 0
+		discoveredURLs := []string{}
+
+		if ac.stats != nil {
+			// Count total discovered URLs
+			if ac.stats.queuedURLs != nil {
+				ac.stats.queuedURLs.Range(func(key, value interface{}) bool {
+					totalDiscovered++
+
+					// Check if this URL has been crawled
+					urlStr := key.(string)
+					if ac.stats.crawledURLs != nil {
+						if _, crawled := ac.stats.crawledURLs.Load(urlStr); !crawled {
+							// URL is queued but not crawled yet
+							discoveredURLs = append(discoveredURLs, urlStr)
+						}
+					} else {
+						// If crawledURLs not initialized, assume all queued URLs are discovered
+						discoveredURLs = append(discoveredURLs, urlStr)
+					}
+					return true
+				})
+			}
+		}
+
+		progress = append(progress, CrawlProgress{
+			ProjectID:       ac.projectID,
+			CrawlID:         ac.crawlID,
+			Domain:          ac.domain,
+			URL:             ac.url,
+			PagesCrawled:    ac.stats.pagesCrawled,
+			TotalDiscovered: totalDiscovered,
+			DiscoveredURLs:  discoveredURLs,
+			IsCrawling:      true,
+		})
+		ac.statusMutex.RUnlock()
+	}
+
+	return progress
+}
+
+// GetActiveCrawlData returns the data for an active crawl from database + memory
+func (a *App) GetActiveCrawlData(projectID uint) (*CrawlResultDetailed, error) {
+	a.crawlsMutex.RLock()
+	ac, exists := a.activeCrawls[projectID]
+	a.crawlsMutex.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("no active crawl found for project %d", projectID)
+	}
+
+	// Read stats and get discovered URLs from memory
+	ac.statusMutex.RLock()
+	pagesCrawled := 0
+	discoveredURLs := []string{}
+	if ac.stats != nil {
+		pagesCrawled = ac.stats.pagesCrawled
+
+		// Get URLs that have been discovered but not yet crawled
+		if ac.stats.queuedURLs != nil {
+			ac.stats.queuedURLs.Range(func(key, value interface{}) bool {
+				urlStr := key.(string)
+				if ac.stats.crawledURLs != nil {
+					if _, crawled := ac.stats.crawledURLs.Load(urlStr); !crawled {
+						discoveredURLs = append(discoveredURLs, urlStr)
+					}
+				}
+				return true
+			})
+		}
+	}
+	crawlID := ac.crawlID
+	ac.statusMutex.RUnlock()
+
+	// Fetch crawled results from database
+	urls, err := GetCrawlResults(crawlID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert crawled URLs to CrawlResult for frontend
+	results := make([]CrawlResult, len(urls))
+	for i, u := range urls {
+		results[i] = CrawlResult{
+			URL:       u.URL,
+			Status:    u.Status,
+			Title:     u.Title,
+			Indexable: u.Indexable,
+			Error:     u.Error,
+		}
+	}
+
+	// Add discovered (in-progress) URLs to results
+	for _, url := range discoveredURLs {
+		results = append(results, CrawlResult{
+			URL:       url,
+			Status:    0,
+			Title:     "In progress...",
+			Indexable: "-",
+		})
+	}
+
+	return &CrawlResultDetailed{
+		CrawlInfo: CrawlInfo{
+			ID:            crawlID,
+			ProjectID:     ac.projectID,
+			CrawlDateTime: 0,        // Not applicable for active crawl
+			CrawlDuration: 0,        // Not applicable for active crawl
+			PagesCrawled:  pagesCrawled,
+		},
+		Results: results,
+	}, nil
+}
+
+// StopCrawl stops an active crawl for a specific project
+func (a *App) StopCrawl(projectID uint) error {
+	a.crawlsMutex.Lock()
+	defer a.crawlsMutex.Unlock()
+
+	ac, exists := a.activeCrawls[projectID]
+	if !exists {
+		return fmt.Errorf("no active crawl found for project %d", projectID)
+	}
+
+	// Mark as stopped
+	ac.statusMutex.Lock()
+	ac.stopped = true
+	ac.statusMutex.Unlock()
+
+	// Close the stop channel to signal all goroutines
+	close(ac.stopChan)
+	runtime.LogInfof(a.ctx, "Stop signal sent for project %d", projectID)
+
+	// Also cancel the context for cleanup
+	if ac.cancel != nil {
+		ac.cancel()
+	}
+
+	return nil
 }
 
 // StartCrawl initiates a crawl for the given URL
@@ -216,30 +395,32 @@ func (a *App) StartCrawl(urlStr string) error {
 		return fmt.Errorf("failed to parse normalized URL: %v", err)
 	}
 
+	// Get or create project to check if already crawling
+	project, err := GetOrCreateProject(normalizedURL, domain)
+	if err != nil {
+		return fmt.Errorf("failed to get/create project: %v", err)
+	}
+
+	// Check if this project is already being crawled
+	a.crawlsMutex.RLock()
+	_, alreadyCrawling := a.activeCrawls[project.ID]
+	a.crawlsMutex.RUnlock()
+
+	if alreadyCrawling {
+		return fmt.Errorf("crawl already in progress for this project")
+	}
+
 	// Run crawler in a goroutine to not block the UI
-	go a.runCrawler(parsedURL, normalizedURL, domain)
+	go a.runCrawler(parsedURL, normalizedURL, domain, project.ID)
 
 	return nil
 }
 
-func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string) {
-	// Get or create project
-	project, err := GetOrCreateProject(normalizedURL, domain)
-	if err != nil {
-		runtime.LogErrorf(a.ctx, "Failed to get/create project: %v", err)
-		runtime.EventsEmit(a.ctx, "crawl:error", map[string]string{
-			"message": "Failed to create project",
-		})
-		return
-	}
-
+func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string, projectID uint) {
 	// Create a new crawl
-	crawl, err := CreateCrawl(project.ID, time.Now().Unix(), 0, 0)
+	crawl, err := CreateCrawl(projectID, time.Now().Unix(), 0, 0)
 	if err != nil {
 		runtime.LogErrorf(a.ctx, "Failed to create crawl: %v", err)
-		runtime.EventsEmit(a.ctx, "crawl:error", map[string]string{
-			"message": "Failed to create crawl record",
-		})
 		return
 	}
 
@@ -249,15 +430,44 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		pagesCrawled: 0,
 		url:          normalizedURL,
 		domain:       domain,
-		projectID:    project.ID,
+		projectID:    projectID,
 		crawlID:      crawl.ID,
 		queuedURLs:   &sync.Map{},
+		crawledURLs:  &sync.Map{},
 	}
 
-	// Get configuration for this domain
-	config, err := GetOrCreateConfig(domain)
+	// Create cancellation context
+	crawlCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Register this crawl as active
+	stopChan := make(chan struct{}, 1)
+	activeCrawlInfo := &activeCrawl{
+		projectID:   projectID,
+		crawlID:     crawl.ID,
+		domain:      domain,
+		url:         normalizedURL,
+		cancel:      cancel,
+		stopChan:    stopChan,
+		stats:       stats,
+		statusMutex: sync.RWMutex{},
+	}
+
+	a.crawlsMutex.Lock()
+	a.activeCrawls[projectID] = activeCrawlInfo
+	a.crawlsMutex.Unlock()
+
+	// Clean up when done
+	defer func() {
+		a.crawlsMutex.Lock()
+		delete(a.activeCrawls, projectID)
+		a.crawlsMutex.Unlock()
+	}()
+
+	// Get configuration for this project
+	config, err := GetOrCreateConfig(projectID, domain)
 	if err != nil {
-		runtime.LogErrorf(a.ctx, "Failed to get config for domain %s: %v", domain, err)
+		runtime.LogErrorf(a.ctx, "Failed to get config for project %d: %v", projectID, err)
 		// Use defaults if config retrieval fails
 		config = &Config{
 			JSRenderingEnabled: false,
@@ -267,6 +477,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 
 	// Build collector options based on config
 	options := []bluesnake.CollectorOption{
+		bluesnake.StdlibContext(crawlCtx), // Pass context for proper cancellation support
 		bluesnake.AllowedDomains(domain),
 		bluesnake.Async(),
 	}
@@ -285,19 +496,17 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		})
 	}
 
-	// Send crawl start event
-	runtime.EventsEmit(a.ctx, "crawl:started", map[string]string{
-		"url": parsedURL.String(),
-	})
-
-	c.OnRequest(func(r *bluesnake.Request) {
-		// Notify frontend that we're crawling this URL
-		runtime.EventsEmit(a.ctx, "crawl:request", map[string]string{
-			"url": r.URL.String(),
-		})
-	})
+	// Send crawl start event (indicational only, no payload)
+	runtime.EventsEmit(a.ctx, "crawl:started")
 
 	c.OnResponse(func(r *bluesnake.Response) {
+		// Check if crawl was stopped
+		select {
+		case <-crawlCtx.Done():
+			return // Crawl stopped, don't process
+		default:
+		}
+
 		contentType := r.Headers.Get("Content-Type")
 		xRobotsTag := r.Headers.Get("X-Robots-Tag")
 		isIndexable := "Yes"
@@ -334,6 +543,10 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 				Indexable: isIndexable,
 			}
 
+			// Mark URL as crawled
+			normalizedURL := normalizeURLForDedup(result.URL)
+			stats.crawledURLs.Store(normalizedURL, true)
+
 			// Increment pages crawled
 			stats.pagesCrawled++
 
@@ -341,13 +554,17 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 			if err := SaveCrawledUrl(stats.crawlID, result.URL, result.Status, result.Title, result.Indexable, ""); err != nil {
 				runtime.LogErrorf(a.ctx, "Failed to save crawled URL: %v", err)
 			}
-
-			// Emit result to frontend
-			runtime.EventsEmit(a.ctx, "crawl:result", result)
 		}
 	})
 
 	c.OnHTML("title", func(e *bluesnake.HTMLElement) {
+		// Check if crawl was stopped
+		select {
+		case <-crawlCtx.Done():
+			return // Crawl stopped, don't process
+		default:
+		}
+
 		isIndexable := e.Request.Ctx.Get("isIndexable")
 		if isIndexable == "" {
 			isIndexable = "Yes"
@@ -368,6 +585,10 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 			Indexable: isIndexable,
 		}
 
+		// Mark URL as crawled
+		normalizedURL := normalizeURLForDedup(result.URL)
+		stats.crawledURLs.Store(normalizedURL, true)
+
 		// Increment pages crawled
 		stats.pagesCrawled++
 
@@ -375,12 +596,16 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		if err := SaveCrawledUrl(stats.crawlID, result.URL, result.Status, result.Title, result.Indexable, ""); err != nil {
 			runtime.LogErrorf(a.ctx, "Failed to save crawled URL: %v", err)
 		}
-
-		// Emit result to frontend
-		runtime.EventsEmit(a.ctx, "crawl:result", result)
 	})
 
 	c.OnHTML("a[href]", func(e *bluesnake.HTMLElement) {
+		// Check if crawl was stopped - CRITICAL: prevents queuing new URLs
+		select {
+		case <-crawlCtx.Done():
+			return // Crawl stopped, don't queue new URLs
+		default:
+		}
+
 		link := e.Request.AbsoluteURL(e.Attr("href"))
 		if link != "" {
 			// Normalize URL for deduplication (handles trailing slashes, query params, etc.)
@@ -399,6 +624,13 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 	})
 
 	c.OnError(func(r *bluesnake.Response, err error) {
+		// Check if crawl was stopped
+		select {
+		case <-crawlCtx.Done():
+			return // Crawl stopped, don't process errors
+		default:
+		}
+
 		// Skip AlreadyVisitedError - these should not occur now that we're using
 		// LoadOrStore to prevent duplicate Visit() calls, but keep as a safety net.
 		if strings.Contains(err.Error(), "already visited") {
@@ -414,15 +646,54 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		if saveErr := SaveCrawledUrl(stats.crawlID, result.URL, 0, "", "No", err.Error()); saveErr != nil {
 			runtime.LogErrorf(a.ctx, "Failed to save crawl error: %v", saveErr)
 		}
-
-		runtime.EventsEmit(a.ctx, "crawl:error", result)
 	})
 
 	// Mark the starting URL as queued (normalized)
-	stats.queuedURLs.Store(normalizeURLForDedup(parsedURL.String()), true)
+	normalizedStartURL := normalizeURLForDedup(parsedURL.String())
+	stats.queuedURLs.Store(normalizedStartURL, true)
 
 	c.Visit(parsedURL.String())
-	c.Wait()
+
+	// Monitor for stop signals while crawling
+	done := make(chan bool, 1)
+	go func() {
+		c.Wait()
+		done <- true
+	}()
+
+	// Wait for either completion or stop signal
+	wasStopped := false
+	select {
+	case <-done:
+		// Crawl completed normally
+		runtime.LogInfof(a.ctx, "Crawl completed normally for project %d", projectID)
+	case <-stopChan:
+		// Stop requested - give it a short grace period, then force stop
+		runtime.LogInfof(a.ctx, "Stop signal received for project %d, forcing termination...", projectID)
+		wasStopped = true
+
+		// Cancel the context to signal all goroutines to stop
+		cancel()
+
+		// Wait a maximum of 2 seconds for graceful shutdown
+		timeout := time.NewTimer(2 * time.Second)
+		select {
+		case <-done:
+			runtime.LogInfof(a.ctx, "Crawl stopped gracefully for project %d", projectID)
+			timeout.Stop()
+		case <-timeout.C:
+			runtime.LogInfof(a.ctx, "Crawl force-stopped after timeout for project %d", projectID)
+		}
+	case <-crawlCtx.Done():
+		// Context cancelled externally
+		runtime.LogInfof(a.ctx, "Crawl context cancelled for project %d", projectID)
+		wasStopped = true
+		// Give a brief moment for cleanup
+		select {
+		case <-done:
+		case <-time.After(1 * time.Second):
+		}
+	}
 
 	// Calculate crawl duration
 	crawlDuration := time.Since(stats.startTime).Milliseconds()
@@ -432,32 +703,46 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		runtime.LogErrorf(a.ctx, "Failed to update crawl stats: %v", err)
 	}
 
-	// Send crawl complete event
-	runtime.EventsEmit(a.ctx, "crawl:completed", map[string]string{
-		"message": "Crawl completed",
-	})
+	// Send appropriate completion event (indicational only, no payload)
+	if wasStopped {
+		runtime.EventsEmit(a.ctx, "crawl:stopped")
+	} else {
+		runtime.EventsEmit(a.ctx, "crawl:completed")
+	}
 }
 
 // GetConfigForDomain retrieves the configuration for a specific domain
 func (a *App) GetConfigForDomain(urlStr string) (*Config, error) {
 	// Normalize the URL to extract domain
-	_, domain, err := normalizeURL(urlStr)
+	normalizedURL, domain, err := normalizeURL(urlStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid URL: %v", err)
 	}
 
-	return GetOrCreateConfig(domain)
+	// Get or create the project
+	project, err := GetOrCreateProject(normalizedURL, domain)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get project: %v", err)
+	}
+
+	return GetOrCreateConfig(project.ID, domain)
 }
 
 // UpdateConfigForDomain updates the configuration for a specific domain
 func (a *App) UpdateConfigForDomain(urlStr string, jsRendering bool, parallelism int) error {
 	// Normalize the URL to extract domain
-	_, domain, err := normalizeURL(urlStr)
+	normalizedURL, domain, err := normalizeURL(urlStr)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %v", err)
 	}
 
-	return UpdateConfig(domain, jsRendering, parallelism)
+	// Get or create the project
+	project, err := GetOrCreateProject(normalizedURL, domain)
+	if err != nil {
+		return fmt.Errorf("failed to get project: %v", err)
+	}
+
+	return UpdateConfig(project.ID, jsRendering, parallelism)
 }
 
 // GetProjects returns all projects from the database with their latest crawl info

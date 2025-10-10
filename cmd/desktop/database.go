@@ -17,12 +17,14 @@ var db *gorm.DB
 
 // Config represents the crawl configuration for a domain
 type Config struct {
-	ID                 uint   `gorm:"primaryKey"`
-	Domain             string `gorm:"uniqueIndex;not null"`
-	JSRenderingEnabled bool   `gorm:"default:false"`
-	Parallelism        int    `gorm:"default:5"`
-	CreatedAt          int64  `gorm:"autoCreateTime"`
-	UpdatedAt          int64  `gorm:"autoUpdateTime"`
+	ID                 uint     `gorm:"primaryKey"`
+	ProjectID          uint     `gorm:"uniqueIndex;not null"`
+	Domain             string   `gorm:"not null"`
+	JSRenderingEnabled bool     `gorm:"default:false"`
+	Parallelism        int      `gorm:"default:5"`
+	Project            *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
+	CreatedAt          int64    `gorm:"autoCreateTime"`
+	UpdatedAt          int64    `gorm:"autoUpdateTime"`
 }
 
 // Project represents a project (base URL) that can have multiple crawls
@@ -91,15 +93,16 @@ func InitDB() error {
 	return nil
 }
 
-// GetOrCreateConfig retrieves the config for a domain or creates one with defaults
-func GetOrCreateConfig(domain string) (*Config, error) {
+// GetOrCreateConfig retrieves the config for a project or creates one with defaults
+func GetOrCreateConfig(projectID uint, domain string) (*Config, error) {
 	var config Config
 
-	result := db.Where("domain = ?", domain).First(&config)
+	result := db.Where("project_id = ?", projectID).First(&config)
 
 	if result.Error == gorm.ErrRecordNotFound {
 		// Create new config with defaults
 		config = Config{
+			ProjectID:          projectID,
 			Domain:             domain,
 			JSRenderingEnabled: false,
 			Parallelism:        5,
@@ -119,21 +122,11 @@ func GetOrCreateConfig(domain string) (*Config, error) {
 	return &config, nil
 }
 
-// UpdateConfig updates the configuration for a domain
-func UpdateConfig(domain string, jsRendering bool, parallelism int) error {
+// UpdateConfig updates the configuration for a project
+func UpdateConfig(projectID uint, jsRendering bool, parallelism int) error {
 	var config Config
 
-	result := db.Where("domain = ?", domain).First(&config)
-
-	if result.Error == gorm.ErrRecordNotFound {
-		// Create new config
-		config = Config{
-			Domain:             domain,
-			JSRenderingEnabled: jsRendering,
-			Parallelism:        parallelism,
-		}
-		return db.Create(&config).Error
-	}
+	result := db.Where("project_id = ?", projectID).First(&config)
 
 	if result.Error != nil {
 		return fmt.Errorf("failed to get config: %v", result.Error)
@@ -144,11 +137,6 @@ func UpdateConfig(domain string, jsRendering bool, parallelism int) error {
 	config.Parallelism = parallelism
 
 	return db.Save(&config).Error
-}
-
-// GetConfig returns the configuration for a domain (for frontend)
-func GetConfig(domain string) (*Config, error) {
-	return GetOrCreateConfig(domain)
 }
 
 // fetchAndSaveFavicon fetches the favicon for a domain and saves it locally

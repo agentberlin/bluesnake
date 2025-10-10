@@ -688,6 +688,13 @@ func (c *Collector) scrape(u, method string, depth int, requestData io.Reader, c
 	}
 	u = parsedURL.String()
 	c.wg.Add(1)
+	// Check before adding to queue
+	select {
+	case <-c.Context.Done():
+		c.wg.Done()
+		return c.Context.Err()
+	default:
+	}
 	if c.Async {
 		go c.fetch(u, method, depth, requestData, ctx, hdr, req)
 		return nil
@@ -697,6 +704,14 @@ func (c *Collector) scrape(u, method string, depth int, requestData io.Reader, c
 
 func (c *Collector) fetch(u, method string, depth int, requestData io.Reader, ctx *Context, hdr http.Header, req *http.Request) error {
 	defer c.wg.Done()
+
+	// Check cancellation before processing
+	select {
+	case <-c.Context.Done():
+		return c.Context.Err()
+	default:
+	}
+
 	if ctx == nil {
 		ctx = NewContext()
 	}
@@ -779,6 +794,13 @@ func (c *Collector) fetch(u, method string, depth int, requestData io.Reader, ct
 }
 
 func (c *Collector) requestCheck(parsedURL *url.URL, method string, getBody func() (io.ReadCloser, error), depth int, checkRevisit bool) error {
+	// Check at start
+	select {
+	case <-c.Context.Done():
+		return c.Context.Err()
+	default:
+	}
+
 	u := parsedURL.String()
 	if c.MaxDepth > 0 && c.MaxDepth < depth {
 		return ErrMaxDepth
@@ -929,6 +951,16 @@ func (c *Collector) String() string {
 // Wait returns when the collector jobs are finished
 func (c *Collector) Wait() {
 	c.wg.Wait()
+}
+
+// IsCancelled returns true if the collector's context is cancelled
+func (c *Collector) IsCancelled() bool {
+	select {
+	case <-c.Context.Done():
+		return true
+	default:
+		return false
+	}
 }
 
 // OnRequest registers a function. Function will be executed on every

@@ -5,7 +5,6 @@
 BlueSnake is a web crawler application with multiple interfaces, consisting of these main components:
 1. **BlueSnake Crawler Package** - A Go-based web scraping library (root directory)
 2. **BlueSnake Desktop Application** - A Wails-based GUI application (cmd/desktop directory)
-3. **BlueSnake CLI Tool** - A command-line interface for quick crawls (cmd/cli directory)
 
 ## Project Structure
 
@@ -18,8 +17,6 @@ bluesnake/
 ├── proxy/                 # Proxy support
 ├── queue/                 # Request queuing
 └── cmd/                   # Application executables
-    ├── cli/               # Command-line interface tool
-    │   └── main.go        # CLI entry point
     └── desktop/           # Wails desktop application
         ├── main.go        # Application entry point
         ├── app.go         # Backend API (Go methods exposed to frontend)
@@ -205,6 +202,9 @@ The `App` struct provides the bridge between frontend and crawler:
 ```go
 // Crawl Management
 StartCrawl(urlStr string) error
+StopCrawl(projectID uint) error
+GetActiveCrawls() []CrawlProgress
+GetActiveCrawlData(projectID uint) (*CrawlResultDetailed, error)
 GetProjects() ([]ProjectInfo, error)
 GetCrawls(projectID uint) ([]CrawlInfo, error)
 GetCrawlWithResults(crawlID uint) (*CrawlResultDetailed, error)
@@ -233,12 +233,16 @@ DeleteProjectByID(projectID uint) error
 
 3. **Event Emission:**
    ```go
-   runtime.EventsEmit(ctx, "crawl:started", data)
-   runtime.EventsEmit(ctx, "crawl:request", data)
-   runtime.EventsEmit(ctx, "crawl:result", result)
-   runtime.EventsEmit(ctx, "crawl:error", error)
-   runtime.EventsEmit(ctx, "crawl:completed", data)
+   runtime.EventsEmit(ctx, "crawl:started")    // Indicational only, no payload
+   runtime.EventsEmit(ctx, "crawl:completed")  // Indicational only, no payload
+   runtime.EventsEmit(ctx, "crawl:stopped")    // Indicational only, no payload
    ```
+
+   **Important:** Events are **indicational only** and carry no payload. The frontend uses polling to fetch actual data from the backend via method calls. This design decision was made because:
+   - At scale, emitting millions of URL events adds complexity
+   - Polling from database is more reliable and predictable
+   - Simpler synchronization logic
+   - Easier to implement future optimizations (batching, pagination, etc.)
 
 #### 3. Database Layer (`database.go`)
 
@@ -331,23 +335,141 @@ interface ProjectInfo {
   pagesCrawled: number
   latestCrawlId: number
 }
+
+// Key state variables
+const [currentProject, setCurrentProject] = useState<ProjectInfo | null>(null)
+const [currentCrawlId, setCurrentCrawlId] = useState<number | null>(null)
+const [isCrawling, setIsCrawling] = useState(false)
+const [activeCrawls, setActiveCrawls] = useState<Map<number, CrawlProgress>>(new Map())
 ```
 
-**Event Listeners:**
+**Crawl ID Tracking:**
+The `currentCrawlId` state is critical for data synchronization. It tracks which specific crawl is currently being viewed, allowing the frontend to:
+- Filter incoming events to only process those for the current crawl
+- Prevent mixing data from different crawls of the same project
+- Properly handle navigation between active and historical crawls
+
+**Initial Discovery:**
+On app startup, the frontend calls `GetActiveCrawls()` once to discover any running crawls (e.g., if the app restarted during a crawl). This populates the `activeCrawls` map immediately.
+
+**Event Listeners (Indicational Only):**
 ```typescript
-EventsOn("crawl:started", ...)
-EventsOn("crawl:request", ...)   // URL being crawled
-EventsOn("crawl:result", ...)    // Successful crawl
-EventsOn("crawl:error", ...)     // Error occurred
-EventsOn("crawl:completed", ...) // Crawl finished
+// We decided to not rely on events for data update because at the scale we are operating at,
+// events add more complexity and we needed to make the system more reliable before getting
+// into complication. When we do need to rely on the payload from events, in the future
+// (fetching all the crawl url every 500 ms is not good because there are millions of them),
+// we'll implement events. For now, events are indicational only - they trigger data refresh
+// via polling, but don't carry any payload.
+
+EventsOn("crawl:started", () => {
+  // Just trigger a refresh - polling will handle the updates
+  loadProjects()
+})
+
+EventsOn("crawl:completed", () => {
+  // Just trigger a refresh - polling will handle the updates
+  loadProjects()
+})
+
+EventsOn("crawl:stopped", () => {
+  // Just trigger a refresh - polling will handle the updates
+  loadProjects()
+})
 ```
+
+**Polling Architecture:**
+
+The frontend uses polling to fetch data at regular intervals:
+
+**Home Page Polling:**
+```typescript
+// Poll every 500ms when there are active crawls
+useEffect(() => {
+  if (view !== 'start') return
+
+  const pollHomeData = async () => {
+    const projectList = await GetProjects()
+    const crawls = await GetActiveCrawls()
+    // Update state
+  }
+
+  pollHomeData() // Initial load
+  if (activeCrawls.size > 0) {
+    const interval = setInterval(pollHomeData, 500)
+    return () => clearInterval(interval)
+  }
+}, [view, activeCrawls.size])
+```
+
+**Crawl Page Polling:**
+```typescript
+// Poll every 2s when crawling, 500ms when stopping
+useEffect(() => {
+  if (view !== 'crawl' || !currentProject) return
+
+  const pollCrawlData = async () => {
+    const crawls = await GetActiveCrawls()
+    const activeCrawl = crawls.find(c => c.projectId === currentProject.id)
+
+    if (activeCrawl) {
+      // Get data from database via GetActiveCrawlData
+      const crawlData = await GetActiveCrawlData(currentProject.id)
+      setResults(crawlData.results)
+    } else {
+      // Get completed crawl from database
+      const crawlData = await GetCrawlWithResults(currentCrawlId)
+      setResults(crawlData.results)
+    }
+  }
+
+  pollCrawlData() // Initial load
+  const isStoppingProject = stoppingProjects.has(currentProject.id)
+  if (isCrawling || isStoppingProject) {
+    const pollInterval = isStoppingProject ? 500 : 2000
+    const interval = setInterval(pollCrawlData, pollInterval)
+    return () => clearInterval(interval)
+  }
+}, [view, currentProject, isCrawling, stoppingProjects])
+```
+
+This polling approach:
+- Reduces complexity compared to event-driven updates
+- More reliable data synchronization from database
+- Easier to optimize in the future (batching, pagination)
+- Less network traffic (no event for each URL)
+- Database is the single source of truth
 
 **Features:**
-- Real-time crawl progress display
-- URL status tracking (discovered → crawling → completed)
+- Real-time crawl progress display via polling
 - Project history with cards
 - Crawl comparison (dropdown to select past crawls)
 - Delete crawls and projects with confirmation modals
+- Active crawl detection when navigating to projects
+
+**Active Crawl Detection:**
+When clicking on a project card, the app intelligently determines which crawl to display:
+
+```typescript
+const handleProjectClick = async (project: ProjectInfo) => {
+  // Check if there's an active crawl for this project
+  const activeCrawl = activeCrawls.get(project.id)
+  const crawlIdToLoad = activeCrawl ? activeCrawl.crawlId : project.latestCrawlId
+
+  // Set the current crawl ID for tracking
+  setCurrentCrawlId(crawlIdToLoad)
+  setIsCrawling(!!activeCrawl)
+
+  // Load crawl data - polling will keep it updated if active
+  const crawlData = await GetCrawlWithResults(crawlIdToLoad)
+  // ...
+}
+```
+
+This ensures:
+- Navigating to a project with an active crawl shows the live crawl data
+- Navigating to a completed project shows the latest completed crawl
+- Polling continues to update the view for active crawls
+- No mixing of data between different crawls
 
 #### 2. Config Component (`Config.tsx`)
 
@@ -388,25 +510,29 @@ const projects = await GetProjects()
 
 ### Backend → Frontend (Events)
 
-Backend emits events using Wails runtime:
+Backend emits indicational events using Wails runtime (no payload):
 
 ```go
-runtime.EventsEmit(ctx, "crawl:result", result)
+runtime.EventsEmit(ctx, "crawl:started")    // Indicational only
+runtime.EventsEmit(ctx, "crawl:completed")  // Indicational only
+runtime.EventsEmit(ctx, "crawl:stopped")    // Indicational only
 ```
 
 Frontend listens with:
 
 ```typescript
-EventsOn("crawl:result", (result) => {
-  // Update UI
+EventsOn("crawl:started", () => {
+  // Just trigger a refresh - polling will handle the data updates
+  loadProjects()
 })
 ```
 
 **Event Flow:**
-1. Go code calls `runtime.EventsEmit()`
-2. Wails runtime pushes event to frontend
+1. Go code calls `runtime.EventsEmit()` with event name only (no data payload)
+2. Wails runtime pushes indicational event to frontend
 3. All registered listeners invoked
-4. React state updated, UI re-renders
+4. Listeners trigger data refresh via polling (GetActiveCrawls, GetActiveCrawlData, etc.)
+5. React state updated from polling results, UI re-renders
 
 ---
 
@@ -524,6 +650,7 @@ Frontend (React)                Backend (Go)                    Crawler         
      │                               │ GetOrCreateProject() ──────┼────────────────────────▶│
      │                               │                            │                         │
      │                               │ CreateCrawl() ─────────────┼────────────────────────▶│
+     │                               │ (returns crawlId)          │                         │
      │                               │                            │                         │
      │                               │ GetOrCreateConfig() ───────┼────────────────────────▶│
      │                               │                            │                         │
@@ -533,13 +660,17 @@ Frontend (React)                Backend (Go)                    Crawler         
      │                               │                            │ Init()                  │
      │                               │                            │ InMemoryStorage.Init()  │
      │                               │                            │                         │
-     │◀─ "crawl:started" ────────────│                            │                         │
-     │                               │    OnRequest()             │                         │
-     │◀─ "crawl:request" ────────────│◀───────────────────────────│                         │
+     │◀─ "crawl:started" ────────────│ (no payload)               │                         │
+     │  loadProjects()               │                            │                         │
+     │                               │                            │                         │
+     │  [Polling Loop @ 2s]          │                            │                         │
+     │ GetActiveCrawlData() ─────────▶│                            │                         │
+     │◀──────────────────────────────│◀──GetCrawlResults()───────▶│────────────────────────▶│
+     │  (crawl results from DB)      │                            │                         │
      │                               │                            │                         │
      │                               │    OnResponse()            │                         │
      │                               │    OnHTML("title")         │                         │
-     │◀─ "crawl:result" ─────────────│◀───────────────────────────│                         │
+     │                               │                            │                         │
      │                               ├───────SaveCrawledUrl()────▶│────────────────────────▶│
      │                               │                            │                         │
      │                               │    OnHTML("a[href]")       │                         │
@@ -547,14 +678,16 @@ Frontend (React)                Backend (Go)                    Crawler         
      │                               │                            │ (recursive)             │
      │                               │                            │                         │
      │                               │    OnError()               │                         │
-     │◀─ "crawl:error" ──────────────│◀───────────────────────────│                         │
+     │                               │                            │                         │
      │                               ├───────SaveCrawledUrl()────▶│────────────────────────▶│
      │                               │                            │                         │
      │                               │    Wait()                  │                         │
      │                               │                            │ (blocks until done)     │
      │                               │                            │                         │
      │                               ├───UpdateCrawlStats()──────▶│────────────────────────▶│
-     │◀─ "crawl:completed" ──────────│                            │                         │
+     │◀─ "crawl:completed" ──────────│ (no payload)               │                         │
+     │  loadProjects()               │                            │                         │
+     │  [Stops polling]              │                            │                         │
      │                               │                            │                         │
 ```
 
@@ -612,11 +745,29 @@ Frontend (React)                Backend (Go)                    Crawler         
 - **Desktop App:** UI and persistence layer
 - **Database Layer:** Abstracted via GORM models
 
-### 2. Event-Driven Architecture
+### 2. Polling-Based Architecture with Active Crawl Tracking
 
-- Crawler callbacks drive data flow
-- Wails events enable real-time UI updates
+- Crawler callbacks save data to database
+- Frontend polls database for updates
+- Events used only for immediate refresh triggers
 - Loose coupling between components
+
+**Critical Design Pattern: Polling with Active Crawl Map**
+
+The frontend maintains an `activeCrawls` map (updated via polling `GetActiveCrawls()`) to:
+- Detect when navigating to a project with an active crawl
+- Automatically load the active crawl instead of the latest completed one
+- Show accurate "crawling" status in project cards with real-time progress
+- Determine polling interval (2s for active crawls, 500ms when stopping)
+- Initialize on app startup by calling `GetActiveCrawls()` once to discover any running crawls
+
+**Why Polling Instead of Events:**
+- Database is the single source of truth
+- Prevents data mixing and synchronization issues
+- More reliable at scale (millions of URLs)
+- Easier to optimize (batching, pagination, caching)
+- Simpler code with less complexity
+- Events only used for immediate UI refresh triggers (no payload data)
 
 ### 3. Callback Pattern (Crawler)
 
@@ -634,7 +785,8 @@ Frontend (React)                Backend (Go)                    Crawler         
 
 - Crawler runs in goroutine
 - Non-blocking UI
-- Events stream results as they arrive
+- Frontend polls for results at regular intervals (2s for active crawls, 500ms when stopping)
+- Events trigger immediate refresh, but polling provides the actual data
 
 ---
 
@@ -879,24 +1031,6 @@ c.Visit("https://example.com")
 c.Wait()
 ```
 
-### CLI Tool
-
-A simple command-line interface for quick crawls:
-
-```bash
-cd cmd/cli
-go build -o bluesnake-cli
-./bluesnake-cli --url https://example.com
-./bluesnake-cli --url https://example.com -r  # With JS rendering
-```
-
-**Features:**
-- Simple URL crawling
-- Optional JavaScript rendering (`-r` flag)
-- Prints URLs, titles, status codes, and indexability to stdout
-- Perfect for quick tests or automation scripts
-
----
 
 ## Future Enhancement Opportunities
 
@@ -933,4 +1067,4 @@ BlueSnake demonstrates a clean separation between:
 2. **User Interface** (Wails app) - Modern, responsive, cross-platform
 3. **Data Persistence** (SQLite) - Simple, local, no external dependencies
 
-The architecture allows each component to evolve independently while maintaining clear interfaces between layers. The event-driven design enables real-time UI updates, and the callback pattern provides extensibility without modifying core code.
+The architecture allows each component to evolve independently while maintaining clear interfaces between layers. The polling-based design with database as single source of truth enables reliable UI updates at scale, while the callback pattern provides extensibility without modifying core code. Indicational events provide immediate feedback triggers, while polling handles the actual data synchronization.

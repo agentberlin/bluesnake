@@ -10,6 +10,14 @@ export function DeleteProjectByID(arg1) {
   return window['go']['main']['App']['DeleteProjectByID'](arg1);
 }
 
+export function GetActiveCrawlData(arg1) {
+  return window['go']['main']['App']['GetActiveCrawlData'](arg1);
+}
+
+export function GetActiveCrawls() {
+  return window['go']['main']['App']['GetActiveCrawls']();
+}
+
 export function GetConfigForDomain(arg1) {
   return window['go']['main']['App']['GetConfigForDomain'](arg1);
 }
@@ -32,6 +40,10 @@ export function GetProjects() {
 
 export function StartCrawl(arg1) {
   return window['go']['main']['App']['StartCrawl'](arg1);
+}
+
+export function StopCrawl(arg1) {
+  return window['go']['main']['App']['StopCrawl'](arg1);
 }
 
 export function UpdateConfigForDomain(arg1, arg2, arg3) {
