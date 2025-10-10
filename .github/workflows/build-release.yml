@@ -1,0 +1,214 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.increment.outputs.version }}
+
+    steps:
+      - name: Configure AWS CLI for R2
+        run: |
+          aws configure set aws_access_key_id ${{ secrets.R2_ACCESS_KEY_ID }}
+          aws configure set aws_secret_access_key ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          aws configure set default.region auto
+
+      - name: Download or create version file
+        id: get-version
+        run: |
+          # Try to download existing version file
+          aws s3 cp \
+            s3://${{ secrets.R2_BUCKET_NAME }}/bluesnake/version.txt \
+            version.txt \
+            --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com || echo "v0.0.0" > version.txt
+
+          CURRENT_VERSION=$(cat version.txt)
+          echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Increment version
+        id: increment
+        run: |
+          CURRENT_VERSION="${{ steps.get-version.outputs.current }}"
+
+          # Remove 'v' prefix for parsing
+          VERSION_NUM="${CURRENT_VERSION#v}"
+
+          # Parse version
+          IFS='.' read -r -a parts <<< "$VERSION_NUM"
+          MAJOR="${parts[0]}"
+          MINOR="${parts[1]}"
+          PATCH="${parts[2]}"
+
+          # Increment patch version
+          PATCH=$((PATCH + 1))
+
+          NEW_VERSION="v$MAJOR.$MINOR.$PATCH"
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "New version: $NEW_VERSION"
+
+          # Save to file
+          echo "$NEW_VERSION" > version.txt
+
+      - name: Upload new version to R2
+        run: |
+          aws s3 cp version.txt \
+            s3://${{ secrets.R2_BUCKET_NAME }}/bluesnake/version.txt \
+            --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
+            --acl public-read
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows/amd64
+            extension: .exe
+          - os: macos-latest
+            platform: darwin/universal
+            extension: .app
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.1'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: cmd/desktop/frontend/package-lock.json
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: cmd/desktop/frontend
+
+      - name: Build application (Windows)
+        if: matrix.os == 'windows-latest'
+        run: wails build -platform ${{ matrix.platform }}
+        working-directory: cmd/desktop
+
+      - name: Build application (macOS)
+        if: matrix.os == 'macos-latest'
+        run: wails build -platform ${{ matrix.platform }}
+        working-directory: cmd/desktop
+
+      - name: Package Windows build
+        if: matrix.os == 'windows-latest'
+        run: |
+          cd cmd/desktop/build/bin
+          mv BlueSnake.exe BlueSnake-Windows-x64-${{ needs.version.outputs.version }}.exe
+
+      - name: Package macOS build (DMG)
+        if: matrix.os == 'macos-latest'
+        run: |
+          cd cmd/desktop/build/bin
+
+          # Create a temporary directory for DMG contents
+          mkdir -p dmg-temp
+          cp -R BlueSnake.app dmg-temp/
+
+          # Create Applications symlink
+          ln -s /Applications dmg-temp/Applications
+
+          # Create DMG
+          hdiutil create -volname "BlueSnake" -srcfolder dmg-temp -ov -format UDZO BlueSnake-macOS-Universal-${{ needs.version.outputs.version }}.dmg
+
+          # Cleanup
+          rm -rf dmg-temp
+
+      - name: Upload Windows artifact
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: cmd/desktop/build/bin/BlueSnake-Windows-x64-${{ needs.version.outputs.version }}.exe
+
+      - name: Upload macOS artifact
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: cmd/desktop/build/bin/BlueSnake-macOS-Universal-${{ needs.version.outputs.version }}.dmg
+
+  upload-to-r2:
+    needs: [build, version]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-build
+          path: ./artifacts
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-build
+          path: ./artifacts
+
+      - name: Configure AWS CLI for R2
+        run: |
+          aws configure set aws_access_key_id ${{ secrets.R2_ACCESS_KEY_ID }}
+          aws configure set aws_secret_access_key ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          aws configure set default.region auto
+
+      - name: Upload to Cloudflare R2
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          # Upload versioned files
+          aws s3 cp artifacts/BlueSnake-Windows-x64-${VERSION}.exe \
+            s3://${{ secrets.R2_BUCKET_NAME }}/bluesnake/BlueSnake-Windows-x64-${VERSION}.exe \
+            --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
+            --acl public-read
+
+          aws s3 cp artifacts/BlueSnake-macOS-Universal-${VERSION}.dmg \
+            s3://${{ secrets.R2_BUCKET_NAME }}/bluesnake/BlueSnake-macOS-Universal-${VERSION}.dmg \
+            --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
+            --acl public-read
+
+          # Also upload as "latest" for easy access
+          aws s3 cp artifacts/BlueSnake-Windows-x64-${VERSION}.exe \
+            s3://${{ secrets.R2_BUCKET_NAME }}/bluesnake/BlueSnake-Windows-x64-latest.exe \
+            --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
+            --acl public-read
+
+          aws s3 cp artifacts/BlueSnake-macOS-Universal-${VERSION}.dmg \
+            s3://${{ secrets.R2_BUCKET_NAME }}/bluesnake/BlueSnake-macOS-Universal-latest.dmg \
+            --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
+            --acl public-read
+
+      - name: Print download URLs
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          echo "✅ Build ${VERSION} uploaded successfully!"
+          echo ""
+          echo "Download URLs (versioned):"
+          echo "Windows: https://storage.agentberlin.ai/bluesnake/BlueSnake-Windows-x64-${VERSION}.exe"
+          echo "macOS: https://storage.agentberlin.ai/bluesnake/BlueSnake-macOS-Universal-${VERSION}.dmg"
+          echo ""
+          echo "Download URLs (latest):"
+          echo "Windows: https://storage.agentberlin.ai/bluesnake/BlueSnake-Windows-x64-latest.exe"
+          echo "macOS: https://storage.agentberlin.ai/bluesnake/BlueSnake-macOS-Universal-latest.dmg"
