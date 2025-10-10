@@ -384,24 +384,31 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		runtime.LogErrorf(a.ctx, "Failed to get config for project %d: %v", projectID, err)
 		// Use defaults if config retrieval fails
 		config = &Config{
-			JSRenderingEnabled: false,
-			Parallelism:        5,
+			JSRenderingEnabled:  false,
+			Parallelism:         5,
+			DiscoveryMechanisms: "[\"spider\"]",
+			SitemapURLs:         "",
 		}
 	}
 
-	// Build crawler options based on config
-	options := []bluesnake.CollectorOption{
-		bluesnake.StdlibContext(crawlCtx), // Pass context for proper cancellation support
-		bluesnake.AllowedDomains(domain),
-		bluesnake.Async(),
+	// Convert discovery mechanisms to bluesnake types
+	mechanisms := []bluesnake.DiscoveryMechanism{}
+	for _, m := range config.GetDiscoveryMechanismsArray() {
+		mechanisms = append(mechanisms, bluesnake.DiscoveryMechanism(m))
 	}
 
-	if config.JSRenderingEnabled {
-		options = append(options, bluesnake.EnableJSRendering())
+	// Build crawler configuration based on database config
+	crawlerConfig := &bluesnake.CollectorConfig{
+		Context:              crawlCtx, // Pass context for proper cancellation support
+		AllowedDomains:       []string{domain},
+		Async:                true,
+		EnableRendering:      config.JSRenderingEnabled,
+		DiscoveryMechanisms:  mechanisms,
+		SitemapURLs:          config.GetSitemapURLsArray(),
 	}
 
 	// Create the high-level crawler
-	crawler := bluesnake.NewCrawler(options...)
+	crawler := bluesnake.NewCrawler(crawlerConfig)
 
 	// Apply parallelism limit to the underlying collector
 	if config.Parallelism > 0 {
@@ -514,8 +521,17 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 	}
 }
 
+// ConfigResponse represents the configuration response for the frontend
+type ConfigResponse struct {
+	Domain              string   `json:"domain"`
+	JSRenderingEnabled  bool     `json:"jsRenderingEnabled"`
+	Parallelism         int      `json:"parallelism"`
+	DiscoveryMechanisms []string `json:"discoveryMechanisms"`
+	SitemapURLs         []string `json:"sitemapURLs"`
+}
+
 // GetConfigForDomain retrieves the configuration for a specific domain
-func (a *App) GetConfigForDomain(urlStr string) (*Config, error) {
+func (a *App) GetConfigForDomain(urlStr string) (*ConfigResponse, error) {
 	// Normalize the URL to extract domain
 	normalizedURL, domain, err := normalizeURL(urlStr)
 	if err != nil {
@@ -528,11 +544,30 @@ func (a *App) GetConfigForDomain(urlStr string) (*Config, error) {
 		return nil, fmt.Errorf("failed to get project: %v", err)
 	}
 
-	return GetOrCreateConfig(project.ID, domain)
+	config, err := GetOrCreateConfig(project.ID, domain)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to response struct with deserialized arrays
+	return &ConfigResponse{
+		Domain:              config.Domain,
+		JSRenderingEnabled:  config.JSRenderingEnabled,
+		Parallelism:         config.Parallelism,
+		DiscoveryMechanisms: config.GetDiscoveryMechanismsArray(),
+		SitemapURLs:         config.GetSitemapURLsArray(),
+	}, nil
 }
 
 // UpdateConfigForDomain updates the configuration for a specific domain
-func (a *App) UpdateConfigForDomain(urlStr string, jsRendering bool, parallelism int) error {
+func (a *App) UpdateConfigForDomain(
+	urlStr string,
+	jsRendering bool,
+	parallelism int,
+	spiderEnabled bool,
+	sitemapEnabled bool,
+	sitemapURLs []string,
+) error {
 	// Normalize the URL to extract domain
 	normalizedURL, domain, err := normalizeURL(urlStr)
 	if err != nil {
@@ -545,7 +580,21 @@ func (a *App) UpdateConfigForDomain(urlStr string, jsRendering bool, parallelism
 		return fmt.Errorf("failed to get project: %v", err)
 	}
 
-	return UpdateConfig(project.ID, jsRendering, parallelism)
+	// Desktop logic: Always make sitemap additive
+	// When sitemap is enabled, ALWAYS include both spider and sitemap
+	var mechanisms []string
+	if spiderEnabled && !sitemapEnabled {
+		mechanisms = []string{"spider"}
+	} else if sitemapEnabled {
+		// Sitemap mode always includes spider for additive behavior
+		mechanisms = []string{"spider", "sitemap"}
+	} else {
+		// At least one must be enabled (should be validated in frontend)
+		// Default to spider if somehow both are false
+		mechanisms = []string{"spider"}
+	}
+
+	return UpdateConfig(project.ID, jsRendering, parallelism, mechanisms, sitemapURLs)
 }
 
 // GetProjects returns all projects from the database with their latest crawl info

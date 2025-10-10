@@ -16,6 +16,7 @@ package bluesnake
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 )
@@ -73,23 +74,60 @@ type Crawler struct {
 
 	// Per-page URL tracking for discovered URLs callback
 	pageURLs *sync.Map // map[string][]CrawledURL - maps page URL to its discovered URLs
+
+	// Discovery configuration
+	discoveryMechanisms []DiscoveryMechanism // Enabled discovery mechanisms
+	sitemapURLs         []string             // Custom sitemap URLs (nil = try defaults)
 }
 
-// NewCrawler creates a high-level crawler with the specified collector options.
+// NewCrawler creates a high-level crawler with the specified collector configuration.
 // The returned crawler must have its callbacks set via SetOnPageCrawled and SetOnCrawlComplete
-// before calling Start.
-func NewCrawler(options ...CollectorOption) *Crawler {
-	c := NewCollector(options...)
+// before calling Start. If config is nil, default configuration is used.
+func NewCrawler(config *CollectorConfig) *Crawler {
+	if config == nil {
+		config = NewDefaultConfig()
+	}
+
+	c := NewCollector(config)
+
+	// Apply defaults for discovery mechanisms if not specified
+	discoveryMechanisms := config.DiscoveryMechanisms
+	if len(discoveryMechanisms) == 0 {
+		discoveryMechanisms = []DiscoveryMechanism{DiscoverySpider} // Default to spider mode
+	}
 
 	crawler := &Crawler{
-		Collector:    c,
-		queuedURLs:   &sync.Map{},
-		pageURLs:     &sync.Map{},
-		crawledPages: 0,
+		Collector:           c,
+		queuedURLs:          &sync.Map{},
+		pageURLs:            &sync.Map{},
+		crawledPages:        0,
+		discoveryMechanisms: discoveryMechanisms,
+		sitemapURLs:         config.SitemapURLs,
 	}
+
+	// Configure sitemap fetching to use the same HTTP client as the collector
+	// This ensures mocks and custom transports work for sitemap fetching too
+	crawler.configureSitemapFetch()
 
 	crawler.setupCallbacks()
 	return crawler
+}
+
+// configureSitemapFetch configures the sitemap library to use the Collector's HTTP client.
+// This ensures that sitemap fetching uses the same transport as regular crawling,
+// which is crucial for testing with mock transports.
+// Note: We access cr.Collector.backend.Client dynamically (not capturing it) so that
+// changes to the transport (like calling WithTransport) are properly reflected.
+func (cr *Crawler) configureSitemapFetch() {
+	SetFetch(func(url string, options interface{}) ([]byte, error) {
+		// Access the client dynamically to pick up any transport changes
+		resp, err := cr.Collector.backend.Client.Get(url)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		return io.ReadAll(resp.Body)
+	})
 }
 
 // SetOnPageCrawled registers a callback function that will be called after each page is crawled.
@@ -111,7 +149,28 @@ func (cr *Crawler) SetOnCrawlComplete(f OnCrawlCompleteFunc) {
 // Start begins crawling from the specified starting URL.
 // It returns immediately if the crawler is in Async mode, or blocks until completion otherwise.
 func (cr *Crawler) Start(url string) error {
-	return cr.Collector.Visit(url)
+	// ALWAYS queue the base URL first
+	cr.queuedURLs.Store(url, true)
+
+	// Start crawling from base URL first
+	if err := cr.Collector.Visit(url); err != nil {
+		return err
+	}
+
+	// If sitemap discovery is enabled, fetch and queue sitemap URLs
+	if cr.hasDiscoveryMechanism(DiscoverySitemap) {
+		sitemapURLs := cr.fetchSitemapURLs(url)
+		for _, sitemapURL := range sitemapURLs {
+			// De-duplicate automatically - only queue if not already seen
+			if _, alreadyQueued := cr.queuedURLs.LoadOrStore(sitemapURL, true); !alreadyQueued {
+				// Visit each sitemap URL (errors are logged but don't stop the crawl)
+				cr.Collector.Visit(sitemapURL)
+			}
+		}
+	}
+
+	// Spider mode link following is handled by setupCallbacks if enabled
+	return nil
 }
 
 // Wait blocks until all crawling operations complete.
@@ -141,32 +200,35 @@ func (cr *Crawler) Wait() {
 
 // setupCallbacks configures the internal collector callbacks to aggregate page data
 func (cr *Crawler) setupCallbacks() {
-	// Extract and queue links from HTML pages (MUST be registered before OnScraped)
-	cr.Collector.OnHTML("a[href]", func(e *HTMLElement) {
-		link := e.Request.AbsoluteURL(e.Attr("href"))
-		if link == "" {
-			return
-		}
-
-		// Check if this URL is crawlable by testing filters and robots.txt
-		isCrawlable := cr.isURLCrawlable(link)
-
-		// Track discovered URL
-		crawledURL := CrawledURL{
-			URL:         link,
-			IsCrawlable: isCrawlable,
-		}
-
-		// Store this discovered URL for the current page
-		cr.addDiscoveredURLToPage(e.Request.URL.String(), crawledURL)
-
-		// Only visit if crawlable and not already queued
-		if isCrawlable {
-			if _, alreadyQueued := cr.queuedURLs.LoadOrStore(link, true); !alreadyQueued {
-				e.Request.Visit(link)
+	// Only register link extraction if spider discovery is enabled
+	if cr.hasDiscoveryMechanism(DiscoverySpider) {
+		// Extract and queue links from HTML pages (MUST be registered before OnScraped)
+		cr.Collector.OnHTML("a[href]", func(e *HTMLElement) {
+			link := e.Request.AbsoluteURL(e.Attr("href"))
+			if link == "" {
+				return
 			}
-		}
-	})
+
+			// Check if this URL is crawlable by testing filters and robots.txt
+			isCrawlable := cr.isURLCrawlable(link)
+
+			// Track discovered URL
+			crawledURL := CrawledURL{
+				URL:         link,
+				IsCrawlable: isCrawlable,
+			}
+
+			// Store this discovered URL for the current page
+			cr.addDiscoveredURLToPage(e.Request.URL.String(), crawledURL)
+
+			// Only visit if crawlable and not already queued
+			if isCrawlable {
+				if _, alreadyQueued := cr.queuedURLs.LoadOrStore(link, true); !alreadyQueued {
+					e.Request.Visit(link)
+				}
+			}
+		})
+	}
 
 	// Capture page metadata (title, indexability)
 	cr.Collector.OnHTML("html", func(e *HTMLElement) {
@@ -404,4 +466,42 @@ func (cr *Crawler) callOnPageCrawled(result *PageResult) {
 	if callback != nil {
 		callback(result)
 	}
+}
+
+// hasDiscoveryMechanism checks if a specific discovery mechanism is enabled
+func (cr *Crawler) hasDiscoveryMechanism(mechanism DiscoveryMechanism) bool {
+	for _, m := range cr.discoveryMechanisms {
+		if m == mechanism {
+			return true
+		}
+	}
+	return false
+}
+
+// fetchSitemapURLs fetches sitemap URLs based on configuration.
+// Uses custom sitemap URLs if provided, otherwise tries default locations.
+// Returns all discovered URLs from sitemaps (empty slice if none found).
+func (cr *Crawler) fetchSitemapURLs(baseURL string) []string {
+	var sitemapLocations []string
+
+	// Use custom sitemap URLs if provided
+	if len(cr.sitemapURLs) > 0 {
+		sitemapLocations = cr.sitemapURLs
+	} else {
+		// Try default locations
+		return TryDefaultSitemaps(baseURL)
+	}
+
+	// Fetch URLs from custom sitemap locations
+	var allURLs []string
+	for _, sitemapURL := range sitemapLocations {
+		urls, err := FetchSitemapURLs(sitemapURL)
+		if err != nil {
+			// Log error but continue with other sitemaps
+			continue
+		}
+		allURLs = append(allURLs, urls...)
+	}
+
+	return allURLs
 }

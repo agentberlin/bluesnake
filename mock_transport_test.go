@@ -372,11 +372,8 @@ func TestMockTransport_WithCollector(t *testing.T) {
 	</html>`)
 
 	// Create low-level collector with mock transport
-	c := NewCollector(
-		AllowedDomains("example.com"),
-		WithMockTransport(mock),
-		Async(),
-	)
+	c := NewCollector(&CollectorConfig{AllowedDomains: []string{"example.com"}, Async: true})
+	c.WithTransport(mock)
 
 	// Track visited pages
 	var mu sync.Mutex

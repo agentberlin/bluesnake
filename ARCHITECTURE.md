@@ -109,10 +109,11 @@ type OnCrawlCompleteFunc func(wasStopped bool, totalPages int, totalDiscovered i
 
 **Example Desktop App Usage:**
 ```go
-crawler := bluesnake.NewCrawler(
-    bluesnake.AllowedDomains(domain),
-    bluesnake.Async(),
-)
+config := &bluesnake.CollectorConfig{
+    AllowedDomains: []string{domain},
+    Async:         true,
+}
+crawler := bluesnake.NewCrawler(config)
 
 // Desktop app only needs to implement these callbacks
 crawler.SetOnPageCrawled(func(result *bluesnake.PageResult) {
@@ -161,34 +162,50 @@ The `Collector` is the main entity that manages web crawling operations.
 - Robots.txt compliance (can be disabled)
 
 **Configuration Options:**
+
+The Collector is configured using the `CollectorConfig` struct:
+
 ```go
-type Collector struct {
-    UserAgent            string
-    Headers              *http.Header
-    MaxDepth             int
-    AllowedDomains       []string
-    DisallowedDomains    []string
-    AllowURLRevisit      bool
-    MaxBodySize          int
-    CacheDir             string
-    IgnoreRobotsTxt      bool
-    Async                bool
-    EnableRendering      bool  // JavaScript rendering with chromedp
-    MaxRequests          uint32
-    // ... internal fields
+type CollectorConfig struct {
+    UserAgent              string
+    Headers                map[string]string
+    MaxDepth               int
+    AllowedDomains         []string
+    DisallowedDomains      []string
+    DisallowedURLFilters   []*regexp.Regexp
+    URLFilters             []*regexp.Regexp
+    AllowURLRevisit        bool
+    MaxBodySize            int
+    CacheDir               string
+    IgnoreRobotsTxt        bool
+    Async                  bool
+    ParseHTTPErrorResponse bool
+    ID                     uint32  // auto-assigned if 0
+    DetectCharset          bool
+    CheckHead              bool
+    TraceHTTP              bool
+    Context                context.Context
+    MaxRequests            uint32
+    EnableRendering        bool  // JavaScript rendering with chromedp
+    CacheExpiration        time.Duration
+    Debugger               debug.Debugger
 }
 ```
 
-**Collector Options (Functional Configuration):**
-- `UserAgent(ua string)` - Set user agent
-- `AllowedDomains(domains ...string)` - Domain whitelist
-- `MaxDepth(depth int)` - Limit crawl depth
-- `MaxRequests(max uint32)` - Limit total requests
-- `EnableJSRendering()` - Enable JavaScript rendering
-- `Async(a ...bool)` - Enable async crawling
-- `CacheDir(path string)` - Enable request caching
-- `IgnoreRobotsTxt()` - Ignore robots.txt restrictions
-- And many more...
+**Creating a Collector:**
+```go
+config := &bluesnake.CollectorConfig{
+    UserAgent:       "MyBot 1.0",
+    AllowedDomains:  []string{"example.com"},
+    MaxDepth:        3,
+    Async:           true,
+    EnableRendering: true,
+}
+c := bluesnake.NewCollector(config)
+
+// Or use default configuration
+c := bluesnake.NewCollector(nil)
+```
 
 #### 2. Callback System
 
@@ -930,13 +947,15 @@ The frontend maintains an `activeCrawls` map (updated via polling `GetActiveCraw
 
 #### 1. Crawler Configuration (Per-Crawl)
 
-Set via `CollectorOption` functions when creating collector:
+Set via `CollectorConfig` struct when creating collector:
 
 ```go
-c := bluesnake.NewCollector(
-    bluesnake.AllowedDomains(domain),
-    bluesnake.EnableJSRendering(),
-)
+config := &bluesnake.CollectorConfig{
+    AllowedDomains:  []string{domain},
+    EnableRendering: true,
+    Async:           true,
+}
+c := bluesnake.NewCollector(config)
 
 c.Limit(&bluesnake.LimitRule{
     DomainGlob:  "*",
@@ -962,7 +981,7 @@ type Config struct {
 1. User configures via Config UI
 2. Settings saved to database
 3. On next crawl, settings retrieved
-4. Translated to CollectorOptions
+4. Translated to `CollectorConfig` struct fields
 5. Applied to new Collector instance
 
 ---
@@ -1157,7 +1176,10 @@ Can be used standalone:
 ```go
 import "github.com/agentberlin/bluesnake"
 
-c := bluesnake.NewCollector()
+config := &bluesnake.CollectorConfig{
+    AllowedDomains: []string{"example.com"},
+}
+c := bluesnake.NewCollector(config)
 c.OnHTML("title", func(e *bluesnake.HTMLElement) {
     fmt.Println(e.Text)
 })

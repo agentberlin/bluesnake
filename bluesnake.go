@@ -51,8 +51,74 @@ import (
 	"google.golang.org/appengine/urlfetch"
 )
 
-// A CollectorOption sets an option on a Collector.
-type CollectorOption func(*Collector)
+// CollectorConfig contains all configuration options for a Collector
+type CollectorConfig struct {
+	// UserAgent is the User-Agent string used by HTTP requests
+	UserAgent string
+	// Headers contains custom headers for HTTP requests
+	Headers map[string]string
+	// MaxDepth limits the recursion depth of visited URLs.
+	// Set it to 0 for infinite recursion (default).
+	MaxDepth int
+	// AllowedDomains is a domain whitelist.
+	// Leave it blank to allow any domains to be visited
+	AllowedDomains []string
+	// DisallowedDomains is a domain blacklist.
+	DisallowedDomains []string
+	// DisallowedURLFilters is a list of regular expressions which restricts
+	// visiting URLs. If any of the rules matches to a URL the
+	// request will be stopped. DisallowedURLFilters will
+	// be evaluated before URLFilters
+	DisallowedURLFilters []*regexp.Regexp
+	// URLFilters is a list of regular expressions which restricts
+	// visiting URLs. If any of the rules matches to a URL the
+	// request won't be stopped. DisallowedURLFilters will
+	// be evaluated before URLFilters
+	URLFilters []*regexp.Regexp
+	// AllowURLRevisit allows multiple downloads of the same URL
+	AllowURLRevisit bool
+	// MaxBodySize is the limit of the retrieved response body in bytes.
+	// 0 means unlimited.
+	// The default value for MaxBodySize is 10MB (10 * 1024 * 1024 bytes).
+	MaxBodySize int
+	// CacheDir specifies a location where GET requests are cached as files.
+	// When it's not defined, caching is disabled.
+	CacheDir string
+	// IgnoreRobotsTxt allows the Collector to ignore any restrictions set by
+	// the target host's robots.txt file.
+	IgnoreRobotsTxt bool
+	// Async turns on asynchronous network communication.
+	Async bool
+	// ParseHTTPErrorResponse allows parsing HTTP responses with non 2xx status codes.
+	ParseHTTPErrorResponse bool
+	// ID is the unique identifier of a collector (auto-assigned if 0)
+	ID uint32
+	// DetectCharset can enable character encoding detection for non-utf8 response bodies
+	DetectCharset bool
+	// CheckHead performs a HEAD request before every GET to pre-validate the response
+	CheckHead bool
+	// TraceHTTP enables capturing and reporting request performance.
+	TraceHTTP bool
+	// Context is the context that will be used for HTTP requests.
+	Context context.Context
+	// MaxRequests limit the number of requests done by the instance.
+	// Set it to 0 for infinite requests (default).
+	MaxRequests uint32
+	// EnableRendering enables JavaScript rendering using headless Chrome.
+	EnableRendering bool
+	// CacheExpiration sets the maximum age for cache files.
+	CacheExpiration time.Duration
+	// Debugger is the debugger instance to use
+	Debugger debug.Debugger
+	// DiscoveryMechanisms specifies which mechanisms to use for URL discovery.
+	// Can be any combination: ["spider"], ["sitemap"], or ["spider", "sitemap"].
+	// Default is ["spider"].
+	DiscoveryMechanisms []DiscoveryMechanism
+	// SitemapURLs specifies custom sitemap URLs to fetch (optional).
+	// If nil/empty when sitemap discovery is enabled, tries default locations
+	// (/sitemap.xml, /sitemap_index.xml).
+	SitemapURLs []string
+}
 
 // Collector provides the scraper instance for a scraping job
 type Collector struct {
@@ -311,203 +377,87 @@ var envMap = map[string]func(*Collector, string){
 
 var urlParser = whatwgUrl.NewParser(whatwgUrl.WithPercentEncodeSinglePercentSign())
 
-// NewCollector creates a new Collector instance with default configuration
-func NewCollector(options ...CollectorOption) *Collector {
+// DiscoveryMechanism specifies how URLs are discovered during crawling
+type DiscoveryMechanism string
+
+const (
+	// DiscoverySpider discovers URLs by following links in HTML pages
+	DiscoverySpider DiscoveryMechanism = "spider"
+	// DiscoverySitemap discovers URLs from sitemap.xml files
+	DiscoverySitemap DiscoveryMechanism = "sitemap"
+)
+
+// NewDefaultConfig returns a CollectorConfig with sensible defaults
+func NewDefaultConfig() *CollectorConfig {
+	return &CollectorConfig{
+		UserAgent:              "bluesnake - https://github.com/agentberlin/bluesnake",
+		MaxBodySize:            10 * 1024 * 1024, // 10MB
+		IgnoreRobotsTxt:        true,
+		Context:                context.Background(),
+		MaxDepth:               0,
+		MaxRequests:            0,
+		AllowURLRevisit:        false,
+		Async:                  false,
+		DetectCharset:          false,
+		CheckHead:              false,
+		TraceHTTP:              false,
+		ParseHTTPErrorResponse: false,
+		EnableRendering:        false,
+		DiscoveryMechanisms:    []DiscoveryMechanism{DiscoverySpider}, // Default to spider mode
+		SitemapURLs:            nil,
+	}
+}
+
+// NewCollector creates a new Collector instance with the provided configuration.
+// If config is nil, default configuration is used.
+func NewCollector(config *CollectorConfig) *Collector {
+	if config == nil {
+		config = NewDefaultConfig()
+	}
+
 	c := &Collector{}
 	c.Init()
 
-	for _, f := range options {
-		f(c)
+	// Apply configuration
+	c.UserAgent = config.UserAgent
+	if len(config.Headers) > 0 {
+		customHeaders := make(http.Header)
+		for header, value := range config.Headers {
+			customHeaders.Add(header, value)
+		}
+		c.Headers = &customHeaders
+	}
+	c.MaxDepth = config.MaxDepth
+	c.AllowedDomains = config.AllowedDomains
+	c.DisallowedDomains = config.DisallowedDomains
+	c.DisallowedURLFilters = config.DisallowedURLFilters
+	c.URLFilters = config.URLFilters
+	c.AllowURLRevisit = config.AllowURLRevisit
+	c.MaxBodySize = config.MaxBodySize
+	c.CacheDir = config.CacheDir
+	c.IgnoreRobotsTxt = config.IgnoreRobotsTxt
+	c.Async = config.Async
+	c.ParseHTTPErrorResponse = config.ParseHTTPErrorResponse
+	if config.ID != 0 {
+		c.ID = config.ID
+	}
+	c.DetectCharset = config.DetectCharset
+	c.CheckHead = config.CheckHead
+	c.TraceHTTP = config.TraceHTTP
+	if config.Context != nil {
+		c.Context = config.Context
+	}
+	c.MaxRequests = config.MaxRequests
+	c.EnableRendering = config.EnableRendering
+	c.CacheExpiration = config.CacheExpiration
+	if config.Debugger != nil {
+		config.Debugger.Init()
+		c.debugger = config.Debugger
 	}
 
 	c.parseSettingsFromEnv()
 
 	return c
-}
-
-// UserAgent sets the user agent used by the Collector.
-func UserAgent(ua string) CollectorOption {
-	return func(c *Collector) {
-		c.UserAgent = ua
-	}
-}
-
-// Headers sets the custom headers used by the Collector.
-func Headers(headers map[string]string) CollectorOption {
-	return func(c *Collector) {
-		customHeaders := make(http.Header)
-		for header, value := range headers {
-			customHeaders.Add(header, value)
-		}
-		c.Headers = &customHeaders
-	}
-}
-
-// MaxDepth limits the recursion depth of visited URLs.
-func MaxDepth(depth int) CollectorOption {
-	return func(c *Collector) {
-		c.MaxDepth = depth
-	}
-}
-
-// MaxRequests limit the number of requests done by the instance.
-// Set it to 0 for infinite requests (default).
-func MaxRequests(max uint32) CollectorOption {
-	return func(c *Collector) {
-		c.MaxRequests = max
-	}
-}
-
-// AllowedDomains sets the domain whitelist used by the Collector.
-func AllowedDomains(domains ...string) CollectorOption {
-	return func(c *Collector) {
-		c.AllowedDomains = domains
-	}
-}
-
-// ParseHTTPErrorResponse allows parsing responses with HTTP errors
-func ParseHTTPErrorResponse() CollectorOption {
-	return func(c *Collector) {
-		c.ParseHTTPErrorResponse = true
-	}
-}
-
-// DisallowedDomains sets the domain blacklist used by the Collector.
-func DisallowedDomains(domains ...string) CollectorOption {
-	return func(c *Collector) {
-		c.DisallowedDomains = domains
-	}
-}
-
-// DisallowedURLFilters sets the list of regular expressions which restricts
-// visiting URLs. If any of the rules matches to a URL the request will be stopped.
-func DisallowedURLFilters(filters ...*regexp.Regexp) CollectorOption {
-	return func(c *Collector) {
-		c.DisallowedURLFilters = filters
-	}
-}
-
-// URLFilters sets the list of regular expressions which restricts
-// visiting URLs. If any of the rules matches to a URL the request won't be stopped.
-func URLFilters(filters ...*regexp.Regexp) CollectorOption {
-	return func(c *Collector) {
-		c.URLFilters = filters
-	}
-}
-
-// AllowURLRevisit instructs the Collector to allow multiple downloads of the same URL
-func AllowURLRevisit() CollectorOption {
-	return func(c *Collector) {
-		c.AllowURLRevisit = true
-	}
-}
-
-// MaxBodySize sets the limit of the retrieved response body in bytes.
-func MaxBodySize(sizeInBytes int) CollectorOption {
-	return func(c *Collector) {
-		c.MaxBodySize = sizeInBytes
-	}
-}
-
-// CacheDir specifies the location where GET requests are cached as files.
-func CacheDir(path string) CollectorOption {
-	return func(c *Collector) {
-		c.CacheDir = path
-	}
-}
-
-// IgnoreRobotsTxt instructs the Collector to ignore any restrictions
-// set by the target host's robots.txt file.
-func IgnoreRobotsTxt() CollectorOption {
-	return func(c *Collector) {
-		c.IgnoreRobotsTxt = true
-	}
-}
-
-// TraceHTTP instructs the Collector to collect and report request trace data
-// on the Response.Trace.
-func TraceHTTP() CollectorOption {
-	return func(c *Collector) {
-		c.TraceHTTP = true
-	}
-}
-
-// StdlibContext sets the context that will be used for HTTP requests.
-// You can set this to support clean cancellation of scraping.
-func StdlibContext(ctx context.Context) CollectorOption {
-	return func(c *Collector) {
-		c.Context = ctx
-	}
-}
-
-// ID sets the unique identifier of the Collector.
-func ID(id uint32) CollectorOption {
-	return func(c *Collector) {
-		c.ID = id
-	}
-}
-
-// Async turns on asynchronous network requests.
-func Async(a ...bool) CollectorOption {
-	return func(c *Collector) {
-		if len(a) > 0 {
-			c.Async = a[0]
-		} else {
-			c.Async = true
-		}
-	}
-}
-
-// DetectCharset enables character encoding detection for non-utf8 response bodies
-// without explicit charset declaration. This feature uses https://github.com/saintfish/chardet
-func DetectCharset() CollectorOption {
-	return func(c *Collector) {
-		c.DetectCharset = true
-	}
-}
-
-// Debugger sets the debugger used by the Collector.
-func Debugger(d debug.Debugger) CollectorOption {
-	return func(c *Collector) {
-		d.Init()
-		c.debugger = d
-	}
-}
-
-// CheckHead performs a HEAD request before every GET to pre-validate the response
-func CheckHead() CollectorOption {
-	return func(c *Collector) {
-		c.CheckHead = true
-	}
-}
-
-// CacheExpiration sets the maximum age for cache files.
-// If a cached file is older than this duration, it will be ignored and refreshed.
-func CacheExpiration(d time.Duration) CollectorOption {
-	return func(c *Collector) {
-		c.CacheExpiration = d
-	}
-}
-
-// EnableJSRendering enables JavaScript rendering using headless Chrome.
-// When enabled, pages will be rendered with chromedp before parsing.
-func EnableJSRendering() CollectorOption {
-	return func(c *Collector) {
-		c.EnableRendering = true
-	}
-}
-
-// WithMockTransport sets a mock HTTP transport for testing purposes.
-// This allows you to mock HTTP responses without needing a real HTTP server.
-// Example:
-//
-//	mock := bluesnake.NewMockTransport()
-//	mock.RegisterHTML("https://example.com/", `<html><body>Test</body></html>`)
-//	c := bluesnake.NewCollector(bluesnake.WithMockTransport(mock))
-func WithMockTransport(transport *MockTransport) CollectorOption {
-	return func(c *Collector) {
-		c.backend.Client.Transport = transport
-	}
 }
 
 // Init initializes the Collector's private variables and sets default
