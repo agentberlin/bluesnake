@@ -42,6 +42,10 @@ export function GetFaviconData(arg1) {
   return window['go']['main']['App']['GetFaviconData'](arg1);
 }
 
+export function GetPageLinksForURL(arg1, arg2) {
+  return window['go']['main']['App']['GetPageLinksForURL'](arg1, arg2);
+}
+
 export function GetProjects() {
   return window['go']['main']['App']['GetProjects']();
 }

@@ -21,13 +21,30 @@ import (
 	"sync"
 )
 
-// CrawledURL represents a discovered URL with metadata about its crawlability
-type CrawledURL struct {
-	// URL is the absolute URL that was discovered
-	URL string
-	// IsCrawlable indicates whether this URL passed domain filters and robots.txt checks
-	// If false, the URL was discovered but will not be crawled
-	IsCrawlable bool
+// Link represents a single outbound link discovered on a page
+type Link struct {
+	// URL is the target URL
+	URL string `json:"url"`
+	// Type is the link type: "anchor", "image", "script", "stylesheet", "iframe", "canonical", "video", "audio"
+	Type string `json:"type"`
+	// Text is the anchor text, alt text, or empty for other link types
+	Text string `json:"text"`
+	// IsInternal indicates if this link points to the same domain/subdomain
+	IsInternal bool `json:"isInternal"`
+	// Status is the HTTP status code if this URL has been crawled (200, 404, 301, etc.)
+	Status *int `json:"status,omitempty"`
+	// Title is the page title if this URL has been crawled
+	Title string `json:"title,omitempty"`
+	// ContentType is the MIME type if this URL has been crawled
+	ContentType string `json:"contentType,omitempty"`
+}
+
+// Links contains outbound links from a page
+type Links struct {
+	// Internal links point to same domain/subdomain
+	Internal []Link `json:"internal"`
+	// External links point to different domains
+	External []Link `json:"external"`
 }
 
 // PageResult contains all data collected from a single crawled page
@@ -45,8 +62,8 @@ type PageResult struct {
 	ContentType string
 	// Error contains any error message if the crawl failed, empty otherwise
 	Error string
-	// DiscoveredURLs contains all URLs found on this page with their crawlability status
-	DiscoveredURLs []CrawledURL
+	// Links contains all outbound links from this page (internal and external)
+	Links *Links
 }
 
 // OnPageCrawledFunc is called after each individual page is successfully crawled or encounters an error.
@@ -60,6 +77,13 @@ type OnPageCrawledFunc func(*PageResult)
 //   - totalDiscovered: total number of unique URLs discovered during the crawl
 type OnCrawlCompleteFunc func(wasStopped bool, totalPages int, totalDiscovered int)
 
+// PageMetadata stores cached metadata for crawled pages
+type PageMetadata struct {
+	Status      int
+	Title       string
+	ContentType string
+}
+
 // Crawler provides a high-level interface for web crawling with callbacks for page results
 type Crawler struct {
 	// Collector is the underlying low-level collector (exported for advanced configuration)
@@ -72,8 +96,9 @@ type Crawler struct {
 	crawledPages int
 	mutex        sync.RWMutex
 
-	// Per-page URL tracking for discovered URLs callback
-	pageURLs *sync.Map // map[string][]CrawledURL - maps page URL to its discovered URLs
+	// Link tracking
+	rootDomain   string    // Root domain for internal/external classification
+	pageMetadata *sync.Map // map[string]PageMetadata - cached page metadata
 
 	// Discovery configuration
 	discoveryMechanisms []DiscoveryMechanism // Enabled discovery mechanisms
@@ -99,10 +124,10 @@ func NewCrawler(config *CollectorConfig) *Crawler {
 	crawler := &Crawler{
 		Collector:           c,
 		queuedURLs:          &sync.Map{},
-		pageURLs:            &sync.Map{},
 		crawledPages:        0,
 		discoveryMechanisms: discoveryMechanisms,
 		sitemapURLs:         config.SitemapURLs,
+		pageMetadata:        &sync.Map{},
 	}
 
 	// Configure sitemap fetching to use the same HTTP client as the collector
@@ -149,6 +174,9 @@ func (cr *Crawler) SetOnCrawlComplete(f OnCrawlCompleteFunc) {
 // Start begins crawling from the specified starting URL.
 // It returns immediately if the crawler is in Async mode, or blocks until completion otherwise.
 func (cr *Crawler) Start(url string) error {
+	// Extract and set root domain for internal/external classification
+	cr.rootDomain = cr.extractRootDomain(url)
+
 	// ALWAYS queue the base URL first
 	cr.queuedURLs.Store(url, true)
 
@@ -200,35 +228,42 @@ func (cr *Crawler) Wait() {
 
 // setupCallbacks configures the internal collector callbacks to aggregate page data
 func (cr *Crawler) setupCallbacks() {
-	// Only register link extraction if spider discovery is enabled
-	if cr.hasDiscoveryMechanism(DiscoverySpider) {
-		// Extract and queue links from HTML pages (MUST be registered before OnScraped)
-		cr.Collector.OnHTML("a[href]", func(e *HTMLElement) {
-			link := e.Request.AbsoluteURL(e.Attr("href"))
-			if link == "" {
-				return
-			}
+	// Store outbound links for each page (map[pageURL][]Link)
+	pageOutboundLinks := &sync.Map{}
 
-			// Check if this URL is crawlable by testing filters and robots.txt
-			isCrawlable := cr.isURLCrawlable(link)
+	// Extract all links from HTML pages and build link graph
+	cr.Collector.OnHTML("html", func(e *HTMLElement) {
+		// Extract ALL link types (anchors, images, scripts, etc.)
+		allLinks := cr.extractAllLinks(e)
 
-			// Track discovered URL
-			crawledURL := CrawledURL{
-				URL:         link,
-				IsCrawlable: isCrawlable,
-			}
+		// Store outbound links for this page
+		pageOutboundLinks.Store(e.Request.URL.String(), allLinks)
 
-			// Store this discovered URL for the current page
-			cr.addDiscoveredURLToPage(e.Request.URL.String(), crawledURL)
+		// If spider discovery is enabled, visit internal anchor links
+		if cr.hasDiscoveryMechanism(DiscoverySpider) {
+			for _, link := range allLinks {
+				// Only visit anchor links (HTML pages)
+				if link.Type != "anchor" {
+					continue
+				}
 
-			// Only visit if crawlable and not already queued
-			if isCrawlable {
-				if _, alreadyQueued := cr.queuedURLs.LoadOrStore(link, true); !alreadyQueued {
-					e.Request.Visit(link)
+				// Only visit internal links
+				if !link.IsInternal {
+					continue
+				}
+
+				// Check if crawlable (filters, robots.txt)
+				if !cr.isURLCrawlable(link.URL) {
+					continue
+				}
+
+				// Only visit if not already queued
+				if _, alreadyQueued := cr.queuedURLs.LoadOrStore(link.URL, true); !alreadyQueued {
+					e.Request.Visit(link.URL)
 				}
 			}
-		})
-	}
+		}
+	})
 
 	// Capture page metadata (title, indexability)
 	cr.Collector.OnHTML("html", func(e *HTMLElement) {
@@ -270,17 +305,26 @@ func (cr *Crawler) setupCallbacks() {
 			fmt.Sscanf(statusStr, "%d", &status)
 		}
 
-		// Get discovered URLs for this page (now all OnHTML callbacks have completed)
-		discoveredURLs := cr.getDiscoveredURLsForPage(r.Request.URL.String())
+		pageURL := r.Request.URL.String()
+
+		// Store page metadata for future link population
+		cr.pageMetadata.Store(pageURL, PageMetadata{
+			Status:      status,
+			Title:       title,
+			ContentType: contentType,
+		})
+
+		// Build PageLinks structure
+		pageLinks := cr.buildPageLinks(pageURL, pageOutboundLinks)
 
 		result := &PageResult{
-			URL:            r.Request.URL.String(),
-			Status:         status,
-			Title:          title,
-			Indexable:      isIndexable,
-			ContentType:    contentType,
-			Error:          "",
-			DiscoveredURLs: discoveredURLs,
+			URL:         pageURL,
+			Status:      status,
+			Title:       title,
+			Indexable:   isIndexable,
+			ContentType: contentType,
+			Error:       "",
+			Links:       pageLinks,
 		}
 
 		cr.incrementCrawledPages()
@@ -301,6 +345,8 @@ func (cr *Crawler) setupCallbacks() {
 		r.Request.Ctx.Put("status", fmt.Sprintf("%d", r.StatusCode))
 		r.Request.Ctx.Put("contentType", contentType)
 
+		pageURL := r.Request.URL.String()
+
 		// For non-HTML content, we need to create a result here since OnHTML won't fire
 		if !strings.Contains(contentType, "text/html") {
 			// Determine a descriptive title based on content type
@@ -319,17 +365,24 @@ func (cr *Crawler) setupCallbacks() {
 				title = "Stylesheet"
 			}
 
-			// Get discovered URLs for this page (will be empty for non-HTML)
-			discoveredURLs := cr.getDiscoveredURLsForPage(r.Request.URL.String())
+			// Store page metadata for future link population
+			cr.pageMetadata.Store(pageURL, PageMetadata{
+				Status:      r.StatusCode,
+				Title:       title,
+				ContentType: contentType,
+			})
+
+			// Build PageLinks structure (non-HTML has no outbound links, only inbound)
+			pageLinks := cr.buildPageLinks(pageURL, pageOutboundLinks)
 
 			result := &PageResult{
-				URL:            r.Request.URL.String(),
-				Status:         r.StatusCode,
-				Title:          title,
-				Indexable:      isIndexable,
-				ContentType:    contentType,
-				Error:          "",
-				DiscoveredURLs: discoveredURLs,
+				URL:         pageURL,
+				Status:      r.StatusCode,
+				Title:       title,
+				Indexable:   isIndexable,
+				ContentType: contentType,
+				Error:       "",
+				Links:       pageLinks,
 			}
 
 			cr.incrementCrawledPages()
@@ -344,17 +397,19 @@ func (cr *Crawler) setupCallbacks() {
 			return
 		}
 
-		// Get discovered URLs for this page (should be empty for errors)
-		discoveredURLs := cr.getDiscoveredURLsForPage(r.Request.URL.String())
+		pageURL := r.Request.URL.String()
+
+		// Build PageLinks structure (errors have no outbound links, but may have inbound)
+		pageLinks := cr.buildPageLinks(pageURL, pageOutboundLinks)
 
 		result := &PageResult{
-			URL:            r.Request.URL.String(),
-			Status:         0,
-			Title:          "",
-			Indexable:      "No",
-			ContentType:    "",
-			Error:          err.Error(),
-			DiscoveredURLs: discoveredURLs,
+			URL:         pageURL,
+			Status:      0,
+			Title:       "",
+			Indexable:   "No",
+			ContentType: "",
+			Error:       err.Error(),
+			Links:       pageLinks,
 		}
 
 		cr.callOnPageCrawled(result)
@@ -425,31 +480,6 @@ func (cr *Crawler) isURLCrawlable(urlStr string) bool {
 	return true
 }
 
-// addDiscoveredURLToPage adds a discovered URL to a page's list
-func (cr *Crawler) addDiscoveredURLToPage(pageURL string, crawledURL CrawledURL) {
-	value, _ := cr.pageURLs.LoadOrStore(pageURL, &sync.Mutex{})
-	pageMutex := value.(*sync.Mutex)
-
-	pageMutex.Lock()
-	defer pageMutex.Unlock()
-
-	// Get or create the slice for this page
-	var urls []CrawledURL
-	if stored, ok := cr.pageURLs.Load(pageURL + ":urls"); ok {
-		urls = stored.([]CrawledURL)
-	}
-	urls = append(urls, crawledURL)
-	cr.pageURLs.Store(pageURL+":urls", urls)
-}
-
-// getDiscoveredURLsForPage retrieves all discovered URLs for a given page
-func (cr *Crawler) getDiscoveredURLsForPage(pageURL string) []CrawledURL {
-	if stored, ok := cr.pageURLs.Load(pageURL + ":urls"); ok {
-		return stored.([]CrawledURL)
-	}
-	return []CrawledURL{}
-}
-
 // incrementCrawledPages safely increments the crawled pages counter
 func (cr *Crawler) incrementCrawledPages() {
 	cr.mutex.Lock()
@@ -504,4 +534,193 @@ func (cr *Crawler) fetchSitemapURLs(baseURL string) []string {
 	}
 
 	return allURLs
+}
+
+// buildPageLinks constructs the Links structure for a given page
+func (cr *Crawler) buildPageLinks(pageURL string, pageOutboundLinks *sync.Map) *Links {
+	// Get outbound links for this page
+	var outbound []Link
+	if val, ok := pageOutboundLinks.Load(pageURL); ok {
+		outbound = val.([]Link)
+	}
+
+	// Separate internal and external links
+	var internal, external []Link
+	for _, link := range outbound {
+		if link.IsInternal {
+			internal = append(internal, link)
+		} else {
+			external = append(external, link)
+		}
+	}
+
+	return &Links{
+		Internal: internal,
+		External: external,
+	}
+}
+
+// extractAllLinks extracts all links from an HTML element.
+// Returns a list of links with their types, text, and internal/external classification.
+func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
+	var links []Link
+
+	// Helper function to add a link to the list
+	addLink := func(url, linkType, text string) {
+		absoluteURL := e.Request.AbsoluteURL(url)
+		if absoluteURL == "" {
+			return
+		}
+
+		// Skip fragment-only links
+		if strings.HasPrefix(url, "#") {
+			return
+		}
+
+		isInternal := cr.isInternalURL(absoluteURL)
+
+		// Get metadata if this URL has been crawled
+		var status *int
+		var title, contentType string
+		if meta, ok := cr.pageMetadata.Load(absoluteURL); ok {
+			metadata := meta.(PageMetadata)
+			status = &metadata.Status
+			title = metadata.Title
+			contentType = metadata.ContentType
+		}
+
+		links = append(links, Link{
+			URL:         absoluteURL,
+			Type:        linkType,
+			Text:        text,
+			IsInternal:  isInternal,
+			Status:      status,
+			Title:       title,
+			ContentType: contentType,
+		})
+	}
+
+	// Extract anchor links <a href="">
+	e.ForEach("a[href]", func(_ int, elem *HTMLElement) {
+		href := elem.Attr("href")
+		text := strings.TrimSpace(elem.Text)
+		addLink(href, "anchor", text)
+	})
+
+	// Extract image links <img src="">
+	e.ForEach("img[src]", func(_ int, elem *HTMLElement) {
+		src := elem.Attr("src")
+		alt := elem.Attr("alt")
+		addLink(src, "image", alt)
+	})
+
+	// Extract script links <script src="">
+	e.ForEach("script[src]", func(_ int, elem *HTMLElement) {
+		src := elem.Attr("src")
+		addLink(src, "script", "")
+	})
+
+	// Extract stylesheet links <link rel="stylesheet" href="">
+	e.ForEach("link[rel='stylesheet'][href]", func(_ int, elem *HTMLElement) {
+		href := elem.Attr("href")
+		addLink(href, "stylesheet", "")
+	})
+
+	// Extract canonical links <link rel="canonical" href="">
+	e.ForEach("link[rel='canonical'][href]", func(_ int, elem *HTMLElement) {
+		href := elem.Attr("href")
+		addLink(href, "canonical", "")
+	})
+
+	// Extract iframe links <iframe src="">
+	e.ForEach("iframe[src]", func(_ int, elem *HTMLElement) {
+		src := elem.Attr("src")
+		addLink(src, "iframe", "")
+	})
+
+	// Extract video sources <video src=""> and <source src="">
+	e.ForEach("video[src]", func(_ int, elem *HTMLElement) {
+		src := elem.Attr("src")
+		addLink(src, "video", "")
+	})
+	e.ForEach("video source[src]", func(_ int, elem *HTMLElement) {
+		src := elem.Attr("src")
+		addLink(src, "video", "")
+	})
+
+	// Extract audio sources <audio src=""> and <source src="">
+	e.ForEach("audio[src]", func(_ int, elem *HTMLElement) {
+		src := elem.Attr("src")
+		addLink(src, "audio", "")
+	})
+	e.ForEach("audio source[src]", func(_ int, elem *HTMLElement) {
+		src := elem.Attr("src")
+		addLink(src, "audio", "")
+	})
+
+	return links
+}
+
+// extractRootDomain extracts the root domain from a URL for internal/external classification.
+// Returns the hostname (including subdomain) in lowercase.
+// Examples:
+//   - https://example.com/path -> example.com
+//   - https://blog.example.com/path -> blog.example.com
+//   - https://example.com:8080/path -> example.com:8080
+func (cr *Crawler) extractRootDomain(urlStr string) string {
+	parsedURL, err := urlParser.Parse(urlStr)
+	if err != nil {
+		return ""
+	}
+
+	hostname := parsedURL.Hostname()
+	port := parsedURL.Port()
+
+	// Include port if non-standard
+	if port != "" && port != "80" && port != "443" {
+		return strings.ToLower(hostname + ":" + port)
+	}
+
+	return strings.ToLower(hostname)
+}
+
+// isInternalURL checks if a URL belongs to the same domain/subdomain as the root domain.
+// Returns true if:
+//   - URL has exact same domain as rootDomain
+//   - URL is a subdomain of rootDomain (e.g., blog.example.com is internal to example.com)
+//   - rootDomain is a subdomain of URL domain (e.g., example.com is internal to blog.example.com)
+func (cr *Crawler) isInternalURL(urlStr string) bool {
+	if cr.rootDomain == "" {
+		return false
+	}
+
+	targetDomain := cr.extractRootDomain(urlStr)
+	if targetDomain == "" {
+		return false
+	}
+
+	// Exact match
+	if targetDomain == cr.rootDomain {
+		return true
+	}
+
+	// Check if one is a subdomain of the other
+	// blog.example.com contains .example.com (subdomain)
+	// example.com contains .example.com is false, but blog.example.com should be internal to example.com
+
+	// Remove port for subdomain comparison
+	rootWithoutPort := strings.Split(cr.rootDomain, ":")[0]
+	targetWithoutPort := strings.Split(targetDomain, ":")[0]
+
+	// Check if target is subdomain of root
+	if strings.HasSuffix(targetWithoutPort, "."+rootWithoutPort) {
+		return true
+	}
+
+	// Check if root is subdomain of target
+	if strings.HasSuffix(rootWithoutPort, "."+targetWithoutPort) {
+		return true
+	}
+
+	return false
 }
