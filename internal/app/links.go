@@ -36,6 +36,8 @@ func (a *App) GetPageLinksForURL(crawlID uint, pageURL string) (*types.PageLinks
 			URL:        link.SourceURL, // For inlinks, show the source URL
 			AnchorText: link.LinkText,
 			Status:     status,
+			Position:   link.Position,
+			DOMPath:    link.DOMPath,
 		})
 	}
 
@@ -49,6 +51,8 @@ func (a *App) GetPageLinksForURL(crawlID uint, pageURL string) (*types.PageLinks
 			URL:        link.TargetURL, // For outlinks, show the target URL
 			AnchorText: link.LinkText,
 			Status:     status,
+			Position:   link.Position,
+			DOMPath:    link.DOMPath,
 		})
 	}
 

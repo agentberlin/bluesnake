@@ -258,6 +258,8 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 					Status:      status,
 					Title:       link.Title,
 					ContentType: link.ContentType,
+					Position:    link.Position,
+					DOMPath:     link.DOMPath,
 				})
 			}
 			for _, link := range result.Links.External {
@@ -273,6 +275,8 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 					Status:      status,
 					Title:       link.Title,
 					ContentType: link.ContentType,
+					Position:    link.Position,
+					DOMPath:     link.DOMPath,
 				})
 			}
 

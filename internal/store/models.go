@@ -130,6 +130,8 @@ type PageLink struct {
 	Status      int    `gorm:"default:0"`                       // HTTP status of target (0 if not crawled)
 	Title       string `gorm:"type:text"`                       // Title of target page (if crawled)
 	ContentType string `gorm:"type:text"`                       // Content type of target (if crawled)
+	Position    string `gorm:"type:text"`                       // Position: "content", "navigation", "header", "footer", "sidebar", "breadcrumbs", "pagination", "unknown"
+	DOMPath     string `gorm:"type:text"`                       // Simplified DOM path showing link's location in HTML structure
 	CreatedAt   int64  `gorm:"autoCreateTime"`
 }
 
@@ -142,4 +144,6 @@ type PageLinkData struct {
 	Status      int
 	Title       string
 	ContentType string
+	Position    string
+	DOMPath     string
 }

@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData, CheckForUpdate, DownloadAndInstallUpdate, GetVersion } from "../wailsjs/go/main/DesktopApp";
+import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL } from "../wailsjs/go/main/DesktopApp";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
@@ -91,6 +91,8 @@ interface Link {
   url: string;
   anchorText: string;
   status?: number;
+  position?: string;
+  domPath?: string;
 }
 
 interface ProjectInfo {
@@ -822,48 +824,21 @@ function App() {
     }
   };
 
-  // Generate dummy link data for a URL (TODO: Replace with real backend data)
-  const generateDummyLinksData = (clickedUrl: string): { inlinks: Link[], outlinks: Link[] } => {
-    // Get all available URLs from the results
-    const availableUrls = results.filter(r => r.url !== clickedUrl);
-
-    // Generate inlinks (pages linking TO this page) - use most of available URLs
-    const inlinks: Link[] = [];
-    const inlinkCount = Math.min(Math.floor(Math.random() * 30) + 10, availableUrls.length); // 10-40 inlinks
-    const anchorTexts = ['Read more', 'Learn more', 'Click here', 'View details', 'See more', 'Discover', 'Explore'];
-
-    for (let i = 0; i < inlinkCount; i++) {
-      const result = availableUrls[i];
-      inlinks.push({
-        url: result.url,
-        anchorText: `${anchorTexts[Math.floor(Math.random() * anchorTexts.length)]} about ${new URL(clickedUrl).pathname.split('/').pop() || 'this page'}`,
-        status: result.status
-      });
+  const handleUrlClick = async (clickedUrl: string) => {
+    if (!currentCrawlId) {
+      console.error('No current crawl ID available');
+      return;
     }
 
-    // Generate outlinks (pages this page links TO) - use all or most available URLs
-    const outlinks: Link[] = [];
-    const outlinkCount = Math.min(Math.floor(Math.random() * 50) + 20, availableUrls.length); // 20-70 outlinks
-
-    for (let i = 0; i < outlinkCount; i++) {
-      const result = availableUrls[i];
-      const pathname = new URL(result.url).pathname.split('/').pop() || 'page';
-      outlinks.push({
-        url: result.url,
-        anchorText: `${anchorTexts[Math.floor(Math.random() * anchorTexts.length)]} - ${pathname}`,
-        status: result.status
-      });
+    try {
+      const response = await GetPageLinksForURL(currentCrawlId, clickedUrl);
+      setSelectedUrlForPanel(clickedUrl);
+      setInlinksData(response.inlinks);
+      setOutlinksData(response.outlinks);
+      setIsPanelOpen(true);
+    } catch (error) {
+      console.error('Failed to load links:', error);
     }
-
-    return { inlinks, outlinks };
-  };
-
-  const handleUrlClick = (clickedUrl: string) => {
-    const { inlinks, outlinks } = generateDummyLinksData(clickedUrl);
-    setSelectedUrlForPanel(clickedUrl);
-    setInlinksData(inlinks);
-    setOutlinksData(outlinks);
-    setIsPanelOpen(true);
   };
 
   const handleClosePanel = () => {
