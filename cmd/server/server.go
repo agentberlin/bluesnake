@@ -1,0 +1,344 @@
+// Copyright 2025 Agentic World, LLC (Sherin Thomas)
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+import (
+	"encoding/json"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/agentberlin/bluesnake/internal/app"
+)
+
+// Server represents the HTTP server
+type Server struct {
+	app *app.App
+	mux *http.ServeMux
+}
+
+// NewServer creates a new HTTP server
+func NewServer(app *app.App) *Server {
+	s := &Server{
+		app: app,
+		mux: http.NewServeMux(),
+	}
+
+	// Register routes
+	s.registerRoutes()
+
+	return s
+}
+
+// ServeHTTP implements http.Handler
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// CORS middleware
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	// Handle preflight
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Logging middleware
+	log.Printf("%s %s", r.Method, r.URL.Path)
+
+	// Serve request
+	s.mux.ServeHTTP(w, r)
+}
+
+// registerRoutes registers all HTTP routes
+func (s *Server) registerRoutes() {
+	s.mux.HandleFunc("/api/v1/health", s.handleHealth)
+	s.mux.HandleFunc("/api/v1/version", s.handleGetVersion)
+	s.mux.HandleFunc("/api/v1/projects", s.handleProjects)
+	s.mux.HandleFunc("/api/v1/projects/", s.handleProjectsWithID)
+	s.mux.HandleFunc("/api/v1/crawls/", s.handleCrawls)
+	s.mux.HandleFunc("/api/v1/crawl", s.handleStartCrawl)
+	s.mux.HandleFunc("/api/v1/stop-crawl/", s.handleStopCrawl)
+	s.mux.HandleFunc("/api/v1/active-crawls", s.handleActiveCrawls)
+	s.mux.HandleFunc("/api/v1/config", s.handleConfig)
+}
+
+// handleHealth returns server health status
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "ok",
+	})
+}
+
+// handleGetVersion returns the application version
+func (s *Server) handleGetVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	version := s.app.GetVersion()
+	json.NewEncoder(w).Encode(map[string]string{
+		"version": version,
+	})
+}
+
+// handleProjects handles GET /api/v1/projects
+func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	projects, err := s.app.GetProjects()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(projects)
+}
+
+// handleProjectsWithID handles /api/v1/projects/{id}/*
+func (s *Server) handleProjectsWithID(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/projects/")
+	parts := strings.Split(path, "/")
+
+	if len(parts) == 0 || parts[0] == "" {
+		http.Error(w, "Project ID required", http.StatusBadRequest)
+		return
+	}
+
+	projectID, err := strconv.ParseUint(parts[0], 10, 32)
+	if err != nil {
+		http.Error(w, "Invalid project ID", http.StatusBadRequest)
+		return
+	}
+
+	// DELETE /api/v1/projects/{id}
+	if len(parts) == 1 && r.Method == "DELETE" {
+		if err := s.app.DeleteProjectByID(uint(projectID)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// GET /api/v1/projects/{id}/crawls
+	if len(parts) == 2 && parts[1] == "crawls" && r.Method == "GET" {
+		crawls, err := s.app.GetCrawls(uint(projectID))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(crawls)
+		return
+	}
+
+	// GET /api/v1/projects/{id}/active-data
+	if len(parts) == 2 && parts[1] == "active-data" && r.Method == "GET" {
+		data, err := s.app.GetActiveCrawlData(uint(projectID))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(data)
+		return
+	}
+
+	http.Error(w, "Not found", http.StatusNotFound)
+}
+
+// handleCrawls handles /api/v1/crawls/{id}/*
+func (s *Server) handleCrawls(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/crawls/")
+	parts := strings.Split(path, "/")
+
+	if len(parts) == 0 || parts[0] == "" {
+		http.Error(w, "Crawl ID required", http.StatusBadRequest)
+		return
+	}
+
+	crawlID, err := strconv.ParseUint(parts[0], 10, 32)
+	if err != nil {
+		http.Error(w, "Invalid crawl ID", http.StatusBadRequest)
+		return
+	}
+
+	// GET /api/v1/crawls/{id}
+	if len(parts) == 1 && r.Method == "GET" {
+		crawl, err := s.app.GetCrawlWithResults(uint(crawlID))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(crawl)
+		return
+	}
+
+	// DELETE /api/v1/crawls/{id}
+	if len(parts) == 1 && r.Method == "DELETE" {
+		if err := s.app.DeleteCrawlByID(uint(crawlID)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// GET /api/v1/crawls/{id}/pages/{url}/links
+	if len(parts) >= 3 && parts[1] == "pages" && strings.HasSuffix(path, "/links") && r.Method == "GET" {
+		// Extract URL from path (everything between "pages/" and "/links")
+		pageURL := strings.TrimSuffix(strings.Join(parts[2:], "/"), "/links")
+		links, err := s.app.GetPageLinksForURL(uint(crawlID), pageURL)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(links)
+		return
+	}
+
+	http.Error(w, "Not found", http.StatusNotFound)
+}
+
+// handleStartCrawl handles POST /api/v1/crawl
+func (s *Server) handleStartCrawl(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		URL string `json:"url"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.app.StartCrawl(req.URL); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Crawl started",
+	})
+}
+
+// handleStopCrawl handles POST /api/v1/stop-crawl/{projectID}
+func (s *Server) handleStopCrawl(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/stop-crawl/")
+	projectID, err := strconv.ParseUint(path, 10, 32)
+	if err != nil {
+		http.Error(w, "Invalid project ID", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.app.StopCrawl(uint(projectID)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Crawl stopped",
+	})
+}
+
+// handleActiveCrawls handles GET /api/v1/active-crawls
+func (s *Server) handleActiveCrawls(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	crawls := s.app.GetActiveCrawls()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(crawls)
+}
+
+// handleConfig handles GET and PUT /api/v1/config
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		url := r.URL.Query().Get("url")
+		if url == "" {
+			http.Error(w, "URL parameter required", http.StatusBadRequest)
+			return
+		}
+
+		config, err := s.app.GetConfigForDomain(url)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(config)
+
+	case "PUT":
+		var req struct {
+			URL            string   `json:"url"`
+			JSRendering    bool     `json:"jsRendering"`
+			Parallelism    int      `json:"parallelism"`
+			UserAgent      string   `json:"userAgent"`
+			SpiderEnabled  bool     `json:"spiderEnabled"`
+			SitemapEnabled bool     `json:"sitemapEnabled"`
+			SitemapURLs    []string `json:"sitemapURLs"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if err := s.app.UpdateConfigForDomain(
+			req.URL,
+			req.JSRendering,
+			req.Parallelism,
+			req.UserAgent,
+			req.SpiderEnabled,
+			req.SitemapEnabled,
+			req.SitemapURLs,
+		); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "Config updated",
+		})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}

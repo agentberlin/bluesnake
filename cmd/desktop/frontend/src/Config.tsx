@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { useState, useEffect } from 'react';
-import { GetConfigForDomain, UpdateConfigForDomain } from "../wailsjs/go/main/App";
+import { GetConfigForDomain, UpdateConfigForDomain } from "../wailsjs/go/main/DesktopApp";
 import './Config.css';
 
 interface ConfigProps {

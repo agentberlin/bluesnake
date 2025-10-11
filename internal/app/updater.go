@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package app
 
 import (
 	"fmt"
@@ -24,6 +24,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/agentberlin/bluesnake/internal/types"
+	"github.com/agentberlin/bluesnake/internal/version"
 )
 
 const (
@@ -31,16 +34,8 @@ const (
 	versionURL    = updateBaseURL + "/version.txt"
 )
 
-// UpdateInfo contains information about available updates
-type UpdateInfo struct {
-	CurrentVersion   string `json:"currentVersion"`
-	LatestVersion    string `json:"latestVersion"`
-	UpdateAvailable  bool   `json:"updateAvailable"`
-	DownloadURL      string `json:"downloadUrl"`
-}
-
 // CheckForUpdate checks if a new version is available
-func (a *App) CheckForUpdate() (*UpdateInfo, error) {
+func (a *App) CheckForUpdate() (*types.UpdateInfo, error) {
 	// Fetch the latest version from the server
 	resp, err := http.Get(versionURL)
 	if err != nil {
@@ -60,17 +55,55 @@ func (a *App) CheckForUpdate() (*UpdateInfo, error) {
 	latestVersion := strings.TrimSpace(string(body))
 
 	// Compare versions
-	updateAvailable := compareVersions(latestVersion, CurrentVersion)
+	updateAvailable := compareVersions(latestVersion, version.CurrentVersion)
 
 	// Build download URL based on platform
 	downloadURL := buildDownloadURL(latestVersion)
 
-	return &UpdateInfo{
-		CurrentVersion:  CurrentVersion,
+	return &types.UpdateInfo{
+		CurrentVersion:  version.CurrentVersion,
 		LatestVersion:   latestVersion,
 		UpdateAvailable: updateAvailable,
 		DownloadURL:     downloadURL,
 	}, nil
+}
+
+// DownloadAndInstallUpdate downloads and installs the update
+func (a *App) DownloadAndInstallUpdate() error {
+	// Check if running in development mode
+	if isDevMode() {
+		return fmt.Errorf("updates are not supported in development mode. Please build and install the app first")
+	}
+
+	// First check if update is available
+	updateInfo, err := a.CheckForUpdate()
+	if err != nil {
+		return fmt.Errorf("failed to check for update: %v", err)
+	}
+
+	if !updateInfo.UpdateAvailable {
+		return fmt.Errorf("no update available")
+	}
+
+	fmt.Printf("Downloading update from: %s\n", updateInfo.DownloadURL)
+
+	// Download the installer
+	installerPath, err := downloadInstaller(updateInfo.DownloadURL, updateInfo.LatestVersion)
+	if err != nil {
+		return fmt.Errorf("failed to download update: %v", err)
+	}
+
+	fmt.Printf("Downloaded installer to: %s\n", installerPath)
+
+	// Install based on platform
+	switch runtime.GOOS {
+	case "darwin":
+		return installMacOSUpdate(installerPath)
+	case "windows":
+		return installWindowsUpdate(installerPath)
+	default:
+		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+	}
 }
 
 // compareVersions returns true if latest > current
@@ -116,44 +149,6 @@ func buildDownloadURL(version string) string {
 		return fmt.Sprintf("%s/BlueSnake-Windows-x64-%s.exe", updateBaseURL, version)
 	default:
 		return ""
-	}
-}
-
-// DownloadAndInstallUpdate downloads and installs the update
-func (a *App) DownloadAndInstallUpdate() error {
-	// Check if running in development mode
-	if isDevMode() {
-		return fmt.Errorf("updates are not supported in development mode. Please build and install the app first")
-	}
-
-	// First check if update is available
-	updateInfo, err := a.CheckForUpdate()
-	if err != nil {
-		return fmt.Errorf("failed to check for update: %v", err)
-	}
-
-	if !updateInfo.UpdateAvailable {
-		return fmt.Errorf("no update available")
-	}
-
-	fmt.Printf("Downloading update from: %s\n", updateInfo.DownloadURL)
-
-	// Download the installer
-	installerPath, err := downloadInstaller(updateInfo.DownloadURL, updateInfo.LatestVersion)
-	if err != nil {
-		return fmt.Errorf("failed to download update: %v", err)
-	}
-
-	fmt.Printf("Downloaded installer to: %s\n", installerPath)
-
-	// Install based on platform
-	switch runtime.GOOS {
-	case "darwin":
-		return installMacOSUpdate(installerPath)
-	case "windows":
-		return installWindowsUpdate(installerPath)
-	default:
-		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
 }
 
@@ -411,4 +406,9 @@ func installWindowsUpdate(exePath string) error {
 	// Exit the application (the installer will handle the rest)
 	os.Exit(0)
 	return nil
+}
+
+// GetVersion returns the current version of the application
+func (a *App) GetVersion() string {
+	return version.CurrentVersion
 }
