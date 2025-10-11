@@ -19,6 +19,8 @@ import './LinksPanel.css';
 interface Link {
   url: string;
   anchorText: string;
+  context?: string;
+  isInternal: boolean;
   status?: number;
 }
 
@@ -92,6 +94,13 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks }: LinksPa
 
   const currentLinks = activeTab === 'inlinks' ? inlinks : outlinks;
 
+  // Sort links: internal links first, then external links
+  const sortedLinks = [...currentLinks].sort((a, b) => {
+    if (a.isInternal && !b.isInternal) return -1;
+    if (!a.isInternal && b.isInternal) return 1;
+    return 0;
+  });
+
   return (
     <>
       {/* Backdrop */}
@@ -141,15 +150,28 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks }: LinksPa
               <p>No {activeTab === 'inlinks' ? 'inlinks' : 'outlinks'} found</p>
             </div>
           ) : (
-            <div className="links-table">
+            <>
+              {/* Legend */}
+              <div className="links-legend">
+                <div className="legend-item">
+                  <div className="legend-color legend-internal"></div>
+                  <span className="legend-label">Internal Link</span>
+                </div>
+                <div className="legend-item">
+                  <div className="legend-color legend-external"></div>
+                  <span className="legend-label">External Link</span>
+                </div>
+              </div>
+              <div className="links-table">
               <div className="links-table-header">
                 <div className="links-header-cell url-column">URL</div>
                 <div className="links-header-cell anchor-column">Anchor Text</div>
+                <div className="links-header-cell context-column">Context</div>
                 <div className="links-header-cell status-column">Status</div>
               </div>
               <div className="links-table-body">
-                {currentLinks.map((link, index) => (
-                  <div key={index} className="link-row">
+                {sortedLinks.map((link, index) => (
+                  <div key={index} className={`link-row ${link.isInternal ? 'link-internal' : 'link-external'}`}>
                     <div
                       className="link-cell url-column clickable"
                       title={link.url}
@@ -158,7 +180,10 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks }: LinksPa
                       {link.url}
                     </div>
                     <div className="link-cell anchor-column" title={link.anchorText}>
-                      {link.anchorText}
+                      {link.anchorText || '-'}
+                    </div>
+                    <div className="link-cell context-column" title={link.context}>
+                      {link.context || '-'}
                     </div>
                     <div className="link-cell status-column">
                       {link.status && (
@@ -171,6 +196,7 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks }: LinksPa
                 ))}
               </div>
             </div>
+            </>
           )}
         </div>
 

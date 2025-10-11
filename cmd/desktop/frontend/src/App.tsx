@@ -83,6 +83,8 @@ interface CrawlResult {
   url: string;
   status: number;
   title: string;
+  metaDescription?: string;
+  contentHash?: string;
   indexable: string;
   error?: string;
 }
@@ -90,6 +92,8 @@ interface CrawlResult {
 interface Link {
   url: string;
   anchorText: string;
+  context?: string;
+  isInternal: boolean;
   status?: number;
 }
 
@@ -831,12 +835,22 @@ function App() {
     const inlinks: Link[] = [];
     const inlinkCount = Math.min(Math.floor(Math.random() * 30) + 10, availableUrls.length); // 10-40 inlinks
     const anchorTexts = ['Read more', 'Learn more', 'Click here', 'View details', 'See more', 'Discover', 'Explore'];
+    const contexts = [
+      'Check out our latest article on',
+      'For more information about',
+      'You might also be interested in',
+      'Learn everything you need to know about',
+      'Discover the benefits of'
+    ];
 
     for (let i = 0; i < inlinkCount; i++) {
       const result = availableUrls[i];
+      const isInternal = Math.random() > 0.3; // 70% internal, 30% external
       inlinks.push({
         url: result.url,
         anchorText: `${anchorTexts[Math.floor(Math.random() * anchorTexts.length)]} about ${new URL(clickedUrl).pathname.split('/').pop() || 'this page'}`,
+        context: `${contexts[Math.floor(Math.random() * contexts.length)]} ${new URL(clickedUrl).pathname.split('/').pop() || 'this page'}`,
+        isInternal: isInternal,
         status: result.status
       });
     }
@@ -848,9 +862,12 @@ function App() {
     for (let i = 0; i < outlinkCount; i++) {
       const result = availableUrls[i];
       const pathname = new URL(result.url).pathname.split('/').pop() || 'page';
+      const isInternal = Math.random() > 0.3; // 70% internal, 30% external
       outlinks.push({
         url: result.url,
         anchorText: `${anchorTexts[Math.floor(Math.random() * anchorTexts.length)]} - ${pathname}`,
+        context: `${contexts[Math.floor(Math.random() * contexts.length)]} ${pathname}`,
+        isInternal: isInternal,
         status: result.status
       });
     }
@@ -1234,6 +1251,7 @@ function App() {
               <div className="header-cell url-col">URL</div>
               <div className="header-cell status-col">Status</div>
               <div className="header-cell title-col">Title</div>
+              <div className="header-cell meta-desc-col">Meta Description</div>
               <div className="header-cell indexable-col">Indexable</div>
             </div>
 
@@ -1268,6 +1286,9 @@ function App() {
                     </div>
                     <div className="result-cell title-col" style={{ opacity: isInProgress ? 0.6 : 1 }}>
                       {result.error ? result.error : result.title || '(no title)'}
+                    </div>
+                    <div className="result-cell meta-desc-col" style={{ opacity: isInProgress ? 0.6 : 1 }} title={result.metaDescription || ''}>
+                      {result.metaDescription || '-'}
                     </div>
                     <div className="result-cell indexable-col" style={{ opacity: isInProgress ? 0.6 : 1 }}>
                       <span className={`indexable-badge ${result.indexable === 'Yes' ? 'indexable-yes' : 'indexable-no'}`}>

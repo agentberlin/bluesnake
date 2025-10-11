@@ -26,6 +26,7 @@ func (s *Store) SavePageLinks(crawlID uint, sourceURL string, outboundLinks []Pa
 			TargetURL:   link.URL,
 			LinkType:    link.Type,
 			LinkText:    link.Text,
+			LinkContext: link.Context,
 			IsInternal:  link.IsInternal,
 			Status:      link.Status,
 			Title:       link.Title,

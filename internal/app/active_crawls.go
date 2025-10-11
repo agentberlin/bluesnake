@@ -93,11 +93,13 @@ func (a *App) GetActiveCrawlData(projectID uint) (*types.CrawlResultDetailed, er
 	results := make([]types.CrawlResult, len(urls))
 	for i, u := range urls {
 		results[i] = types.CrawlResult{
-			URL:       u.URL,
-			Status:    u.Status,
-			Title:     u.Title,
-			Indexable: u.Indexable,
-			Error:     u.Error,
+			URL:             u.URL,
+			Status:          u.Status,
+			Title:           u.Title,
+			MetaDescription: u.MetaDescription,
+			ContentHash:     u.ContentHash,
+			Indexable:       u.Indexable,
+			Error:           u.Error,
 		}
 	}
 

@@ -235,7 +235,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		}
 
 		// Save to database - all crawling logic handled by bluesnake
-		if err := a.store.SaveCrawledUrl(stats.crawlID, result.URL, result.Status, result.Title, result.Indexable, result.Error); err != nil {
+		if err := a.store.SaveCrawledUrl(stats.crawlID, result.URL, result.Status, result.Title, result.MetaDescription, result.ContentHash, result.Indexable, result.Error); err != nil {
 			log.Printf("Failed to save crawled URL: %v", err)
 		}
 
@@ -254,6 +254,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 					URL:         link.URL,
 					Type:        link.Type,
 					Text:        link.Text,
+					Context:     link.Context,
 					IsInternal:  link.IsInternal,
 					Status:      status,
 					Title:       link.Title,
@@ -269,6 +270,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 					URL:         link.URL,
 					Type:        link.Type,
 					Text:        link.Text,
+					Context:     link.Context,
 					IsInternal:  link.IsInternal,
 					Status:      status,
 					Title:       link.Title,
