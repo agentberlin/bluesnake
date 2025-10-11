@@ -20,6 +20,8 @@ interface Link {
   url: string;
   anchorText: string;
   status?: number;
+  position?: string;
+  domPath?: string;
 }
 
 interface LinksPanelProps {
@@ -38,6 +40,11 @@ const MAX_WIDTH_VW = 90;
 
 function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks }: LinksPanelProps) {
   const [activeTab, setActiveTab] = useState<TabType>('inlinks');
+  const [showContentOnly, setShowContentOnly] = useState<boolean>(() => {
+    // Load saved filter preference from localStorage, default to true (content only)
+    const savedFilter = localStorage.getItem('linksPanelShowContentOnly');
+    return savedFilter !== null ? savedFilter === 'true' : true;
+  });
   const [panelWidth, setPanelWidth] = useState<number>(() => {
     // Load saved width from localStorage or use default
     const savedWidth = localStorage.getItem('linksPanelWidth');
@@ -88,9 +95,18 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks }: LinksPa
     setIsResizing(true);
   };
 
+  // Save filter preference when it changes
+  useEffect(() => {
+    localStorage.setItem('linksPanelShowContentOnly', showContentOnly.toString());
+  }, [showContentOnly]);
+
   if (!isOpen) return null;
 
-  const currentLinks = activeTab === 'inlinks' ? inlinks : outlinks;
+  const allCurrentLinks = activeTab === 'inlinks' ? inlinks : outlinks;
+  // Filter links based on showContentOnly toggle
+  const currentLinks = showContentOnly
+    ? allCurrentLinks.filter(link => link.position === 'content')
+    : allCurrentLinks;
 
   return (
     <>
@@ -116,6 +132,20 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks }: LinksPa
             </button>
           </div>
           <div className="links-panel-url">{selectedUrl}</div>
+
+          {/* Filter Toggle */}
+          <div className="links-panel-filter">
+            <label className="filter-toggle-label">
+              <input
+                type="checkbox"
+                checked={showContentOnly}
+                onChange={(e) => setShowContentOnly(e.target.checked)}
+                className="filter-toggle-checkbox"
+              />
+              <span className="filter-toggle-switch"></span>
+              <span className="filter-toggle-text">Show only content links</span>
+            </label>
+          </div>
         </div>
 
         {/* Tabs */}
@@ -145,6 +175,7 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks }: LinksPa
               <div className="links-table-header">
                 <div className="links-header-cell url-column">URL</div>
                 <div className="links-header-cell anchor-column">Anchor Text</div>
+                <div className="links-header-cell position-column">Position</div>
                 <div className="links-header-cell status-column">Status</div>
               </div>
               <div className="links-table-body">
@@ -159,6 +190,13 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks }: LinksPa
                     </div>
                     <div className="link-cell anchor-column" title={link.anchorText}>
                       {link.anchorText}
+                    </div>
+                    <div className="link-cell position-column" title={link.domPath || ''}>
+                      {link.position && (
+                        <span className={`position-badge position-${link.position === 'content' ? 'content' : 'boilerplate'}`}>
+                          {link.position}
+                        </span>
+                      )}
                     </div>
                     <div className="link-cell status-column">
                       {link.status && (

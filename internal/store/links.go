@@ -30,6 +30,8 @@ func (s *Store) SavePageLinks(crawlID uint, sourceURL string, outboundLinks []Pa
 			Status:      link.Status,
 			Title:       link.Title,
 			ContentType: link.ContentType,
+			Position:    link.Position,
+			DOMPath:     link.DOMPath,
 		}
 		if err := s.db.Create(&pageLink).Error; err != nil {
 			return fmt.Errorf("failed to save outbound link: %v", err)

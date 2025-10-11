@@ -85,6 +85,8 @@ type LinkInfo struct {
 	URL        string `json:"url"`
 	AnchorText string `json:"anchorText"`
 	Status     *int   `json:"status,omitempty"`
+	Position   string `json:"position,omitempty"` // Position in page: "content", "navigation", "header", "footer", "sidebar", "breadcrumbs", "pagination", "unknown"
+	DOMPath    string `json:"domPath,omitempty"`  // Simplified DOM path showing link's location in HTML structure
 }
 
 // PageLinksResponse represents the response for page links
