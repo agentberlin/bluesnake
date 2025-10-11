@@ -16,6 +16,7 @@ package bluesnake
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -649,4 +650,297 @@ func TestCrawlerUserAgent(t *testing.T) {
 			t.Logf("✓ User-Agent correctly set to: %q", receivedUserAgent)
 		})
 	}
+}
+
+// TestPageResult_GetHTML tests the GetHTML() method
+func TestPageResult_GetHTML(t *testing.T) {
+	mock := NewMockTransport()
+
+	expectedHTML := `<html><head><title>Test Page</title><meta name="description" content="Test description"></head><body><main>Main content here</main></body></html>`
+	mock.RegisterHTML("https://example.com/", expectedHTML)
+
+	var mu sync.Mutex
+	var pageResult *PageResult
+
+	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
+	crawler.Collector.WithTransport(mock)
+
+	crawler.SetOnPageCrawled(func(result *PageResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		pageResult = result
+	})
+
+	err := crawler.Start("https://example.com/")
+	if err != nil {
+		t.Fatalf("Failed to start crawler: %v", err)
+	}
+
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if pageResult == nil {
+		t.Fatal("Page was not crawled")
+	}
+
+	html := pageResult.GetHTML()
+	if html != expectedHTML {
+		t.Errorf("GetHTML() returned incorrect HTML.\nExpected: %q\nGot: %q", expectedHTML, html)
+	}
+
+	t.Logf("GetHTML() correctly returned %d bytes of HTML", len(html))
+}
+
+// TestPageResult_GetTextFull tests the GetTextFull() method
+func TestPageResult_GetTextFull(t *testing.T) {
+	mock := NewMockTransport()
+
+	html := `<html>
+		<head><title>Test Page</title></head>
+		<body>
+			<nav>Navigation Menu</nav>
+			<header>Header Content</header>
+			<main>Main Content</main>
+			<aside>Sidebar Content</aside>
+			<footer>Footer Content</footer>
+		</body>
+	</html>`
+
+	mock.RegisterHTML("https://example.com/", html)
+
+	var mu sync.Mutex
+	var pageResult *PageResult
+
+	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
+	crawler.Collector.WithTransport(mock)
+
+	crawler.SetOnPageCrawled(func(result *PageResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		pageResult = result
+	})
+
+	err := crawler.Start("https://example.com/")
+	if err != nil {
+		t.Fatalf("Failed to start crawler: %v", err)
+	}
+
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if pageResult == nil {
+		t.Fatal("Page was not crawled")
+	}
+
+	text := pageResult.GetTextFull()
+
+	// Should include all text from all sections
+	expectedTexts := []string{"Test Page", "Navigation Menu", "Header Content", "Main Content", "Sidebar Content", "Footer Content"}
+	for _, expected := range expectedTexts {
+		if !strings.Contains(text, expected) {
+			t.Errorf("GetTextFull() missing expected text: %q\nFull text: %q", expected, text)
+		}
+	}
+
+	t.Logf("GetTextFull() correctly extracted %d characters including all page sections", len(text))
+}
+
+// TestPageResult_GetTextContent tests the GetTextContent() method
+func TestPageResult_GetTextContent(t *testing.T) {
+	tests := []struct {
+		name            string
+		html            string
+		expectedInclude []string
+		expectedExclude []string
+	}{
+		{
+			name: "article tag",
+			html: `<html><body>
+				<nav>Navigation</nav>
+				<article>Article Content</article>
+				<footer>Footer</footer>
+			</body></html>`,
+			expectedInclude: []string{"Article Content"},
+			expectedExclude: []string{"Navigation", "Footer"},
+		},
+		{
+			name: "main tag",
+			html: `<html><body>
+				<header>Header</header>
+				<main>Main Content</main>
+				<aside>Sidebar</aside>
+			</body></html>`,
+			expectedInclude: []string{"Main Content"},
+			expectedExclude: []string{"Header", "Sidebar"},
+		},
+		{
+			name: "role=main attribute",
+			html: `<html><body>
+				<div role="main">Role Main Content</div>
+				<nav>Navigation</nav>
+			</body></html>`,
+			expectedInclude: []string{"Role Main Content"},
+			expectedExclude: []string{"Navigation"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := NewMockTransport()
+			mock.RegisterHTML("https://example.com/", tt.html)
+
+			var mu sync.Mutex
+			var pageResult *PageResult
+
+			crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
+			crawler.Collector.WithTransport(mock)
+
+			crawler.SetOnPageCrawled(func(result *PageResult) {
+				mu.Lock()
+				defer mu.Unlock()
+				pageResult = result
+			})
+
+			err := crawler.Start("https://example.com/")
+			if err != nil {
+				t.Fatalf("Failed to start crawler: %v", err)
+			}
+
+			crawler.Wait()
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if pageResult == nil {
+				t.Fatal("Page was not crawled")
+			}
+
+			text := pageResult.GetTextContent()
+
+			// Check that expected content is included
+			for _, expected := range tt.expectedInclude {
+				if !strings.Contains(text, expected) {
+					t.Errorf("GetTextContent() missing expected text: %q\nFull text: %q", expected, text)
+				}
+			}
+
+			// Check that unwanted content is excluded
+			for _, excluded := range tt.expectedExclude {
+				if strings.Contains(text, excluded) {
+					t.Errorf("GetTextContent() should not include: %q\nFull text: %q", excluded, text)
+				}
+			}
+
+			t.Logf("GetTextContent() correctly extracted %d characters from main content area", len(text))
+		})
+	}
+}
+
+// TestPageResult_GettersWithNonHTML tests that getters handle non-HTML content gracefully
+func TestPageResult_GettersWithNonHTML(t *testing.T) {
+	mock := NewMockTransport()
+
+	// Register a JSON response
+	mock.RegisterResponse("https://example.com/data.json", &MockResponse{
+		StatusCode: 200,
+		Body:       `{"key": "value"}`,
+		Headers:    http.Header{"Content-Type": []string{"application/json"}},
+	})
+
+	var mu sync.Mutex
+	var pageResult *PageResult
+
+	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
+	crawler.Collector.WithTransport(mock)
+
+	crawler.SetOnPageCrawled(func(result *PageResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		pageResult = result
+	})
+
+	err := crawler.Start("https://example.com/data.json")
+	if err != nil {
+		t.Fatalf("Failed to start crawler: %v", err)
+	}
+
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if pageResult == nil {
+		t.Fatal("Page was not crawled")
+	}
+
+	// GetHTML should still return the body
+	html := pageResult.GetHTML()
+	if html != `{"key": "value"}` {
+		t.Errorf("GetHTML() should return body for non-HTML: %q", html)
+	}
+
+	// GetTextFull and GetTextContent should return empty for non-HTML
+	textFull := pageResult.GetTextFull()
+	if textFull != "" {
+		t.Errorf("GetTextFull() should return empty string for non-HTML, got: %q", textFull)
+	}
+
+	textContent := pageResult.GetTextContent()
+	if textContent != "" {
+		t.Errorf("GetTextContent() should return empty string for non-HTML, got: %q", textContent)
+	}
+
+	t.Log("Getter methods correctly handled non-HTML content")
+}
+
+// TestPageResult_MetaDescription tests that meta description is extracted
+func TestPageResult_MetaDescription(t *testing.T) {
+	mock := NewMockTransport()
+
+	html := `<html>
+		<head>
+			<title>Test Page</title>
+			<meta name="description" content="This is a test description">
+		</head>
+		<body>Content</body>
+	</html>`
+
+	mock.RegisterHTML("https://example.com/", html)
+
+	var mu sync.Mutex
+	var pageResult *PageResult
+
+	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
+	crawler.Collector.WithTransport(mock)
+
+	crawler.SetOnPageCrawled(func(result *PageResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		pageResult = result
+	})
+
+	err := crawler.Start("https://example.com/")
+	if err != nil {
+		t.Fatalf("Failed to start crawler: %v", err)
+	}
+
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if pageResult == nil {
+		t.Fatal("Page was not crawled")
+	}
+
+	expectedDesc := "This is a test description"
+	if pageResult.MetaDescription != expectedDesc {
+		t.Errorf("MetaDescription = %q, want %q", pageResult.MetaDescription, expectedDesc)
+	}
+
+	t.Logf("Meta description correctly extracted: %q", pageResult.MetaDescription)
 }
