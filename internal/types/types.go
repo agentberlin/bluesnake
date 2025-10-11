@@ -89,6 +89,8 @@ type LinkInfo struct {
 	Context    string `json:"context,omitempty"`
 	IsInternal bool   `json:"isInternal"`
 	Status     *int   `json:"status,omitempty"`
+	Position   string `json:"position,omitempty"` // Position in page: "content", "navigation", "header", "footer", "sidebar", "breadcrumbs", "pagination", "unknown"
+	DOMPath    string `json:"domPath,omitempty"`  // Simplified DOM path showing link's location in HTML structure
 }
 
 // PageLinksResponse represents the response for page links

@@ -38,6 +38,8 @@ func (a *App) GetPageLinksForURL(crawlID uint, pageURL string) (*types.PageLinks
 			Context:    link.LinkContext,
 			IsInternal: link.IsInternal,
 			Status:     status,
+			Position:   link.Position,
+			DOMPath:    link.DOMPath,
 		})
 	}
 
@@ -53,6 +55,8 @@ func (a *App) GetPageLinksForURL(crawlID uint, pageURL string) (*types.PageLinks
 			Context:    link.LinkContext,
 			IsInternal: link.IsInternal,
 			Status:     status,
+			Position:   link.Position,
+			DOMPath:    link.DOMPath,
 		})
 	}
 
