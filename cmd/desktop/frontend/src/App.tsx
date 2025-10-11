@@ -252,7 +252,6 @@ function App() {
   const [updateInfo, setUpdateInfo] = useState<main.UpdateInfo | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
-  const [appVersion, setAppVersion] = useState<string>('');
 
   // Links panel state
   const [isPanelOpen, setIsPanelOpen] = useState(false);
@@ -265,6 +264,7 @@ function App() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [isCrawlDropdownOpen, setIsCrawlDropdownOpen] = useState(false);
   const crawlDropdownRef = useRef<HTMLDivElement>(null);
+  const [appVersion, setAppVersion] = useState<string>('');
 
   useEffect(() => {
     // Load projects on start
