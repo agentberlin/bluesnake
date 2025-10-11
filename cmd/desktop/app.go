@@ -45,66 +45,66 @@ type activeCrawl struct {
 	stopChan    chan struct{} // Signal to stop the crawl
 	stopped     bool          // Whether the crawl was stopped
 	stats       *crawlStats
-	statusMutex sync.RWMutex  // Protects stats reads/writes
+	statusMutex sync.RWMutex // Protects stats reads/writes
 }
 
 // CrawlProgress represents the progress of an active crawl
 type CrawlProgress struct {
-	ProjectID        uint     `json:"projectId"`
-	CrawlID          uint     `json:"crawlId"`
-	Domain           string   `json:"domain"`
-	URL              string   `json:"url"`
-	PagesCrawled     int      `json:"pagesCrawled"`
-	TotalDiscovered  int      `json:"totalDiscovered"`  // Total URLs discovered (both crawled and queued)
-	DiscoveredURLs   []string `json:"discoveredUrls"`   // URLs discovered but not yet crawled
-	IsCrawling       bool     `json:"isCrawling"`
+	ProjectID       uint     `json:"projectId"`
+	CrawlID         uint     `json:"crawlId"`
+	Domain          string   `json:"domain"`
+	URL             string   `json:"url"`
+	PagesCrawled    int      `json:"pagesCrawled"`
+	TotalDiscovered int      `json:"totalDiscovered"` // Total URLs discovered (both crawled and queued)
+	DiscoveredURLs  []string `json:"discoveredUrls"`  // URLs discovered but not yet crawled
+	IsCrawling      bool     `json:"isCrawling"`
 }
 
 // CrawlResult represents a single crawl result
 type CrawlResult struct {
-	URL        string `json:"url"`
-	Status     int    `json:"status"`
-	Title      string `json:"title"`
-	Indexable  string `json:"indexable"`
-	Error      string `json:"error,omitempty"`
+	URL       string `json:"url"`
+	Status    int    `json:"status"`
+	Title     string `json:"title"`
+	Indexable string `json:"indexable"`
+	Error     string `json:"error,omitempty"`
 }
 
 // ProjectInfo represents project information for the frontend
 type ProjectInfo struct {
-	ID            uint      `json:"id"`
-	URL           string    `json:"url"`
-	Domain        string    `json:"domain"`
-	FaviconPath   string    `json:"faviconPath"`
-	CrawlDateTime int64     `json:"crawlDateTime"`
-	CrawlDuration int64     `json:"crawlDuration"`
-	PagesCrawled  int       `json:"pagesCrawled"`
-	LatestCrawlID uint      `json:"latestCrawlId"`
+	ID            uint   `json:"id"`
+	URL           string `json:"url"`
+	Domain        string `json:"domain"`
+	FaviconPath   string `json:"faviconPath"`
+	CrawlDateTime int64  `json:"crawlDateTime"`
+	CrawlDuration int64  `json:"crawlDuration"`
+	PagesCrawled  int    `json:"pagesCrawled"`
+	LatestCrawlID uint   `json:"latestCrawlId"`
 }
 
 // CrawlInfo represents crawl information for the frontend
 type CrawlInfo struct {
-	ID            uint   `json:"id"`
-	ProjectID     uint   `json:"projectId"`
-	CrawlDateTime int64  `json:"crawlDateTime"`
-	CrawlDuration int64  `json:"crawlDuration"`
-	PagesCrawled  int    `json:"pagesCrawled"`
+	ID            uint  `json:"id"`
+	ProjectID     uint  `json:"projectId"`
+	CrawlDateTime int64 `json:"crawlDateTime"`
+	CrawlDuration int64 `json:"crawlDuration"`
+	PagesCrawled  int   `json:"pagesCrawled"`
 }
 
 // CrawlResultDetailed represents a crawl with all its URLs
 type CrawlResultDetailed struct {
-	CrawlInfo CrawlInfo      `json:"crawlInfo"`
-	Results   []CrawlResult  `json:"results"`
+	CrawlInfo CrawlInfo     `json:"crawlInfo"`
+	Results   []CrawlResult `json:"results"`
 }
 
 // crawlStats tracks crawl statistics for the desktop app
 type crawlStats struct {
-	startTime      time.Time
-	pagesCrawled   int
+	startTime       time.Time
+	pagesCrawled    int
 	totalDiscovered int // Total unique URLs discovered (from bluesnake)
-	url            string
-	domain         string
-	projectID      uint
-	crawlID        uint
+	url             string
+	domain          string
+	projectID       uint
+	crawlID         uint
 	// Track discovered vs crawled URLs for UI display
 	discoveredURLs *sync.Map // URLs discovered but not yet crawled (from bluesnake)
 	crawledURLs    *sync.Map // URLs that have been crawled
@@ -400,13 +400,13 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 
 	// Build crawler configuration based on database config
 	crawlerConfig := &bluesnake.CollectorConfig{
-		Context:              crawlCtx, // Pass context for proper cancellation support
-		UserAgent:            config.UserAgent,
-		AllowedDomains:       []string{domain},
-		Async:                true,
-		EnableRendering:      config.JSRenderingEnabled,
-		DiscoveryMechanisms:  mechanisms,
-		SitemapURLs:          config.GetSitemapURLsArray(),
+		Context:             crawlCtx, // Pass context for proper cancellation support
+		UserAgent:           config.UserAgent,
+		AllowedDomains:      []string{domain},
+		Async:               true,
+		EnableRendering:     config.JSRenderingEnabled,
+		DiscoveryMechanisms: mechanisms,
+		SitemapURLs:         config.GetSitemapURLsArray(),
 	}
 
 	// Create the high-level crawler
