@@ -39,6 +39,12 @@ type Link struct {
 	Title string `json:"title,omitempty"`
 	// ContentType is the MIME type if this URL has been crawled
 	ContentType string `json:"contentType,omitempty"`
+	// Position indicates the semantic location of the link on the page
+	// Values: "content", "navigation", "header", "footer", "sidebar", "breadcrumbs", "pagination", "unknown"
+	Position string `json:"position,omitempty"`
+	// DOMPath is a simplified DOM path showing the link's location in the HTML structure
+	// Example: "body > main > article > p > a"
+	DOMPath string `json:"domPath,omitempty"`
 }
 
 // Links contains outbound links from a page
@@ -606,7 +612,7 @@ func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 	var links []Link
 
 	// Helper function to add a link to the list
-	addLink := func(url, linkType, text, context string) {
+	addLink := func(url, linkType, text, context string, elem *HTMLElement) {
 		absoluteURL := e.Request.AbsoluteURL(url)
 		if absoluteURL == "" {
 			return
@@ -629,6 +635,9 @@ func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 			contentType = metadata.ContentType
 		}
 
+		// Extract link position and DOM path
+		position, domPath := extractLinkPosition(elem)
+
 		links = append(links, Link{
 			URL:         absoluteURL,
 			Type:        linkType,
@@ -638,6 +647,8 @@ func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 			Status:      status,
 			Title:       title,
 			ContentType: contentType,
+			Position:    position,
+			DOMPath:     domPath,
 		})
 	}
 
@@ -646,58 +657,58 @@ func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 		href := elem.Attr("href")
 		text := strings.TrimSpace(elem.Text)
 		context := extractLinkContext(elem)
-		addLink(href, "anchor", text, context)
+		addLink(href, "anchor", text, context, elem)
 	})
 
 	// Extract image links <img src="">
 	e.ForEach("img[src]", func(_ int, elem *HTMLElement) {
 		src := elem.Attr("src")
 		alt := elem.Attr("alt")
-		addLink(src, "image", alt, "")
+		addLink(src, "image", alt, "", elem)
 	})
 
 	// Extract script links <script src="">
 	e.ForEach("script[src]", func(_ int, elem *HTMLElement) {
 		src := elem.Attr("src")
-		addLink(src, "script", "", "")
+		addLink(src, "script", "", "", elem)
 	})
 
 	// Extract stylesheet links <link rel="stylesheet" href="">
 	e.ForEach("link[rel='stylesheet'][href]", func(_ int, elem *HTMLElement) {
 		href := elem.Attr("href")
-		addLink(href, "stylesheet", "", "")
+		addLink(href, "stylesheet", "", "", elem)
 	})
 
 	// Extract canonical links <link rel="canonical" href="">
 	e.ForEach("link[rel='canonical'][href]", func(_ int, elem *HTMLElement) {
 		href := elem.Attr("href")
-		addLink(href, "canonical", "", "")
+		addLink(href, "canonical", "", "", elem)
 	})
 
 	// Extract iframe links <iframe src="">
 	e.ForEach("iframe[src]", func(_ int, elem *HTMLElement) {
 		src := elem.Attr("src")
-		addLink(src, "iframe", "", "")
+		addLink(src, "iframe", "", "", elem)
 	})
 
 	// Extract video sources <video src=""> and <source src="">
 	e.ForEach("video[src]", func(_ int, elem *HTMLElement) {
 		src := elem.Attr("src")
-		addLink(src, "video", "", "")
+		addLink(src, "video", "", "", elem)
 	})
 	e.ForEach("video source[src]", func(_ int, elem *HTMLElement) {
 		src := elem.Attr("src")
-		addLink(src, "video", "", "")
+		addLink(src, "video", "", "", elem)
 	})
 
 	// Extract audio sources <audio src=""> and <source src="">
 	e.ForEach("audio[src]", func(_ int, elem *HTMLElement) {
 		src := elem.Attr("src")
-		addLink(src, "audio", "", "")
+		addLink(src, "audio", "", "", elem)
 	})
 	e.ForEach("audio source[src]", func(_ int, elem *HTMLElement) {
 		src := elem.Attr("src")
-		addLink(src, "audio", "", "")
+		addLink(src, "audio", "", "", elem)
 	})
 
 	return links

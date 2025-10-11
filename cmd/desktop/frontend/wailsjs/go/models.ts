@@ -130,6 +130,8 @@ export namespace types {
 	    context?: string;
 	    isInternal: boolean;
 	    status?: number;
+	    position?: string;
+	    domPath?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new LinkInfo(source);
@@ -142,6 +144,8 @@ export namespace types {
 	        this.context = source["context"];
 	        this.isInternal = source["isInternal"];
 	        this.status = source["status"];
+	        this.position = source["position"];
+	        this.domPath = source["domPath"];
 	    }
 	}
 	export class PageLinksResponse {
