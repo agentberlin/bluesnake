@@ -24,6 +24,8 @@ export function GetFaviconData(arg1:string):Promise<string>;
 
 export function GetProjects():Promise<Array<main.ProjectInfo>>;
 
+export function GetVersion():Promise<string>;
+
 export function StartCrawl(arg1:string):Promise<void>;
 
 export function StopCrawl(arg1:number):Promise<void>;

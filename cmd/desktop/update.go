@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const (
@@ -120,21 +121,30 @@ func buildDownloadURL(version string) string {
 
 // DownloadAndInstallUpdate downloads and installs the update
 func (a *App) DownloadAndInstallUpdate() error {
+	// Check if running in development mode
+	if isDevMode() {
+		return fmt.Errorf("updates are not supported in development mode. Please build and install the app first")
+	}
+
 	// First check if update is available
 	updateInfo, err := a.CheckForUpdate()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to check for update: %v", err)
 	}
 
 	if !updateInfo.UpdateAvailable {
 		return fmt.Errorf("no update available")
 	}
 
+	fmt.Printf("Downloading update from: %s\n", updateInfo.DownloadURL)
+
 	// Download the installer
 	installerPath, err := downloadInstaller(updateInfo.DownloadURL, updateInfo.LatestVersion)
 	if err != nil {
 		return fmt.Errorf("failed to download update: %v", err)
 	}
+
+	fmt.Printf("Downloaded installer to: %s\n", installerPath)
 
 	// Install based on platform
 	switch runtime.GOOS {
@@ -145,6 +155,26 @@ func (a *App) DownloadAndInstallUpdate() error {
 	default:
 		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
 	}
+}
+
+// isDevMode detects if the app is running in development mode
+func isDevMode() bool {
+	execPath, err := os.Executable()
+	if err != nil {
+		return false
+	}
+
+	// In dev mode on macOS, the path typically contains /build/bin/ or similar temp directories
+	// In production, it's in /Applications/BlueSnake.app/Contents/MacOS/
+	if runtime.GOOS == "darwin" {
+		return !strings.Contains(execPath, "/Applications/") && !strings.Contains(execPath, ".app/Contents/MacOS/")
+	} else if runtime.GOOS == "windows" {
+		// In dev mode on Windows, the path typically contains \build\bin\ or temp directories
+		// In production, it's in C:\Program Files\ or similar
+		return !strings.Contains(execPath, "Program Files")
+	}
+
+	return false
 }
 
 // downloadInstaller downloads the installer to a temporary location
@@ -192,32 +222,7 @@ func downloadInstaller(url, version string) (string, error) {
 
 // installMacOSUpdate installs the update on macOS
 func installMacOSUpdate(dmgPath string) error {
-	// Mount the DMG
-	mountCmd := exec.Command("hdiutil", "attach", dmgPath, "-nobrowse", "-quiet")
-	output, err := mountCmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to mount DMG: %v, output: %s", err, string(output))
-	}
-
-	// Parse the mount point from output
-	// The output format is: /dev/diskXsY    Apple_HFS    /Volumes/BlueSnake
-	lines := strings.Split(string(output), "\n")
-	var mountPoint string
-	for _, line := range lines {
-		if strings.Contains(line, "/Volumes/") {
-			parts := strings.Fields(line)
-			for _, part := range parts {
-				if strings.HasPrefix(part, "/Volumes/") {
-					mountPoint = part
-					break
-				}
-			}
-		}
-	}
-
-	if mountPoint == "" {
-		return fmt.Errorf("could not determine mount point")
-	}
+	fmt.Printf("Starting macOS update installation from: %s\n", dmgPath)
 
 	// Get the current app bundle path
 	execPath, err := os.Executable()
@@ -225,52 +230,166 @@ func installMacOSUpdate(dmgPath string) error {
 		return fmt.Errorf("failed to get executable path: %v", err)
 	}
 
+	fmt.Printf("Executable path: %s\n", execPath)
+
 	// The executable is at BlueSnake.app/Contents/MacOS/BlueSnake
 	// We need to get to BlueSnake.app
 	appBundlePath := filepath.Clean(filepath.Join(filepath.Dir(execPath), "..", ".."))
-
-	// Source app in DMG
-	sourceApp := filepath.Join(mountPoint, "BlueSnake.app")
+	fmt.Printf("App bundle path: %s\n", appBundlePath)
 
 	// Create an update script that will:
 	// 1. Wait for the app to quit
-	// 2. Remove old app
-	// 3. Copy new app
-	// 4. Unmount DMG
-	// 5. Relaunch app
+	// 2. Mount the DMG
+	// 3. Copy the new app to temp location
+	// 4. Remove old app and move new one into place
+	// 5. Unmount DMG
+	// 6. Relaunch app
 	scriptPath := filepath.Join(os.TempDir(), "bluesnake-update.sh")
+	logPath := filepath.Join(os.TempDir(), "bluesnake-update.log")
+
 	script := fmt.Sprintf(`#!/bin/bash
+
+# Redirect all output to log file (do this BEFORE set -e)
+exec > "%s" 2>&1
+
+echo "=== BlueSnake Update Script Started at $(date) ==="
+echo "DMG Path: %s"
+echo "App Bundle Path: %s"
+echo "PID: $$"
+
+# Now enable exit on error after logging is set up
+set -e
+
 # Wait for app to quit
-sleep 2
+echo "Waiting for app to quit..."
+sleep 3
+
+# Check if app process is still running
+echo "Checking if app is still running..."
+if pgrep -f "BlueSnake.app" > /dev/null; then
+    echo "WARNING: BlueSnake app is still running, waiting longer..."
+    sleep 3
+fi
+
+# Mount the DMG
+echo "Mounting DMG..."
+MOUNT_OUTPUT=$(hdiutil attach "%s" -nobrowse -readonly 2>&1 || echo "MOUNT_FAILED")
+echo "Mount output: $MOUNT_OUTPUT"
+
+if echo "$MOUNT_OUTPUT" | grep -q "MOUNT_FAILED"; then
+    echo "ERROR: Failed to mount DMG"
+    exit 1
+fi
+
+# Extract mount point (get the last field from lines containing /Volumes/)
+MOUNT_POINT=$(echo "$MOUNT_OUTPUT" | grep "/Volumes/" | tail -1 | awk '{print $NF}')
+echo "Mount point: $MOUNT_POINT"
+
+if [ -z "$MOUNT_POINT" ]; then
+    echo "ERROR: Failed to extract mount point"
+    exit 1
+fi
+
+# Verify the new app exists in the DMG
+echo "Checking for BlueSnake.app in DMG..."
+if [ ! -d "$MOUNT_POINT/BlueSnake.app" ]; then
+    echo "ERROR: BlueSnake.app not found in DMG at $MOUNT_POINT"
+    echo "Contents of mount point:"
+    ls -la "$MOUNT_POINT/"
+    hdiutil detach "$MOUNT_POINT" -quiet || true
+    exit 1
+fi
+
+# Copy new app to temporary location first
+TEMP_APP="/tmp/BlueSnake-update-$$.app"
+echo "Copying new app to temporary location: $TEMP_APP"
+rm -rf "$TEMP_APP"
+ditto "$MOUNT_POINT/BlueSnake.app" "$TEMP_APP"
+
+# Verify the copy was successful
+if [ ! -d "$TEMP_APP" ]; then
+    echo "ERROR: Failed to copy app to temporary location"
+    hdiutil detach "$MOUNT_POINT" -quiet || true
+    exit 1
+fi
+
+echo "Copy successful, size check:"
+du -sh "$TEMP_APP"
+
+echo "Now replacing old app..."
+
+# Store the old app path for verification
+OLD_APP_PATH="%s"
+echo "Old app path: $OLD_APP_PATH"
 
 # Remove old app
-rm -rf "%s"
+echo "Removing old app..."
+if [ -d "$OLD_APP_PATH" ]; then
+    rm -rf "$OLD_APP_PATH"
+    echo "Old app removed"
+else
+    echo "WARNING: Old app not found at $OLD_APP_PATH"
+fi
 
-# Copy new app
-cp -R "%s" "%s"
+# Move new app into place
+echo "Moving new app into place..."
+mv "$TEMP_APP" "$OLD_APP_PATH"
+
+# Verify the app is in place
+if [ ! -d "$OLD_APP_PATH" ]; then
+    echo "ERROR: Failed to move app into place at $OLD_APP_PATH"
+    hdiutil detach "$MOUNT_POINT" -quiet || true
+    exit 1
+fi
+
+echo "New app is now at: $OLD_APP_PATH"
+ls -la "$OLD_APP_PATH"
 
 # Unmount DMG
-hdiutil detach "%s" -quiet
+echo "Unmounting DMG..."
+hdiutil detach "$MOUNT_POINT" -quiet
+
+# Clean up DMG file
+echo "Cleaning up DMG at: %s"
+rm -f "%s"
 
 # Relaunch app
-open "%s"
+echo "Relaunching app..."
+open "$OLD_APP_PATH"
 
-# Clean up
-rm -f "%s"
+echo "=== Update completed successfully at $(date) ==="
+
+# Clean up script (self-delete)
+sleep 1
 rm -f "$0"
-`, appBundlePath, sourceApp, appBundlePath, mountPoint, appBundlePath, dmgPath)
+`, logPath, dmgPath, appBundlePath, dmgPath, appBundlePath, dmgPath, dmgPath)
 
 	err = os.WriteFile(scriptPath, []byte(script), 0755)
 	if err != nil {
 		return fmt.Errorf("failed to create update script: %v", err)
 	}
 
-	// Launch the script in background
+	fmt.Printf("Update script created at: %s\n", scriptPath)
+	fmt.Printf("Update log will be written to: %s\n", logPath)
+	fmt.Println("Launching update script...")
+
+	// Launch the script in background and detach from current process
 	cmd := exec.Command("sh", scriptPath)
+	cmd.Dir = os.TempDir()
 	err = cmd.Start()
 	if err != nil {
 		return fmt.Errorf("failed to start update script: %v", err)
 	}
+
+	// Detach the process
+	cmd.Process.Release()
+
+	fmt.Println("Update script started successfully.")
+	fmt.Printf("If the update fails, check the log at: %s\n", logPath)
+	fmt.Println("Exiting app in 1 second...")
+
+	// Give the script a moment to start
+	time.Sleep(time.Second)
 
 	// Exit the application (the script will handle the rest)
 	os.Exit(0)

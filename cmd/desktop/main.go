@@ -31,7 +31,7 @@ func main() {
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:  "Blue Snake | World's #1 AI Native Web Crawler",
+		Title:  "Blue Snake | World's #1 AI Native Web Crawler | " + CurrentVersion,
 		Width:  1280,
 		Height: 800,
 		AssetServer: &assetserver.Options{
