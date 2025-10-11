@@ -51,6 +51,25 @@ import (
 	"google.golang.org/appengine/urlfetch"
 )
 
+// ContentHashConfig contains configuration for content-based duplicate detection
+type ContentHashConfig struct {
+	// ExcludeTags specifies HTML tags to exclude from content hashing
+	// Default: ["script", "style", "nav", "footer"]
+	ExcludeTags []string
+	// IncludeOnlyTags specifies to only include specific tags in content hashing
+	// If empty, all content (minus ExcludeTags) is included
+	// Example: ["article", "main"] to focus only on main content
+	IncludeOnlyTags []string
+	// StripTimestamps removes timestamp patterns from content before hashing
+	StripTimestamps bool
+	// StripAnalytics removes analytics and tracking code from content
+	StripAnalytics bool
+	// StripComments removes HTML comments from content
+	StripComments bool
+	// CollapseWhitespace normalizes whitespace (multiple spaces/newlines to single)
+	CollapseWhitespace bool
+}
+
 // CollectorConfig contains all configuration options for a Collector
 type CollectorConfig struct {
 	// UserAgent is the User-Agent string used by HTTP requests
@@ -118,6 +137,14 @@ type CollectorConfig struct {
 	// If nil/empty when sitemap discovery is enabled, tries default locations
 	// (/sitemap.xml, /sitemap_index.xml).
 	SitemapURLs []string
+	// EnableContentHash enables content-based duplicate detection
+	// When true, pages with identical content will be detected even if URLs differ
+	EnableContentHash bool
+	// ContentHashAlgorithm specifies the hash algorithm to use
+	// Options: "xxhash" (fastest, default), "md5", "sha256"
+	ContentHashAlgorithm string
+	// ContentHashConfig contains detailed configuration for content hashing
+	ContentHashConfig *ContentHashConfig
 }
 
 // Collector provides the scraper instance for a scraping job
@@ -190,6 +217,12 @@ type Collector struct {
 	// EnableRendering enables JavaScript rendering using headless Chrome.
 	// When set to true, pages will be rendered with chromedp before parsing.
 	EnableRendering bool
+	// EnableContentHash enables content-based duplicate detection
+	EnableContentHash bool
+	// ContentHashAlgorithm specifies the hash algorithm to use ("xxhash", "md5", "sha256")
+	ContentHashAlgorithm string
+	// ContentHashConfig contains detailed configuration for content hashing
+	ContentHashConfig *ContentHashConfig
 
 	store                    storage.Storage
 	debugger                 debug.Debugger
@@ -405,6 +438,16 @@ func NewDefaultConfig() *CollectorConfig {
 		EnableRendering:        false,
 		DiscoveryMechanisms:    []DiscoveryMechanism{DiscoverySpider}, // Default to spider mode
 		SitemapURLs:            nil,
+		EnableContentHash:      false,
+		ContentHashAlgorithm:   "xxhash",
+		ContentHashConfig: &ContentHashConfig{
+			ExcludeTags:        []string{"script", "style", "nav", "footer"},
+			IncludeOnlyTags:    nil,
+			StripTimestamps:    true,
+			StripAnalytics:     true,
+			StripComments:      true,
+			CollapseWhitespace: true,
+		},
 	}
 }
 
@@ -490,6 +533,15 @@ func NewCollector(config *CollectorConfig) *Collector {
 		if config.SitemapURLs != nil {
 			defaults.SitemapURLs = config.SitemapURLs
 		}
+		if config.EnableContentHash {
+			defaults.EnableContentHash = true
+		}
+		if config.ContentHashAlgorithm != "" {
+			defaults.ContentHashAlgorithm = config.ContentHashAlgorithm
+		}
+		if config.ContentHashConfig != nil {
+			defaults.ContentHashConfig = config.ContentHashConfig
+		}
 	}
 	config = defaults
 
@@ -532,6 +584,9 @@ func NewCollector(config *CollectorConfig) *Collector {
 		config.Debugger.Init()
 		c.debugger = config.Debugger
 	}
+	c.EnableContentHash = config.EnableContentHash
+	c.ContentHashAlgorithm = config.ContentHashAlgorithm
+	c.ContentHashConfig = config.ContentHashConfig
 
 	c.parseSettingsFromEnv()
 
@@ -817,6 +872,31 @@ func (c *Collector) fetch(u, method string, depth int, requestData io.Reader, ct
 	err = response.fixCharset(c.DetectCharset, request.ResponseCharacterEncoding)
 	if err != nil {
 		return err
+	}
+
+	// Compute and store content hash if enabled
+	if c.EnableContentHash && len(response.Body) > 0 {
+		contentHash, err := ComputeContentHashWithConfig(
+			response.Body,
+			c.ContentHashAlgorithm,
+			c.ContentHashConfig,
+		)
+		if err == nil {
+			// Store the content hash for this URL
+			c.store.SetContentHash(request.URL.String(), contentHash)
+
+			// Store in response context for use in callbacks
+			response.Ctx.Put("contentHash", contentHash)
+
+			// Check if we've seen this content before
+			isContentVisited, _ := c.store.IsContentVisited(contentHash)
+			response.Ctx.Put("isContentDuplicate", fmt.Sprintf("%t", isContentVisited))
+
+			// Mark this content hash as visited
+			if !isContentVisited {
+				c.store.VisitedContent(contentHash)
+			}
+		}
 	}
 
 	c.handleOnResponse(response)

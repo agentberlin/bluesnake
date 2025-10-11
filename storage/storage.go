@@ -42,21 +42,37 @@ type Storage interface {
 	Cookies(u *url.URL) string
 	// SetCookies stores cookies for a given host
 	SetCookies(u *url.URL, cookies string)
+	// SetContentHash stores a content hash for a given URL
+	SetContentHash(url string, contentHash string) error
+	// GetContentHash retrieves the stored content hash for a given URL
+	GetContentHash(url string) (string, error)
+	// IsContentVisited returns true if content with the given hash has been visited
+	IsContentVisited(contentHash string) (bool, error)
+	// VisitedContent marks content with the given hash as visited
+	VisitedContent(contentHash string) error
 }
 
 // InMemoryStorage is the default storage backend of bluesnake.
 // InMemoryStorage keeps cookies and visited urls in memory
 // without persisting data on the disk.
 type InMemoryStorage struct {
-	visitedURLs map[uint64]bool
-	lock        *sync.RWMutex
-	jar         *cookiejar.Jar
+	visitedURLs     map[uint64]bool
+	contentHashes   map[string]string // url -> content hash
+	visitedContent  map[string]bool   // content hash -> visited
+	lock            *sync.RWMutex
+	jar             *cookiejar.Jar
 }
 
 // Init initializes InMemoryStorage
 func (s *InMemoryStorage) Init() error {
 	if s.visitedURLs == nil {
 		s.visitedURLs = make(map[uint64]bool)
+	}
+	if s.contentHashes == nil {
+		s.contentHashes = make(map[string]string)
+	}
+	if s.visitedContent == nil {
+		s.visitedContent = make(map[string]bool)
 	}
 	if s.lock == nil {
 		s.lock = &sync.RWMutex{}
@@ -128,4 +144,36 @@ func ContainsCookie(cookies []*http.Cookie, name string) bool {
 		}
 	}
 	return false
+}
+
+// SetContentHash implements Storage.SetContentHash()
+func (s *InMemoryStorage) SetContentHash(url string, contentHash string) error {
+	s.lock.Lock()
+	s.contentHashes[url] = contentHash
+	s.lock.Unlock()
+	return nil
+}
+
+// GetContentHash implements Storage.GetContentHash()
+func (s *InMemoryStorage) GetContentHash(url string) (string, error) {
+	s.lock.RLock()
+	hash := s.contentHashes[url]
+	s.lock.RUnlock()
+	return hash, nil
+}
+
+// IsContentVisited implements Storage.IsContentVisited()
+func (s *InMemoryStorage) IsContentVisited(contentHash string) (bool, error) {
+	s.lock.RLock()
+	visited := s.visitedContent[contentHash]
+	s.lock.RUnlock()
+	return visited, nil
+}
+
+// VisitedContent implements Storage.VisitedContent()
+func (s *InMemoryStorage) VisitedContent(contentHash string) error {
+	s.lock.Lock()
+	s.visitedContent[contentHash] = true
+	s.lock.Unlock()
+	return nil
 }
