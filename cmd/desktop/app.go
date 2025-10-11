@@ -435,11 +435,11 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		// Mark this URL as crawled (for UI tracking)
 		stats.crawledURLs.Store(result.URL, true)
 
-		// Track all discovered URLs from this page (only crawlable ones for UI display)
-		for _, discoveredURL := range result.DiscoveredURLs {
-			// Only add crawlable URLs to our tracking
-			if discoveredURL.IsCrawlable {
-				stats.discoveredURLs.Store(discoveredURL.URL, true)
+		// Track all discovered URLs from this page
+		// Add internal links (these are the crawlable URLs we discover)
+		if result.Links != nil {
+			for _, link := range result.Links.Internal {
+				stats.discoveredURLs.Store(link.URL, true)
 			}
 		}
 
@@ -451,6 +451,49 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		// Save to database - all crawling logic handled by bluesnake
 		if err := SaveCrawledUrl(stats.crawlID, result.URL, result.Status, result.Title, result.Indexable, result.Error); err != nil {
 			runtime.LogErrorf(a.ctx, "Failed to save crawled URL: %v", err)
+		}
+
+		// Save page links to database
+		if result.Links != nil {
+			// Convert bluesnake links to database format
+			var outboundLinks []PageLinkData
+
+			// Combine internal and external links
+			for _, link := range result.Links.Internal {
+				status := 0
+				if link.Status != nil {
+					status = *link.Status
+				}
+				outboundLinks = append(outboundLinks, PageLinkData{
+					URL:         link.URL,
+					Type:        link.Type,
+					Text:        link.Text,
+					IsInternal:  link.IsInternal,
+					Status:      status,
+					Title:       link.Title,
+					ContentType: link.ContentType,
+				})
+			}
+			for _, link := range result.Links.External {
+				status := 0
+				if link.Status != nil {
+					status = *link.Status
+				}
+				outboundLinks = append(outboundLinks, PageLinkData{
+					URL:         link.URL,
+					Type:        link.Type,
+					Text:        link.Text,
+					IsInternal:  link.IsInternal,
+					Status:      status,
+					Title:       link.Title,
+					ContentType: link.ContentType,
+				})
+			}
+
+			// Save outbound links
+			if err := SavePageLinks(stats.crawlID, result.URL, outboundLinks, nil); err != nil {
+				runtime.LogErrorf(a.ctx, "Failed to save page links: %v", err)
+			}
 		}
 	})
 
@@ -728,6 +771,61 @@ func (a *App) GetFaviconData(faviconPath string) (string, error) {
 
 	base64Data := base64.StdEncoding.EncodeToString(data)
 	return fmt.Sprintf("data:%s;base64,%s", contentType, base64Data), nil
+}
+
+// LinkInfo represents link information for the frontend
+type LinkInfo struct {
+	URL        string `json:"url"`
+	AnchorText string `json:"anchorText"`
+	Status     *int   `json:"status,omitempty"`
+}
+
+// PageLinksResponse represents the response for page links
+type PageLinksResponse struct {
+	PageURL  string     `json:"pageUrl"`
+	Inlinks  []LinkInfo `json:"inlinks"`
+	Outlinks []LinkInfo `json:"outlinks"`
+}
+
+// GetPageLinksForURL retrieves inbound and outbound links for a specific URL in a crawl
+func (a *App) GetPageLinksForURL(crawlID uint, pageURL string) (*PageLinksResponse, error) {
+	inlinks, outlinks, err := GetPageLinks(crawlID, pageURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to frontend format
+	inlinkInfos := make([]LinkInfo, 0, len(inlinks))
+	for _, link := range inlinks {
+		var status *int
+		if link.Status != 0 {
+			status = &link.Status
+		}
+		inlinkInfos = append(inlinkInfos, LinkInfo{
+			URL:        link.SourceURL, // For inlinks, show the source URL
+			AnchorText: link.LinkText,
+			Status:     status,
+		})
+	}
+
+	outlinkInfos := make([]LinkInfo, 0, len(outlinks))
+	for _, link := range outlinks {
+		var status *int
+		if link.Status != 0 {
+			status = &link.Status
+		}
+		outlinkInfos = append(outlinkInfos, LinkInfo{
+			URL:        link.TargetURL, // For outlinks, show the target URL
+			AnchorText: link.LinkText,
+			Status:     status,
+		})
+	}
+
+	return &PageLinksResponse{
+		PageURL:  pageURL,
+		Inlinks:  inlinkInfos,
+		Outlinks: outlinkInfos,
+	}, nil
 }
 
 // GetVersion returns the current version of the application

@@ -18,6 +18,7 @@ import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByI
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
+import LinksPanel from './LinksPanel';
 import { main } from "../wailsjs/go/models";
 
 interface CustomDropdownProps {
@@ -84,6 +85,12 @@ interface CrawlResult {
   title: string;
   indexable: string;
   error?: string;
+}
+
+interface Link {
+  url: string;
+  anchorText: string;
+  status?: number;
 }
 
 interface ProjectInfo {
@@ -247,6 +254,12 @@ function App() {
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [appVersion, setAppVersion] = useState<string>('');
+
+  // Links panel state
+  const [isPanelOpen, setIsPanelOpen] = useState(false);
+  const [selectedUrlForPanel, setSelectedUrlForPanel] = useState('');
+  const [inlinksData, setInlinksData] = useState<Link[]>([]);
+  const [outlinksData, setOutlinksData] = useState<Link[]>([]);
 
   useEffect(() => {
     // Load projects on start
@@ -753,6 +766,54 @@ function App() {
     }
   };
 
+  // Generate dummy link data for a URL (TODO: Replace with real backend data)
+  const generateDummyLinksData = (clickedUrl: string): { inlinks: Link[], outlinks: Link[] } => {
+    // Get all available URLs from the results
+    const availableUrls = results.filter(r => r.url !== clickedUrl);
+
+    // Generate inlinks (pages linking TO this page) - use most of available URLs
+    const inlinks: Link[] = [];
+    const inlinkCount = Math.min(Math.floor(Math.random() * 30) + 10, availableUrls.length); // 10-40 inlinks
+    const anchorTexts = ['Read more', 'Learn more', 'Click here', 'View details', 'See more', 'Discover', 'Explore'];
+
+    for (let i = 0; i < inlinkCount; i++) {
+      const result = availableUrls[i];
+      inlinks.push({
+        url: result.url,
+        anchorText: `${anchorTexts[Math.floor(Math.random() * anchorTexts.length)]} about ${new URL(clickedUrl).pathname.split('/').pop() || 'this page'}`,
+        status: result.status
+      });
+    }
+
+    // Generate outlinks (pages this page links TO) - use all or most available URLs
+    const outlinks: Link[] = [];
+    const outlinkCount = Math.min(Math.floor(Math.random() * 50) + 20, availableUrls.length); // 20-70 outlinks
+
+    for (let i = 0; i < outlinkCount; i++) {
+      const result = availableUrls[i];
+      const pathname = new URL(result.url).pathname.split('/').pop() || 'page';
+      outlinks.push({
+        url: result.url,
+        anchorText: `${anchorTexts[Math.floor(Math.random() * anchorTexts.length)]} - ${pathname}`,
+        status: result.status
+      });
+    }
+
+    return { inlinks, outlinks };
+  };
+
+  const handleUrlClick = (clickedUrl: string) => {
+    const { inlinks, outlinks } = generateDummyLinksData(clickedUrl);
+    setSelectedUrlForPanel(clickedUrl);
+    setInlinksData(inlinks);
+    setOutlinksData(outlinks);
+    setIsPanelOpen(true);
+  };
+
+  const handleClosePanel = () => {
+    setIsPanelOpen(false);
+  };
+
   // Config page
   if (view === 'config') {
     return <Config url={url} onClose={handleCloseConfig} />;
@@ -1067,12 +1128,24 @@ function App() {
               {results.map((result, index) => {
                 const isInProgress = result.status === 0 && result.title === 'In progress...';
                 return (
-                  <div key={index} className="result-row">
+                  <div
+                    key={index}
+                    className="result-row"
+                    onClick={() => !isInProgress && handleUrlClick(result.url)}
+                    style={{ cursor: isInProgress ? 'default' : 'pointer' }}
+                    title={isInProgress ? '' : 'Click row to view internal links'}
+                  >
                     <div className="result-cell url-col">
                       <span
-                        onClick={() => !isInProgress && handleOpenUrl(result.url)}
                         className="url-link"
-                        style={{ cursor: isInProgress ? 'default' : 'pointer', opacity: isInProgress ? 0.6 : 1 }}
+                        style={{ opacity: isInProgress ? 0.6 : 1 }}
+                        onClick={(e) => {
+                          if (!isInProgress) {
+                            e.stopPropagation();
+                            handleOpenUrl(result.url);
+                          }
+                        }}
+                        title={isInProgress ? '' : 'Click to open URL in browser'}
                       >
                         {result.url}
                       </span>
@@ -1165,6 +1238,15 @@ function App() {
             </div>
           </div>
         )}
+
+        {/* Links Panel */}
+        <LinksPanel
+          isOpen={isPanelOpen}
+          onClose={handleClosePanel}
+          selectedUrl={selectedUrlForPanel}
+          inlinks={inlinksData}
+          outlinks={outlinksData}
+        />
       </div>
     </div>
   );

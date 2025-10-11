@@ -132,6 +132,21 @@ type CrawledUrl struct {
 	CreatedAt int64  `gorm:"autoCreateTime"`
 }
 
+// PageLink represents a link between two pages
+type PageLink struct {
+	ID          uint   `gorm:"primaryKey"`
+	CrawlID     uint   `gorm:"not null;index:idx_crawl_source;index:idx_crawl_target"`
+	SourceURL   string `gorm:"not null;index:idx_crawl_source"` // Page containing the link
+	TargetURL   string `gorm:"not null;index:idx_crawl_target"` // Page being linked to
+	LinkType    string `gorm:"not null"`                        // "anchor", "image", "script", etc.
+	LinkText    string `gorm:"type:text"`                       // anchor text or alt text
+	IsInternal  bool   `gorm:"not null"`                        // internal vs external
+	Status      int    `gorm:"default:0"`                       // HTTP status of target (0 if not crawled)
+	Title       string `gorm:"type:text"`                       // Title of target page (if crawled)
+	ContentType string `gorm:"type:text"`                       // Content type of target (if crawled)
+	CreatedAt   int64  `gorm:"autoCreateTime"`
+}
+
 // InitDB initializes the database connection and creates tables
 func InitDB() error {
 	// Get user home directory
@@ -156,7 +171,7 @@ func InitDB() error {
 	db = database
 
 	// Auto migrate the schema
-	if err := db.AutoMigrate(&Config{}, &Project{}, &Crawl{}, &CrawledUrl{}); err != nil {
+	if err := db.AutoMigrate(&Config{}, &Project{}, &Crawl{}, &CrawledUrl{}, &PageLink{}); err != nil {
 		return fmt.Errorf("failed to migrate database: %v", err)
 	}
 
@@ -449,4 +464,56 @@ func DeleteCrawl(crawlID uint) error {
 // DeleteProject deletes a project and all its crawls (cascade)
 func DeleteProject(projectID uint) error {
 	return db.Delete(&Project{}, projectID).Error
+}
+
+// SavePageLinks saves all links from a crawled page
+func SavePageLinks(crawlID uint, sourceURL string, outboundLinks []PageLinkData, inboundLinks []PageLinkData) error {
+	// Save outbound links (sourceURL -> targetURL)
+	for _, link := range outboundLinks {
+		pageLink := PageLink{
+			CrawlID:     crawlID,
+			SourceURL:   sourceURL,
+			TargetURL:   link.URL,
+			LinkType:    link.Type,
+			LinkText:    link.Text,
+			IsInternal:  link.IsInternal,
+			Status:      link.Status,
+			Title:       link.Title,
+			ContentType: link.ContentType,
+		}
+		if err := db.Create(&pageLink).Error; err != nil {
+			return fmt.Errorf("failed to save outbound link: %v", err)
+		}
+	}
+
+	// Note: Inbound links are already saved when those source pages were crawled
+	// We don't need to save them again here
+
+	return nil
+}
+
+// PageLinkData is a simplified structure for passing link data
+type PageLinkData struct {
+	URL         string
+	Type        string
+	Text        string
+	IsInternal  bool
+	Status      int
+	Title       string
+	ContentType string
+}
+
+// GetPageLinks retrieves inbound and outbound links for a specific URL in a crawl
+func GetPageLinks(crawlID uint, pageURL string) (inlinks []PageLink, outlinks []PageLink, err error) {
+	// Get outbound links (where this page is the source)
+	if err := db.Where("crawl_id = ? AND source_url = ?", crawlID, pageURL).Find(&outlinks).Error; err != nil {
+		return nil, nil, fmt.Errorf("failed to get outbound links: %v", err)
+	}
+
+	// Get inbound links (where this page is the target)
+	if err := db.Where("crawl_id = ? AND target_url = ?", crawlID, pageURL).Find(&inlinks).Error; err != nil {
+		return nil, nil, fmt.Errorf("failed to get inbound links: %v", err)
+	}
+
+	return inlinks, outlinks, nil
 }

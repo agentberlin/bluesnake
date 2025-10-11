@@ -20,7 +20,7 @@ import (
 	"testing"
 )
 
-// TestDiscoveredURLs tests that discovered URLs are correctly identified and marked as crawlable
+// TestDiscoveredURLs tests that discovered URLs are correctly identified as internal outbound links
 func TestDiscoveredURLs(t *testing.T) {
 	// Create a mock transport
 	mock := NewMockTransport()
@@ -35,7 +35,7 @@ func TestDiscoveredURLs(t *testing.T) {
 		</body>
 	</html>`)
 
-	// Register the 3 linked pages with 2-second delays
+	// Register the 3 linked pages
 	for _, page := range []string{"/page1", "/page2", "/page3"} {
 		mock.RegisterResponse("https://example.com"+page, &MockResponse{
 			StatusCode: 200,
@@ -59,10 +59,7 @@ func TestDiscoveredURLs(t *testing.T) {
 
 		// Capture the home page result
 		if result.URL == "https://example.com/" {
-			resultCopy := *result
-			resultCopy.DiscoveredURLs = make([]CrawledURL, len(result.DiscoveredURLs))
-			copy(resultCopy.DiscoveredURLs, result.DiscoveredURLs)
-			homePageResult = &resultCopy
+			homePageResult = result
 		}
 	})
 
@@ -83,15 +80,27 @@ func TestDiscoveredURLs(t *testing.T) {
 		t.Fatal("Home page was not crawled")
 	}
 
-	// Check that we have exactly 3 discovered URLs
-	if len(homePageResult.DiscoveredURLs) != 3 {
-		t.Fatalf("Expected 3 discovered URLs, got %d", len(homePageResult.DiscoveredURLs))
+	if homePageResult.Links == nil {
+		t.Fatal("Links should not be nil")
 	}
 
-	// Verify all discovered URLs are crawlable
-	for i, url := range homePageResult.DiscoveredURLs {
-		if !url.IsCrawlable {
-			t.Errorf("Expected URL %d (%s) to be crawlable, but IsCrawlable=false", i, url.URL)
+	// Check that we have exactly 3 internal anchor links
+	internalLinks := homePageResult.Links.Internal
+	anchorLinks := []Link{}
+	for _, link := range internalLinks {
+		if link.Type == "anchor" {
+			anchorLinks = append(anchorLinks, link)
+		}
+	}
+
+	if len(anchorLinks) != 3 {
+		t.Fatalf("Expected 3 anchor links, got %d", len(anchorLinks))
+	}
+
+	// Verify all discovered links are internal
+	for i, link := range anchorLinks {
+		if !link.IsInternal {
+			t.Errorf("Expected link %d (%s) to be internal, but IsInternal=false", i, link.URL)
 		}
 	}
 
@@ -102,22 +111,22 @@ func TestDiscoveredURLs(t *testing.T) {
 		"https://example.com/page3": false,
 	}
 
-	for _, url := range homePageResult.DiscoveredURLs {
-		if _, exists := expectedURLs[url.URL]; exists {
-			expectedURLs[url.URL] = true
+	for _, link := range anchorLinks {
+		if _, exists := expectedURLs[link.URL]; exists {
+			expectedURLs[link.URL] = true
 		} else {
-			t.Errorf("Unexpected URL discovered: %s", url.URL)
+			t.Errorf("Unexpected URL discovered: %s", link.URL)
 		}
 	}
 
 	// Verify all expected URLs were found
 	for url, found := range expectedURLs {
 		if !found {
-			t.Errorf("Expected to find URL %s in discovered URLs", url)
+			t.Errorf("Expected to find URL %s in discovered links", url)
 		}
 	}
 
-	t.Logf("Successfully discovered %d URLs, all marked as crawlable", len(homePageResult.DiscoveredURLs))
+	t.Logf("Successfully discovered %d internal links", len(anchorLinks))
 }
 
 // TestDiscoveryMechanism_SpiderOnly tests that spider-only mode follows links but doesn't use sitemap
