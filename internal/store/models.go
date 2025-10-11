@@ -108,14 +108,16 @@ type Crawl struct {
 
 // CrawledUrl represents a single URL that was crawled
 type CrawledUrl struct {
-	ID        uint   `gorm:"primaryKey"`
-	CrawlID   uint   `gorm:"not null;index"`
-	URL       string `gorm:"not null"`
-	Status    int    `gorm:"not null"`
-	Title     string `gorm:"type:text"`
-	Indexable string `gorm:"not null"`
-	Error     string `gorm:"type:text"`
-	CreatedAt int64  `gorm:"autoCreateTime"`
+	ID              uint   `gorm:"primaryKey"`
+	CrawlID         uint   `gorm:"not null;index"`
+	URL             string `gorm:"not null"`
+	Status          int    `gorm:"not null"`
+	Title           string `gorm:"type:text"`
+	MetaDescription string `gorm:"type:text"`
+	ContentHash     string `gorm:"type:text;index"`
+	Indexable       string `gorm:"not null"`
+	Error           string `gorm:"type:text"`
+	CreatedAt       int64  `gorm:"autoCreateTime"`
 }
 
 // PageLink represents a link between two pages
@@ -126,6 +128,7 @@ type PageLink struct {
 	TargetURL   string `gorm:"not null;index:idx_crawl_target"` // Page being linked to
 	LinkType    string `gorm:"not null"`                        // "anchor", "image", "script", etc.
 	LinkText    string `gorm:"type:text"`                       // anchor text or alt text
+	LinkContext string `gorm:"type:text"`                       // surrounding text context
 	IsInternal  bool   `gorm:"not null"`                        // internal vs external
 	Status      int    `gorm:"default:0"`                       // HTTP status of target (0 if not crawled)
 	Title       string `gorm:"type:text"`                       // Title of target page (if crawled)
@@ -138,6 +141,7 @@ type PageLinkData struct {
 	URL         string
 	Type        string
 	Text        string
+	Context     string
 	IsInternal  bool
 	Status      int
 	Title       string

@@ -28,11 +28,13 @@ type CrawlProgress struct {
 
 // CrawlResult represents a single crawl result
 type CrawlResult struct {
-	URL       string `json:"url"`
-	Status    int    `json:"status"`
-	Title     string `json:"title"`
-	Indexable string `json:"indexable"`
-	Error     string `json:"error,omitempty"`
+	URL             string `json:"url"`
+	Status          int    `json:"status"`
+	Title           string `json:"title"`
+	MetaDescription string `json:"metaDescription,omitempty"`
+	ContentHash     string `json:"contentHash,omitempty"`
+	Indexable       string `json:"indexable"`
+	Error           string `json:"error,omitempty"`
 }
 
 // ProjectInfo represents project information for the frontend
@@ -84,6 +86,8 @@ type UpdateInfo struct {
 type LinkInfo struct {
 	URL        string `json:"url"`
 	AnchorText string `json:"anchorText"`
+	Context    string `json:"context,omitempty"`
+	IsInternal bool   `json:"isInternal"`
 	Status     *int   `json:"status,omitempty"`
 }
 

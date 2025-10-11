@@ -72,6 +72,8 @@ export namespace types {
 	    url: string;
 	    status: number;
 	    title: string;
+	    metaDescription?: string;
+	    contentHash?: string;
 	    indexable: string;
 	    error?: string;
 	
@@ -84,6 +86,8 @@ export namespace types {
 	        this.url = source["url"];
 	        this.status = source["status"];
 	        this.title = source["title"];
+	        this.metaDescription = source["metaDescription"];
+	        this.contentHash = source["contentHash"];
 	        this.indexable = source["indexable"];
 	        this.error = source["error"];
 	    }
@@ -123,6 +127,8 @@ export namespace types {
 	export class LinkInfo {
 	    url: string;
 	    anchorText: string;
+	    context?: string;
+	    isInternal: boolean;
 	    status?: number;
 	
 	    static createFrom(source: any = {}) {
@@ -133,6 +139,8 @@ export namespace types {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.url = source["url"];
 	        this.anchorText = source["anchorText"];
+	        this.context = source["context"];
+	        this.isInternal = source["isInternal"];
 	        this.status = source["status"];
 	    }
 	}

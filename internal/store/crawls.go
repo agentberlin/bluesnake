@@ -88,14 +88,16 @@ func (s *Store) GetCrawlResults(crawlID uint) ([]CrawledUrl, error) {
 }
 
 // SaveCrawledUrl saves a crawled URL result
-func (s *Store) SaveCrawledUrl(crawlID uint, url string, status int, title string, indexable string, errorMsg string) error {
+func (s *Store) SaveCrawledUrl(crawlID uint, url string, status int, title string, metaDescription string, contentHash string, indexable string, errorMsg string) error {
 	crawledUrl := CrawledUrl{
-		CrawlID:   crawlID,
-		URL:       url,
-		Status:    status,
-		Title:     title,
-		Indexable: indexable,
-		Error:     errorMsg,
+		CrawlID:         crawlID,
+		URL:             url,
+		Status:          status,
+		Title:           title,
+		MetaDescription: metaDescription,
+		ContentHash:     contentHash,
+		Indexable:       indexable,
+		Error:           errorMsg,
 	}
 
 	return s.db.Create(&crawledUrl).Error
