@@ -55,6 +55,8 @@ type PageResult struct {
 	Status int
 	// Title is the page title extracted from the <title> tag (for HTML pages)
 	Title string
+	// MetaDescription is the content of the <meta name="description"> tag
+	MetaDescription string
 	// Indexable indicates if search engines can index this page
 	// Values: "Yes", "No", or "-" for non-HTML resources
 	Indexable string
@@ -68,6 +70,9 @@ type PageResult struct {
 	ContentHash string
 	// IsDuplicateContent indicates if this content hash has been seen before on a different URL
 	IsDuplicateContent bool
+
+	// response stores the Response object for lazy content extraction via getter methods
+	response *Response
 }
 
 // OnPageCrawledFunc is called after each individual page is successfully crawled or encounters an error.
@@ -269,11 +274,15 @@ func (cr *Crawler) setupCallbacks() {
 		}
 	})
 
-	// Capture page metadata (title, indexability)
+	// Capture page metadata (title, meta description, indexability)
 	cr.Collector.OnHTML("html", func(e *HTMLElement) {
-		// Store title and meta robots in context for OnScraped to use
+		// Store title in context for OnScraped to use
 		title := e.ChildText("title")
 		e.Request.Ctx.Put("title", title)
+
+		// Extract meta description
+		metaDesc := e.ChildAttr("meta[name='description']", "content")
+		e.Request.Ctx.Put("metaDescription", metaDesc)
 
 		// Check for meta robots noindex
 		metaRobots := e.ChildAttr("meta[name='robots']", "content")
@@ -292,6 +301,9 @@ func (cr *Crawler) setupCallbacks() {
 
 		// Get title from context (set by OnHTML)
 		title := r.Ctx.Get("title")
+
+		// Get meta description from context (set by OnHTML)
+		metaDescription := r.Ctx.Get("metaDescription")
 
 		// Get indexability from context (set by OnResponse)
 		isIndexable := r.Ctx.Get("isIndexable")
@@ -330,12 +342,14 @@ func (cr *Crawler) setupCallbacks() {
 			URL:                pageURL,
 			Status:             status,
 			Title:              title,
+			MetaDescription:    metaDescription,
 			Indexable:          isIndexable,
 			ContentType:        contentType,
 			Error:              "",
 			Links:              pageLinks,
 			ContentHash:        contentHash,
 			IsDuplicateContent: isDuplicate,
+			response:           r,
 		}
 
 		cr.incrementCrawledPages()
@@ -395,12 +409,14 @@ func (cr *Crawler) setupCallbacks() {
 				URL:                pageURL,
 				Status:             r.StatusCode,
 				Title:              title,
+				MetaDescription:    "", // Non-HTML content has no meta description
 				Indexable:          isIndexable,
 				ContentType:        contentType,
 				Error:              "",
 				Links:              pageLinks,
 				ContentHash:        contentHash,
 				IsDuplicateContent: isDuplicate,
+				response:           r,
 			}
 
 			cr.incrementCrawledPages()
@@ -424,12 +440,14 @@ func (cr *Crawler) setupCallbacks() {
 			URL:                pageURL,
 			Status:             0,
 			Title:              "",
+			MetaDescription:    "",
 			Indexable:          "No",
 			ContentType:        "",
 			Error:              err.Error(),
 			Links:              pageLinks,
 			ContentHash:        "",
 			IsDuplicateContent: false,
+			response:           r,
 		}
 
 		cr.callOnPageCrawled(result)
@@ -743,4 +761,33 @@ func (cr *Crawler) isInternalURL(urlStr string) bool {
 	}
 
 	return false
+}
+
+// GetHTML returns the full HTML content of the page.
+// Returns empty string if the response is not available.
+func (pr *PageResult) GetHTML() string {
+	if pr.response == nil {
+		return ""
+	}
+	return string(pr.response.Body)
+}
+
+// GetTextFull returns all visible text from the entire page (including navigation, headers, footers).
+// HTML tags are stripped, leaving only the text content.
+// Returns empty string if the response is not available or is not HTML.
+func (pr *PageResult) GetTextFull() string {
+	if pr.response == nil || !strings.Contains(pr.ContentType, "text/html") {
+		return ""
+	}
+	return extractAllText(pr.response.Body)
+}
+
+// GetTextContent returns text from the main content area only (excluding navigation, headers, footers).
+// Extracts text from semantic HTML5 elements like <article>, <main>, or [role="main"].
+// Returns empty string if the response is not available or is not HTML.
+func (pr *PageResult) GetTextContent() string {
+	if pr.response == nil || !strings.Contains(pr.ContentType, "text/html") {
+		return ""
+	}
+	return extractMainContentText(pr.response.Body)
 }
