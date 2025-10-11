@@ -64,6 +64,10 @@ type PageResult struct {
 	Error string
 	// Links contains all outbound links from this page (internal and external)
 	Links *Links
+	// ContentHash is the hash of the normalized page content (empty if content hashing is disabled)
+	ContentHash string
+	// IsDuplicateContent indicates if this content hash has been seen before on a different URL
+	IsDuplicateContent bool
 }
 
 // OnPageCrawledFunc is called after each individual page is successfully crawled or encounters an error.
@@ -317,14 +321,21 @@ func (cr *Crawler) setupCallbacks() {
 		// Build PageLinks structure
 		pageLinks := cr.buildPageLinks(pageURL, pageOutboundLinks)
 
+		// Get content hash and duplicate status from context
+		contentHash := r.Ctx.Get("contentHash")
+		isDuplicateStr := r.Ctx.Get("isContentDuplicate")
+		isDuplicate := isDuplicateStr == "true"
+
 		result := &PageResult{
-			URL:         pageURL,
-			Status:      status,
-			Title:       title,
-			Indexable:   isIndexable,
-			ContentType: contentType,
-			Error:       "",
-			Links:       pageLinks,
+			URL:                pageURL,
+			Status:             status,
+			Title:              title,
+			Indexable:          isIndexable,
+			ContentType:        contentType,
+			Error:              "",
+			Links:              pageLinks,
+			ContentHash:        contentHash,
+			IsDuplicateContent: isDuplicate,
 		}
 
 		cr.incrementCrawledPages()
@@ -375,14 +386,21 @@ func (cr *Crawler) setupCallbacks() {
 			// Build PageLinks structure (non-HTML has no outbound links, only inbound)
 			pageLinks := cr.buildPageLinks(pageURL, pageOutboundLinks)
 
+			// Get content hash and duplicate status from context
+			contentHash := r.Request.Ctx.Get("contentHash")
+			isDuplicateStr := r.Request.Ctx.Get("isContentDuplicate")
+			isDuplicate := isDuplicateStr == "true"
+
 			result := &PageResult{
-				URL:         pageURL,
-				Status:      r.StatusCode,
-				Title:       title,
-				Indexable:   isIndexable,
-				ContentType: contentType,
-				Error:       "",
-				Links:       pageLinks,
+				URL:                pageURL,
+				Status:             r.StatusCode,
+				Title:              title,
+				Indexable:          isIndexable,
+				ContentType:        contentType,
+				Error:              "",
+				Links:              pageLinks,
+				ContentHash:        contentHash,
+				IsDuplicateContent: isDuplicate,
 			}
 
 			cr.incrementCrawledPages()
@@ -403,13 +421,15 @@ func (cr *Crawler) setupCallbacks() {
 		pageLinks := cr.buildPageLinks(pageURL, pageOutboundLinks)
 
 		result := &PageResult{
-			URL:         pageURL,
-			Status:      0,
-			Title:       "",
-			Indexable:   "No",
-			ContentType: "",
-			Error:       err.Error(),
-			Links:       pageLinks,
+			URL:                pageURL,
+			Status:             0,
+			Title:              "",
+			Indexable:          "No",
+			ContentType:        "",
+			Error:              err.Error(),
+			Links:              pageLinks,
+			ContentHash:        "",
+			IsDuplicateContent: false,
 		}
 
 		cr.callOnPageCrawled(result)
