@@ -35,4 +35,4 @@ export function Startup(arg1:context.Context):Promise<void>;
 
 export function StopCrawl(arg1:number):Promise<void>;
 
-export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number,arg4:string,arg5:boolean,arg6:boolean,arg7:Array<string>):Promise<void>;
+export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number,arg4:string,arg5:boolean,arg6:boolean,arg7:boolean,arg8:Array<string>):Promise<void>;

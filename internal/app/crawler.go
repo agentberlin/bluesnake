@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -115,6 +117,30 @@ func (a *App) StopCrawl(projectID uint) error {
 	return nil
 }
 
+// buildDomainFilter creates a regex filter for domain matching based on includeSubdomains flag.
+// If includeSubdomains is true, it matches the domain and all its subdomains.
+// If includeSubdomains is false, it matches only the exact domain.
+// Examples for domain "example.com":
+//   - includeSubdomains=false: matches "example.com" but not "blog.example.com"
+//   - includeSubdomains=true: matches "example.com", "blog.example.com", "api.example.com", etc.
+func buildDomainFilter(domain string, includeSubdomains bool) (*regexp.Regexp, error) {
+	// Escape special regex characters in the domain
+	escapedDomain := regexp.QuoteMeta(domain)
+
+	var pattern string
+	if includeSubdomains {
+		// Match domain or any subdomain: (.*\.)?example\.com
+		// Remove port if present for pattern matching
+		domainWithoutPort := strings.Split(escapedDomain, ":")[0]
+		pattern = fmt.Sprintf(`^https?://(.*\.)?%s(/|$|\?)`, domainWithoutPort)
+	} else {
+		// Match exact domain only: example\.com
+		pattern = fmt.Sprintf(`^https?://%s(/|$|\?)`, escapedDomain)
+	}
+
+	return regexp.Compile(pattern)
+}
+
 func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string, projectID uint) {
 	// Create a new crawl
 	crawl, err := a.store.CreateCrawl(projectID, time.Now().Unix(), 0, 0)
@@ -173,6 +199,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 			JSRenderingEnabled:  false,
 			Parallelism:         5,
 			UserAgent:           "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)",
+			IncludeSubdomains:   true, // Default to including subdomains
 			DiscoveryMechanisms: "[\"spider\"]",
 			SitemapURLs:         "",
 		}
@@ -184,11 +211,18 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		mechanisms = append(mechanisms, bluesnake.DiscoveryMechanism(m))
 	}
 
+	// Build domain filter based on IncludeSubdomains setting
+	domainFilter, err := buildDomainFilter(domain, config.IncludeSubdomains)
+	if err != nil {
+		log.Printf("Failed to build domain filter: %v", err)
+		return
+	}
+
 	// Build crawler configuration based on database config
 	crawlerConfig := &bluesnake.CollectorConfig{
 		Context:             crawlCtx, // Pass context for proper cancellation support
 		UserAgent:           config.UserAgent,
-		AllowedDomains:      []string{domain},
+		URLFilters:          []*regexp.Regexp{domainFilter}, // Use URLFilters instead of AllowedDomains
 		Async:               true,
 		EnableRendering:     config.JSRenderingEnabled,
 		DiscoveryMechanisms: mechanisms,

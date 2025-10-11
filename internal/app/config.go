@@ -45,6 +45,7 @@ func (a *App) GetConfigForDomain(urlStr string) (*types.ConfigResponse, error) {
 		JSRenderingEnabled:  config.JSRenderingEnabled,
 		Parallelism:         config.Parallelism,
 		UserAgent:           config.UserAgent,
+		IncludeSubdomains:   config.IncludeSubdomains,
 		DiscoveryMechanisms: config.GetDiscoveryMechanismsArray(),
 		SitemapURLs:         config.GetSitemapURLsArray(),
 	}, nil
@@ -56,6 +57,7 @@ func (a *App) UpdateConfigForDomain(
 	jsRendering bool,
 	parallelism int,
 	userAgent string,
+	includeSubdomains bool,
 	spiderEnabled bool,
 	sitemapEnabled bool,
 	sitemapURLs []string,
@@ -86,5 +88,5 @@ func (a *App) UpdateConfigForDomain(
 		mechanisms = []string{"spider"}
 	}
 
-	return a.store.UpdateConfig(project.ID, jsRendering, parallelism, userAgent, mechanisms, sitemapURLs)
+	return a.store.UpdateConfig(project.ID, jsRendering, parallelism, userAgent, includeSubdomains, mechanisms, sitemapURLs)
 }

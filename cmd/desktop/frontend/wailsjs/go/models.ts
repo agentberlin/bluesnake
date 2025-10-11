@@ -5,6 +5,7 @@ export namespace types {
 	    jsRenderingEnabled: boolean;
 	    parallelism: number;
 	    userAgent: string;
+	    includeSubdomains: boolean;
 	    discoveryMechanisms: string[];
 	    sitemapURLs: string[];
 	
@@ -18,6 +19,7 @@ export namespace types {
 	        this.jsRenderingEnabled = source["jsRenderingEnabled"];
 	        this.parallelism = source["parallelism"];
 	        this.userAgent = source["userAgent"];
+	        this.includeSubdomains = source["includeSubdomains"];
 	        this.discoveryMechanisms = source["discoveryMechanisms"];
 	        this.sitemapURLs = source["sitemapURLs"];
 	    }

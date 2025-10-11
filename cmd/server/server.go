@@ -306,13 +306,14 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 	case "PUT":
 		var req struct {
-			URL            string   `json:"url"`
-			JSRendering    bool     `json:"jsRendering"`
-			Parallelism    int      `json:"parallelism"`
-			UserAgent      string   `json:"userAgent"`
-			SpiderEnabled  bool     `json:"spiderEnabled"`
-			SitemapEnabled bool     `json:"sitemapEnabled"`
-			SitemapURLs    []string `json:"sitemapURLs"`
+			URL               string   `json:"url"`
+			JSRendering       bool     `json:"jsRendering"`
+			Parallelism       int      `json:"parallelism"`
+			UserAgent         string   `json:"userAgent"`
+			IncludeSubdomains bool     `json:"includeSubdomains"`
+			SpiderEnabled     bool     `json:"spiderEnabled"`
+			SitemapEnabled    bool     `json:"sitemapEnabled"`
+			SitemapURLs       []string `json:"sitemapURLs"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -325,6 +326,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			req.JSRendering,
 			req.Parallelism,
 			req.UserAgent,
+			req.IncludeSubdomains,
 			req.SpiderEnabled,
 			req.SitemapEnabled,
 			req.SitemapURLs,

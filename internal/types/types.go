@@ -70,6 +70,7 @@ type ConfigResponse struct {
 	JSRenderingEnabled  bool     `json:"jsRenderingEnabled"`
 	Parallelism         int      `json:"parallelism"`
 	UserAgent           string   `json:"userAgent"`
+	IncludeSubdomains   bool     `json:"includeSubdomains"`
 	DiscoveryMechanisms []string `json:"discoveryMechanisms"`
 	SitemapURLs         []string `json:"sitemapURLs"`
 }
