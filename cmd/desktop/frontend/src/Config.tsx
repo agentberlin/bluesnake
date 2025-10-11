@@ -26,6 +26,7 @@ interface ConfigData {
   jsRenderingEnabled: boolean;
   parallelism: number;
   userAgent: string;
+  includeSubdomains: boolean;
   discoveryMechanisms: string[];  // Not exposed directly, derived from checkboxes
 }
 
@@ -37,6 +38,7 @@ function Config({ url, onClose }: ConfigProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [includeSubdomains, setIncludeSubdomains] = useState(true); // Default to true as per requirement
   const [sitemapEnabled, setSitemapEnabled] = useState(false);
 
   useEffect(() => {
@@ -54,6 +56,7 @@ function Config({ url, onClose }: ConfigProps) {
       setJsRendering(config.jsRenderingEnabled);
       setParallelism(config.parallelism);
       setUserAgent(config.userAgent || 'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)');
+      setIncludeSubdomains(config.includeSubdomains !== undefined ? config.includeSubdomains : true);
 
       // Derive sitemap state from mechanisms (spider is always enabled)
       const mechanisms = config.discoveryMechanisms || ["spider"];
@@ -75,6 +78,7 @@ function Config({ url, onClose }: ConfigProps) {
       // Set default values
       setJsRendering(false);
       setParallelism(5);
+      setIncludeSubdomains(true); // Default to including subdomains
       setSitemapEnabled(false);
     } finally {
       setLoading(false);
@@ -91,6 +95,7 @@ function Config({ url, onClose }: ConfigProps) {
         jsRendering,
         parallelism,
         userAgent,
+        includeSubdomains,
         true, // Spider is always enabled
         sitemapEnabled,
         [] // No custom sitemap URLs in this version
@@ -146,6 +151,23 @@ function Config({ url, onClose }: ConfigProps) {
                     <span className="checkbox-label">Enable JavaScript Rendering</span>
                     <p className="config-hint">
                       When enabled, pages will be rendered with a headless browser to execute JavaScript
+                    </p>
+                  </div>
+                </label>
+              </div>
+
+              <div className="config-field">
+                <label className="config-label">
+                  <input
+                    type="checkbox"
+                    checked={includeSubdomains}
+                    onChange={(e) => setIncludeSubdomains(e.target.checked)}
+                    className="config-checkbox"
+                  />
+                  <div>
+                    <span className="checkbox-label">Include Subdomains</span>
+                    <p className="config-hint">
+                      When enabled, the crawler will include all subdomains of the main domain (e.g., blog.example.com, api.example.com)
                     </p>
                   </div>
                 </label>

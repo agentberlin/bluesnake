@@ -104,11 +104,12 @@ func (d *DesktopApp) UpdateConfigForDomain(
 	jsRendering bool,
 	parallelism int,
 	userAgent string,
+	includeSubdomains bool,
 	spiderEnabled bool,
 	sitemapEnabled bool,
 	sitemapURLs []string,
 ) error {
-	return d.app.UpdateConfigForDomain(url, jsRendering, parallelism, userAgent, spiderEnabled, sitemapEnabled, sitemapURLs)
+	return d.app.UpdateConfigForDomain(url, jsRendering, parallelism, userAgent, includeSubdomains, spiderEnabled, sitemapEnabled, sitemapURLs)
 }
 
 // GetPageLinksForURL wraps app.GetPageLinksForURL

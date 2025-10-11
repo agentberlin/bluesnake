@@ -34,6 +34,7 @@ func (s *Store) GetOrCreateConfig(projectID uint, domain string) (*Config, error
 			JSRenderingEnabled:  false,
 			Parallelism:         5,
 			UserAgent:           "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)",
+			IncludeSubdomains:   true,           // Default to including subdomains
 			DiscoveryMechanisms: "[\"spider\"]", // Default to spider mode
 			SitemapURLs:         "",             // Empty = use defaults when sitemap enabled
 		}
@@ -53,7 +54,7 @@ func (s *Store) GetOrCreateConfig(projectID uint, domain string) (*Config, error
 }
 
 // UpdateConfig updates the configuration for a project
-func (s *Store) UpdateConfig(projectID uint, jsRendering bool, parallelism int, userAgent string, discoveryMechanisms []string, sitemapURLs []string) error {
+func (s *Store) UpdateConfig(projectID uint, jsRendering bool, parallelism int, userAgent string, includeSubdomains bool, discoveryMechanisms []string, sitemapURLs []string) error {
 	var config Config
 
 	result := s.db.Where("project_id = ?", projectID).First(&config)
@@ -66,6 +67,7 @@ func (s *Store) UpdateConfig(projectID uint, jsRendering bool, parallelism int, 
 	config.JSRenderingEnabled = jsRendering
 	config.Parallelism = parallelism
 	config.UserAgent = userAgent
+	config.IncludeSubdomains = includeSubdomains
 
 	// Update discovery mechanisms
 	if err := config.SetDiscoveryMechanismsArray(discoveryMechanisms); err != nil {
