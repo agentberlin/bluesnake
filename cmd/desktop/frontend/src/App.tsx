@@ -14,12 +14,12 @@
 
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData, CheckForUpdate, DownloadAndInstallUpdate, GetVersion } from "../wailsjs/go/main/App";
+import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData, CheckForUpdate, DownloadAndInstallUpdate, GetVersion } from "../wailsjs/go/main/DesktopApp";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
 import LinksPanel from './LinksPanel';
-import { main } from "../wailsjs/go/models";
+import { types } from "../wailsjs/go/models";
 
 interface CustomDropdownProps {
   value: number;
@@ -249,7 +249,7 @@ function App() {
   const [activeCrawls, setActiveCrawls] = useState<Map<number, CrawlProgress>>(new Map());
   const [stoppingProjects, setStoppingProjects] = useState<Set<number>>(new Set());
   const inputRef = useRef<HTMLInputElement>(null);
-  const [updateInfo, setUpdateInfo] = useState<main.UpdateInfo | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<types.UpdateInfo | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
 
@@ -293,7 +293,7 @@ function App() {
     // Check for updates on startup
     setIsCheckingUpdate(true);
     CheckForUpdate()
-      .then((info: main.UpdateInfo) => {
+      .then((info: types.UpdateInfo) => {
         setUpdateInfo(info);
         setIsCheckingUpdate(false);
       })

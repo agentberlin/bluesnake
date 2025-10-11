@@ -15,8 +15,12 @@
 package main
 
 import (
+	"context"
 	"embed"
 
+	"github.com/agentberlin/bluesnake/internal/app"
+	"github.com/agentberlin/bluesnake/internal/store"
+	"github.com/agentberlin/bluesnake/internal/version"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -26,21 +30,41 @@ import (
 var assets embed.FS
 
 func main() {
-	// Create an instance of the app structure
-	app := NewApp()
+	// Create desktop app adapter (will be initialized in OnStartup)
+	desktopApp := &DesktopApp{}
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:  "Blue Snake | World's #1 AI Native Web Crawler | " + CurrentVersion,
+		Title:  "Blue Snake | World's #1 AI Native Web Crawler | " + version.CurrentVersion,
 		Width:  1280,
 		Height: 800,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
 		BackgroundColour: &options.RGBA{R: 255, G: 255, B: 255, A: 1},
-		OnStartup:        app.startup,
+		OnStartup: func(ctx context.Context) {
+			// Initialize the database store
+			st, err := store.NewStore()
+			if err != nil {
+				println("Failed to initialize database:", err.Error())
+				return
+			}
+
+			// Create Wails-specific event emitter
+			emitter := NewWailsEmitter(ctx)
+
+			// Create core app with injected dependencies
+			coreApp := app.NewApp(st, emitter)
+
+			// Initialize the already-bound desktopApp
+			desktopApp.app = coreApp
+			desktopApp.ctx = ctx
+
+			// Initialize the app
+			coreApp.Startup(ctx)
+		},
 		Bind: []interface{}{
-			app,
+			desktopApp,
 		},
 	})
 

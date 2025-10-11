@@ -4,7 +4,10 @@
 
 BlueSnake is a web crawler application with multiple interfaces, consisting of these main components:
 1. **BlueSnake Crawler Package** - A Go-based web scraping library (root directory)
-2. **BlueSnake Desktop Application** - A Wails-based GUI application (cmd/desktop directory)
+2. **Internal Packages** - Shared business logic and data layers (internal/ directory)
+3. **Desktop Application** - A Wails-based GUI application (cmd/desktop/ directory)
+4. **HTTP Server** - A REST API server (cmd/server/ directory)
+5. **Future: MCP Server** - Model Context Protocol server (planned)
 
 ## Project Structure
 
@@ -16,22 +19,241 @@ bluesnake/
 ├── extensions/            # Crawler extensions
 ├── proxy/                 # Proxy support
 ├── queue/                 # Request queuing
+├── internal/              # Internal packages (shared across transports)
+│   ├── version/           # Version constant
+│   │   └── version.go
+│   ├── types/             # Shared types (ProjectInfo, CrawlInfo, etc.)
+│   │   └── types.go
+│   ├── store/             # Database layer (repository pattern)
+│   │   ├── store.go       # Store initialization
+│   │   ├── models.go      # GORM models
+│   │   ├── projects.go    # Project CRUD operations
+│   │   ├── crawls.go      # Crawl CRUD operations
+│   │   ├── config.go      # Config CRUD operations
+│   │   └── links.go       # PageLink CRUD operations
+│   └── app/               # Business logic (transport-agnostic)
+│       ├── events.go      # EventEmitter interface
+│       ├── app.go         # Core App struct
+│       ├── utils.go       # URL normalization helpers
+│       ├── crawler.go     # Crawl orchestration
+│       ├── active_crawls.go  # Active crawl tracking
+│       ├── projects.go    # Project management
+│       ├── crawls.go      # Crawl management
+│       ├── config.go      # Config management
+│       ├── links.go       # Link management
+│       ├── favicon.go     # Favicon handling
+│       └── updater.go     # Update checking
 └── cmd/                   # Application executables
-    └── desktop/           # Wails desktop application
-        ├── main.go        # Application entry point
-        ├── app.go         # Backend API (Go methods exposed to frontend)
-        ├── database.go    # SQLite database layer
-        └── frontend/      # React/TypeScript UI
-            └── src/
-                ├── App.tsx     # Main UI component
-                └── Config.tsx  # Configuration UI
+    ├── desktop/           # Wails desktop application
+    │   ├── main.go        # Application entry point (dependency injection)
+    │   ├── adapter.go     # Wails adapter (WailsEmitter, DesktopApp)
+    │   └── frontend/      # React/TypeScript UI
+    │       └── src/
+    │           ├── App.tsx     # Main UI component
+    │           └── Config.tsx  # Configuration UI
+    └── server/            # HTTP REST API server
+        ├── main.go        # Server initialization
+        └── server.go      # HTTP handlers and routing
+```
+
+---
+
+## Multi-Transport Architecture
+
+BlueSnake now uses a layered architecture that separates business logic from transport layers, enabling the same core functionality to be exposed via multiple interfaces.
+
+### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Transport Layer                          │
+│                                                             │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
+│  │   Desktop    │  │  HTTP Server │  │  MCP Server  │    │
+│  │   (Wails)    │  │   (REST)     │  │   (Future)   │    │
+│  │              │  │              │  │              │    │
+│  │ WailsEmitter │  │  NoOpEmitter │  │  MCPEmitter  │    │
+│  │ EventsEmit() │  │     (stub)   │  │  (planned)   │    │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘    │
+│         │                 │                  │             │
+└─────────┼─────────────────┼──────────────────┼─────────────┘
+          │                 │                  │
+          └─────────────────┼──────────────────┘
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Business Logic Layer (internal/app/)           │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │  App (transport-agnostic)                           │  │
+│  │                                                      │  │
+│  │  • StartCrawl(), StopCrawl()                        │  │
+│  │  • GetProjects(), GetCrawls()                       │  │
+│  │  • GetConfigForDomain(), UpdateConfigForDomain()    │  │
+│  │  • Uses EventEmitter interface (injected)           │  │
+│  │  • No knowledge of Wails/HTTP/MCP                   │  │
+│  └──────────────────────┬──────────────────────────────┘  │
+│                         │                                  │
+└─────────────────────────┼──────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Data Layer (internal/store/)                   │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │  Store (database operations)                        │  │
+│  │                                                      │  │
+│  │  • GetOrCreateProject(), DeleteProject()            │  │
+│  │  • CreateCrawl(), GetCrawlResults()                 │  │
+│  │  • GetOrCreateConfig(), UpdateConfig()              │  │
+│  │  • SavePageLinks(), GetPageLinks()                  │  │
+│  │                                                      │  │
+│  │  SQLite (~/.bluesnake/bluesnake.db)                 │  │
+│  └─────────────────────────────────────────────────────┘  │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+                          ▲
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│           BlueSnake Crawler Package (root/)                 │
+│                                                             │
+│  • HTTP requests/responses                                  │
+│  • HTML parsing and link extraction                         │
+│  • URL deduplication (in-memory)                            │
+│  • JavaScript rendering (chromedp)                          │
+│  • Rate limiting and parallelism                            │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Key Design Principles
+
+1. **Dependency Injection**: Store and EventEmitter injected into App
+2. **Interface-Based Design**: EventEmitter interface allows different transport implementations
+3. **Transport Agnostic**: internal/app has NO imports of Wails or HTTP libraries
+4. **Separation of Concerns**: Clear boundaries between layers
+5. **Testability**: Business logic can be tested without transport dependencies
+
+### EventEmitter Pattern
+
+The `EventEmitter` interface allows each transport to handle events differently:
+
+```go
+// internal/app/events.go
+type EventEmitter interface {
+    Emit(eventType EventType, data interface{})
+}
+
+// Desktop implementation (cmd/desktop/adapter.go)
+type WailsEmitter struct {
+    ctx context.Context
+}
+
+func (w *WailsEmitter) Emit(eventType app.EventType, data interface{}) {
+    runtime.EventsEmit(w.ctx, string(eventType), data)
+}
+
+// HTTP implementation (cmd/server/main.go)
+type NoOpEmitter struct{}
+
+func (n *NoOpEmitter) Emit(eventType app.EventType, data interface{}) {
+    // Do nothing - HTTP server uses polling instead
+}
+```
+
+### Transport Layer Implementations
+
+#### Desktop (cmd/desktop/)
+
+**Initialization with Dependency Injection:**
+```go
+func main() {
+    // Initialize store
+    st, err := store.NewStore()
+
+    err = wails.Run(&options.App{
+        OnStartup: func(ctx context.Context) {
+            // Create Wails-specific event emitter
+            emitter := NewWailsEmitter(ctx)
+
+            // Create core app with injected dependencies
+            coreApp := app.NewApp(st, emitter)
+
+            // Create desktop adapter
+            desktopApp = NewDesktopApp(coreApp)
+            desktopApp.Startup(ctx)
+        },
+        Bind: []interface{}{desktopApp},
+    })
+}
+```
+
+**Adapter Pattern:**
+- `DesktopApp` wraps `app.App` and delegates all method calls
+- Thin wrapper (~20 lines per method)
+- No business logic in adapter
+
+#### HTTP Server (cmd/server/)
+
+**Initialization:**
+```go
+func main() {
+    // Initialize store
+    st, err := store.NewStore()
+
+    // Create app with NoOpEmitter (no events for HTTP)
+    coreApp := app.NewApp(st, &app.NoOpEmitter{})
+    coreApp.Startup(context.Background())
+
+    // Create HTTP server
+    server := NewServer(coreApp)
+
+    // Start server
+    httpServer := &http.Server{
+        Addr:    ":8080",
+        Handler: server,
+    }
+    httpServer.ListenAndServe()
+}
+```
+
+**REST API Endpoints:**
+```
+GET  /api/v1/health                        - Health check
+GET  /api/v1/version                       - App version
+GET  /api/v1/projects                      - List all projects
+GET  /api/v1/projects/{id}/crawls          - Get project crawls
+DELETE /api/v1/projects/{id}               - Delete project
+
+GET  /api/v1/crawls/{id}                   - Get crawl with results
+DELETE /api/v1/crawls/{id}                 - Delete crawl
+GET  /api/v1/crawls/{id}/pages/{url}/links - Get page links
+
+POST /api/v1/crawl                         - Start new crawl
+POST /api/v1/stop-crawl/{projectID}        - Stop active crawl
+GET  /api/v1/active-crawls                 - List active crawls
+
+GET  /api/v1/config?url=example.com        - Get config
+PUT  /api/v1/config                        - Update config
+```
+
+**Running the Server:**
+```bash
+# Default (port 8080)
+go run ./cmd/server
+
+# Custom port
+go run ./cmd/server -port 3000 -host localhost
+
+# Build binary
+go build -o bluesnake-server ./cmd/server
+./bluesnake-server
 ```
 
 ---
 
 ## Responsibility Division: What Goes Where?
 
-This section provides clear guidance on where different types of functionality should be implemented.
+This section provides clear guidance on where different types of functionality should be implemented across the new layered architecture.
 
 ### BlueSnake Package Responsibilities (Core Crawling Library)
 
@@ -62,30 +284,76 @@ This section provides clear guidance on where different types of functionality s
 - Historical crawl comparison
 - Analytics or reporting logic
 
+### Internal Packages Responsibilities (internal/)
+
+**✅ What BELONGS in internal/store/ (Database Layer):**
+- GORM models and schema definitions
+- SQLite operations (save, query, delete)
+- Database initialization and migrations
+- CRUD operations for projects, crawls, configs, links
+- Favicon file management
+- Repository pattern implementation
+
+**✅ What BELONGS in internal/app/ (Business Logic Layer):**
+- Crawl orchestration and management
+- Project and domain organization logic
+- Configuration management (get, update)
+- Active crawl tracking and state management
+- URL normalization and validation
+- Callbacks that save crawler results to database
+- Crawl statistics and aggregation
+- Update checking logic
+- **NO transport-specific code** (no Wails, HTTP, or MCP dependencies)
+- **NO UI logic** (just returns data)
+
+**✅ What BELONGS in internal/types/ (Shared Types):**
+- Request/response types (ProjectInfo, CrawlInfo, etc.)
+- Shared data structures used across layers
+- No business logic, just data definitions
+
+**❌ What DOES NOT belong in internal packages:**
+- Low-level HTTP handling (that's in crawler package)
+- HTML parsing logic (that's in crawler package)
+- Robots.txt parsing (that's in crawler package)
+- Chromedp rendering code (that's in crawler package)
+- UI components (that's in frontend)
+- Event emission specifics (only interface defined)
+- HTTP routing/handlers (that's in cmd/server)
+- Wails bindings (that's in cmd/desktop)
+
 ### Desktop Application Responsibilities (cmd/desktop/)
 
 **✅ What BELONGS in desktop app:**
-- Database schema and GORM models
-- SQLite operations (save, query, delete)
-- Wails UI integration and event handling
-- Project and domain organization
-- Favicon downloading and caching
-- User configuration persistence (JS rendering, parallelism)
-- Crawl history and comparison
+- Wails initialization and configuration
+- WailsEmitter implementation (runtime.EventsEmit)
+- DesktopApp adapter (thin wrapper)
+- UI integration and event handling
 - UI state management (React)
-- Export functionality (CSV, JSON)
-- Analytics and reporting
-- **Callbacks that save crawler results to database** (NEW in v1)
-- **UI polling for real-time updates** (NEW in v1)
+- Frontend polling for real-time updates
+- User interaction handling
 
 **❌ What DOES NOT belong in desktop app:**
-- Low-level HTTP handling
-- HTML parsing logic
-- URL normalization algorithms
-- Robots.txt parsing
-- Rate limiting implementation
-- Link extraction logic
-- Chromedp rendering code
+- Business logic (moved to internal/app)
+- Database operations (moved to internal/store)
+- Crawl orchestration (moved to internal/app)
+- URL normalization (moved to internal/app)
+- Any logic that could be shared with HTTP server
+
+### HTTP Server Responsibilities (cmd/server/)
+
+**✅ What BELONGS in HTTP server:**
+- HTTP server initialization and configuration
+- Route definitions and handlers
+- Request/response marshaling (JSON)
+- CORS middleware
+- Error handling and HTTP status codes
+- Graceful shutdown logic
+
+**❌ What DOES NOT belong in HTTP server:**
+- Business logic (use internal/app)
+- Database operations (use internal/store)
+- Crawl orchestration (use internal/app)
+- Any logic that could be shared with desktop app
 
 ### High-Level Crawler API (New in v1)
 
@@ -288,61 +556,98 @@ When `EnableRendering` is enabled:
 
 ---
 
-## Part 2: Wails Desktop Application (`cmd/desktop/`)
+## Part 2: Application Layer (internal/)
 
 ### Architecture Overview
 
-The desktop application wraps the BlueSnake crawler in a cross-platform GUI using the Wails framework, which binds Go backend methods to a React frontend.
+The internal packages provide transport-agnostic business logic and data access, enabling code reuse across desktop, HTTP, and future MCP servers.
 
 ### Technology Stack
 
-- **Backend:** Go with Wails v2
-- **Frontend:** React + TypeScript + Vite
+- **Business Logic:** Pure Go (no transport dependencies)
 - **Database:** SQLite with GORM ORM
-- **Communication:** Wails runtime bindings + events
+- **Patterns:** Repository pattern, dependency injection, interface-based design
 
-### Backend Components
+### Internal Packages
 
-#### 1. Main Entry Point (`main.go`)
+#### 1. Store Layer (internal/store/)
 
+**Purpose:** Database operations and data persistence
+
+**Key Components:**
+- `Store` struct: Main database interface
+- `models.go`: GORM models (Project, Crawl, CrawledUrl, PageLink, Config)
+- `projects.go`: Project CRUD operations
+- `crawls.go`: Crawl CRUD operations
+- `config.go`: Configuration management
+- `links.go`: Link management
+
+**Example Usage:**
 ```go
-func main() {
-    app := NewApp()
-    wails.Run(&options.App{
-        Title:    "BlueSnake - Web Crawler",
-        OnStartup: app.startup,
-        Bind: []interface{}{app},  // Exposes App methods to frontend
-    })
-}
+// Initialize store
+st, err := store.NewStore()
+
+// Get or create project
+project, err := st.GetOrCreateProject(url, domain)
+
+// Save crawled URL
+err = st.SaveCrawledUrl(crawlID, url, status, title, indexable, error)
 ```
 
-- Initializes the Wails application
-- Embeds frontend assets
-- Binds `App` struct methods for frontend access
+#### 2. App Layer (internal/app/)
 
-#### 2. App Backend API (`app.go`)
+**Purpose:** Business logic and crawl orchestration
 
-The `App` struct provides the bridge between frontend and crawler:
+The `App` struct provides the core business logic, decoupled from any transport:
 
-**Exported Methods (callable from frontend):**
+**Public Methods (available to all transports):**
 
 ```go
 // Crawl Management
 StartCrawl(urlStr string) error
 StopCrawl(projectID uint) error
-GetActiveCrawls() []CrawlProgress
-GetActiveCrawlData(projectID uint) (*CrawlResultDetailed, error)
-GetProjects() ([]ProjectInfo, error)
-GetCrawls(projectID uint) ([]CrawlInfo, error)
-GetCrawlWithResults(crawlID uint) (*CrawlResultDetailed, error)
+GetActiveCrawls() []types.CrawlProgress
+GetActiveCrawlData(projectID uint) (*types.CrawlResultDetailed, error)
+
+// Project Management
+GetProjects() ([]types.ProjectInfo, error)
+DeleteProjectByID(projectID uint) error
+
+// Crawl History
+GetCrawls(projectID uint) ([]types.CrawlInfo, error)
+GetCrawlWithResults(crawlID uint) (*types.CrawlResultDetailed, error)
+DeleteCrawlByID(crawlID uint) error
 
 // Configuration
-GetConfigForDomain(urlStr string) (*Config, error)
-UpdateConfigForDomain(urlStr string, jsRendering bool, parallelism int) error
+GetConfigForDomain(urlStr string) (*types.ConfigResponse, error)
+UpdateConfigForDomain(...) error
 
-// Deletion
-DeleteCrawlByID(crawlID uint) error
-DeleteProjectByID(projectID uint) error
+// Links
+GetPageLinksForURL(crawlID uint, pageURL string) (*types.PageLinksResponse, error)
+
+// Utilities
+GetFaviconData(faviconPath string) (string, error)
+GetVersion() string
+
+// Updates (Desktop only)
+CheckForUpdate() (*types.UpdateInfo, error)
+DownloadAndInstallUpdate() error
+```
+
+**Constructor with Dependency Injection:**
+
+```go
+// Create new App with injected dependencies
+func NewApp(store *store.Store, emitter EventEmitter) *App {
+    if emitter == nil {
+        emitter = &NoOpEmitter{} // Default to no-op
+    }
+    return &App{
+        store:        store,
+        emitter:      emitter,
+        activeCrawls: make(map[uint]*activeCrawl),
+    }
+}
 ```
 
 **Key Implementation Details:**
@@ -363,18 +668,102 @@ DeleteProjectByID(projectID uint) error
 
 3. **Event Emission:**
    ```go
-   runtime.EventsEmit(ctx, "crawl:started")    // Indicational only, no payload
-   runtime.EventsEmit(ctx, "crawl:completed")  // Indicational only, no payload
-   runtime.EventsEmit(ctx, "crawl:stopped")    // Indicational only, no payload
+   a.emitter.Emit(EventCrawlStarted, nil)    // Indicational only, no payload
+   a.emitter.Emit(EventCrawlCompleted, nil)  // Indicational only, no payload
+   a.emitter.Emit(EventCrawlStopped, nil)    // Indicational only, no payload
    ```
 
-   **Important:** Events are **indicational only** and carry no payload. The frontend uses polling to fetch actual data from the backend via method calls. This design decision was made because:
+   **Important:** Events are **indicational only** and carry no payload. The frontend uses polling to fetch actual data from the backend via method calls. The emitter interface allows each transport to handle events differently:
+   - **Desktop:** Emits Wails events via `runtime.EventsEmit()`
+   - **HTTP:** Uses `NoOpEmitter` (no events, clients poll instead)
+   - **Future MCP:** Would emit MCP notifications
+
+   This design decision was made because:
    - At scale, emitting millions of URL events adds complexity
    - Polling from database is more reliable and predictable
    - Simpler synchronization logic
    - Easier to implement future optimizations (batching, pagination, etc.)
+   - Transport-agnostic approach
 
-#### 3. Database Layer (`database.go`)
+## Part 3: Wails Desktop Application (`cmd/desktop/`)
+
+### Architecture Overview
+
+The desktop application is now a thin wrapper around the internal packages, using dependency injection and the adapter pattern.
+
+### Technology Stack
+
+- **Backend:** Go with Wails v2 (adapter layer only)
+- **Frontend:** React + TypeScript + Vite
+- **Database:** SQLite with GORM ORM (via internal/store)
+- **Communication:** Wails runtime bindings + events
+
+### Backend Components
+
+#### 1. Main Entry Point (`main.go`)
+
+```go
+func main() {
+    // Initialize store
+    st, err := store.NewStore()
+
+    var desktopApp *DesktopApp
+
+    err = wails.Run(&options.App{
+        Title:    "BlueSnake - Web Crawler",
+        OnStartup: func(ctx context.Context) {
+            // Create Wails-specific event emitter
+            emitter := NewWailsEmitter(ctx)
+
+            // Create core app with injected dependencies
+            coreApp := app.NewApp(st, emitter)
+
+            // Create desktop adapter
+            desktopApp = NewDesktopApp(coreApp)
+            desktopApp.Startup(ctx)
+        },
+        Bind: []interface{}{desktopApp},
+    })
+}
+```
+
+- Initializes the Wails application
+- Creates and injects dependencies (store, emitter)
+- Binds `DesktopApp` adapter methods for frontend access
+
+#### 2. Wails Adapter (`adapter.go`)
+
+**WailsEmitter:** Implements EventEmitter interface for Wails
+
+```go
+type WailsEmitter struct {
+    ctx context.Context
+}
+
+func (w *WailsEmitter) Emit(eventType app.EventType, data interface{}) {
+    runtime.EventsEmit(w.ctx, string(eventType), data)
+}
+```
+
+**DesktopApp:** Thin wrapper that delegates to internal/app
+
+```go
+type DesktopApp struct {
+    app *app.App
+    ctx context.Context
+}
+
+func (d *DesktopApp) GetProjects() ([]types.ProjectInfo, error) {
+    return d.app.GetProjects() // Simple delegation
+}
+// ... all other methods follow same pattern
+```
+
+- ~20 lines per method (just delegation)
+- No business logic in adapter
+- Clean separation of concerns
+
+#### 3. Database Layer (internal/store/)
 
 **ORM:** GORM with SQLite driver
 
@@ -428,14 +817,20 @@ type CrawledUrl struct {
 }
 ```
 
-**Database Operations:**
+**Database Operations (all in internal/store/):**
 - `GetOrCreateProject()` - Find existing or create new project by domain
 - `CreateCrawl()` - Create new crawl record
 - `SaveCrawledUrl()` - Save individual URL result
 - `UpdateCrawlStats()` - Update crawl statistics after completion
 - `GetAllProjects()` - Retrieve all projects with latest crawl info
 - `GetCrawlResults()` - Get all URLs for a specific crawl
+- `GetOrCreateConfig()` - Get or create config for domain
+- `UpdateConfig()` - Update domain configuration
+- `SavePageLinks()` - Save page link relationships
+- `GetPageLinks()` - Get inbound/outbound links for a page
 - CASCADE deletion for related records
+
+**Note:** All database operations are now in `internal/store/`, not in cmd/desktop/. This enables reuse across desktop and HTTP server.
 
 ### Frontend Components
 
@@ -621,10 +1016,10 @@ UpdateConfigForDomain(url, jsRendering, parallelism)
 
 ### Frontend → Backend (Method Calls)
 
-Wails generates TypeScript bindings in `frontend/wailsjs/go/main/App.js`:
+Wails generates TypeScript bindings in `frontend/wailsjs/go/main/DesktopApp.js`:
 
 ```typescript
-import { StartCrawl, GetProjects } from "../wailsjs/go/main/App"
+import { StartCrawl, GetProjects } from "../wailsjs/go/main/DesktopApp"
 
 // Direct method invocation
 await StartCrawl("https://example.com")
@@ -1188,39 +1583,162 @@ c.Wait()
 ```
 
 
+## Adding New Transports
+
+The layered architecture makes it easy to add new transport layers (CLI, gRPC, WebSocket, etc.).
+
+### Example: Adding a CLI
+
+1. **Create cmd/cli/main.go:**
+```go
+func main() {
+    // Initialize store
+    st, err := store.NewStore()
+
+    // Create app with NoOpEmitter
+    coreApp := app.NewApp(st, &app.NoOpEmitter{})
+    coreApp.Startup(context.Background())
+
+    // Parse CLI flags
+    url := flag.String("url", "", "URL to crawl")
+    flag.Parse()
+
+    // Start crawl
+    if err := coreApp.StartCrawl(*url); err != nil {
+        log.Fatal(err)
+    }
+
+    // Wait for completion (poll active crawls)
+    for {
+        crawls := coreApp.GetActiveCrawls()
+        if len(crawls) == 0 {
+            break
+        }
+        time.Sleep(1 * time.Second)
+    }
+}
+```
+
+2. **Build and run:**
+```bash
+go build -o bluesnake-cli ./cmd/cli
+./bluesnake-cli -url https://example.com
+```
+
+No changes to internal packages required!
+
+### Example: Adding WebSocket Support to HTTP Server
+
+1. **Create WebSocket emitter in cmd/server:**
+```go
+type WebSocketEmitter struct {
+    subscribers map[string]chan app.Event
+    mu          sync.RWMutex
+}
+
+func (w *WebSocketEmitter) Emit(eventType app.EventType, data interface{}) {
+    w.mu.RLock()
+    defer w.mu.RUnlock()
+
+    event := app.Event{Type: eventType, Data: data}
+    for _, ch := range w.subscribers {
+        select {
+        case ch <- event:
+        default: // Non-blocking
+        }
+    }
+}
+```
+
+2. **Use in server initialization:**
+```go
+// Create app with WebSocket emitter
+wsEmitter := NewWebSocketEmitter()
+coreApp := app.NewApp(st, wsEmitter)
+
+// Add WebSocket handler
+http.HandleFunc("/ws", wsEmitter.handleWebSocket)
+```
+
+Again, no changes to internal packages!
+
+---
+
 ## Future Enhancement Opportunities
 
 ### Crawler Package
 - Redis/PostgreSQL storage backend
 - Distributed crawling support
-- Sitemap.xml parsing
+- Sitemap.xml parsing (implemented!)
 - Advanced JavaScript interaction (form filling, clicking)
 - Screenshot capture
 - Content extraction templates
 
+### Internal Packages
+- Batch operations for performance
+- Caching layer (Redis)
+- Crawl pause/resume state management
+- Advanced filtering and search
+- Export to CSV/JSON (refactor from desktop)
+
 ### Desktop Application
-- Export to CSV/JSON
-- Crawl scheduling
+- Crawl scheduling UI
 - Crawl comparison/diff view
-- Advanced filtering/search
 - Charts and analytics
-- Multiple crawler instances
 - Cloud sync of crawl data
 - Browser extension integration
+
+### HTTP Server
+- WebSocket support for real-time updates
+- API authentication (JWT, OAuth)
+- Rate limiting per client
+- GraphQL endpoint
+- Swagger/OpenAPI documentation
+- Pagination for large result sets
+
+### New Transports
+- **CLI Tool** - Command-line interface for scripting
+- **MCP Server** - Model Context Protocol for AI agents
+- **gRPC Server** - For high-performance internal APIs
+- **Browser Extension** - Direct integration with browsers
 
 ### Performance
 - Connection pooling
 - Streaming database writes
 - Incremental crawls (only new/changed pages)
 - Crawl pause/resume
+- Database sharding for large datasets
 
 ---
 
 ## Conclusion
 
-BlueSnake demonstrates a clean separation between:
-1. **Core Logic** (crawler package) - Reusable, testable, framework-agnostic
-2. **User Interface** (Wails app) - Modern, responsive, cross-platform
-3. **Data Persistence** (SQLite) - Simple, local, no external dependencies
+BlueSnake demonstrates a clean layered architecture with separation between:
 
-The architecture allows each component to evolve independently while maintaining clear interfaces between layers. The polling-based design with database as single source of truth enables reliable UI updates at scale, while the callback pattern provides extensibility without modifying core code. Indicational events provide immediate feedback triggers, while polling handles the actual data synchronization.
+1. **Crawler Package** (root/) - Low-level crawling, HTTP, parsing - Framework-agnostic
+2. **Store Layer** (internal/store/) - Data persistence and CRUD operations
+3. **Business Logic** (internal/app/) - Transport-agnostic orchestration
+4. **Transport Layers** (cmd/*/) - Thin adapters for different interfaces:
+   - Desktop (Wails) - Cross-platform GUI
+   - HTTP Server - REST API
+   - Future: CLI, MCP, gRPC, etc.
+
+### Key Architectural Benefits
+
+1. **Code Reuse**: Same business logic powers all transports
+2. **Testability**: Each layer can be tested independently
+3. **Extensibility**: Add new transports without modifying core logic
+4. **Maintainability**: Clear boundaries and single responsibility
+5. **Scalability**: Easy to optimize each layer independently
+
+### Design Patterns Used
+
+- **Repository Pattern**: Store layer abstracts database operations
+- **Dependency Injection**: Store and EventEmitter injected into App
+- **Adapter Pattern**: Transport layers adapt core App to different interfaces
+- **Observer Pattern**: EventEmitter allows decoupled event handling
+- **Interface-Based Design**: Enables polymorphism and testing
+
+The polling-based design with database as single source of truth enables reliable UI updates at scale, while the callback pattern provides extensibility without modifying core code. Indicational events provide immediate feedback triggers, while polling handles the actual data synchronization.
+
+The architecture is designed to be **future-proof**: adding new transports (MCP, CLI, gRPC) requires only creating a new `cmd/` directory and implementing a thin adapter - no changes to business logic required.

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package version
 
 // CurrentVersion is the current version of the application
 // This should match the version in the latest build

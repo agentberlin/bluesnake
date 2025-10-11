@@ -1,4 +1,4 @@
-export namespace main {
+export namespace types {
 	
 	export class ConfigResponse {
 	    domain: string;
