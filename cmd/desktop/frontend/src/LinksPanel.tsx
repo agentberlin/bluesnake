@@ -14,6 +14,7 @@
 
 import { useState, useEffect } from 'react';
 import { BrowserOpenURL } from "../wailsjs/runtime/runtime";
+import { GetPageContent } from "../wailsjs/go/main/DesktopApp";
 import './LinksPanel.css';
 
 interface Link {
@@ -32,15 +33,16 @@ interface LinksPanelProps {
   selectedUrl: string;
   inlinks: Link[];
   outlinks: Link[];
+  crawlId?: number;  // Add crawlId for fetching content
 }
 
-type TabType = 'inlinks' | 'outlinks';
+type TabType = 'inlinks' | 'outlinks' | 'content';
 
 const DEFAULT_WIDTH = 480;
 const MIN_WIDTH = 400;
 const MAX_WIDTH_VW = 90;
 
-function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks }: LinksPanelProps) {
+function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks, crawlId }: LinksPanelProps) {
   const [activeTab, setActiveTab] = useState<TabType>('inlinks');
   const [showContentOnly, setShowContentOnly] = useState<boolean>(() => {
     // Load saved filter preference from localStorage, default to true (content only)
@@ -53,6 +55,11 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks }: LinksPa
     return savedWidth ? parseInt(savedWidth, 10) : DEFAULT_WIDTH;
   });
   const [isResizing, setIsResizing] = useState(false);
+
+  // Content tab state
+  const [content, setContent] = useState<string>('');
+  const [isLoadingContent, setIsLoadingContent] = useState(false);
+  const [contentError, setContentError] = useState<string>('');
 
   // Handle Escape key to close panel
   useEffect(() => {
@@ -101,6 +108,39 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks }: LinksPa
   useEffect(() => {
     localStorage.setItem('linksPanelShowContentOnly', showContentOnly.toString());
   }, [showContentOnly]);
+
+  // Fetch content when Content tab is selected
+  useEffect(() => {
+    if (activeTab === 'content' && crawlId && selectedUrl && isOpen) {
+      setIsLoadingContent(true);
+      setContentError('');
+
+      GetPageContent(crawlId, selectedUrl)
+        .then((fetchedContent: string) => {
+          setContent(fetchedContent);
+          setIsLoadingContent(false);
+        })
+        .catch((error: any) => {
+          console.error('Failed to load content:', error);
+          setContentError(error?.toString() || 'Failed to load content');
+          setIsLoadingContent(false);
+        });
+    }
+  }, [activeTab, crawlId, selectedUrl, isOpen]);
+
+  // Copy to clipboard handler
+  const handleCopyToClipboard = () => {
+    if (content) {
+      navigator.clipboard.writeText(content)
+        .then(() => {
+          // Could add a toast notification here
+          console.log('Content copied to clipboard');
+        })
+        .catch((err) => {
+          console.error('Failed to copy content:', err);
+        });
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -171,11 +211,58 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks }: LinksPa
           >
             Outlinks ({outlinks.length})
           </button>
+          <button
+            className={`links-panel-tab ${activeTab === 'content' ? 'active' : ''}`}
+            onClick={() => setActiveTab('content')}
+          >
+            Content
+          </button>
         </div>
 
         {/* Content */}
         <div className="links-panel-content">
-          {currentLinks.length === 0 ? (
+          {activeTab === 'content' ? (
+            // Content tab display
+            <div className="content-tab-container">
+              {isLoadingContent ? (
+                <div className="content-loading">
+                  <p>Loading content...</p>
+                </div>
+              ) : contentError ? (
+                <div className="content-error">
+                  <p>Error: {contentError}</p>
+                </div>
+              ) : (
+                <>
+                  <div className="content-header">
+                    <button
+                      className="copy-button"
+                      onClick={handleCopyToClipboard}
+                      title="Copy to clipboard"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                      </svg>
+                      Copy
+                    </button>
+                    <div className="content-stats">
+                      {content.length > 0 && (
+                        <>
+                          <span>{content.split(/\s+/).filter(w => w.length > 0).length} words</span>
+                          <span className="content-separator">•</span>
+                          <span>{content.length} characters</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="content-display">
+                    {content || 'No content available for this page.'}
+                  </div>
+                </>
+              )}
+            </div>
+          ) : currentLinks.length === 0 ? (
             <div className="links-panel-empty">
               <p>No {activeTab === 'inlinks' ? 'inlinks' : 'outlinks'} found</p>
             </div>
@@ -235,14 +322,16 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks }: LinksPa
         </div>
 
         {/* Footer with stats */}
-        <div className="links-panel-footer">
-          <div className="links-panel-stats">
-            <span className="stat-item">
-              <span className="stat-label">Total {activeTab === 'inlinks' ? 'Inlinks' : 'Outlinks'}:</span>
-              <span className="stat-value">{currentLinks.length}</span>
-            </span>
+        {activeTab !== 'content' && (
+          <div className="links-panel-footer">
+            <div className="links-panel-stats">
+              <span className="stat-item">
+                <span className="stat-label">Total {activeTab === 'inlinks' ? 'Inlinks' : 'Outlinks'}:</span>
+                <span className="stat-value">{currentLinks.length}</span>
+              </span>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </>
   );

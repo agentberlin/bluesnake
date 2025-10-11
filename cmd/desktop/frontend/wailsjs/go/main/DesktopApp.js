@@ -42,6 +42,10 @@ export function GetFaviconData(arg1) {
   return window['go']['main']['DesktopApp']['GetFaviconData'](arg1);
 }
 
+export function GetPageContent(arg1, arg2) {
+  return window['go']['main']['DesktopApp']['GetPageContent'](arg1, arg2);
+}
+
 export function GetPageLinksForURL(arg1, arg2) {
   return window['go']['main']['DesktopApp']['GetPageLinksForURL'](arg1, arg2);
 }

@@ -23,6 +23,8 @@ export function GetCrawls(arg1:number):Promise<Array<types.CrawlInfo>>;
 
 export function GetFaviconData(arg1:string):Promise<string>;
 
+export function GetPageContent(arg1:number,arg2:string):Promise<string>;
+
 export function GetPageLinksForURL(arg1:number,arg2:string):Promise<types.PageLinksResponse>;
 
 export function GetProjects():Promise<Array<types.ProjectInfo>>;

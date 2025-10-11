@@ -117,6 +117,11 @@ func (d *DesktopApp) GetPageLinksForURL(crawlID uint, pageURL string) (*types.Pa
 	return d.app.GetPageLinksForURL(crawlID, pageURL)
 }
 
+// GetPageContent wraps app.GetPageContent
+func (d *DesktopApp) GetPageContent(crawlID uint, pageURL string) (string, error) {
+	return d.app.GetPageContent(crawlID, pageURL)
+}
+
 // DeleteProjectByID wraps app.DeleteProjectByID
 func (d *DesktopApp) DeleteProjectByID(projectID uint) error {
 	return d.app.DeleteProjectByID(projectID)
