@@ -46,6 +46,10 @@ export function GetProjects() {
   return window['go']['main']['App']['GetProjects']();
 }
 
+export function GetVersion() {
+  return window['go']['main']['App']['GetVersion']();
+}
+
 export function StartCrawl(arg1) {
   return window['go']['main']['App']['StartCrawl'](arg1);
 }

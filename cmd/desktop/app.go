@@ -729,3 +729,8 @@ func (a *App) GetFaviconData(faviconPath string) (string, error) {
 	base64Data := base64.StdEncoding.EncodeToString(data)
 	return fmt.Sprintf("data:%s;base64,%s", contentType, base64Data), nil
 }
+
+// GetVersion returns the current version of the application
+func (a *App) GetVersion() string {
+	return CurrentVersion
+}

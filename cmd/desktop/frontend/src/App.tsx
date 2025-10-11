@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData, CheckForUpdate, DownloadAndInstallUpdate } from "../wailsjs/go/main/App";
+import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData, CheckForUpdate, DownloadAndInstallUpdate, GetVersion } from "../wailsjs/go/main/App";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
@@ -246,6 +246,7 @@ function App() {
   const [updateInfo, setUpdateInfo] = useState<main.UpdateInfo | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [appVersion, setAppVersion] = useState<string>('');
 
   useEffect(() => {
     // Load projects on start
@@ -261,6 +262,15 @@ function App() {
     }).catch(error => {
       console.error('Failed to get active crawls:', error);
     });
+
+    // Get the app version
+    GetVersion()
+      .then((version: string) => {
+        setAppVersion(version);
+      })
+      .catch((error: any) => {
+        console.error('Failed to get version:', error);
+      });
 
     // Check for updates on startup
     setIsCheckingUpdate(true);
@@ -739,7 +749,7 @@ function App() {
     } catch (error) {
       console.error('Failed to update:', error);
       setIsUpdating(false);
-      alert('Failed to install update. Please try again later.');
+      alert(`Failed to install update: ${error}\n\nPlease check the console for details.`);
     }
   };
 
