@@ -237,7 +237,6 @@ function App() {
   const [isCrawling, setIsCrawling] = useState(false);
   const [results, setResults] = useState<CrawlResult[]>([]);
   const [view, setView] = useState<View>('start');
-  const [hasStarted, setHasStarted] = useState(false);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [currentProject, setCurrentProject] = useState<ProjectInfo | null>(null);
   const [availableCrawls, setAvailableCrawls] = useState<CrawlInfo[]>([]);
@@ -246,7 +245,7 @@ function App() {
   const [showDeleteCrawlModal, setShowDeleteCrawlModal] = useState(false);
   const [showDeleteProjectModal, setShowDeleteProjectModal] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<number | null>(null);
-  const [faviconCache, setFaviconCache] = useState<Map<string, string>>(new Map());
+  const [crawlToDelete, setCrawlToDelete] = useState<number | null>(null);
   const [activeCrawls, setActiveCrawls] = useState<Map<number, CrawlProgress>>(new Map());
   const [stoppingProjects, setStoppingProjects] = useState<Set<number>>(new Set());
   const inputRef = useRef<HTMLInputElement>(null);
@@ -260,6 +259,12 @@ function App() {
   const [selectedUrlForPanel, setSelectedUrlForPanel] = useState('');
   const [inlinksData, setInlinksData] = useState<Link[]>([]);
   const [outlinksData, setOutlinksData] = useState<Link[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+  const [filteredResults, setFilteredResults] = useState<CrawlResult[]>([]);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [isCrawlDropdownOpen, setIsCrawlDropdownOpen] = useState(false);
+  const crawlDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // Load projects on start
@@ -426,6 +431,35 @@ function App() {
     }
   }, [view, currentProject, isCrawling, stoppingProjects, currentCrawlId]);
 
+  // Debounce search query
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Dummy search function - filters results based on URL
+  const performSearch = (query: string, data: CrawlResult[]): CrawlResult[] => {
+    if (!query.trim()) {
+      return data;
+    }
+
+    const lowerQuery = query.toLowerCase();
+    return data.filter(result =>
+      result.url.toLowerCase().includes(lowerQuery) ||
+      result.title.toLowerCase().includes(lowerQuery) ||
+      result.status.toString().includes(lowerQuery) ||
+      result.indexable.toLowerCase().includes(lowerQuery)
+    );
+  };
+
+  // Update filtered results when debounced search query or results change
+  useEffect(() => {
+    setFilteredResults(performSearch(debouncedSearchQuery, results));
+  }, [debouncedSearchQuery, results]);
+
   const loadCurrentProjectFromUrl = async (currentUrl: string) => {
     try {
       const projectList = await GetProjects();
@@ -492,10 +526,27 @@ function App() {
     setUrl('');
     setIsCrawling(false);
     setCurrentCrawlId(null);
+    setSearchQuery('');
+    setDebouncedSearchQuery('');
+    setIsCrawlDropdownOpen(false);
 
     // Reload projects to show any newly created ones
     await loadProjects();
   };
+
+  // Handle click outside dropdown
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (crawlDropdownRef.current && !crawlDropdownRef.current.contains(event.target as Node)) {
+        setIsCrawlDropdownOpen(false);
+      }
+    };
+
+    if (isCrawlDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [isCrawlDropdownOpen]);
 
   const handleNewCrawl = async () => {
     if (!url.trim()) return;
@@ -619,6 +670,7 @@ function App() {
       const crawlData = await GetCrawlWithResults(crawlId);
       setSelectedCrawl(crawlData.crawlInfo);
       setResults(crawlData.results);
+      setIsCrawlDropdownOpen(false);
     } catch (error) {
       console.error('Failed to load crawl:', error);
     }
@@ -669,32 +721,36 @@ function App() {
     }
   };
 
-  const handleDeleteCrawl = () => {
-    if (selectedCrawl) {
-      setShowDeleteCrawlModal(true);
-    }
+  const handleDeleteCrawl = (crawlId: number) => {
+    setCrawlToDelete(crawlId);
+    setShowDeleteCrawlModal(true);
+    setIsCrawlDropdownOpen(false);
   };
 
   const confirmDeleteCrawl = async () => {
-    if (!selectedCrawl || !currentProject) return;
+    if (!crawlToDelete || !currentProject) return;
 
     try {
-      await DeleteCrawlByID(selectedCrawl.id);
+      await DeleteCrawlByID(crawlToDelete);
       setShowDeleteCrawlModal(false);
+      setCrawlToDelete(null);
 
       // Reload crawls for this project
       const crawls = await GetCrawls(currentProject.id);
       setAvailableCrawls(crawls);
 
-      // If there are still crawls, load the latest one
-      if (crawls.length > 0) {
-        const latestCrawl = crawls[0];
-        const crawlData = await GetCrawlWithResults(latestCrawl.id);
-        setSelectedCrawl(crawlData.crawlInfo);
-        setResults(crawlData.results);
-      } else {
-        // No more crawls, go back to home
-        handleHome();
+      // If we deleted the currently selected crawl, switch to another one
+      if (selectedCrawl && crawlToDelete === selectedCrawl.id) {
+        if (crawls.length > 0) {
+          const latestCrawl = crawls[0];
+          const crawlData = await GetCrawlWithResults(latestCrawl.id);
+          setSelectedCrawl(crawlData.crawlInfo);
+          setResults(crawlData.results);
+          setCurrentCrawlId(latestCrawl.id);
+        } else {
+          // No more crawls, go back to home
+          handleHome();
+        }
       }
 
       // Reload projects to update the card
@@ -1012,44 +1068,101 @@ function App() {
               </svg>
             </button>
             <div className="domain-info">
-              <FaviconImage
-                faviconPath={currentProject?.faviconPath || ''}
-                alt="Domain favicon"
-                className="domain-favicon"
-                placeholderSize={20}
-              />
-              <h2 className="domain-name">{getDomainName()}</h2>
+              <div className="domain-info-header">
+                <FaviconImage
+                  faviconPath={currentProject?.faviconPath || ''}
+                  alt="Domain favicon"
+                  className="domain-favicon"
+                  placeholderSize={20}
+                />
+                <h2 className="domain-name">{getDomainName()}</h2>
+              </div>
+              {!hasNoCrawls && availableCrawls.length > 0 && selectedCrawl && (
+                <div className="crawl-info-container" ref={crawlDropdownRef}>
+                  <button
+                    className="crawl-info-trigger"
+                    onClick={() => setIsCrawlDropdownOpen(!isCrawlDropdownOpen)}
+                    disabled={isCrawling}
+                  >
+                    <span className="crawl-info-text">
+                      Crawled on {formatDateTime(selectedCrawl.crawlDateTime)}
+                    </span>
+                    <svg className="crawl-dropdown-icon" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                  </button>
+                  {isCrawlDropdownOpen && !isCrawling && (
+                    <div className="crawl-dropdown-menu">
+                      {availableCrawls.map((crawl) => (
+                        <div
+                          key={crawl.id}
+                          className={`crawl-dropdown-item ${crawl.id === selectedCrawl.id ? 'selected' : ''}`}
+                        >
+                          <div
+                            className="crawl-dropdown-option"
+                            onClick={() => handleCrawlSelect(crawl.id)}
+                          >
+                            {formatDateTime(crawl.crawlDateTime)}
+                          </div>
+                          {availableCrawls.length > 1 && (
+                            <button
+                              className="crawl-item-delete-button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteCrawl(crawl.id);
+                              }}
+                              title="Delete this crawl"
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                <line x1="10" y1="11" x2="10" y2="17"></line>
+                                <line x1="14" y1="11" x2="14" y2="17"></line>
+                              </svg>
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
           {!hasNoCrawls && (
             <div className="header-center">
-              {availableCrawls.length > 0 && selectedCrawl && (
-                <div className="crawl-selector">
-                  <label>Crawl:</label>
-                  <CustomDropdown
-                    value={selectedCrawl.id}
-                    options={availableCrawls}
-                    onChange={handleCrawlSelect}
-                    disabled={isCrawling}
-                    formatOption={(crawl) => formatDateTime(crawl.crawlDateTime)}
-                  />
-                  {!isCrawling && availableCrawls.length > 1 && (
-                    <button
-                      className="delete-crawl-button"
-                      onClick={handleDeleteCrawl}
-                      title="Delete this crawl"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <polyline points="3 6 5 6 21 6"></polyline>
-                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                        <line x1="10" y1="11" x2="10" y2="17"></line>
-                        <line x1="14" y1="11" x2="14" y2="17"></line>
-                      </svg>
-                    </button>
-                  )}
-                </div>
-              )}
+              <div className="header-search-bar">
+                <svg className="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <path d="m21 21-4.35-4.35"></path>
+                </svg>
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  className="header-search-input"
+                  placeholder="Search by URL, title, status, or indexable..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+                {searchQuery && (
+                  <span className="search-results-count-inline">
+                    {filteredResults.length} {filteredResults.length === 1 ? 'result' : 'results'}
+                  </span>
+                )}
+                {searchQuery && (
+                  <button
+                    className="search-clear-button-inline"
+                    onClick={() => setSearchQuery('')}
+                    title="Clear search"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="18" y1="6" x2="6" y2="18"></line>
+                      <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -1125,7 +1238,7 @@ function App() {
             </div>
 
             <div className="results-body">
-              {results.map((result, index) => {
+              {filteredResults.map((result, index) => {
                 const isInProgress = result.status === 0 && result.title === 'In progress...';
                 return (
                   <div
@@ -1187,16 +1300,16 @@ function App() {
               )}
               <div className="stats">
                 <span className="stat-item">
-                  <span className="stat-label">Total:</span>
-                  <span className="stat-value">{results.length}</span>
+                  <span className="stat-label">{searchQuery ? 'Showing:' : 'Total:'}</span>
+                  <span className="stat-value">{filteredResults.length}{searchQuery && ` of ${results.length}`}</span>
                 </span>
                 <span className="stat-item">
                   <span className="stat-label">Indexable:</span>
-                  <span className="stat-value">{results.filter(r => r.indexable === 'Yes').length}</span>
+                  <span className="stat-value">{filteredResults.filter(r => r.indexable === 'Yes').length}</span>
                 </span>
                 <span className="stat-item">
                   <span className="stat-label">Non-indexable:</span>
-                  <span className="stat-value">{results.filter(r => r.indexable === 'No').length}</span>
+                  <span className="stat-value">{filteredResults.filter(r => r.indexable === 'No').length}</span>
                 </span>
               </div>
             </div>
