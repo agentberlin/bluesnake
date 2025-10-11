@@ -1342,6 +1342,7 @@ function App() {
           selectedUrl={selectedUrlForPanel}
           inlinks={inlinksData}
           outlinks={outlinksData}
+          crawlId={currentCrawlId ?? undefined}
         />
       </div>
     </div>
