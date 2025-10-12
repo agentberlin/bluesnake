@@ -32,3 +32,6 @@ go.work.sum
 # .vscode/
 
 .claude
+
+# Cloudflared binaries (downloaded by CI for embedding)
+cmd/desktop/binaries/

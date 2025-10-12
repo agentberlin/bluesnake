@@ -29,12 +29,18 @@ export function GetPageLinksForURL(arg1:number,arg2:string):Promise<types.PageLi
 
 export function GetProjects():Promise<Array<types.ProjectInfo>>;
 
+export function GetServerStatus():Promise<types.ServerStatus>;
+
 export function GetVersion():Promise<string>;
 
 export function StartCrawl(arg1:string):Promise<void>;
 
+export function StartServerWithTunnel():Promise<types.ServerInfo>;
+
 export function Startup(arg1:context.Context):Promise<void>;
 
 export function StopCrawl(arg1:number):Promise<void>;
+
+export function StopServerWithTunnel():Promise<void>;
 
 export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number,arg4:string,arg5:boolean,arg6:boolean,arg7:boolean,arg8:Array<string>,arg9:boolean):Promise<void>;
