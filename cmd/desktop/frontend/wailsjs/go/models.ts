@@ -215,6 +215,9 @@ export namespace types {
 	    latestVersion: string;
 	    updateAvailable: boolean;
 	    downloadUrl: string;
+	    shouldWarn: boolean;
+	    shouldBlock: boolean;
+	    displayReason?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new UpdateInfo(source);
@@ -226,6 +229,9 @@ export namespace types {
 	        this.latestVersion = source["latestVersion"];
 	        this.updateAvailable = source["updateAvailable"];
 	        this.downloadUrl = source["downloadUrl"];
+	        this.shouldWarn = source["shouldWarn"];
+	        this.shouldBlock = source["shouldBlock"];
+	        this.displayReason = source["displayReason"];
 	    }
 	}
 
