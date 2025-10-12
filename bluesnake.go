@@ -70,6 +70,21 @@ type ContentHashConfig struct {
 	CollapseWhitespace bool
 }
 
+// ResourceValidationConfig controls checking of non-HTML resources for broken links
+type ResourceValidationConfig struct {
+	// Enabled turns on resource validation
+	// Default: true
+	Enabled bool
+	// ResourceTypes specifies which resource types to check
+	// Options: "image", "script", "stylesheet", "video", "audio", "iframe"
+	// Default: ["image", "script", "stylesheet"]
+	// Empty array = check all types
+	ResourceTypes []string
+	// CheckExternal controls whether to check external resources
+	// Default: true
+	CheckExternal bool
+}
+
 // CollectorConfig contains all configuration options for a Collector
 type CollectorConfig struct {
 	// UserAgent is the User-Agent string used by HTTP requests
@@ -145,6 +160,8 @@ type CollectorConfig struct {
 	ContentHashAlgorithm string
 	// ContentHashConfig contains detailed configuration for content hashing
 	ContentHashConfig *ContentHashConfig
+	// ResourceValidation configures checking of non-HTML resources for broken links
+	ResourceValidation *ResourceValidationConfig
 }
 
 // Collector provides the scraper instance for a scraping job
@@ -223,6 +240,8 @@ type Collector struct {
 	ContentHashAlgorithm string
 	// ContentHashConfig contains detailed configuration for content hashing
 	ContentHashConfig *ContentHashConfig
+	// ResourceValidation configures checking of non-HTML resources for broken links
+	ResourceValidation *ResourceValidationConfig
 
 	store                    storage.Storage
 	debugger                 debug.Debugger
@@ -448,6 +467,11 @@ func NewDefaultConfig() *CollectorConfig {
 			StripComments:      true,
 			CollapseWhitespace: true,
 		},
+		ResourceValidation: &ResourceValidationConfig{
+			Enabled:        true,
+			ResourceTypes:  []string{"image", "script", "stylesheet"},
+			CheckExternal:  true,
+		},
 	}
 }
 
@@ -542,6 +566,9 @@ func NewCollector(config *CollectorConfig) *Collector {
 		if config.ContentHashConfig != nil {
 			defaults.ContentHashConfig = config.ContentHashConfig
 		}
+		if config.ResourceValidation != nil {
+			defaults.ResourceValidation = config.ResourceValidation
+		}
 	}
 	config = defaults
 
@@ -587,6 +614,7 @@ func NewCollector(config *CollectorConfig) *Collector {
 	c.EnableContentHash = config.EnableContentHash
 	c.ContentHashAlgorithm = config.ContentHashAlgorithm
 	c.ContentHashConfig = config.ContentHashConfig
+	c.ResourceValidation = config.ResourceValidation
 
 	c.parseSettingsFromEnv()
 

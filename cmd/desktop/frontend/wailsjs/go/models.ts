@@ -8,6 +8,7 @@ export namespace types {
 	    includeSubdomains: boolean;
 	    discoveryMechanisms: string[];
 	    sitemapURLs: string[];
+	    checkExternalResources: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigResponse(source);
@@ -22,6 +23,7 @@ export namespace types {
 	        this.includeSubdomains = source["includeSubdomains"];
 	        this.discoveryMechanisms = source["discoveryMechanisms"];
 	        this.sitemapURLs = source["sitemapURLs"];
+	        this.checkExternalResources = source["checkExternalResources"];
 	    }
 	}
 	export class CrawlInfo {

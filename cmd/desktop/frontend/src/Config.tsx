@@ -28,6 +28,7 @@ interface ConfigData {
   userAgent: string;
   includeSubdomains: boolean;
   discoveryMechanisms: string[];  // Not exposed directly, derived from checkboxes
+  checkExternalResources: boolean;
 }
 
 function Config({ url, onClose }: ConfigProps) {
@@ -40,6 +41,7 @@ function Config({ url, onClose }: ConfigProps) {
   const [error, setError] = useState('');
   const [includeSubdomains, setIncludeSubdomains] = useState(true); // Default to true as per requirement
   const [sitemapEnabled, setSitemapEnabled] = useState(false);
+  const [checkExternalResources, setCheckExternalResources] = useState(true); // Default to true
 
   useEffect(() => {
     if (url) {
@@ -61,6 +63,7 @@ function Config({ url, onClose }: ConfigProps) {
       // Derive sitemap state from mechanisms (spider is always enabled)
       const mechanisms = config.discoveryMechanisms || ["spider"];
       setSitemapEnabled(mechanisms.includes("sitemap"));
+      setCheckExternalResources(config.checkExternalResources !== undefined ? config.checkExternalResources : true);
     } catch (err) {
       // Project doesn't exist yet - use defaults and extract domain from URL
       console.log('Project not found, using default configuration');
@@ -80,6 +83,7 @@ function Config({ url, onClose }: ConfigProps) {
       setParallelism(5);
       setIncludeSubdomains(true); // Default to including subdomains
       setSitemapEnabled(false);
+      setCheckExternalResources(true); // Default to checking external resources
     } finally {
       setLoading(false);
     }
@@ -98,7 +102,8 @@ function Config({ url, onClose }: ConfigProps) {
         includeSubdomains,
         true, // Spider is always enabled
         sitemapEnabled,
-        [] // No custom sitemap URLs in this version
+        [], // No custom sitemap URLs in this version
+        checkExternalResources
       );
       onClose();
     } catch (err) {
@@ -168,6 +173,23 @@ function Config({ url, onClose }: ConfigProps) {
                     <span className="checkbox-label">Include Subdomains</span>
                     <p className="config-hint">
                       When enabled, the crawler will include all subdomains of the main domain (e.g., blog.example.com, api.example.com)
+                    </p>
+                  </div>
+                </label>
+              </div>
+
+              <div className="config-field">
+                <label className="config-label">
+                  <input
+                    type="checkbox"
+                    checked={checkExternalResources}
+                    onChange={(e) => setCheckExternalResources(e.target.checked)}
+                    className="config-checkbox"
+                  />
+                  <div>
+                    <span className="checkbox-label">Check External Resources</span>
+                    <p className="config-hint">
+                      When enabled, validates external resources (images, CSS, JS) for broken links
                     </p>
                   </div>
                 </label>

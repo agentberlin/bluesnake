@@ -41,13 +41,14 @@ func (a *App) GetConfigForDomain(urlStr string) (*types.ConfigResponse, error) {
 
 	// Convert to response struct with deserialized arrays
 	return &types.ConfigResponse{
-		Domain:              config.Domain,
-		JSRenderingEnabled:  config.JSRenderingEnabled,
-		Parallelism:         config.Parallelism,
-		UserAgent:           config.UserAgent,
-		IncludeSubdomains:   config.IncludeSubdomains,
-		DiscoveryMechanisms: config.GetDiscoveryMechanismsArray(),
-		SitemapURLs:         config.GetSitemapURLsArray(),
+		Domain:                 config.Domain,
+		JSRenderingEnabled:     config.JSRenderingEnabled,
+		Parallelism:            config.Parallelism,
+		UserAgent:              config.UserAgent,
+		IncludeSubdomains:      config.IncludeSubdomains,
+		DiscoveryMechanisms:    config.GetDiscoveryMechanismsArray(),
+		SitemapURLs:            config.GetSitemapURLsArray(),
+		CheckExternalResources: config.CheckExternalResources,
 	}, nil
 }
 
@@ -61,6 +62,7 @@ func (a *App) UpdateConfigForDomain(
 	spiderEnabled bool,
 	sitemapEnabled bool,
 	sitemapURLs []string,
+	checkExternalResources bool,
 ) error {
 	// Normalize the URL to extract domain
 	normalizedURL, domain, err := normalizeURL(urlStr)
@@ -88,5 +90,5 @@ func (a *App) UpdateConfigForDomain(
 		mechanisms = []string{"spider"}
 	}
 
-	return a.store.UpdateConfig(project.ID, jsRendering, parallelism, userAgent, includeSubdomains, mechanisms, sitemapURLs)
+	return a.store.UpdateConfig(project.ID, jsRendering, parallelism, userAgent, includeSubdomains, mechanisms, sitemapURLs, checkExternalResources)
 }
