@@ -121,6 +121,25 @@ jobs:
         run: npm install
         working-directory: cmd/desktop/frontend
 
+      - name: Download cloudflared binary (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p cmd/desktop/binaries/windows
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -o cmd/desktop/binaries/windows/cloudflared.exe
+          echo "Downloaded cloudflared for Windows"
+
+      - name: Download cloudflared binary (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          mkdir -p cmd/desktop/binaries/darwin
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz -o cloudflared.tgz
+          tar -xzf cloudflared.tgz
+          mv cloudflared cmd/desktop/binaries/darwin/cloudflared
+          chmod +x cmd/desktop/binaries/darwin/cloudflared
+          rm cloudflared.tgz
+          echo "Downloaded cloudflared for macOS"
+
       - name: Build application (Windows)
         if: matrix.os == 'windows-latest'
         run: wails build -platform ${{ matrix.platform }} -tags desktop

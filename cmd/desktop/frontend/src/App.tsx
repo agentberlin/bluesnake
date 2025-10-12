@@ -19,6 +19,7 @@ import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
 import LinksPanel from './LinksPanel';
+import ServerControl from './ServerControl';
 import { types } from "../wailsjs/go/models";
 
 interface CustomDropdownProps {
@@ -868,6 +869,7 @@ function App() {
     return (
       <div className="app">
         <div className="start-screen">
+          <ServerControl />
           <div className="logo-container">
             <img src={logo} alt="BlueSnake Logo" className="logo-image" />
           </div>

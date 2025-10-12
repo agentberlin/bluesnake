@@ -60,8 +60,8 @@ func main() {
 			desktopApp.app = coreApp
 			desktopApp.ctx = ctx
 
-			// Initialize the app
-			coreApp.Startup(ctx)
+			// Initialize the app and server manager
+			desktopApp.Startup(ctx)
 		},
 		Bind: []interface{}{
 			desktopApp,
