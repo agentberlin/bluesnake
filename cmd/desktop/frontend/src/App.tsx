@@ -258,6 +258,8 @@ function App() {
   const [updateInfo, setUpdateInfo] = useState<types.UpdateInfo | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [showWarningModal, setShowWarningModal] = useState(false);
+  const [showBlockModal, setShowBlockModal] = useState(false);
 
   // Links panel state
   const [isPanelOpen, setIsPanelOpen] = useState(false);
@@ -302,6 +304,13 @@ function App() {
       .then((info: types.UpdateInfo) => {
         setUpdateInfo(info);
         setIsCheckingUpdate(false);
+
+        // Check for version warnings or blocks
+        if (info.shouldBlock) {
+          setShowBlockModal(true);
+        } else if (info.shouldWarn) {
+          setShowWarningModal(true);
+        }
       })
       .catch((error: any) => {
         console.error('Failed to check for updates:', error);
@@ -1345,6 +1354,61 @@ function App() {
           crawlId={currentCrawlId ?? undefined}
         />
       </div>
+
+      {/* Version Warning Modal */}
+      {showWarningModal && updateInfo && (
+        <div className="modal-overlay version-warning-overlay" onClick={() => setShowWarningModal(false)}>
+          <div className="modal version-warning-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="modal-close-button" onClick={() => setShowWarningModal(false)} title="Close">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+            <div className="version-modal-icon warning-icon">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                <line x1="12" y1="9" x2="12" y2="13"></line>
+                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+              </svg>
+            </div>
+            <h3>Version Warning</h3>
+            <p className="version-info">You are using version {updateInfo.currentVersion}</p>
+            <p className="version-reason">{updateInfo.displayReason}</p>
+            <div className="modal-actions">
+              <button className="modal-button primary" onClick={handleUpdate} disabled={isUpdating}>
+                {isUpdating ? 'Updating...' : `Update to ${updateInfo.latestVersion}`}
+              </button>
+              <button className="modal-button cancel" onClick={() => setShowWarningModal(false)}>
+                Continue Anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Version Block Modal */}
+      {showBlockModal && updateInfo && (
+        <div className="modal-overlay version-block-overlay">
+          <div className="modal version-block-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="version-modal-icon block-icon">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
+              </svg>
+            </div>
+            <h3>Update Required</h3>
+            <p className="version-info">You are using version {updateInfo.currentVersion}</p>
+            <p className="version-reason">{updateInfo.displayReason}</p>
+            <p className="version-instruction">Please update to continue using BlueSnake.</p>
+            <div className="modal-actions">
+              <button className="modal-button primary" onClick={handleUpdate} disabled={isUpdating}>
+                {isUpdating ? 'Updating...' : `Update to ${updateInfo.latestVersion}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
