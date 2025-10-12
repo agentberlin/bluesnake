@@ -64,6 +64,7 @@ func (a *App) GetCrawlWithResults(crawlID uint) (*types.CrawlResultDetailed, err
 			MetaDescription: u.MetaDescription,
 			ContentHash:     u.ContentHash,
 			Indexable:       u.Indexable,
+			ContentType:     u.ContentType,
 			Error:           u.Error,
 		}
 	}

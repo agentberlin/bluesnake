@@ -99,6 +99,7 @@ func (a *App) GetActiveCrawlData(projectID uint) (*types.CrawlResultDetailed, er
 			MetaDescription: u.MetaDescription,
 			ContentHash:     u.ContentHash,
 			Indexable:       u.Indexable,
+			ContentType:     u.ContentType,
 			Error:           u.Error,
 		}
 	}

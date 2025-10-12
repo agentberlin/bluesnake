@@ -34,6 +34,7 @@ type CrawlResult struct {
 	MetaDescription string `json:"metaDescription,omitempty"`
 	ContentHash     string `json:"contentHash,omitempty"`
 	Indexable       string `json:"indexable"`
+	ContentType     string `json:"contentType,omitempty"` // MIME type: text/html, image/jpeg, text/css, application/javascript, etc.
 	Error           string `json:"error,omitempty"`
 }
 

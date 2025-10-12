@@ -347,7 +347,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		// Save resource to database (same table as pages, but won't count as "page crawled")
 		// Status 0 means error/unreachable
 		indexable := "-" // Resources are not indexable by search engines
-		if err := a.store.SaveCrawledUrl(stats.crawlID, result.URL, result.Status, "", "", "", indexable, result.Error); err != nil {
+		if err := a.store.SaveCrawledUrl(stats.crawlID, result.URL, result.Status, "", "", "", indexable, result.ContentType, result.Error); err != nil {
 			log.Printf("Failed to save resource URL: %v", err)
 		}
 
@@ -381,7 +381,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		}
 
 		// Save to database - all crawling logic handled by bluesnake
-		if err := a.store.SaveCrawledUrl(stats.crawlID, result.URL, result.Status, result.Title, result.MetaDescription, result.ContentHash, result.Indexable, result.Error); err != nil {
+		if err := a.store.SaveCrawledUrl(stats.crawlID, result.URL, result.Status, result.Title, result.MetaDescription, result.ContentHash, result.Indexable, result.ContentType, result.Error); err != nil {
 			log.Printf("Failed to save crawled URL: %v", err)
 		}
 
