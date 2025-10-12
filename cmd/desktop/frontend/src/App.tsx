@@ -87,6 +87,7 @@ interface CrawlResult {
   metaDescription?: string;
   contentHash?: string;
   indexable: string;
+  contentType?: string;
   error?: string;
 }
 
@@ -274,6 +275,7 @@ function App() {
   const [isCrawlDropdownOpen, setIsCrawlDropdownOpen] = useState(false);
   const crawlDropdownRef = useRef<HTMLDivElement>(null);
   const [appVersion, setAppVersion] = useState<string>('');
+  const [contentTypeFilter, setContentTypeFilter] = useState<string>('all');
 
   useEffect(() => {
     // Load projects on start
@@ -456,25 +458,67 @@ function App() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  // Dummy search function - filters results based on URL
-  const performSearch = (query: string, data: CrawlResult[]): CrawlResult[] => {
-    if (!query.trim()) {
-      return data;
-    }
+  // Helper function to categorize content type
+  const categorizeContentType = (contentType: string | undefined): string => {
+    if (!contentType) return 'other';
 
-    const lowerQuery = query.toLowerCase();
-    return data.filter(result =>
-      result.url.toLowerCase().includes(lowerQuery) ||
-      result.title.toLowerCase().includes(lowerQuery) ||
-      result.status.toString().includes(lowerQuery) ||
-      result.indexable.toLowerCase().includes(lowerQuery)
-    );
+    const ct = contentType.toLowerCase();
+    if (ct.includes('text/html') || ct.includes('application/xhtml')) return 'html';
+    if (ct.includes('javascript') || ct.includes('application/x-javascript') || ct.includes('text/javascript')) return 'javascript';
+    if (ct.includes('text/css')) return 'css';
+    if (ct.includes('image/')) return 'image';
+    if (ct.includes('font/') || ct.includes('application/font') || ct.includes('woff') || ct.includes('ttf') || ct.includes('eot') || ct.includes('otf')) return 'font';
+    return 'other';
   };
 
-  // Update filtered results when debounced search query or results change
+  // Helper function to display friendly content type name
+  const getContentTypeDisplay = (contentType: string | undefined): string => {
+    if (!contentType) return 'Unknown';
+
+    const category = categorizeContentType(contentType);
+    const ct = contentType.toLowerCase();
+
+    // Return more specific type for images
+    if (category === 'image') {
+      if (ct.includes('jpeg') || ct.includes('jpg')) return 'JPEG';
+      if (ct.includes('png')) return 'PNG';
+      if (ct.includes('gif')) return 'GIF';
+      if (ct.includes('webp')) return 'WebP';
+      if (ct.includes('svg')) return 'SVG';
+      return 'Image';
+    }
+
+    // Return capitalized category for others
+    return category.charAt(0).toUpperCase() + category.slice(1);
+  };
+
+  // Filter and search function - filters results based on URL and content type
+  const performSearch = (query: string, typeFilter: string, data: CrawlResult[]): CrawlResult[] => {
+    let filtered = data;
+
+    // Filter by content type first
+    if (typeFilter !== 'all') {
+      filtered = filtered.filter(result => categorizeContentType(result.contentType) === typeFilter);
+    }
+
+    // Then apply search query if present
+    if (query.trim()) {
+      const lowerQuery = query.toLowerCase();
+      filtered = filtered.filter(result =>
+        result.url.toLowerCase().includes(lowerQuery) ||
+        result.title.toLowerCase().includes(lowerQuery) ||
+        result.status.toString().includes(lowerQuery) ||
+        result.indexable.toLowerCase().includes(lowerQuery)
+      );
+    }
+
+    return filtered;
+  };
+
+  // Update filtered results when debounced search query, content type filter, or results change
   useEffect(() => {
-    setFilteredResults(performSearch(debouncedSearchQuery, results));
-  }, [debouncedSearchQuery, results]);
+    setFilteredResults(performSearch(debouncedSearchQuery, contentTypeFilter, results));
+  }, [debouncedSearchQuery, contentTypeFilter, results]);
 
   const loadCurrentProjectFromUrl = async (currentUrl: string) => {
     try {
@@ -1220,12 +1264,57 @@ function App() {
           </div>
         ) : (
           <div className="results-container">
+            <div className="content-type-filter">
+              <button
+                className={`filter-tab ${contentTypeFilter === 'all' ? 'active' : ''}`}
+                onClick={() => setContentTypeFilter('all')}
+              >
+                All ({results.length})
+              </button>
+              <button
+                className={`filter-tab ${contentTypeFilter === 'html' ? 'active' : ''}`}
+                onClick={() => setContentTypeFilter('html')}
+              >
+                HTML ({results.filter(r => categorizeContentType(r.contentType) === 'html').length})
+              </button>
+              <button
+                className={`filter-tab ${contentTypeFilter === 'javascript' ? 'active' : ''}`}
+                onClick={() => setContentTypeFilter('javascript')}
+              >
+                JavaScript ({results.filter(r => categorizeContentType(r.contentType) === 'javascript').length})
+              </button>
+              <button
+                className={`filter-tab ${contentTypeFilter === 'css' ? 'active' : ''}`}
+                onClick={() => setContentTypeFilter('css')}
+              >
+                CSS ({results.filter(r => categorizeContentType(r.contentType) === 'css').length})
+              </button>
+              <button
+                className={`filter-tab ${contentTypeFilter === 'image' ? 'active' : ''}`}
+                onClick={() => setContentTypeFilter('image')}
+              >
+                Images ({results.filter(r => categorizeContentType(r.contentType) === 'image').length})
+              </button>
+              <button
+                className={`filter-tab ${contentTypeFilter === 'font' ? 'active' : ''}`}
+                onClick={() => setContentTypeFilter('font')}
+              >
+                Fonts ({results.filter(r => categorizeContentType(r.contentType) === 'font').length})
+              </button>
+              <button
+                className={`filter-tab ${contentTypeFilter === 'other' ? 'active' : ''}`}
+                onClick={() => setContentTypeFilter('other')}
+              >
+                Others ({results.filter(r => categorizeContentType(r.contentType) === 'other').length})
+              </button>
+            </div>
             <div className="results-header">
               <div className="header-cell url-col">URL</div>
               <div className="header-cell status-col">Status</div>
               <div className="header-cell title-col">Title</div>
               <div className="header-cell meta-desc-col">Meta Description</div>
               <div className="header-cell indexable-col">Indexable</div>
+              <div className="header-cell content-type-col">Type</div>
             </div>
 
             <div className="results-body">
@@ -1266,6 +1355,11 @@ function App() {
                     <div className="result-cell indexable-col" style={{ opacity: isInProgress ? 0.6 : 1 }}>
                       <span className={`indexable-badge ${result.indexable === 'Yes' ? 'indexable-yes' : 'indexable-no'}`}>
                         {result.indexable}
+                      </span>
+                    </div>
+                    <div className="result-cell content-type-col" style={{ opacity: isInProgress ? 0.6 : 1 }}>
+                      <span className={`content-type-badge content-type-${categorizeContentType(result.contentType)}`}>
+                        {getContentTypeDisplay(result.contentType)}
                       </span>
                     </div>
                   </div>

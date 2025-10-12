@@ -79,6 +79,7 @@ export namespace types {
 	    metaDescription?: string;
 	    contentHash?: string;
 	    indexable: string;
+	    contentType?: string;
 	    error?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -93,6 +94,7 @@ export namespace types {
 	        this.metaDescription = source["metaDescription"];
 	        this.contentHash = source["contentHash"];
 	        this.indexable = source["indexable"];
+	        this.contentType = source["contentType"];
 	        this.error = source["error"];
 	    }
 	}
