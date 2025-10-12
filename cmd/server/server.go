@@ -306,19 +306,26 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 	case "PUT":
 		var req struct {
-			URL               string   `json:"url"`
-			JSRendering       bool     `json:"jsRendering"`
-			Parallelism       int      `json:"parallelism"`
-			UserAgent         string   `json:"userAgent"`
-			IncludeSubdomains bool     `json:"includeSubdomains"`
-			SpiderEnabled     bool     `json:"spiderEnabled"`
-			SitemapEnabled    bool     `json:"sitemapEnabled"`
-			SitemapURLs       []string `json:"sitemapURLs"`
+			URL                    string   `json:"url"`
+			JSRendering            bool     `json:"jsRendering"`
+			Parallelism            int      `json:"parallelism"`
+			UserAgent              string   `json:"userAgent"`
+			IncludeSubdomains      bool     `json:"includeSubdomains"`
+			SpiderEnabled          bool     `json:"spiderEnabled"`
+			SitemapEnabled         bool     `json:"sitemapEnabled"`
+			SitemapURLs            []string `json:"sitemapURLs"`
+			CheckExternalResources *bool    `json:"checkExternalResources,omitempty"` // Pointer to distinguish between false and not-provided
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid request body", http.StatusBadRequest)
 			return
+		}
+
+		// Default to true if not provided
+		checkExternal := true
+		if req.CheckExternalResources != nil {
+			checkExternal = *req.CheckExternalResources
 		}
 
 		if err := s.app.UpdateConfigForDomain(
@@ -330,6 +337,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			req.SpiderEnabled,
 			req.SitemapEnabled,
 			req.SitemapURLs,
+			checkExternal,
 		); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

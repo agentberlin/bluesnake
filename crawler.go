@@ -83,9 +83,27 @@ type PageResult struct {
 	response *Response
 }
 
-// OnPageCrawledFunc is called after each individual page is successfully crawled or encounters an error.
-// It receives the complete result of crawling that page including all discovered URLs.
+// ResourceResult contains data from a visited resource (non-HTML asset)
+type ResourceResult struct {
+	// URL is the resource URL that was visited
+	URL string
+	// Status is the HTTP status code (e.g., 200, 404, 500)
+	Status int
+	// ContentType is the MIME type (e.g., "image/png", "text/css", "application/javascript")
+	ContentType string
+	// Error contains any error message if the visit failed, empty otherwise
+	Error string
+}
+
+// OnPageCrawledFunc is called after each HTML page is successfully crawled or encounters an error.
+// This callback receives HTML pages only, not resources.
+// For resources (images, CSS, JS), use SetOnResourceVisit instead.
 type OnPageCrawledFunc func(*PageResult)
+
+// OnResourceVisitFunc is called for each resource (non-HTML asset) visited during crawling.
+// Resources include images, stylesheets, scripts, and other non-HTML content.
+// Use this for resource validation/checking without the overhead of PageResult.
+type OnResourceVisitFunc func(*ResourceResult)
 
 // OnCrawlCompleteFunc is called when the entire crawl finishes, either naturally or due to cancellation.
 // Parameters:
@@ -104,9 +122,10 @@ type PageMetadata struct {
 // Crawler provides a high-level interface for web crawling with callbacks for page results
 type Crawler struct {
 	// Collector is the underlying low-level collector (exported for advanced configuration)
-	Collector       *Collector
-	onPageCrawled   OnPageCrawledFunc
-	onCrawlComplete OnCrawlCompleteFunc
+	Collector        *Collector
+	onPageCrawled    OnPageCrawledFunc
+	onResourceVisit  OnResourceVisitFunc
+	onCrawlComplete  OnCrawlCompleteFunc
 
 	// Internal state tracking
 	queuedURLs   *sync.Map // map[string]bool - tracks all discovered URLs
@@ -172,12 +191,22 @@ func (cr *Crawler) configureSitemapFetch() {
 	})
 }
 
-// SetOnPageCrawled registers a callback function that will be called after each page is crawled.
+// SetOnPageCrawled registers a callback function that will be called after each HTML page is crawled.
 // This callback receives complete page information including discovered URLs.
+// Note: This is only called for HTML pages. For resources, use SetOnResourceVisit.
 func (cr *Crawler) SetOnPageCrawled(f OnPageCrawledFunc) {
 	cr.mutex.Lock()
 	defer cr.mutex.Unlock()
 	cr.onPageCrawled = f
+}
+
+// SetOnResourceVisit registers a callback function that will be called after each resource is visited.
+// This callback receives resource information (URL, status, content type) for non-HTML assets
+// such as images, stylesheets, scripts, etc.
+func (cr *Crawler) SetOnResourceVisit(f OnResourceVisitFunc) {
+	cr.mutex.Lock()
+	defer cr.mutex.Unlock()
+	cr.onResourceVisit = f
 }
 
 // SetOnCrawlComplete registers a callback function that will be called when the crawl finishes.
@@ -269,6 +298,21 @@ func (cr *Crawler) setupCallbacks() {
 					continue
 				}
 
+				// Check if crawlable (filters, robots.txt)
+				if !cr.isURLCrawlable(link.URL) {
+					continue
+				}
+
+				// Only visit if not already queued
+				if _, alreadyQueued := cr.queuedURLs.LoadOrStore(link.URL, true); !alreadyQueued {
+					e.Request.Visit(link.URL)
+				}
+			}
+		}
+
+		// Resource validation: check configured resource types for broken links
+		for _, link := range allLinks {
+			if cr.shouldValidateResource(link) {
 				// Check if crawlable (filters, robots.txt)
 				if !cr.isURLCrawlable(link.URL) {
 					continue
@@ -380,59 +424,37 @@ func (cr *Crawler) setupCallbacks() {
 
 		pageURL := r.Request.URL.String()
 
-		// For non-HTML content, we need to create a result here since OnHTML won't fire
+		// For non-HTML content, route to OnResourceVisit callback instead of OnPageCrawled
 		if !strings.Contains(contentType, "text/html") {
-			// Determine a descriptive title based on content type
-			title := "Unknown Resource"
-			if strings.Contains(contentType, "xml") || strings.Contains(contentType, "rss") || strings.Contains(contentType, "atom") {
-				title = "XML Feed"
-			} else if strings.Contains(contentType, "json") {
-				title = "JSON Resource"
-			} else if strings.Contains(contentType, "pdf") {
-				title = "PDF Document"
-			} else if strings.Contains(contentType, "image/") {
-				title = "Image"
-			} else if strings.Contains(contentType, "javascript") {
-				title = "JavaScript File"
-			} else if strings.Contains(contentType, "css") {
-				title = "Stylesheet"
-			}
+			// Note: We keep the body intact for backwards compatibility with any existing
+			// OnResponse callbacks. Memory optimization can be added later if needed.
 
-			// Store page metadata for future link population
+			// Store minimal metadata for link population (so links can show status/type)
 			cr.pageMetadata.Store(pageURL, PageMetadata{
 				Status:      r.StatusCode,
-				Title:       title,
+				Title:       "", // Resources don't have titles
 				ContentType: contentType,
 			})
 
-			// Build PageLinks structure (non-HTML has no outbound links, only inbound)
-			pageLinks := cr.buildPageLinks(pageURL, pageOutboundLinks)
-
-			// Get content hash and duplicate status from context
-			contentHash := r.Request.Ctx.Get("contentHash")
-			isDuplicateStr := r.Request.Ctx.Get("isContentDuplicate")
-			isDuplicate := isDuplicateStr == "true"
-
-			result := &PageResult{
-				URL:                pageURL,
-				Status:             r.StatusCode,
-				Title:              title,
-				MetaDescription:    "", // Non-HTML content has no meta description
-				Indexable:          isIndexable,
-				ContentType:        contentType,
-				Error:              "",
-				Links:              pageLinks,
-				ContentHash:        contentHash,
-				IsDuplicateContent: isDuplicate,
-				response:           r,
+			// Create ResourceResult (lightweight - no links, no content hash, no page fields)
+			result := &ResourceResult{
+				URL:         pageURL,
+				Status:      r.StatusCode,
+				ContentType: contentType,
+				Error:       "",
 			}
 
-			cr.incrementCrawledPages()
-			cr.callOnPageCrawled(result)
+			// Call OnResourceVisit callback if set
+			cr.callOnResourceVisit(result)
+			// Note: We don't return here to allow extensions and low-level code that
+			// registers OnResponse callbacks on crawler.Collector to process all responses.
+			// For example, the Referer extension (extensions/referer.go) tracks all responses
+			// to set referer headers. OnScraped will return early for non-HTML anyway,
+			// so no duplicate processing occurs
 		}
 	})
 
-	// Handle errors
+	// Handle errors (both pages and resources)
 	cr.Collector.OnError(func(r *Response, err error) {
 		// Skip already visited errors - these are handled by deduplication
 		if strings.Contains(err.Error(), "already visited") {
@@ -441,24 +463,50 @@ func (cr *Crawler) setupCallbacks() {
 
 		pageURL := r.Request.URL.String()
 
-		// Build PageLinks structure (errors have no outbound links, but may have inbound)
-		pageLinks := cr.buildPageLinks(pageURL, pageOutboundLinks)
-
-		result := &PageResult{
-			URL:                pageURL,
-			Status:             0,
-			Title:              "",
-			MetaDescription:    "",
-			Indexable:          "No",
-			ContentType:        "",
-			Error:              err.Error(),
-			Links:              pageLinks,
-			ContentHash:        "",
-			IsDuplicateContent: false,
-			response:           r,
+		// Determine if this error is for a resource or a page
+		// 1. Try to get Content-Type from response headers (if available)
+		contentType := ""
+		if r != nil && r.Headers != nil {
+			contentType = r.Headers.Get("Content-Type")
 		}
 
-		cr.callOnPageCrawled(result)
+		// 2. Fall back to URL extension heuristic if no Content-Type
+		isResource := false
+		if contentType != "" {
+			isResource = !strings.Contains(contentType, "text/html")
+		} else {
+			isResource = cr.isLikelyResource(pageURL)
+		}
+
+		// Route to appropriate callback
+		if isResource {
+			// Resource error - send to OnResourceVisit
+			result := &ResourceResult{
+				URL:         pageURL,
+				Status:      0, // 0 indicates network/request error
+				ContentType: contentType,
+				Error:       err.Error(),
+			}
+			cr.callOnResourceVisit(result)
+		} else {
+			// Page error - send to OnPageCrawled
+			pageLinks := cr.buildPageLinks(pageURL, pageOutboundLinks)
+
+			result := &PageResult{
+				URL:                pageURL,
+				Status:             0,
+				Title:              "",
+				MetaDescription:    "",
+				Indexable:          "No",
+				ContentType:        contentType,
+				Error:              err.Error(),
+				Links:              pageLinks,
+				ContentHash:        "",
+				IsDuplicateContent: false,
+				response:           r,
+			}
+			cr.callOnPageCrawled(result)
+		}
 	})
 }
 
@@ -533,10 +581,45 @@ func (cr *Crawler) incrementCrawledPages() {
 	cr.crawledPages++
 }
 
+// isLikelyResource checks if a URL is likely a resource (non-HTML) based on its extension.
+// Used as a fallback when Content-Type is not available (e.g., network errors).
+func (cr *Crawler) isLikelyResource(urlStr string) bool {
+	urlLower := strings.ToLower(urlStr)
+
+	// Common resource extensions
+	resourceExtensions := []string{
+		".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", // Images
+		".css",                                                     // Stylesheets
+		".js",                                                      // Scripts
+		".woff", ".woff2", ".ttf", ".eot", ".otf",                 // Fonts
+		".mp4", ".webm", ".ogg", ".mp3", ".wav",                   // Media
+		".pdf", ".zip", ".gz", ".tar",                             // Documents/Archives
+	}
+
+	for _, ext := range resourceExtensions {
+		if strings.HasSuffix(urlLower, ext) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // callOnPageCrawled safely calls the OnPageCrawled callback if set
 func (cr *Crawler) callOnPageCrawled(result *PageResult) {
 	cr.mutex.RLock()
 	callback := cr.onPageCrawled
+	cr.mutex.RUnlock()
+
+	if callback != nil {
+		callback(result)
+	}
+}
+
+// callOnResourceVisit safely calls the OnResourceVisit callback if set
+func (cr *Crawler) callOnResourceVisit(result *ResourceResult) {
+	cr.mutex.RLock()
+	callback := cr.onResourceVisit
 	cr.mutex.RUnlock()
 
 	if callback != nil {
@@ -776,6 +859,42 @@ func (cr *Crawler) isInternalURL(urlStr string) bool {
 	}
 
 	return false
+}
+
+// shouldValidateResource checks if a resource link should be validated for broken links.
+// Returns true if the resource should be crawled to check its status.
+func (cr *Crawler) shouldValidateResource(link Link) bool {
+	config := cr.Collector.ResourceValidation
+
+	if config == nil || !config.Enabled {
+		return false
+	}
+
+	// Don't validate anchors (handled separately by spider mode)
+	if link.Type == "anchor" {
+		return false
+	}
+
+	// Check external filter
+	if !config.CheckExternal && !link.IsInternal {
+		return false
+	}
+
+	// Check resource type filter
+	if len(config.ResourceTypes) > 0 {
+		allowed := false
+		for _, rt := range config.ResourceTypes {
+			if rt == link.Type {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return false
+		}
+	}
+
+	return true
 }
 
 // GetHTML returns the full HTML content of the page.

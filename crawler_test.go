@@ -597,6 +597,7 @@ func TestCrawlerUserAgent(t *testing.T) {
 				BodyFunc: func(req *http.Request) string {
 					return req.Header.Get("User-Agent")
 				},
+				Headers: http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
 			})
 
 			var mu sync.Mutex
@@ -618,19 +619,12 @@ func TestCrawlerUserAgent(t *testing.T) {
 
 			crawler.Collector.WithTransport(mock)
 
-			// Capture the user agent from the response
+			// Capture the user agent from the response body using GetHTML()
 			crawler.SetOnPageCrawled(func(result *PageResult) {
 				mu.Lock()
 				defer mu.Unlock()
-				// The body contains the User-Agent header that was sent
-				receivedUserAgent = result.Title // Title will be empty, but we can check the raw response
-			})
-
-			// Use OnResponse to get the actual response body
-			crawler.Collector.OnResponse(func(r *Response) {
-				mu.Lock()
-				defer mu.Unlock()
-				receivedUserAgent = string(r.Body)
+				// Use GetHTML() to get the response body (which contains the User-Agent)
+				receivedUserAgent = result.GetHTML()
 			})
 
 			err := crawler.Start("https://example.com/")
@@ -840,8 +834,8 @@ func TestPageResult_GetTextContent(t *testing.T) {
 	}
 }
 
-// TestPageResult_GettersWithNonHTML tests that getters handle non-HTML content gracefully
-func TestPageResult_GettersWithNonHTML(t *testing.T) {
+// TestResourceResult_NonHTMLRouting tests that non-HTML resources are routed to OnResourceVisit callback
+func TestResourceResult_NonHTMLRouting(t *testing.T) {
 	mock := NewMockTransport()
 
 	// Register a JSON response
@@ -852,15 +846,16 @@ func TestPageResult_GettersWithNonHTML(t *testing.T) {
 	})
 
 	var mu sync.Mutex
-	var pageResult *PageResult
+	var resourceResult *ResourceResult
 
 	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
 	crawler.Collector.WithTransport(mock)
 
-	crawler.SetOnPageCrawled(func(result *PageResult) {
+	// Non-HTML content should go to OnResourceVisit, not OnPageCrawled
+	crawler.SetOnResourceVisit(func(result *ResourceResult) {
 		mu.Lock()
 		defer mu.Unlock()
-		pageResult = result
+		resourceResult = result
 	})
 
 	err := crawler.Start("https://example.com/data.json")
@@ -873,28 +868,175 @@ func TestPageResult_GettersWithNonHTML(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if pageResult == nil {
-		t.Fatal("Page was not crawled")
+	if resourceResult == nil {
+		t.Fatal("Resource was not visited")
 	}
 
-	// GetHTML should still return the body
-	html := pageResult.GetHTML()
-	if html != `{"key": "value"}` {
-		t.Errorf("GetHTML() should return body for non-HTML: %q", html)
+	// Verify ResourceResult fields
+	if resourceResult.URL != "https://example.com/data.json" {
+		t.Errorf("URL = %q, want %q", resourceResult.URL, "https://example.com/data.json")
 	}
 
-	// GetTextFull and GetTextContent should return empty for non-HTML
-	textFull := pageResult.GetTextFull()
-	if textFull != "" {
-		t.Errorf("GetTextFull() should return empty string for non-HTML, got: %q", textFull)
+	if resourceResult.Status != 200 {
+		t.Errorf("Status = %d, want 200", resourceResult.Status)
 	}
 
-	textContent := pageResult.GetTextContent()
-	if textContent != "" {
-		t.Errorf("GetTextContent() should return empty string for non-HTML, got: %q", textContent)
+	if resourceResult.ContentType != "application/json" {
+		t.Errorf("ContentType = %q, want %q", resourceResult.ContentType, "application/json")
 	}
 
-	t.Log("Getter methods correctly handled non-HTML content")
+	if resourceResult.Error != "" {
+		t.Errorf("Error should be empty, got: %q", resourceResult.Error)
+	}
+
+	t.Log("Non-HTML resources correctly routed to OnResourceVisit")
+}
+
+// TestResourceValidation_ConfiguredTypes tests that resource validation respects configuration
+func TestResourceValidation_ConfiguredTypes(t *testing.T) {
+	tests := []struct {
+		name                  string
+		resourceTypes         []string
+		checkExternal         bool
+		expectedInternalImage bool
+		expectedExternalImage bool
+		expectedScript        bool
+	}{
+		{
+			name:                  "Validate all resource types",
+			resourceTypes:         nil, // nil = all types
+			checkExternal:         true,
+			expectedInternalImage: true,
+			expectedExternalImage: true,
+			expectedScript:        true,
+		},
+		{
+			name:                  "Validate only images",
+			resourceTypes:         []string{"image"},
+			checkExternal:         true,
+			expectedInternalImage: true,
+			expectedExternalImage: true,
+			expectedScript:        false, // scripts not in list
+		},
+		{
+			name:                  "Skip external resources",
+			resourceTypes:         []string{"image", "script"},
+			checkExternal:         false,
+			expectedInternalImage: true,
+			expectedExternalImage: false, // external check disabled
+			expectedScript:        true,
+		},
+		{
+			name:                  "Disabled validation",
+			resourceTypes:         []string{"image"},
+			checkExternal:         false,
+			expectedInternalImage: false, // Will be set by disabling validation below
+			expectedExternalImage: false,
+			expectedScript:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := NewMockTransport()
+
+			// Register HTML page with various resource links
+			mock.RegisterHTML("https://example.com/", `<html>
+				<head><title>Test Page</title></head>
+				<body>
+					<img src="https://example.com/internal.png" alt="Internal Image">
+					<img src="https://external.com/external.png" alt="External Image">
+					<script src="https://example.com/script.js"></script>
+				</body>
+			</html>`)
+
+			// Register resources
+			mock.RegisterResponse("https://example.com/internal.png", &MockResponse{
+				StatusCode: 200,
+				Body:       "fake-image-data",
+				Headers:    http.Header{"Content-Type": []string{"image/png"}},
+			})
+			mock.RegisterResponse("https://external.com/external.png", &MockResponse{
+				StatusCode: 200,
+				Body:       "fake-image-data",
+				Headers:    http.Header{"Content-Type": []string{"image/png"}},
+			})
+			mock.RegisterResponse("https://example.com/script.js", &MockResponse{
+				StatusCode: 200,
+				Body:       "console.log('test');",
+				Headers:    http.Header{"Content-Type": []string{"application/javascript"}},
+			})
+
+			var mu sync.Mutex
+			visitedResources := make(map[string]bool)
+
+			// Configure resource validation
+			resourceValidation := &ResourceValidationConfig{
+				Enabled:       tt.name != "Disabled validation", // Disable for last test
+				ResourceTypes: tt.resourceTypes,
+				CheckExternal: tt.checkExternal,
+			}
+
+			crawler := NewCrawler(&CollectorConfig{
+				AllowedDomains:     []string{"example.com", "external.com"}, // Need to allow external domain
+				Async:              true,
+				ResourceValidation: resourceValidation,
+			})
+			crawler.Collector.WithTransport(mock)
+
+			// Track resource visits
+			crawler.SetOnResourceVisit(func(result *ResourceResult) {
+				mu.Lock()
+				defer mu.Unlock()
+				visitedResources[result.URL] = true
+			})
+
+			err := crawler.Start("https://example.com/")
+			if err != nil {
+				t.Fatalf("Failed to start crawler: %v", err)
+			}
+
+			crawler.Wait()
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			// Check internal image
+			if tt.expectedInternalImage {
+				if !visitedResources["https://example.com/internal.png"] {
+					t.Error("Internal image should be validated")
+				}
+			} else {
+				if visitedResources["https://example.com/internal.png"] {
+					t.Error("Internal image should NOT be validated")
+				}
+			}
+
+			// Check external image
+			if tt.expectedExternalImage {
+				if !visitedResources["https://external.com/external.png"] {
+					t.Error("External image should be validated")
+				}
+			} else {
+				if visitedResources["https://external.com/external.png"] {
+					t.Error("External image should NOT be validated")
+				}
+			}
+
+			// Check script
+			if tt.expectedScript {
+				if !visitedResources["https://example.com/script.js"] {
+					t.Error("Script should be validated")
+				}
+			} else {
+				if visitedResources["https://example.com/script.js"] {
+					t.Error("Script should NOT be validated")
+				}
+			}
+
+			t.Logf("Resource validation config correctly applied: %d resources visited", len(visitedResources))
+		})
+	}
 }
 
 // TestPageResult_MetaDescription tests that meta description is extracted

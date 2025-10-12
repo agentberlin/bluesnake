@@ -196,12 +196,13 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		log.Printf("Failed to get config for project %d: %v", projectID, err)
 		// Use defaults if config retrieval fails
 		config = &store.Config{
-			JSRenderingEnabled:  false,
-			Parallelism:         5,
-			UserAgent:           "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)",
-			IncludeSubdomains:   true, // Default to including subdomains
-			DiscoveryMechanisms: "[\"spider\"]",
-			SitemapURLs:         "",
+			JSRenderingEnabled:     false,
+			Parallelism:            5,
+			UserAgent:              "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)",
+			IncludeSubdomains:      true, // Default to including subdomains
+			DiscoveryMechanisms:    "[\"spider\"]",
+			SitemapURLs:            "",
+			CheckExternalResources: true, // Default to checking external resources
 		}
 	}
 
@@ -227,6 +228,11 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		EnableRendering:     config.JSRenderingEnabled,
 		DiscoveryMechanisms: mechanisms,
 		SitemapURLs:         config.GetSitemapURLsArray(),
+		ResourceValidation: &bluesnake.ResourceValidationConfig{
+			Enabled:       true,
+			ResourceTypes: []string{"image", "script", "stylesheet"},
+			CheckExternal: config.CheckExternalResources,
+		},
 	}
 
 	// Create the high-level crawler
@@ -242,6 +248,26 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 
 	// Add the starting URL to discovered URLs so it shows up in the UI immediately
 	stats.discoveredURLs.Store(parsedURL.String(), true)
+
+	// Set up callback for resource visits (images, CSS, JS, etc.)
+	crawler.SetOnResourceVisit(func(result *bluesnake.ResourceResult) {
+		// Check if crawl was stopped
+		select {
+		case <-crawlCtx.Done():
+			return // Crawl stopped, don't process
+		default:
+		}
+
+		// Save resource to database (same table as pages, but won't count as "page crawled")
+		// Status 0 means error/unreachable
+		indexable := "-" // Resources are not indexable by search engines
+		if err := a.store.SaveCrawledUrl(stats.crawlID, result.URL, result.Status, "", "", "", indexable, result.Error); err != nil {
+			log.Printf("Failed to save resource URL: %v", err)
+		}
+
+		// Note: Resources are NOT counted toward pagesCrawled stat
+		// They're tracked separately for resource validation purposes
+	})
 
 	// Set up callback for individual page results
 	crawler.SetOnPageCrawled(func(result *bluesnake.PageResult) {

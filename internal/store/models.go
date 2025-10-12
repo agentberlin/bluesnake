@@ -24,12 +24,13 @@ type Config struct {
 	JSRenderingEnabled  bool     `gorm:"default:false"`
 	Parallelism         int      `gorm:"default:5"`
 	UserAgent           string   `gorm:"type:text;default:'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)'"`
-	IncludeSubdomains   bool     `gorm:"default:false"` // When true, crawl all subdomains of the project domain
-	DiscoveryMechanisms string   `gorm:"type:text;default:'[\"spider\"]'"` // JSON array
-	SitemapURLs         string   `gorm:"type:text"`                        // JSON array, nullable
-	Project             *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
-	CreatedAt           int64    `gorm:"autoCreateTime"`
-	UpdatedAt           int64    `gorm:"autoUpdateTime"`
+	IncludeSubdomains      bool     `gorm:"default:false"`                                // When true, crawl all subdomains of the project domain
+	DiscoveryMechanisms    string   `gorm:"type:text;default:'[\"spider\"]'"`             // JSON array
+	SitemapURLs            string   `gorm:"type:text"`                                    // JSON array, nullable
+	CheckExternalResources bool     `gorm:"default:true"`                                 // When true, validate external resources for broken links
+	Project                *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
+	CreatedAt              int64    `gorm:"autoCreateTime"`
+	UpdatedAt              int64    `gorm:"autoUpdateTime"`
 }
 
 // GetDiscoveryMechanismsArray deserializes the DiscoveryMechanisms JSON to []string

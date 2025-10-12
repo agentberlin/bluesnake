@@ -66,13 +66,14 @@ type CrawlResultDetailed struct {
 
 // ConfigResponse represents the configuration response for the frontend
 type ConfigResponse struct {
-	Domain              string   `json:"domain"`
-	JSRenderingEnabled  bool     `json:"jsRenderingEnabled"`
-	Parallelism         int      `json:"parallelism"`
-	UserAgent           string   `json:"userAgent"`
-	IncludeSubdomains   bool     `json:"includeSubdomains"`
-	DiscoveryMechanisms []string `json:"discoveryMechanisms"`
-	SitemapURLs         []string `json:"sitemapURLs"`
+	Domain                 string   `json:"domain"`
+	JSRenderingEnabled     bool     `json:"jsRenderingEnabled"`
+	Parallelism            int      `json:"parallelism"`
+	UserAgent              string   `json:"userAgent"`
+	IncludeSubdomains      bool     `json:"includeSubdomains"`
+	DiscoveryMechanisms    []string `json:"discoveryMechanisms"`
+	SitemapURLs            []string `json:"sitemapURLs"`
+	CheckExternalResources bool     `json:"checkExternalResources"`
 }
 
 // UpdateInfo contains information about available updates

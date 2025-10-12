@@ -323,6 +323,7 @@ func TestSpiderOnlyFollowsAnchors(t *testing.T) {
 		AllowedDomains:      []string{"example.com"},
 		Async:               true,
 		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySpider},
+		ResourceValidation:  &ResourceValidationConfig{Enabled: false}, // Disable for this test
 	})
 	crawler.Collector.WithTransport(mock)
 

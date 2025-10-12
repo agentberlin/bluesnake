@@ -108,8 +108,9 @@ func (d *DesktopApp) UpdateConfigForDomain(
 	spiderEnabled bool,
 	sitemapEnabled bool,
 	sitemapURLs []string,
+	checkExternalResources bool,
 ) error {
-	return d.app.UpdateConfigForDomain(url, jsRendering, parallelism, userAgent, includeSubdomains, spiderEnabled, sitemapEnabled, sitemapURLs)
+	return d.app.UpdateConfigForDomain(url, jsRendering, parallelism, userAgent, includeSubdomains, spiderEnabled, sitemapEnabled, sitemapURLs, checkExternalResources)
 }
 
 // GetPageLinksForURL wraps app.GetPageLinksForURL

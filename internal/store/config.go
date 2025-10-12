@@ -29,14 +29,15 @@ func (s *Store) GetOrCreateConfig(projectID uint, domain string) (*Config, error
 	if result.Error == gorm.ErrRecordNotFound {
 		// Create new config with defaults
 		config = Config{
-			ProjectID:           projectID,
-			Domain:              domain,
-			JSRenderingEnabled:  false,
-			Parallelism:         5,
-			UserAgent:           "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)",
-			IncludeSubdomains:   true,           // Default to including subdomains
-			DiscoveryMechanisms: "[\"spider\"]", // Default to spider mode
-			SitemapURLs:         "",             // Empty = use defaults when sitemap enabled
+			ProjectID:              projectID,
+			Domain:                 domain,
+			JSRenderingEnabled:     false,
+			Parallelism:            5,
+			UserAgent:              "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)",
+			IncludeSubdomains:      true,           // Default to including subdomains
+			DiscoveryMechanisms:    "[\"spider\"]", // Default to spider mode
+			SitemapURLs:            "",             // Empty = use defaults when sitemap enabled
+			CheckExternalResources: true,           // Default to checking external resources
 		}
 
 		if err := s.db.Create(&config).Error; err != nil {
@@ -54,7 +55,7 @@ func (s *Store) GetOrCreateConfig(projectID uint, domain string) (*Config, error
 }
 
 // UpdateConfig updates the configuration for a project
-func (s *Store) UpdateConfig(projectID uint, jsRendering bool, parallelism int, userAgent string, includeSubdomains bool, discoveryMechanisms []string, sitemapURLs []string) error {
+func (s *Store) UpdateConfig(projectID uint, jsRendering bool, parallelism int, userAgent string, includeSubdomains bool, discoveryMechanisms []string, sitemapURLs []string, checkExternalResources bool) error {
 	var config Config
 
 	result := s.db.Where("project_id = ?", projectID).First(&config)
@@ -68,6 +69,7 @@ func (s *Store) UpdateConfig(projectID uint, jsRendering bool, parallelism int, 
 	config.Parallelism = parallelism
 	config.UserAgent = userAgent
 	config.IncludeSubdomains = includeSubdomains
+	config.CheckExternalResources = checkExternalResources
 
 	// Update discovery mechanisms
 	if err := config.SetDiscoveryMechanismsArray(discoveryMechanisms); err != nil {
