@@ -75,12 +75,32 @@ type ConfigResponse struct {
 	SitemapURLs         []string `json:"sitemapURLs"`
 }
 
+// VersionRule represents a version-specific rule (warning or block)
+type VersionRule struct {
+	Version string `json:"version"`
+	Reason  string `json:"reason"`
+}
+
+// VersionManifest represents the version.json structure from R2
+type VersionManifest struct {
+	LatestVersion    string        `json:"latestVersion"`
+	WarnBelow        string        `json:"warnBelow,omitempty"`
+	WarnBelowReason  string        `json:"warnBelowReason,omitempty"`
+	BlockBelow       string        `json:"blockBelow,omitempty"`
+	BlockBelowReason string        `json:"blockBelowReason,omitempty"`
+	WarnVersions     []VersionRule `json:"warnVersions,omitempty"`
+	BlockVersions    []VersionRule `json:"blockVersions,omitempty"`
+}
+
 // UpdateInfo contains information about available updates
 type UpdateInfo struct {
 	CurrentVersion  string `json:"currentVersion"`
 	LatestVersion   string `json:"latestVersion"`
 	UpdateAvailable bool   `json:"updateAvailable"`
 	DownloadURL     string `json:"downloadUrl"`
+	ShouldWarn      bool   `json:"shouldWarn"`
+	ShouldBlock     bool   `json:"shouldBlock"`
+	DisplayReason   string `json:"displayReason,omitempty"`
 }
 
 // LinkInfo represents link information for the frontend

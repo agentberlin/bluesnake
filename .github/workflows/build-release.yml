@@ -26,11 +26,11 @@ jobs:
         run: |
           # Try to download existing version file
           aws s3 cp \
-            s3://${{ secrets.R2_BUCKET_NAME }}/bluesnake/version.txt \
-            version.txt \
-            --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com || echo "v0.0.0" > version.txt
+            s3://${{ secrets.R2_BUCKET_NAME }}/bluesnake/version.json \
+            version.json \
+            --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com || echo '{"latestVersion":"v0.0.0"}' > version.json
 
-          CURRENT_VERSION=$(cat version.txt)
+          CURRENT_VERSION=$(jq -r '.latestVersion' version.json)
           echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
 
       - name: Increment version
@@ -54,13 +54,13 @@ jobs:
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "New version: $NEW_VERSION"
 
-          # Save to file
-          echo "$NEW_VERSION" > version.txt
+          # Save to file as JSON
+          echo "{\"latestVersion\":\"$NEW_VERSION\"}" > version.json
 
       - name: Upload new version to R2
         run: |
-          aws s3 cp version.txt \
-            s3://${{ secrets.R2_BUCKET_NAME }}/bluesnake/version.txt \
+          aws s3 cp version.json \
+            s3://${{ secrets.R2_BUCKET_NAME }}/bluesnake/version.json \
             --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \
             --acl public-read
 
