@@ -118,6 +118,7 @@ type CrawledUrl struct {
 	MetaDescription string `gorm:"type:text"`
 	ContentHash     string `gorm:"type:text;index"`
 	Indexable       string `gorm:"not null"`
+	ContentType     string `gorm:"type:text"` // MIME type: text/html, image/jpeg, text/css, application/javascript, etc.
 	Error           string `gorm:"type:text"`
 	CreatedAt       int64  `gorm:"autoCreateTime"`
 }

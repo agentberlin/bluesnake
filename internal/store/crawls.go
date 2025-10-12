@@ -88,7 +88,7 @@ func (s *Store) GetCrawlResults(crawlID uint) ([]CrawledUrl, error) {
 }
 
 // SaveCrawledUrl saves a crawled URL result
-func (s *Store) SaveCrawledUrl(crawlID uint, url string, status int, title string, metaDescription string, contentHash string, indexable string, errorMsg string) error {
+func (s *Store) SaveCrawledUrl(crawlID uint, url string, status int, title string, metaDescription string, contentHash string, indexable string, contentType string, errorMsg string) error {
 	crawledUrl := CrawledUrl{
 		CrawlID:         crawlID,
 		URL:             url,
@@ -97,6 +97,7 @@ func (s *Store) SaveCrawledUrl(crawlID uint, url string, status int, title strin
 		MetaDescription: metaDescription,
 		ContentHash:     contentHash,
 		Indexable:       indexable,
+		ContentType:     contentType,
 		Error:           errorMsg,
 	}
 
