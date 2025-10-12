@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -139,6 +141,90 @@ func buildDomainFilter(domain string, includeSubdomains bool) (*regexp.Regexp, e
 	}
 
 	return regexp.Compile(pattern)
+}
+
+// sanitizeURLToFilename converts a URL to a disk-safe filename
+// Replaces non-disk-friendly characters with underscores
+// Example: "https://example.com/blog/post-1?page=2" -> "blog_post-1_page_2.txt"
+func sanitizeURLToFilename(urlStr string) string {
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		// If URL parsing fails, use a hash-based fallback
+		return fmt.Sprintf("url_%d.txt", len(urlStr))
+	}
+
+	// Get the path and query from URL
+	path := parsedURL.Path
+	query := parsedURL.RawQuery
+
+	// Combine path and query
+	fullPath := path
+	if query != "" {
+		fullPath = path + "?" + query
+	}
+
+	// Handle root path
+	if fullPath == "" || fullPath == "/" {
+		return "index.txt"
+	}
+
+	// Remove leading slash
+	if strings.HasPrefix(fullPath, "/") {
+		fullPath = fullPath[1:]
+	}
+
+	// Replace non-disk-friendly characters with underscores
+	// Characters to replace: / ? = & # : * " < > | spaces
+	replacer := strings.NewReplacer(
+		"/", "_",
+		"?", "_",
+		"=", "_",
+		"&", "_",
+		"#", "_",
+		":", "_",
+		"*", "_",
+		"\"", "_",
+		"<", "_",
+		">", "_",
+		"|", "_",
+		" ", "_",
+	)
+
+	sanitized := replacer.Replace(fullPath)
+
+	// Add .txt extension if not already present
+	if !strings.HasSuffix(sanitized, ".txt") {
+		sanitized = sanitized + ".txt"
+	}
+
+	return sanitized
+}
+
+// saveContentToDisk saves the text content of a page to disk
+// Content is saved to ~/.bluesnake/<domain>/<crawlid>/<sanitized-url>.txt
+func saveContentToDisk(domain string, crawlID uint, pageURL string, content string) error {
+	// Get home directory
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get user home directory: %v", err)
+	}
+
+	// Create directory structure: ~/.bluesnake/<domain>/<crawlid>/
+	contentDir := filepath.Join(homeDir, ".bluesnake", domain, fmt.Sprintf("%d", crawlID))
+	if err := os.MkdirAll(contentDir, 0755); err != nil {
+		return fmt.Errorf("failed to create content directory: %v", err)
+	}
+
+	// Generate filename from URL
+	filename := sanitizeURLToFilename(pageURL)
+	filePath := filepath.Join(contentDir, filename)
+
+	// Write content to file
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write content file: %v", err)
+	}
+
+	return nil
 }
 
 func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string, projectID uint) {
@@ -345,6 +431,17 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 			// Save outbound links
 			if err := a.store.SavePageLinks(stats.crawlID, result.URL, outboundLinks, nil); err != nil {
 				log.Printf("Failed to save page links: %v", err)
+			}
+		}
+
+		// Save text content to disk (only for successful HTML crawls)
+		if result.Error == "" && strings.Contains(result.ContentType, "text/html") {
+			textContent := result.GetTextContent()
+			if textContent != "" {
+				if err := saveContentToDisk(domain, stats.crawlID, result.URL, textContent); err != nil {
+					// Log error but don't fail the crawl
+					log.Printf("Failed to save content for %s: %v", result.URL, err)
+				}
 			}
 		}
 	})

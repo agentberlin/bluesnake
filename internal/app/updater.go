@@ -15,6 +15,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,12 +32,12 @@ import (
 
 const (
 	updateBaseURL = "https://storage.agentberlin.ai/bluesnake"
-	versionURL    = updateBaseURL + "/version.txt"
+	versionURL    = updateBaseURL + "/version.json"
 )
 
 // CheckForUpdate checks if a new version is available
 func (a *App) CheckForUpdate() (*types.UpdateInfo, error) {
-	// Fetch the latest version from the server
+	// Fetch the version manifest from the server
 	resp, err := http.Get(versionURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch version info: %v", err)
@@ -52,19 +53,29 @@ func (a *App) CheckForUpdate() (*types.UpdateInfo, error) {
 		return nil, fmt.Errorf("failed to read version info: %v", err)
 	}
 
-	latestVersion := strings.TrimSpace(string(body))
+	// Parse the JSON manifest
+	var manifest types.VersionManifest
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		return nil, fmt.Errorf("failed to parse version manifest: %v", err)
+	}
 
 	// Compare versions
-	updateAvailable := compareVersions(latestVersion, version.CurrentVersion)
+	updateAvailable := compareVersions(manifest.LatestVersion, version.CurrentVersion)
 
 	// Build download URL based on platform
-	downloadURL := buildDownloadURL(latestVersion)
+	downloadURL := buildDownloadURL(manifest.LatestVersion)
+
+	// Evaluate version rules to determine warnings and blocks
+	shouldWarn, shouldBlock, displayReason := evaluateVersionRules(version.CurrentVersion, &manifest)
 
 	return &types.UpdateInfo{
 		CurrentVersion:  version.CurrentVersion,
-		LatestVersion:   latestVersion,
+		LatestVersion:   manifest.LatestVersion,
 		UpdateAvailable: updateAvailable,
 		DownloadURL:     downloadURL,
+		ShouldWarn:      shouldWarn,
+		ShouldBlock:     shouldBlock,
+		DisplayReason:   displayReason,
 	}, nil
 }
 
@@ -138,6 +149,53 @@ func compareVersions(latest, current string) bool {
 	}
 
 	return false
+}
+
+// versionEquals returns true if version strings are equal
+func versionEquals(v1, v2 string) bool {
+	v1 = strings.TrimPrefix(v1, "v")
+	v2 = strings.TrimPrefix(v2, "v")
+	return v1 == v2
+}
+
+// evaluateVersionRules checks the current version against warning and block rules
+// Returns (shouldWarn, shouldBlock, displayReason)
+// Specific version rules in arrays take precedence over threshold rules
+func evaluateVersionRules(currentVersion string, manifest *types.VersionManifest) (bool, bool, string) {
+	// First check if current version is in block list (highest priority)
+	for _, rule := range manifest.BlockVersions {
+		if versionEquals(currentVersion, rule.Version) {
+			return false, true, rule.Reason
+		}
+	}
+
+	// Then check if current version is in warn list
+	for _, rule := range manifest.WarnVersions {
+		if versionEquals(currentVersion, rule.Version) {
+			return true, false, rule.Reason
+		}
+	}
+
+	// Check threshold-based block rule
+	if manifest.BlockBelow != "" && compareVersions(manifest.BlockBelow, currentVersion) {
+		reason := manifest.BlockBelowReason
+		if reason == "" {
+			reason = "This version is no longer supported. Please update immediately."
+		}
+		return false, true, reason
+	}
+
+	// Check threshold-based warn rule
+	if manifest.WarnBelow != "" && compareVersions(manifest.WarnBelow, currentVersion) {
+		reason := manifest.WarnBelowReason
+		if reason == "" {
+			reason = "A newer version is recommended."
+		}
+		return true, false, reason
+	}
+
+	// No warnings or blocks
+	return false, false, ""
 }
 
 // buildDownloadURL constructs the download URL based on platform and version

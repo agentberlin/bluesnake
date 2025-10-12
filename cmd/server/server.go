@@ -218,6 +218,23 @@ func (s *Server) handleCrawls(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GET /api/v1/crawls/{id}/pages/{url}/content
+	if len(parts) >= 3 && parts[1] == "pages" && strings.HasSuffix(path, "/content") && r.Method == "GET" {
+		// Extract URL from path (everything between "pages/" and "/content")
+		pageURL := strings.TrimSuffix(strings.Join(parts[2:], "/"), "/content")
+		content, err := s.app.GetPageContent(uint(crawlID), pageURL)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Return as JSON with content field
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"content": content,
+		})
+		return
+	}
+
 	http.Error(w, "Not found", http.StatusNotFound)
 }
 
