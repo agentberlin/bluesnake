@@ -23,18 +23,19 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   height: 100vh;
   padding: 60px;
+  padding-top: 120px;
 }
 
 .logo-container {
-  margin-bottom: 32px;
+  margin-bottom: 24px;
 }
 
 .logo-image {
-  width: 120px;
-  height: 120px;
+  width: 100px;
+  height: 100px;
   object-fit: contain;
 }
 
@@ -50,7 +51,7 @@
   font-size: 14px;
   font-weight: 300;
   color: #666;
-  margin: 0 0 64px 0;
+  margin: 0 0 40px 0;
   letter-spacing: 0.5px;
 }
 
