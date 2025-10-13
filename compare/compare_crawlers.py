@@ -645,55 +645,20 @@ class CrawlerComparison:
         print("FINAL SUMMARY")
         print(f"{'='*80}\n")
 
-        print(f"Data Sources:")
-        print(f"  BlueSnake Server: {self.server_url}")
-        print(f"    Crawl ID: {crawl_id}")
-        print(f"    Direct URL: {self.server_url}/api/v1/crawls/{crawl_id}")
-        print(f"    (Use this URL to query specific details about the crawl)")
-        print(f"\n  ScreamingFrog Output Directory: {self.sf_output_dir}")
-
-        # List files in SF output directory
-        if self.sf_output_dir.exists():
-            sf_files = list(self.sf_output_dir.iterdir())
-            print(f"    Files in directory ({len(sf_files)} total):")
-            for file in sorted(sf_files):
-                file_size = os.path.getsize(file)
-                print(f"      - {file.name} ({file_size:,} bytes)")
-        else:
-            print(f"    Directory not found!")
-        print()
-
-        print(f"URL Coverage:")
-        print(f"  ScreamingFrog found: {url_comparison['sf_total']} URLs")
-        print(f"  BlueSnake found:     {url_comparison['bs_total']} URLs")
-        print(f"  Common:              {url_comparison['common']} URLs")
-        print(f"  Missing in BlueSnake: {url_comparison['missing_in_bs']} URLs")
+        print(f"Crawl ID: {crawl_id}")
+        print(f"ScreamingFrog: {url_comparison['sf_total']} URLs")
+        print(f"BlueSnake: {url_comparison['bs_total']} URLs")
+        print(f"Common: {url_comparison['common']} URLs")
+        print(f"Missing in BS: {url_comparison['missing_in_bs']} URLs")
 
         if url_comparison["sf_total"] > 0:
             coverage = url_comparison["common"] / url_comparison["sf_total"] * 100
-            print(f"  BlueSnake coverage:  {coverage:.1f}%")
+            print(f"Coverage: {coverage:.1f}%")
 
-        print(f"\nStatus Code Differences:")
-        print(f"  URLs with different status codes: {status_comparison['diff_count']}")
+        print(f"\nStatus differences: {status_comparison['diff_count']} URLs")
+        print(f"Outlink differences: {outlink_comparison['diff_count']}/{outlink_comparison['checked_count']} URLs")
 
-        print(f"\nOutlink Accuracy:")
-        print(f"  URLs checked: {outlink_comparison['checked_count']}")
-        print(f"  URLs with different outlinks: {outlink_comparison['diff_count']}")
-        if outlink_comparison["checked_count"] > 0:
-            match_pct = (
-                (outlink_comparison["checked_count"] - outlink_comparison["diff_count"])
-                / outlink_comparison["checked_count"]
-                * 100
-            )
-            print(f"  Match rate: {match_pct:.1f}%")
-
-        print(f"\nOutput Files:")
-        print(f"  Detailed diff: {diff_file}")
-        print(f"    Size: {diff_size:,} bytes ({diff_size / 1024:.1f} KB)")
-
-        sf_log_size = os.path.getsize(self.sf_log_file)
-        print(f"  ScreamingFrog log: {self.sf_log_file}")
-        print(f"    Size: {sf_log_size:,} bytes ({sf_log_size / 1024:.1f} KB)")
+        print(f"\nDiff file: {diff_file}")
 
         print("\n" + "=" * 80 + "\n")
 
