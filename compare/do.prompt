@@ -9,6 +9,6 @@ Run the script with the command to generate a new report. Always generate a new 
 uv run compare/compare_crawlers.py <domain>
 ```
 
-Ask for the domain if not provided already
+Ask for the domain if not provided already. After the crawl, you have access to the outputs from screamingfrog (html, text, other reports) incase you need to do more analysis. You can (and probably should) also check internet incase you need to find how screamingfrog does something, before planning a fix. Also, if the fix is changing a design decision or an internal assumption, you should get the approval before the change.
 
 Do whatever it takes to get to the fix.
