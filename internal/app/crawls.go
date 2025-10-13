@@ -103,10 +103,16 @@ func (a *App) SearchCrawlResults(crawlID uint, query string, contentTypeFilter s
 	// Convert to CrawlResult for frontend
 	results := make([]types.CrawlResult, len(urls))
 	for i, u := range urls {
+		// For unvisited URLs, set a descriptive title
+		title := u.Title
+		if !u.Visited {
+			title = "Unvisited URL"
+		}
+
 		results[i] = types.CrawlResult{
 			URL:             u.URL,
 			Status:          u.Status,
-			Title:           u.Title,
+			Title:           title,
 			MetaDescription: u.MetaDescription,
 			ContentHash:     u.ContentHash,
 			Indexable:       u.Indexable,
