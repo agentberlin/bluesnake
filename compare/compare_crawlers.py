@@ -15,9 +15,9 @@ import urllib.parse
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-import requests
+import requests  # type: ignore
 
 
 class CrawlerComparison:
@@ -36,7 +36,7 @@ class CrawlerComparison:
         self.sf_log_file = f"/tmp/screamingfrog_{domain_safe}_{timestamp}.log"
 
         # For detailed diff output
-        self.detailed_diff = {
+        self.detailed_diff: Dict[str, Any] = {
             "metadata": {
                 "domain": domain,
                 "timestamp": datetime.now().isoformat(),
@@ -83,8 +83,8 @@ class CrawlerComparison:
 
         # Ensure domain has protocol
         crawl_url = self.domain
-        if not crawl_url.startswith(('http://', 'https://')):
-            crawl_url = f'https://{crawl_url}'
+        if not crawl_url.startswith(("http://", "https://")):
+            crawl_url = f"https://{crawl_url}"
 
         # Build command
         args = [
@@ -138,8 +138,8 @@ class CrawlerComparison:
     def configure_bluesnake(self) -> bool:
         """Configure BlueSnake crawler settings"""
         crawl_url = self.domain
-        if not crawl_url.startswith(('http://', 'https://')):
-            crawl_url = f'https://{crawl_url}'
+        if not crawl_url.startswith(("http://", "https://")):
+            crawl_url = f"https://{crawl_url}"
 
         config = {
             "url": crawl_url,
@@ -182,8 +182,8 @@ class CrawlerComparison:
 
         # Ensure domain has protocol
         crawl_url = self.domain
-        if not crawl_url.startswith(('http://', 'https://')):
-            crawl_url = f'https://{crawl_url}'
+        if not crawl_url.startswith(("http://", "https://")):
+            crawl_url = f"https://{crawl_url}"
 
         # Start crawl
         try:
@@ -257,7 +257,7 @@ class CrawlerComparison:
         print(f"\nTimeout waiting for crawl completion after {max_wait_seconds} seconds")
         return False, 0, 0
 
-    def fetch_bluesnake_data(self, crawl_id: int) -> Dict:
+    def fetch_bluesnake_data(self, crawl_id: int) -> Optional[Dict[str, Any]]:
         """Fetch crawl results from BlueSnake API"""
         print(f"\n{'='*80}")
         print(f"Fetching BlueSnake crawl data")
@@ -276,7 +276,7 @@ class CrawlerComparison:
             print(f"Error fetching BlueSnake data: {e}")
             return None
 
-    def fetch_bluesnake_links(self, crawl_id: int, url: str) -> Dict:
+    def fetch_bluesnake_links(self, crawl_id: int, url: str) -> Optional[Dict[str, Any]]:
         """Fetch outlinks for a specific URL"""
         try:
             # URL encode the page URL
@@ -289,7 +289,7 @@ class CrawlerComparison:
             # Silently fail to avoid cluttering output
             return None
 
-    def parse_screamingfrog_internal(self) -> Dict[str, Dict]:
+    def parse_screamingfrog_internal(self) -> Dict[str, Dict[str, Any]]:
         """Parse ScreamingFrog Internal:All export"""
         internal_file = self.sf_output_dir / "internal_all.csv"
         if not internal_file.exists():
@@ -312,7 +312,7 @@ class CrawlerComparison:
         print(f"Parsed {len(urls)} URLs from ScreamingFrog Internal:All")
         return urls
 
-    def parse_screamingfrog_outlinks(self) -> Dict[str, List[Dict]]:
+    def parse_screamingfrog_outlinks(self) -> Dict[str, List[Dict[str, str]]]:
         """Parse ScreamingFrog All Outlinks export"""
         outlinks_file = self.sf_output_dir / "all_outlinks.csv"
         if not outlinks_file.exists():
@@ -341,7 +341,7 @@ class CrawlerComparison:
         url = urllib.parse.unquote(url)
         return url
 
-    def compare_urls(self, sf_urls: Dict, bs_data: Dict) -> Dict:
+    def compare_urls(self, sf_urls: Dict[str, Dict[str, Any]], bs_data: Dict[str, Any]) -> Dict[str, Any]:
         """Compare crawled URLs between ScreamingFrog and BlueSnake"""
         print(f"\n{'='*80}")
         print("Comparing Crawled URLs")
@@ -413,7 +413,7 @@ class CrawlerComparison:
             "missing_in_bs": total_missing,
         }
 
-    def compare_status_codes(self, sf_urls: Dict, bs_data: Dict) -> Dict:
+    def compare_status_codes(self, sf_urls: Dict[str, Dict[str, Any]], bs_data: Dict[str, Any]) -> Dict[str, int]:
         """Compare HTTP status codes"""
         print(f"\n{'='*80}")
         print("Comparing Status Codes")
@@ -462,7 +462,9 @@ class CrawlerComparison:
             "diff_count": len(status_diffs),
         }
 
-    def compare_outlinks(self, crawl_id: int, sf_outlinks: Dict, bs_results: List[Dict]) -> Dict:
+    def compare_outlinks(
+        self, crawl_id: int, sf_outlinks: Dict[str, List[Dict[str, str]]], bs_results: List[Dict[str, Any]]
+    ) -> Dict[str, int]:
         """Compare outlinks for ALL pages"""
         print(f"\n{'='*80}")
         print("Comparing Outlinks")
