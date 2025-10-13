@@ -666,7 +666,7 @@ function App() {
           existingConfig.scrollWaitMs || 2000,
           existingConfig.finalWaitMs || 1000,
           existingConfig.parallelism,
-          existingConfig.userAgent || 'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)',
+          existingConfig.userAgent || 'bluesnake/1.0 (+https://snake.blue)',
           existingConfig.includeSubdomains,
           true,  // spiderEnabled - always true
           mechanisms.includes("sitemap"),
@@ -693,7 +693,7 @@ function App() {
           2000,  // scrollWaitMs - default
           1000,  // finalWaitMs - default
           5,     // parallelism - default
-          'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)', // userAgent
+          'bluesnake/1.0 (+https://snake.blue)', // userAgent
           true,  // includeSubdomains - default
           true,  // spiderEnabled - always true
           false, // sitemapEnabled - default
@@ -742,7 +742,7 @@ function App() {
           existingConfig.scrollWaitMs || 2000,
           existingConfig.finalWaitMs || 1000,
           existingConfig.parallelism,
-          existingConfig.userAgent || 'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)',
+          existingConfig.userAgent || 'bluesnake/1.0 (+https://snake.blue)',
           existingConfig.includeSubdomains,
           true,  // spiderEnabled - always true (won't be used in single page mode)
           mechanisms.includes("sitemap"),
@@ -769,7 +769,7 @@ function App() {
           2000,  // scrollWaitMs - default
           1000,  // finalWaitMs - default
           5,     // parallelism - default
-          'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)', // userAgent
+          'bluesnake/1.0 (+https://snake.blue)', // userAgent
           true,  // includeSubdomains - default (doesn't matter in single page mode)
           true,  // spiderEnabled - always true (won't be used in single page mode)
           false, // sitemapEnabled - default (won't be used in single page mode)

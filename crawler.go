@@ -142,9 +142,8 @@ type Crawler struct {
 	discoveryMechanisms []DiscoveryMechanism // Enabled discovery mechanisms
 	sitemapURLs         []string             // Custom sitemap URLs (nil = try defaults)
 
-	// Framework-specific filtering (passed from application layer)
-	customFilterPatterns []string // URL patterns to filter (e.g., "/_next/static/", "_rsc=")
-	customFilterParams   []string // Query param keys to filter (e.g., "rsc", "ver")
+	// URL filtering callback (provided by application layer)
+	urlFilterCallback func(string) bool // Application-provided URL filter
 }
 
 // NewCrawler creates a high-level crawler with the specified collector configuration.
@@ -223,15 +222,13 @@ func (cr *Crawler) SetOnCrawlComplete(f OnCrawlCompleteFunc) {
 	cr.onCrawlComplete = f
 }
 
-// SetCustomFilters sets custom URL patterns and query params to filter during crawling.
-// This allows the application layer to pass framework-specific filtering rules.
-// filterPatterns: URL patterns to match (e.g., "/_next/static/", "_rsc=")
-// filterParams: Query parameter keys to filter (e.g., "rsc", "ver")
-func (cr *Crawler) SetCustomFilters(filterPatterns []string, filterParams []string) {
+// SetURLFilterCallback sets a custom URL filter callback function.
+// The callback should return true if the URL should be filtered (skipped), false otherwise.
+// This allows the application layer to implement domain-aware, framework-specific filtering.
+func (cr *Crawler) SetURLFilterCallback(filter func(string) bool) {
 	cr.mutex.Lock()
 	defer cr.mutex.Unlock()
-	cr.customFilterPatterns = filterPatterns
-	cr.customFilterParams = filterParams
+	cr.urlFilterCallback = filter
 }
 
 // Start begins crawling from the specified starting URL.
@@ -1167,32 +1164,17 @@ func inferResourceType(urlStr string) string {
 	}
 }
 
-// matchesCustomFilters checks if a URL matches any custom filter patterns or query params
-// that were passed from the application layer. This provides a generic filtering mechanism
-// that can be used for framework-specific filters, analytics/tracking filters, etc.
+// matchesCustomFilters checks if a URL should be filtered using the application-provided callback.
+// This provides a generic filtering mechanism that can be used for framework-specific filters,
+// analytics/tracking filters, etc.
 func (cr *Crawler) matchesCustomFilters(urlStr string) bool {
-	urlLower := strings.ToLower(urlStr)
-
-	// Check custom URL patterns (passed from application layer)
+	// Check if application-provided callback is set
 	cr.mutex.RLock()
-	customPatterns := cr.customFilterPatterns
-	customParams := cr.customFilterParams
+	callback := cr.urlFilterCallback
 	cr.mutex.RUnlock()
 
-	for _, pattern := range customPatterns {
-		if strings.Contains(urlLower, strings.ToLower(pattern)) {
-			return true
-		}
-	}
-
-	// Check custom query params
-	// Simply check if the URL contains the query parameter (e.g., "?param=" or "&param=")
-	for _, param := range customParams {
-		// Check for ?param= or &param= in the URL
-		if strings.Contains(urlLower, "?"+strings.ToLower(param)+"=") ||
-			strings.Contains(urlLower, "&"+strings.ToLower(param)+"=") {
-			return true
-		}
+	if callback != nil {
+		return callback(urlStr)
 	}
 
 	return false

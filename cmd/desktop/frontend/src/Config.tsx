@@ -162,7 +162,7 @@ function Config({ url, onClose }: ConfigProps) {
   const [scrollWaitMs, setScrollWaitMs] = useState(2000);
   const [finalWaitMs, setFinalWaitMs] = useState(1000);
   const [parallelism, setParallelism] = useState(5);
-  const [userAgent, setUserAgent] = useState('bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)');
+  const [userAgent, setUserAgent] = useState('bluesnake/1.0 (+https://snake.blue)');
   const [domain, setDomain] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -194,7 +194,7 @@ function Config({ url, onClose }: ConfigProps) {
       setScrollWaitMs(config.scrollWaitMs || 2000);
       setFinalWaitMs(config.finalWaitMs || 1000);
       setParallelism(config.parallelism);
-      setUserAgent(config.userAgent || 'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)');
+      setUserAgent(config.userAgent || 'bluesnake/1.0 (+https://snake.blue)');
       setIncludeSubdomains(config.includeSubdomains !== undefined ? config.includeSubdomains : true);
 
       // Derive sitemap state from mechanisms (spider is always enabled)
@@ -626,7 +626,7 @@ function Config({ url, onClose }: ConfigProps) {
                         value={userAgent}
                         onChange={(e) => setUserAgent(e.target.value)}
                         className="config-number-input"
-                        placeholder="bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)"
+                        placeholder="bluesnake/1.0 (+https://snake.blue)"
                       />
                       <p className="config-hint">
                         Custom User-Agent string for HTTP requests (default: bluesnake/1.0)

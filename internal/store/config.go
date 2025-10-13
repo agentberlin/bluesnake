@@ -36,7 +36,7 @@ func (s *Store) GetOrCreateConfig(projectID uint, domain string) (*Config, error
 			ScrollWaitMs:           2000, // 2s for lazy-loaded content
 			FinalWaitMs:            1000, // 1s for remaining DOM updates
 			Parallelism:            5,
-			UserAgent:              "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)",
+			UserAgent:              "bluesnake/1.0 (+https://snake.blue)",
 			IncludeSubdomains:      true,                       // Default to including subdomains
 			DiscoveryMechanisms:    "[\"spider\",\"sitemap\"]", // Default to both spider and sitemap mode
 			SitemapURLs:            "",                         // Empty = use defaults when sitemap enabled
