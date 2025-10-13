@@ -65,6 +65,11 @@ interface ConfigData {
   discoveryMechanisms: string[];  // Not exposed directly, derived from checkboxes
   checkExternalResources: boolean;
   singlePageMode: boolean;
+  robotsTxtMode?: string;
+  followInternalNofollow?: boolean;
+  followExternalNofollow?: boolean;
+  respectMetaRobotsNoindex?: boolean;
+  respectNoindex?: boolean;
 }
 
 interface FrameworkInfo {
@@ -176,6 +181,13 @@ function Config({ url, onClose }: ConfigProps) {
   const [domainFrameworks, setDomainFrameworks] = useState<DomainFramework[]>([]);
   const [frameworksLoading, setFrameworksLoading] = useState(false);
 
+  // Crawler directive settings
+  const [respectRobotsTxt, setRespectRobotsTxt] = useState(true);
+  const [respectInternalNofollow, setRespectInternalNofollow] = useState(true);
+  const [respectExternalNofollow, setRespectExternalNofollow] = useState(true);
+  const [respectMetaRobotsNoindex, setRespectMetaRobotsNoindex] = useState(true);
+  const [respectNoindex, setRespectNoindex] = useState(true);
+
   useEffect(() => {
     if (url) {
       loadConfig();
@@ -202,6 +214,13 @@ function Config({ url, onClose }: ConfigProps) {
       setSitemapEnabled(mechanisms.includes("sitemap"));
       setCheckExternalResources(config.checkExternalResources !== undefined ? config.checkExternalResources : true);
       setSinglePageMode(config.singlePageMode !== undefined ? config.singlePageMode : false);
+
+      // Load crawler directive settings
+      setRespectRobotsTxt(config.robotsTxtMode !== 'ignore');
+      setRespectInternalNofollow(!config.followInternalNofollow);
+      setRespectExternalNofollow(!config.followExternalNofollow);
+      setRespectMetaRobotsNoindex(config.respectMetaRobotsNoindex !== undefined ? config.respectMetaRobotsNoindex : true);
+      setRespectNoindex(config.respectNoindex !== undefined ? config.respectNoindex : true);
     } catch (err) {
       // Project doesn't exist yet - use defaults and extract domain from URL
       console.log('Project not found, using default configuration');
@@ -226,6 +245,13 @@ function Config({ url, onClose }: ConfigProps) {
       setSitemapEnabled(false);
       setCheckExternalResources(true); // Default to checking external resources
       setSinglePageMode(false); // Default to full website crawl
+
+      // Set crawler directive defaults
+      setRespectRobotsTxt(true);
+      setRespectInternalNofollow(true);
+      setRespectExternalNofollow(true);
+      setRespectMetaRobotsNoindex(true);
+      setRespectNoindex(true);
     } finally {
       setLoading(false);
     }
@@ -295,7 +321,12 @@ function Config({ url, onClose }: ConfigProps) {
         sitemapEnabled,
         [], // No custom sitemap URLs in this version
         checkExternalResources,
-        singlePageMode
+        singlePageMode,
+        respectRobotsTxt ? "respect" : "ignore",
+        !respectInternalNofollow,
+        !respectExternalNofollow,
+        respectMetaRobotsNoindex,
+        respectNoindex
       );
       onClose();
     } catch (err) {
@@ -631,6 +662,91 @@ function Config({ url, onClose }: ConfigProps) {
                       <p className="config-hint">
                         Custom User-Agent string for HTTP requests (default: bluesnake/1.0)
                       </p>
+                    </div>
+
+                    <div className="config-field">
+                      <label className="config-label">
+                        <input
+                          type="checkbox"
+                          checked={respectRobotsTxt}
+                          onChange={(e) => setRespectRobotsTxt(e.target.checked)}
+                          className="config-checkbox"
+                        />
+                        <div>
+                          <span className="checkbox-label">Respect Robots.txt</span>
+                          <p className="config-hint">
+                            When enabled, the crawler will respect robots.txt and block disallowed URLs. When disabled, robots.txt is completely ignored.
+                          </p>
+                        </div>
+                      </label>
+                    </div>
+
+                    <div className="config-field">
+                      <label className="config-label">
+                        <input
+                          type="checkbox"
+                          checked={respectInternalNofollow}
+                          onChange={(e) => setRespectInternalNofollow(e.target.checked)}
+                          className="config-checkbox"
+                        />
+                        <div>
+                          <span className="checkbox-label">Respect Internal Nofollow</span>
+                          <p className="config-hint">
+                            When enabled, the crawler will respect rel="nofollow", rel="sponsored", and rel="ugc" on internal links and skip them. When disabled, these links will be crawled.
+                          </p>
+                        </div>
+                      </label>
+                    </div>
+
+                    <div className="config-field">
+                      <label className="config-label">
+                        <input
+                          type="checkbox"
+                          checked={respectExternalNofollow}
+                          onChange={(e) => setRespectExternalNofollow(e.target.checked)}
+                          className="config-checkbox"
+                        />
+                        <div>
+                          <span className="checkbox-label">Respect External Nofollow</span>
+                          <p className="config-hint">
+                            When enabled, the crawler will respect rel="nofollow", rel="sponsored", and rel="ugc" on external links and skip them. When disabled, these links will be crawled.
+                          </p>
+                        </div>
+                      </label>
+                    </div>
+
+                    <div className="config-field">
+                      <label className="config-label">
+                        <input
+                          type="checkbox"
+                          checked={respectMetaRobotsNoindex}
+                          onChange={(e) => setRespectMetaRobotsNoindex(e.target.checked)}
+                          className="config-checkbox"
+                        />
+                        <div>
+                          <span className="checkbox-label">Respect Meta Robots Noindex</span>
+                          <p className="config-hint">
+                            When enabled, pages with &lt;meta name="robots" content="noindex"&gt; will be skipped during crawling
+                          </p>
+                        </div>
+                      </label>
+                    </div>
+
+                    <div className="config-field">
+                      <label className="config-label">
+                        <input
+                          type="checkbox"
+                          checked={respectNoindex}
+                          onChange={(e) => setRespectNoindex(e.target.checked)}
+                          className="config-checkbox"
+                        />
+                        <div>
+                          <span className="checkbox-label">Respect X-Robots-Tag Noindex</span>
+                          <p className="config-hint">
+                            When enabled, responses with X-Robots-Tag: noindex header will be skipped during crawling
+                          </p>
+                        </div>
+                      </label>
                     </div>
                   </div>
                 )}

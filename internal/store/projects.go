@@ -119,6 +119,25 @@ func (s *Store) DeleteProject(projectID uint) error {
 	return s.db.Delete(&Project{}, projectID).Error
 }
 
+// GetProjectByDomain gets a project by domain
+func (s *Store) GetProjectByDomain(domain string) (*Project, error) {
+	var project Project
+	result := s.db.Where("domain = ?", domain).First(&project)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get project: %v", result.Error)
+	}
+	return &project, nil
+}
+
+// UpdateProject updates a project with given fields
+func (s *Store) UpdateProject(projectID uint, updates map[string]interface{}) error {
+	result := s.db.Model(&Project{}).Where("id = ?", projectID).Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update project: %v", result.Error)
+	}
+	return nil
+}
+
 // fetchAndSaveFavicon fetches the favicon for a domain and saves it locally
 func fetchAndSaveFavicon(projectID uint, domain string) (string, error) {
 	// Get user home directory

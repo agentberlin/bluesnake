@@ -21,6 +21,7 @@ import Config from './Config';
 import LinksPanel from './LinksPanel';
 import ServerControl from './ServerControl';
 import Sidebar from './Sidebar';
+import AICrawlers from './AICrawlers';
 import { types } from "../wailsjs/go/models";
 
 interface CustomDropdownProps {
@@ -147,7 +148,7 @@ interface ConfigData {
 }
 
 type View = 'start' | 'dashboard';
-type DashboardSection = 'crawl-list' | 'config';
+type DashboardSection = 'crawl-list' | 'config' | 'ai-crawlers';
 
 interface CircularProgressProps {
   crawled: number;
@@ -666,7 +667,12 @@ function App() {
           mechanisms.includes("sitemap"),
           [],    // sitemapURLs
           existingConfig.checkExternalResources,
-          false  // singlePageMode - DISABLE for full crawl
+          false,  // singlePageMode - DISABLE for full crawl
+          "respect",  // robotsTxtMode - default
+          false,  // followInternalNofollow - default
+          false,  // followExternalNofollow - default
+          true,   // respectMetaRobotsNoindex - default
+          true    // respectNoindex - default
         );
       } catch {
         // If config fetch fails (e.g., project doesn't exist yet), this is a first crawl
@@ -693,7 +699,12 @@ function App() {
           false, // sitemapEnabled - default
           [],    // sitemapURLs
           true,  // checkExternalResources - default
-          false  // singlePageMode - DISABLE for full crawl
+          false,  // singlePageMode - DISABLE for full crawl
+          "respect",  // robotsTxtMode - default
+          false,  // followInternalNofollow - default
+          false,  // followExternalNofollow - default
+          true,   // respectMetaRobotsNoindex - default
+          true    // respectNoindex - default
         ).catch(() => {
           // If this also fails, that's okay - config will be created with defaults
         });
@@ -742,7 +753,12 @@ function App() {
           mechanisms.includes("sitemap"),
           [],    // sitemapURLs
           existingConfig.checkExternalResources,
-          true   // singlePageMode - ENABLE for single page crawl
+          true,   // singlePageMode - ENABLE for single page crawl
+          "respect",  // robotsTxtMode - default
+          false,  // followInternalNofollow - default
+          false,  // followExternalNofollow - default
+          true,   // respectMetaRobotsNoindex - default
+          true    // respectNoindex - default
         );
       } catch {
         // If config fetch fails (e.g., project doesn't exist yet), this is a first crawl
@@ -769,7 +785,12 @@ function App() {
           false, // sitemapEnabled - default (won't be used in single page mode)
           [],    // sitemapURLs
           true,  // checkExternalResources - default
-          true   // singlePageMode - ENABLE for single page crawl
+          true,   // singlePageMode - ENABLE for single page crawl
+          "respect",  // robotsTxtMode - default
+          false,  // followInternalNofollow - default
+          false,  // followExternalNofollow - default
+          true,   // respectMetaRobotsNoindex - default
+          true    // respectNoindex - default
         ).catch(() => {
           // If this also fails, that's okay - config will be created with defaults
         });
@@ -1245,6 +1266,8 @@ function App() {
         <div className="dashboard-main">
           {dashboardSection === 'config' ? (
             <Config url={url} onClose={handleCloseConfig} />
+          ) : dashboardSection === 'ai-crawlers' ? (
+            <AICrawlers url={url} />
           ) : (
             <div className="crawl-screen">
         <div className="header">

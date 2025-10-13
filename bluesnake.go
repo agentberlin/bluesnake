@@ -181,6 +181,22 @@ type CollectorConfig struct {
 	ContentHashConfig *ContentHashConfig
 	// ResourceValidation configures checking of non-HTML resources for broken links
 	ResourceValidation *ResourceValidationConfig
+	// RobotsTxtMode controls how robots.txt is handled
+	// Options: "respect", "ignore", or "ignore-report"
+	// Default: "respect"
+	RobotsTxtMode string
+	// FollowInternalNofollow allows following links with rel="nofollow" on same domain
+	// Default: false
+	FollowInternalNofollow bool
+	// FollowExternalNofollow allows following links with rel="nofollow" on external domains
+	// Default: false
+	FollowExternalNofollow bool
+	// RespectMetaRobotsNoindex respects <meta name="robots" content="noindex">
+	// Default: true
+	RespectMetaRobotsNoindex bool
+	// RespectNoindex respects X-Robots-Tag: noindex headers
+	// Default: true
+	RespectNoindex bool
 }
 
 // Collector provides the scraper instance for a scraping job
@@ -264,6 +280,16 @@ type Collector struct {
 	ContentHashConfig *ContentHashConfig
 	// ResourceValidation configures checking of non-HTML resources for broken links
 	ResourceValidation *ResourceValidationConfig
+	// RobotsTxtMode controls how robots.txt is handled
+	RobotsTxtMode string
+	// FollowInternalNofollow allows following links with rel="nofollow" on same domain
+	FollowInternalNofollow bool
+	// FollowExternalNofollow allows following links with rel="nofollow" on external domains
+	FollowExternalNofollow bool
+	// RespectMetaRobotsNoindex respects <meta name="robots" content="noindex">
+	RespectMetaRobotsNoindex bool
+	// RespectNoindex respects X-Robots-Tag: noindex headers
+	RespectNoindex bool
 
 	store                    storage.Storage
 	debugger                 debug.Debugger
@@ -499,6 +525,12 @@ func NewDefaultConfig() *CollectorConfig {
 			ResourceTypes: []string{"image", "script", "stylesheet", "font"},
 			CheckExternal: true,
 		},
+		// Crawler directive defaults (following ScreamingFrog's defaults)
+		RobotsTxtMode:            "respect", // Default to respecting robots.txt
+		FollowInternalNofollow:   false,     // Default to NOT following internal nofollow links
+		FollowExternalNofollow:   false,     // Default to NOT following external nofollow links
+		RespectMetaRobotsNoindex: true,      // Default to respecting meta robots noindex
+		RespectNoindex:           true,      // Default to respecting X-Robots-Tag noindex
 	}
 }
 
@@ -599,6 +631,21 @@ func NewCollector(config *CollectorConfig) *Collector {
 		if config.ResourceValidation != nil {
 			defaults.ResourceValidation = config.ResourceValidation
 		}
+		if config.RobotsTxtMode != "" {
+			defaults.RobotsTxtMode = config.RobotsTxtMode
+		}
+		if config.FollowInternalNofollow {
+			defaults.FollowInternalNofollow = true
+		}
+		if config.FollowExternalNofollow {
+			defaults.FollowExternalNofollow = true
+		}
+		if !config.RespectMetaRobotsNoindex {
+			defaults.RespectMetaRobotsNoindex = false
+		}
+		if !config.RespectNoindex {
+			defaults.RespectNoindex = false
+		}
 	}
 	config = defaults
 
@@ -646,6 +693,25 @@ func NewCollector(config *CollectorConfig) *Collector {
 	c.ContentHashAlgorithm = config.ContentHashAlgorithm
 	c.ContentHashConfig = config.ContentHashConfig
 	c.ResourceValidation = config.ResourceValidation
+	c.RobotsTxtMode = config.RobotsTxtMode
+	c.FollowInternalNofollow = config.FollowInternalNofollow
+	c.FollowExternalNofollow = config.FollowExternalNofollow
+	c.RespectMetaRobotsNoindex = config.RespectMetaRobotsNoindex
+	c.RespectNoindex = config.RespectNoindex
+
+	// Set IgnoreRobotsTxt based on RobotsTxtMode
+	// "ignore" = completely ignore robots.txt (IgnoreRobotsTxt = true)
+	// "respect" = respect robots.txt and block URLs (IgnoreRobotsTxt = false)
+	// "ignore-report" = check robots.txt but don't block (IgnoreRobotsTxt = false, special handling in checkRobots)
+	switch config.RobotsTxtMode {
+	case "ignore":
+		c.IgnoreRobotsTxt = true
+	case "respect", "ignore-report":
+		c.IgnoreRobotsTxt = false
+	default:
+		// Default to "respect" mode
+		c.IgnoreRobotsTxt = false
+	}
 
 	c.parseSettingsFromEnv()
 
@@ -1111,6 +1177,13 @@ func (c *Collector) checkRobots(u *url.URL) error {
 		eu += "?" + u.Query().Encode()
 	}
 	if !uaGroup.Test(eu) {
+		// URL is blocked by robots.txt
+		// In "ignore-report" mode, log the block but don't return error
+		if c.RobotsTxtMode == "ignore-report" {
+			log.Printf("[robots.txt] Would block %s (ignored due to ignore-report mode)", u.String())
+			return nil
+		}
+		// In "respect" mode, return error to block the URL
 		return ErrRobotsTxtBlocked
 	}
 	return nil

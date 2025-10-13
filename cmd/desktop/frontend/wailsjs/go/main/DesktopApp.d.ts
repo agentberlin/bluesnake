@@ -13,6 +13,8 @@ export function DetectJSRenderingNeed(arg1:string):Promise<boolean>;
 
 export function DownloadAndInstallUpdate():Promise<void>;
 
+export function GetAICrawlerData(arg1:string):Promise<types.AICrawlerResponse>;
+
 export function GetActiveCrawlData(arg1:number):Promise<types.CrawlResultDetailed>;
 
 export function GetActiveCrawls():Promise<Array<types.CrawlProgress>>;
@@ -41,6 +43,10 @@ export function GetServerStatus():Promise<types.ServerStatus>;
 
 export function GetVersion():Promise<string>;
 
+export function RunAICrawlerChecks(arg1:string):Promise<void>;
+
+export function SaveAICrawlerData(arg1:string,arg2:types.AICrawlerData,arg3:string,arg4:string,arg5:string):Promise<void>;
+
 export function SearchCrawlResults(arg1:number,arg2:string,arg3:string):Promise<Array<types.CrawlResult>>;
 
 export function SetDomainFramework(arg1:number,arg2:string,arg3:string):Promise<void>;
@@ -55,4 +61,4 @@ export function StopCrawl(arg1:number):Promise<void>;
 
 export function StopServerWithTunnel():Promise<void>;
 
-export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number,arg4:number,arg5:number,arg6:number,arg7:string,arg8:boolean,arg9:boolean,arg10:boolean,arg11:Array<string>,arg12:boolean,arg13:boolean):Promise<void>;
+export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number,arg4:number,arg5:number,arg6:number,arg7:string,arg8:boolean,arg9:boolean,arg10:boolean,arg11:Array<string>,arg12:boolean,arg13:boolean,arg14:string,arg15:boolean,arg16:boolean,arg17:boolean,arg18:boolean):Promise<void>;

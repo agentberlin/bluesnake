@@ -67,18 +67,23 @@ type CrawlResultDetailed struct {
 
 // ConfigResponse represents the configuration response for the frontend
 type ConfigResponse struct {
-	Domain                 string   `json:"domain"`
-	JSRenderingEnabled     bool     `json:"jsRenderingEnabled"`
-	InitialWaitMs          int      `json:"initialWaitMs"`
-	ScrollWaitMs           int      `json:"scrollWaitMs"`
-	FinalWaitMs            int      `json:"finalWaitMs"`
-	Parallelism            int      `json:"parallelism"`
-	UserAgent              string   `json:"userAgent"`
-	IncludeSubdomains      bool     `json:"includeSubdomains"`
-	DiscoveryMechanisms    []string `json:"discoveryMechanisms"`
-	SitemapURLs            []string `json:"sitemapURLs"`
-	CheckExternalResources bool     `json:"checkExternalResources"`
-	SinglePageMode         bool     `json:"singlePageMode"`
+	Domain                   string   `json:"domain"`
+	JSRenderingEnabled       bool     `json:"jsRenderingEnabled"`
+	InitialWaitMs            int      `json:"initialWaitMs"`
+	ScrollWaitMs             int      `json:"scrollWaitMs"`
+	FinalWaitMs              int      `json:"finalWaitMs"`
+	Parallelism              int      `json:"parallelism"`
+	UserAgent                string   `json:"userAgent"`
+	IncludeSubdomains        bool     `json:"includeSubdomains"`
+	DiscoveryMechanisms      []string `json:"discoveryMechanisms"`
+	SitemapURLs              []string `json:"sitemapURLs"`
+	CheckExternalResources   bool     `json:"checkExternalResources"`
+	SinglePageMode           bool     `json:"singlePageMode"`
+	RobotsTxtMode            string   `json:"robotsTxtMode"`            // "respect", "ignore", or "ignore-report"
+	FollowInternalNofollow   bool     `json:"followInternalNofollow"`   // Follow internal links with rel="nofollow"
+	FollowExternalNofollow   bool     `json:"followExternalNofollow"`   // Follow external links with rel="nofollow"
+	RespectMetaRobotsNoindex bool     `json:"respectMetaRobotsNoindex"` // Respect <meta name="robots" content="noindex">
+	RespectNoindex           bool     `json:"respectNoindex"`           // Respect X-Robots-Tag: noindex headers
 }
 
 // VersionRule represents a version-specific rule (warning or block)
@@ -141,4 +146,34 @@ type FrameworkInfo struct {
 	Name        string `json:"name"`
 	Category    string `json:"category"`
 	Description string `json:"description"`
+}
+
+// AICrawlerData represents AI crawler check results
+type AICrawlerData struct {
+	ContentVisibility *ContentVisibilityResult `json:"contentVisibility,omitempty"`
+	RobotsTxt         map[string]BotAccess     `json:"robotsTxt,omitempty"`
+	HTTPCheck         map[string]BotAccess     `json:"httpCheck,omitempty"`
+	CheckedAt         int64                    `json:"checkedAt"` // Unix timestamp
+}
+
+// ContentVisibilityResult represents SSR check results
+type ContentVisibilityResult struct {
+	Score      float64 `json:"score"`
+	StatusCode int     `json:"statusCode"`
+	IsError    bool    `json:"isError"`
+}
+
+// BotAccess represents bot access information
+type BotAccess struct {
+	Allowed bool   `json:"allowed"`
+	Domain  string `json:"domain"`
+	Message string `json:"message,omitempty"`
+}
+
+// AICrawlerResponse represents the complete AI crawler response for frontend
+type AICrawlerResponse struct {
+	Data           *AICrawlerData `json:"data"`
+	SSRScreenshot  string         `json:"ssrScreenshot,omitempty"`  // Base64 or path
+	JSScreenshot   string         `json:"jsScreenshot,omitempty"`   // Base64 or path
+	NoJSScreenshot string         `json:"noJSScreenshot,omitempty"` // Base64 or path
 }

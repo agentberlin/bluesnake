@@ -1,0 +1,166 @@
+{
+  "bots": [
+    {
+      "name": "GPTBot",
+      "version": "1.1",
+      "info_url": "https://openai.com/gptbot",
+      "user_agent_prefix": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible;",
+      "type": ["training"],
+      "brand": "OpenAI",
+      "domain": "openai.com"
+    },
+    {
+      "name": "OAI-SearchBot",
+      "version": "1.0",
+      "info_url": "https://openai.com/searchbot",
+      "user_agent_prefix": "",
+      "type": ["searchindex"],
+      "brand": "OpenAI",
+      "domain": "openai.com"
+    },
+    {
+      "name": "ChatGPT-User",
+      "version": "1.0",
+      "info_url": "https://openai.com/bot",
+      "user_agent_prefix": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible;",
+      "type": ["user"],
+      "brand": "OpenAI",
+      "domain": "openai.com"
+    },
+    {
+      "name": "ClaudeBot",
+      "version": "1.0",
+      "info_url": "https://www.anthropic.com/bot",
+      "user_agent_prefix": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible;",
+      "type": ["training"],
+      "brand": "Anthropic",
+      "domain": "anthropic.com"
+    },
+    {
+      "name": "Claude-SearchBot",
+      "version": "1.0",
+      "info_url": "https://www.anthropic.com/bot",
+      "user_agent_prefix": "",
+      "type": ["searchindex"],
+      "brand": "Anthropic",
+      "domain": "anthropic.com"
+    },
+    {
+      "name": "Claude-User",
+      "version": "1.0",
+      "info_url": "https://www.anthropic.com/bot",
+      "user_agent_prefix": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible;",
+      "type": ["user"],
+      "brand": "Anthropic",
+      "domain": "anthropic.com"
+    },
+    {
+      "name": "PerplexityBot",
+      "version": "1.0",
+      "info_url": "https://www.perplexity.ai/bot",
+      "user_agent_prefix": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible;",
+      "type": ["training", "searchindex"],
+      "brand": "Perplexity",
+      "domain": "perplexity.ai"
+    },
+    {
+      "name": "Perplexity-User",
+      "version": "1.0",
+      "info_url": "https://www.perplexity.ai/bot",
+      "user_agent_prefix": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible;",
+      "type": ["user"],
+      "brand": "Perplexity",
+      "domain": "perplexity.ai"
+    },
+    {
+      "name": "Applebot",
+      "version": "0.1",
+      "info_url": "https://support.apple.com/en-us/119829",
+      "user_agent_prefix": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible;",
+      "type": ["searchindex"],
+      "brand": "Apple",
+      "domain": "apple.com"
+    },
+    {
+      "name": "Applebot-Extended",
+      "version": "0.1",
+      "info_url": "https://support.apple.com/en-us/119829",
+      "user_agent_prefix": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible;",
+      "type": ["training"],
+      "brand": "Apple",
+      "domain": "apple.com"
+    },
+    {
+      "name": "FacebookExternalHit",
+      "version": "1.0",
+      "info_url": "https://developers.facebook.com/docs/sharing/webmasters/crawler",
+      "user_agent_prefix": "",
+      "type": ["crawler"],
+      "brand": "Meta",
+      "domain": "facebook.com"
+    },
+    {
+      "name": "Meta-ExternalAgent",
+      "version": "1.0",
+      "info_url": "https://developers.facebook.com/docs/sharing/bot",
+      "user_agent_prefix": "",
+      "type": ["crawler"],
+      "brand": "Meta",
+      "domain": "facebook.com"
+    },
+    {
+      "name": "Meta-ExternalFetcher",
+      "version": "1.0",
+      "info_url": "https://developers.facebook.com/docs/sharing/bot",
+      "user_agent_prefix": "",
+      "type": ["crawler"],
+      "brand": "Meta",
+      "domain": "facebook.com"
+    },
+    {
+      "name": "CCBot",
+      "version": "2.0",
+      "info_url": "https://commoncrawl.org/faq",
+      "user_agent_prefix": "Mozilla/5.0",
+      "type": ["training"],
+      "brand": "Common Crawl",
+      "domain": "commoncrawl.org"
+    },
+    {
+      "name": "cohere-ai",
+      "version": "1.0",
+      "info_url": "https://cohere.com/bot",
+      "user_agent_prefix": "",
+      "type": ["training"],
+      "brand": "Cohere",
+      "domain": "cohere.ai"
+    },
+    {
+      "name": "Cohere-User",
+      "version": "1.0",
+      "info_url": "https://cohere.com/bot",
+      "user_agent_prefix": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible;",
+      "type": ["user"],
+      "brand": "Cohere",
+      "domain": "cohere.ai"
+    },
+    {
+      "name": "Amazonbot",
+      "version": "1.0",
+      "info_url": "https://developer.amazon.com/amazonbot",
+      "user_agent_prefix": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible;",
+      "type": ["searchindex"],
+      "brand": "Amazon",
+      "domain": "amazon.com"
+    },
+    {
+      "name": "MistralAI-User",
+      "version": "1.0",
+      "info_url": "https://docs.mistral.ai/bot",
+      "user_agent_prefix": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible;",
+      "type": ["user"],
+      "brand": "Mistral AI",
+      "domain": "mistral.ai"
+    }
+  ]
+}

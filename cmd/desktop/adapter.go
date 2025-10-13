@@ -113,8 +113,13 @@ func (d *DesktopApp) UpdateConfigForDomain(
 	sitemapURLs []string,
 	checkExternalResources bool,
 	singlePageMode bool,
+	robotsTxtMode string,
+	followInternalNofollow bool,
+	followExternalNofollow bool,
+	respectMetaRobotsNoindex bool,
+	respectNoindex bool,
 ) error {
-	return d.app.UpdateConfigForDomain(url, jsRendering, initialWaitMs, scrollWaitMs, finalWaitMs, parallelism, userAgent, includeSubdomains, spiderEnabled, sitemapEnabled, sitemapURLs, checkExternalResources, singlePageMode)
+	return d.app.UpdateConfigForDomain(url, jsRendering, initialWaitMs, scrollWaitMs, finalWaitMs, parallelism, userAgent, includeSubdomains, spiderEnabled, sitemapEnabled, sitemapURLs, checkExternalResources, singlePageMode, robotsTxtMode, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex)
 }
 
 // GetPageLinksForURL wraps app.GetPageLinksForURL
@@ -200,4 +205,19 @@ func (d *DesktopApp) GetAllFrameworks() []types.FrameworkInfo {
 // SearchCrawlResults wraps app.SearchCrawlResults
 func (d *DesktopApp) SearchCrawlResults(crawlID uint, query string, contentTypeFilter string) ([]types.CrawlResult, error) {
 	return d.app.SearchCrawlResults(crawlID, query, contentTypeFilter)
+}
+
+// GetAICrawlerData wraps app.GetAICrawlerData
+func (d *DesktopApp) GetAICrawlerData(projectURL string) (*types.AICrawlerResponse, error) {
+	return d.app.GetAICrawlerData(projectURL)
+}
+
+// SaveAICrawlerData wraps app.SaveAICrawlerData
+func (d *DesktopApp) SaveAICrawlerData(projectURL string, data *types.AICrawlerData, ssrScreenshot, jsScreenshot, noJSScreenshot string) error {
+	return d.app.SaveAICrawlerData(projectURL, data, ssrScreenshot, jsScreenshot, noJSScreenshot)
+}
+
+// RunAICrawlerChecks wraps app.RunAICrawlerChecks
+func (d *DesktopApp) RunAICrawlerChecks(projectURL string) error {
+	return d.app.RunAICrawlerChecks(projectURL)
 }
