@@ -74,6 +74,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/stop-crawl/", s.handleStopCrawl)
 	s.mux.HandleFunc("/api/v1/active-crawls", s.handleActiveCrawls)
 	s.mux.HandleFunc("/api/v1/config", s.handleConfig)
+	s.mux.HandleFunc("/api/v1/search/", s.handleSearch)
 }
 
 // handleHealth returns server health status
@@ -376,4 +377,37 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// handleSearch handles GET /api/v1/search/{crawlID}?q={query}&type={contentType}
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract crawl ID from path
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/search/")
+	crawlID, err := strconv.ParseUint(path, 10, 32)
+	if err != nil {
+		http.Error(w, "Invalid crawl ID", http.StatusBadRequest)
+		return
+	}
+
+	// Get query parameters
+	query := r.URL.Query().Get("q")
+	contentTypeFilter := r.URL.Query().Get("type")
+	if contentTypeFilter == "" {
+		contentTypeFilter = "all"
+	}
+
+	// Search results
+	results, err := s.app.SearchCrawlResults(uint(crawlID), query, contentTypeFilter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
 }

@@ -78,6 +78,10 @@ export function GetVersion() {
   return window['go']['main']['DesktopApp']['GetVersion']();
 }
 
+export function SearchCrawlResults(arg1, arg2, arg3) {
+  return window['go']['main']['DesktopApp']['SearchCrawlResults'](arg1, arg2, arg3);
+}
+
 export function SetDomainFramework(arg1, arg2, arg3) {
   return window['go']['main']['DesktopApp']['SetDomainFramework'](arg1, arg2, arg3);
 }

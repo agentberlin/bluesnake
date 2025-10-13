@@ -196,3 +196,8 @@ func (d *DesktopApp) SetDomainFramework(projectID uint, domain string, framework
 func (d *DesktopApp) GetAllFrameworks() []types.FrameworkInfo {
 	return d.app.GetAllFrameworks()
 }
+
+// SearchCrawlResults wraps app.SearchCrawlResults
+func (d *DesktopApp) SearchCrawlResults(crawlID uint, query string, contentTypeFilter string) ([]types.CrawlResult, error) {
+	return d.app.SearchCrawlResults(crawlID, query, contentTypeFilter)
+}

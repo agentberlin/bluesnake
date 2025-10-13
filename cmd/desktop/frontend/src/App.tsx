@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL, UpdateConfigForDomain, GetConfigForDomain, DetectJSRenderingNeed } from "../wailsjs/go/main/DesktopApp";
+import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL, UpdateConfigForDomain, GetConfigForDomain, DetectJSRenderingNeed, SearchCrawlResults } from "../wailsjs/go/main/DesktopApp";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
@@ -516,33 +516,27 @@ function App() {
     return category.charAt(0).toUpperCase() + category.slice(1);
   };
 
-  // Filter and search function - filters results based on URL and content type
-  const performSearch = (query: string, typeFilter: string, data: CrawlResult[]): CrawlResult[] => {
-    let filtered = data;
-
-    // Filter by content type first
-    if (typeFilter !== 'all') {
-      filtered = filtered.filter(result => categorizeContentType(result.contentType) === typeFilter);
-    }
-
-    // Then apply search query if present
-    if (query.trim()) {
-      const lowerQuery = query.toLowerCase();
-      filtered = filtered.filter(result =>
-        result.url.toLowerCase().includes(lowerQuery) ||
-        result.title.toLowerCase().includes(lowerQuery) ||
-        result.status.toString().includes(lowerQuery) ||
-        result.indexable.toLowerCase().includes(lowerQuery)
-      );
-    }
-
-    return filtered;
-  };
-
-  // Update filtered results when debounced search query, content type filter, or results change
+  // Update filtered results when debounced search query, content type filter, or currentCrawlId change
+  // Note: This uses debouncedSearchQuery (not searchQuery) to reduce database load
+  // The debounce happens 300ms after the user stops typing (see useEffect above)
   useEffect(() => {
-    setFilteredResults(performSearch(debouncedSearchQuery, contentTypeFilter, results));
-  }, [debouncedSearchQuery, contentTypeFilter, results]);
+    // Only perform search if we have a crawl ID
+    if (!currentCrawlId) {
+      setFilteredResults([]);
+      return;
+    }
+
+    // Call backend search with debounced query and content type filter
+    SearchCrawlResults(currentCrawlId, debouncedSearchQuery, contentTypeFilter)
+      .then((searchResults: CrawlResult[]) => {
+        setFilteredResults(searchResults);
+      })
+      .catch((error: any) => {
+        console.error('Failed to search crawl results:', error);
+        // On error, fall back to showing all results
+        setFilteredResults(results);
+      });
+  }, [debouncedSearchQuery, contentTypeFilter, currentCrawlId, results.length]);
 
   const loadCurrentProjectFromUrl = async (currentUrl: string) => {
     try {
