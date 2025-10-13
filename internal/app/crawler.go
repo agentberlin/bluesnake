@@ -305,10 +305,17 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		return
 	}
 
+	// Determine MaxDepth based on SinglePageMode
+	maxDepth := 0 // 0 means unlimited depth (default)
+	if config.SinglePageMode {
+		maxDepth = 1 // Depth 1 = only crawl the starting URL, don't follow links
+	}
+
 	// Build crawler configuration based on database config
 	crawlerConfig := &bluesnake.CollectorConfig{
 		Context:             crawlCtx, // Pass context for proper cancellation support
 		UserAgent:           config.UserAgent,
+		MaxDepth:            maxDepth, // Set depth based on SinglePageMode
 		URLFilters:          []*regexp.Regexp{domainFilter}, // Use URLFilters instead of AllowedDomains
 		Async:               true,
 		EnableRendering:     config.JSRenderingEnabled,

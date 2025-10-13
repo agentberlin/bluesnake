@@ -131,6 +131,89 @@
   cursor: not-allowed;
 }
 
+/* Split Button */
+.split-button-container {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
+.split-button-container .go-button {
+  border-radius: 2px 0 0 2px;
+  padding: 16px 24px;
+}
+
+.go-button-dropdown {
+  padding: 16px 12px;
+  background: #333;
+  color: #fff;
+  border: none;
+  border-left: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 0 2px 2px 0;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.go-button-dropdown:hover:not(:disabled) {
+  background: #000;
+}
+
+.go-button-dropdown:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.crawl-type-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 2px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  z-index: 1000;
+  min-width: 320px;
+  animation: dropdownSlideIn 0.15s ease;
+}
+
+.crawl-type-option {
+  padding: 16px 20px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  border-bottom: 1px solid #f5f5f5;
+}
+
+.crawl-type-option:last-child {
+  border-bottom: none;
+}
+
+.crawl-type-option:hover {
+  background-color: #f8f9fa;
+}
+
+.crawl-type-option-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.crawl-type-option-title {
+  font-size: 14px;
+  font-weight: 400;
+  color: #333;
+  letter-spacing: -0.2px;
+}
+
+.crawl-type-option-desc {
+  font-size: 12px;
+  font-weight: 300;
+  color: #999;
+  line-height: 1.4;
+}
+
 /* Projects Section */
 .projects-section {
   margin-top: 64px;
@@ -546,6 +629,17 @@
   border-color: #d0d0d0;
 }
 
+/* Header Split Button */
+.header-split-button-container {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
+.header-split-button-container .new-crawl-button {
+  border-radius: 2px 0 0 2px;
+}
+
 .new-crawl-button {
   padding: 8px 16px;
   font-size: 13px;
@@ -558,13 +652,40 @@
   transition: all 0.2s ease;
 }
 
-.new-crawl-button:hover {
+.new-crawl-button:hover:not(:disabled) {
   background: #333;
   color: #fff;
   border-color: #333;
 }
 
 .new-crawl-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.new-crawl-button-dropdown {
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 300;
+  background: transparent;
+  color: #333;
+  border: 1px solid #e0e0e0;
+  border-left: none;
+  border-radius: 0 2px 2px 0;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.new-crawl-button-dropdown:hover:not(:disabled) {
+  background: #333;
+  color: #fff;
+  border-color: #333;
+}
+
+.new-crawl-button-dropdown:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }

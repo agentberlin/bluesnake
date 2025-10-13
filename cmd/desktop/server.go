@@ -332,6 +332,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			SitemapEnabled         bool     `json:"sitemapEnabled"`
 			SitemapURLs            []string `json:"sitemapURLs"`
 			CheckExternalResources *bool    `json:"checkExternalResources,omitempty"` // Pointer to distinguish between false and not-provided
+			SinglePageMode         bool     `json:"singlePageMode"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -355,6 +356,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			req.SitemapEnabled,
 			req.SitemapURLs,
 			checkExternal,
+			req.SinglePageMode,
 		); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

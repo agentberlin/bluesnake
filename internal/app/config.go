@@ -49,6 +49,7 @@ func (a *App) GetConfigForDomain(urlStr string) (*types.ConfigResponse, error) {
 		DiscoveryMechanisms:    config.GetDiscoveryMechanismsArray(),
 		SitemapURLs:            config.GetSitemapURLsArray(),
 		CheckExternalResources: config.CheckExternalResources,
+		SinglePageMode:         config.SinglePageMode,
 	}, nil
 }
 
@@ -63,6 +64,7 @@ func (a *App) UpdateConfigForDomain(
 	sitemapEnabled bool,
 	sitemapURLs []string,
 	checkExternalResources bool,
+	singlePageMode bool,
 ) error {
 	// Normalize the URL to extract domain
 	normalizedURL, domain, err := normalizeURL(urlStr)
@@ -90,5 +92,5 @@ func (a *App) UpdateConfigForDomain(
 		mechanisms = []string{"spider"}
 	}
 
-	return a.store.UpdateConfig(project.ID, jsRendering, parallelism, userAgent, includeSubdomains, mechanisms, sitemapURLs, checkExternalResources)
+	return a.store.UpdateConfig(project.ID, jsRendering, parallelism, userAgent, includeSubdomains, mechanisms, sitemapURLs, checkExternalResources, singlePageMode)
 }

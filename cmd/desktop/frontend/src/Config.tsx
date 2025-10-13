@@ -29,6 +29,7 @@ interface ConfigData {
   includeSubdomains: boolean;
   discoveryMechanisms: string[];  // Not exposed directly, derived from checkboxes
   checkExternalResources: boolean;
+  singlePageMode: boolean;
 }
 
 function Config({ url, onClose }: ConfigProps) {
@@ -42,6 +43,7 @@ function Config({ url, onClose }: ConfigProps) {
   const [includeSubdomains, setIncludeSubdomains] = useState(true); // Default to true as per requirement
   const [sitemapEnabled, setSitemapEnabled] = useState(false);
   const [checkExternalResources, setCheckExternalResources] = useState(true); // Default to true
+  const [singlePageMode, setSinglePageMode] = useState(false); // Default to false
 
   useEffect(() => {
     if (url) {
@@ -64,6 +66,7 @@ function Config({ url, onClose }: ConfigProps) {
       const mechanisms = config.discoveryMechanisms || ["spider"];
       setSitemapEnabled(mechanisms.includes("sitemap"));
       setCheckExternalResources(config.checkExternalResources !== undefined ? config.checkExternalResources : true);
+      setSinglePageMode(config.singlePageMode !== undefined ? config.singlePageMode : false);
     } catch (err) {
       // Project doesn't exist yet - use defaults and extract domain from URL
       console.log('Project not found, using default configuration');
@@ -84,6 +87,7 @@ function Config({ url, onClose }: ConfigProps) {
       setIncludeSubdomains(true); // Default to including subdomains
       setSitemapEnabled(false);
       setCheckExternalResources(true); // Default to checking external resources
+      setSinglePageMode(false); // Default to full website crawl
     } finally {
       setLoading(false);
     }
@@ -103,7 +107,8 @@ function Config({ url, onClose }: ConfigProps) {
         true, // Spider is always enabled
         sitemapEnabled,
         [], // No custom sitemap URLs in this version
-        checkExternalResources
+        checkExternalResources,
+        singlePageMode
       );
       onClose();
     } catch (err) {
@@ -229,35 +234,72 @@ function Config({ url, onClose }: ConfigProps) {
               </div>
 
               <div className="config-field">
-                <label className="config-label-text">Discovery Mechanisms</label>
-
                 <label className="config-label">
                   <input
                     type="checkbox"
-                    checked={true}
-                    disabled={true}
+                    checked={singlePageMode}
+                    onChange={(e) => setSinglePageMode(e.target.checked)}
                     className="config-checkbox"
                   />
                   <div>
-                    <span className="checkbox-label">Spider</span>
-                    <p className="config-hint">Follow links discovered in HTML pages (always enabled)</p>
-                  </div>
-                </label>
-
-                <label className="config-label">
-                  <input
-                    type="checkbox"
-                    checked={sitemapEnabled}
-                    onChange={(e) => setSitemapEnabled(e.target.checked)}
-                    className="config-checkbox"
-                  />
-                  <div>
-                    <span className="checkbox-label">Sitemap</span>
+                    <span className="checkbox-label">Single Page Mode</span>
                     <p className="config-hint">
-                      Discover URLs from sitemap.xml at default location (/sitemap.xml). When enabled, Spider is automatically included for comprehensive crawling.
+                      When enabled, only the starting URL will be crawled without following any links or sitemaps. This overrides all discovery mechanism settings.
                     </p>
                   </div>
                 </label>
+              </div>
+
+              {singlePageMode && (
+                <div className="config-field" style={{ marginTop: '-8px', marginBottom: '16px' }}>
+                  <div style={{ padding: '12px', backgroundColor: 'rgba(255, 196, 0, 0.1)', border: '1px solid rgba(255, 196, 0, 0.3)', borderRadius: '4px' }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgb(255, 196, 0)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '2px' }}>
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                        <line x1="12" y1="9" x2="12" y2="13"></line>
+                        <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                      </svg>
+                      <p style={{ margin: 0, fontSize: '13px', lineHeight: '1.5', color: 'rgb(255, 196, 0)' }}>
+                        Note: Single Page Mode is active. Discovery mechanisms (Spider/Sitemap) will be ignored.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="config-field">
+                <label className="config-label-text">Discovery Mechanisms</label>
+
+                <div style={{ opacity: singlePageMode ? 0.4 : 1, pointerEvents: singlePageMode ? 'none' : 'auto' }}>
+                  <label className="config-label">
+                    <input
+                      type="checkbox"
+                      checked={true}
+                      disabled={true}
+                      className="config-checkbox"
+                    />
+                    <div>
+                      <span className="checkbox-label">Spider</span>
+                      <p className="config-hint">Follow links discovered in HTML pages (always enabled{singlePageMode ? ', ignored in Single Page Mode' : ''})</p>
+                    </div>
+                  </label>
+
+                  <label className="config-label">
+                    <input
+                      type="checkbox"
+                      checked={sitemapEnabled}
+                      onChange={(e) => setSitemapEnabled(e.target.checked)}
+                      className="config-checkbox"
+                      disabled={singlePageMode}
+                    />
+                    <div>
+                      <span className="checkbox-label">Sitemap</span>
+                      <p className="config-hint">
+                        Discover URLs from sitemap.xml at default location (/sitemap.xml). When enabled, Spider is automatically included for comprehensive crawling{singlePageMode ? ' (ignored in Single Page Mode)' : ''}.
+                      </p>
+                    </div>
+                  </label>
+                </div>
               </div>
 
               <div className="config-actions">

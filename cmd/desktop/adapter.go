@@ -111,8 +111,9 @@ func (d *DesktopApp) UpdateConfigForDomain(
 	sitemapEnabled bool,
 	sitemapURLs []string,
 	checkExternalResources bool,
+	singlePageMode bool,
 ) error {
-	return d.app.UpdateConfigForDomain(url, jsRendering, parallelism, userAgent, includeSubdomains, spiderEnabled, sitemapEnabled, sitemapURLs, checkExternalResources)
+	return d.app.UpdateConfigForDomain(url, jsRendering, parallelism, userAgent, includeSubdomains, spiderEnabled, sitemapEnabled, sitemapURLs, checkExternalResources, singlePageMode)
 }
 
 // GetPageLinksForURL wraps app.GetPageLinksForURL
