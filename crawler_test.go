@@ -1086,3 +1086,100 @@ func TestPageResult_MetaDescription(t *testing.T) {
 
 	t.Logf("Meta description correctly extracted: %q", pageResult.MetaDescription)
 }
+
+// TestResourceHintExtraction tests extraction of <link rel="preload">, <link rel="modulepreload">, and <link rel="prefetch">
+func TestResourceHintExtraction(t *testing.T) {
+	mock := NewMockTransport()
+
+	// Create a mock HTML page with resource hints
+	mockHTML := `<!DOCTYPE html>
+<html>
+<head>
+	<title>Test Page</title>
+	<!-- Preload hints -->
+	<link rel="preload" as="script" href="/js/app.js">
+	<link rel="preload" as="style" href="/css/main.css">
+	<link rel="preload" as="font" href="/fonts/Inter.woff2">
+	<link rel="preload" as="image" href="/images/hero.jpg">
+
+	<!-- Module preload -->
+	<link rel="modulepreload" href="/js/module.js">
+
+	<!-- Prefetch -->
+	<link rel="prefetch" as="script" href="/js/future.js">
+	<link rel="prefetch" as="document" href="/next-page.html">
+
+	<!-- Regular script (for comparison) -->
+	<script src="/js/regular.js"></script>
+	<link rel="stylesheet" href="/css/regular.css">
+</head>
+<body>
+	<h1>Test</h1>
+</body>
+</html>`
+
+	mock.RegisterHTML("https://example.com/", mockHTML)
+
+	// Track discovered links
+	var mu sync.Mutex
+	var discoveredLinks []Link
+
+	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
+	crawler.Collector.WithTransport(mock)
+
+	crawler.SetOnPageCrawled(func(result *PageResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		if result.Links != nil {
+			discoveredLinks = append(discoveredLinks, result.Links.Internal...)
+			discoveredLinks = append(discoveredLinks, result.Links.External...)
+		}
+	})
+
+	// Start crawl
+	if err := crawler.Start("https://example.com/"); err != nil {
+		t.Fatalf("Failed to start crawl: %v", err)
+	}
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Verify we discovered the expected links
+	expectedLinks := map[string]string{
+		"https://example.com/js/app.js":          "script",
+		"https://example.com/css/main.css":       "stylesheet",
+		"https://example.com/fonts/Inter.woff2":  "font",
+		"https://example.com/images/hero.jpg":    "image",
+		"https://example.com/js/module.js":       "script",
+		"https://example.com/js/future.js":       "script",
+		"https://example.com/next-page.html":     "anchor",
+		"https://example.com/js/regular.js":      "script",
+		"https://example.com/css/regular.css":    "stylesheet",
+	}
+
+	foundLinks := make(map[string]string)
+	for _, link := range discoveredLinks {
+		foundLinks[link.URL] = link.Type
+	}
+
+	// Check each expected link
+	missingCount := 0
+	wrongTypeCount := 0
+	for expectedURL, expectedType := range expectedLinks {
+		foundType, found := foundLinks[expectedURL]
+		if !found {
+			t.Errorf("Expected to find link %s but it was not discovered", expectedURL)
+			missingCount++
+		} else if foundType != expectedType {
+			t.Errorf("Link %s has type %s, expected %s", expectedURL, foundType, expectedType)
+			wrongTypeCount++
+		} else {
+			t.Logf("✓ Found %s with correct type: %s", expectedURL, expectedType)
+		}
+	}
+
+	if missingCount == 0 && wrongTypeCount == 0 {
+		t.Logf("Successfully extracted all %d resource hints with correct types", len(expectedLinks))
+	}
+}
