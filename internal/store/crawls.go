@@ -47,7 +47,7 @@ func (s *Store) UpdateCrawlStats(crawlID uint, crawlDuration int64, pagesCrawled
 // GetCrawlByID gets a crawl by ID
 func (s *Store) GetCrawlByID(id uint) (*Crawl, error) {
 	var crawl Crawl
-	result := s.db.Preload("CrawledUrls").First(&crawl, id)
+	result := s.db.Preload("DiscoveredUrls").First(&crawl, id)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get crawl: %v", result.Error)
 	}
@@ -77,9 +77,9 @@ func (s *Store) GetLatestCrawl(projectID uint) (*Crawl, error) {
 	return &crawl, nil
 }
 
-// GetCrawlResults gets all crawled URLs for a specific crawl
-func (s *Store) GetCrawlResults(crawlID uint) ([]CrawledUrl, error) {
-	var urls []CrawledUrl
+// GetCrawlResults gets all discovered URLs for a specific crawl (both visited and unvisited)
+func (s *Store) GetCrawlResults(crawlID uint) ([]DiscoveredUrl, error) {
+	var urls []DiscoveredUrl
 	result := s.db.Where("crawl_id = ?", crawlID).Order("id ASC").Find(&urls)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get crawl results: %v", result.Error)
@@ -87,11 +87,12 @@ func (s *Store) GetCrawlResults(crawlID uint) ([]CrawledUrl, error) {
 	return urls, nil
 }
 
-// SaveCrawledUrl saves a crawled URL result
-func (s *Store) SaveCrawledUrl(crawlID uint, url string, status int, title string, metaDescription string, contentHash string, indexable string, contentType string, errorMsg string) error {
-	crawledUrl := CrawledUrl{
+// SaveDiscoveredUrl saves a discovered URL (whether visited or not)
+func (s *Store) SaveDiscoveredUrl(crawlID uint, url string, visited bool, status int, title string, metaDescription string, contentHash string, indexable string, contentType string, errorMsg string) error {
+	discoveredUrl := DiscoveredUrl{
 		CrawlID:         crawlID,
 		URL:             url,
+		Visited:         visited,
 		Status:          status,
 		Title:           title,
 		MetaDescription: metaDescription,
@@ -101,7 +102,7 @@ func (s *Store) SaveCrawledUrl(crawlID uint, url string, status int, title strin
 		Error:           errorMsg,
 	}
 
-	return s.db.Create(&crawledUrl).Error
+	return s.db.Create(&discoveredUrl).Error
 }
 
 // DeleteCrawl deletes a crawl and all its crawled URLs (cascade)
@@ -109,9 +110,9 @@ func (s *Store) DeleteCrawl(crawlID uint) error {
 	return s.db.Delete(&Crawl{}, crawlID).Error
 }
 
-// SearchCrawlResults searches crawled URLs for a specific crawl with filtering
-func (s *Store) SearchCrawlResults(crawlID uint, query string, contentTypeFilter string) ([]CrawledUrl, error) {
-	var urls []CrawledUrl
+// SearchCrawlResults searches discovered URLs for a specific crawl with filtering
+func (s *Store) SearchCrawlResults(crawlID uint, query string, contentTypeFilter string) ([]DiscoveredUrl, error) {
+	var urls []DiscoveredUrl
 
 	// Start with base query
 	db := s.db.Where("crawl_id = ?", crawlID)
@@ -120,20 +121,28 @@ func (s *Store) SearchCrawlResults(crawlID uint, query string, contentTypeFilter
 	if contentTypeFilter != "" && contentTypeFilter != "all" {
 		switch contentTypeFilter {
 		case "html":
-			db = db.Where("(content_type LIKE ? OR content_type LIKE ?)", "%text/html%", "%application/xhtml%")
+			// HTML: only visited URLs with HTML content type
+			db = db.Where("visited = ? AND (content_type LIKE ? OR content_type LIKE ?)", true, "%text/html%", "%application/xhtml%")
 		case "javascript":
-			db = db.Where("(content_type LIKE ? OR content_type LIKE ? OR content_type LIKE ?)",
+			// JavaScript: only visited URLs with JS content type
+			db = db.Where("visited = ? AND (content_type LIKE ? OR content_type LIKE ? OR content_type LIKE ?)", true,
 				"%javascript%", "%application/x-javascript%", "%text/javascript%")
 		case "css":
-			db = db.Where("content_type LIKE ?", "%text/css%")
+			// CSS: only visited URLs with CSS content type
+			db = db.Where("visited = ? AND content_type LIKE ?", true, "%text/css%")
 		case "image":
-			db = db.Where("content_type LIKE ?", "%image/%")
+			// Images: only visited URLs with image content type
+			db = db.Where("visited = ? AND content_type LIKE ?", true, "%image/%")
 		case "font":
-			db = db.Where("(content_type LIKE ? OR content_type LIKE ? OR content_type LIKE ? OR content_type LIKE ? OR content_type LIKE ? OR content_type LIKE ?)",
+			// Fonts: only visited URLs with font content type
+			db = db.Where("visited = ? AND (content_type LIKE ? OR content_type LIKE ? OR content_type LIKE ? OR content_type LIKE ? OR content_type LIKE ? OR content_type LIKE ?)", true,
 				"%font/%", "%application/font%", "%woff%", "%ttf%", "%eot%", "%otf%")
+		case "unvisited":
+			// Unvisited: only URLs that were discovered but not visited
+			db = db.Where("visited = ?", false)
 		case "other":
-			// Other = not html, not js, not css, not image, not font
-			db = db.Where("content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ?",
+			// Other: visited URLs that are not html, js, css, image, or font
+			db = db.Where("visited = ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ?", true,
 				"%text/html%", "%application/xhtml%", "%javascript%", "%application/x-javascript%", "%text/javascript%", "%text/css%", "%image/%", "%font/%", "%application/font%", "%woff%", "%ttf%", "%eot%", "%otf%")
 		}
 	}

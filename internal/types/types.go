@@ -117,12 +117,14 @@ type UpdateInfo struct {
 // LinkInfo represents link information for the frontend
 type LinkInfo struct {
 	URL        string `json:"url"`
+	LinkType   string `json:"linkType"`           // Type: "anchor", "image", "script", "stylesheet", etc.
 	AnchorText string `json:"anchorText"`
 	Context    string `json:"context,omitempty"`
 	IsInternal bool   `json:"isInternal"`
 	Status     *int   `json:"status,omitempty"`
 	Position   string `json:"position,omitempty"` // Position in page: "content", "navigation", "header", "footer", "sidebar", "breadcrumbs", "pagination", "unknown"
 	DOMPath    string `json:"domPath,omitempty"`  // Simplified DOM path showing link's location in HTML structure
+	URLAction  string `json:"urlAction"`          // Action: "crawl" (normal), "record" (framework-specific), "skip" (ignored)
 }
 
 // PageLinksResponse represents the response for page links

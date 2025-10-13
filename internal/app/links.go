@@ -34,12 +34,14 @@ func (a *App) GetPageLinksForURL(crawlID uint, pageURL string) (*types.PageLinks
 		}
 		inlinkInfos = append(inlinkInfos, types.LinkInfo{
 			URL:        link.SourceURL, // For inlinks, show the source URL
+			LinkType:   link.LinkType,
 			AnchorText: link.LinkText,
 			Context:    link.LinkContext,
 			IsInternal: link.IsInternal,
 			Status:     status,
 			Position:   link.Position,
 			DOMPath:    link.DOMPath,
+			URLAction:  link.URLAction,
 		})
 	}
 
@@ -51,12 +53,14 @@ func (a *App) GetPageLinksForURL(crawlID uint, pageURL string) (*types.PageLinks
 		}
 		outlinkInfos = append(outlinkInfos, types.LinkInfo{
 			URL:        link.TargetURL, // For outlinks, show the target URL
+			LinkType:   link.LinkType,
 			AnchorText: link.LinkText,
 			Context:    link.LinkContext,
 			IsInternal: link.IsInternal,
 			Status:     status,
 			Position:   link.Position,
 			DOMPath:    link.DOMPath,
+			URLAction:  link.URLAction,
 		})
 	}
 

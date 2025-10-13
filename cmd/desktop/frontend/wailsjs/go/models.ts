@@ -292,12 +292,14 @@ export namespace types {
 	}
 	export class LinkInfo {
 	    url: string;
+	    linkType: string;
 	    anchorText: string;
 	    context?: string;
 	    isInternal: boolean;
 	    status?: number;
 	    position?: string;
 	    domPath?: string;
+	    urlAction: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new LinkInfo(source);
@@ -306,12 +308,14 @@ export namespace types {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.url = source["url"];
+	        this.linkType = source["linkType"];
 	        this.anchorText = source["anchorText"];
 	        this.context = source["context"];
 	        this.isInternal = source["isInternal"];
 	        this.status = source["status"];
 	        this.position = source["position"];
 	        this.domPath = source["domPath"];
+	        this.urlAction = source["urlAction"];
 	    }
 	}
 	export class PageLinksResponse {
