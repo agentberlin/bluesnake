@@ -638,6 +638,24 @@ class CrawlerComparison:
         print("FINAL SUMMARY")
         print(f"{'='*80}\n")
 
+        print(f"Data Sources:")
+        print(f"  BlueSnake Server: {self.server_url}")
+        print(f"    Crawl ID: {crawl_id}")
+        print(f"    Direct URL: {self.server_url}/api/v1/crawls/{crawl_id}")
+        print(f"    (Use this URL to query specific details about the crawl)")
+        print(f"\n  ScreamingFrog Output Directory: {self.sf_output_dir}")
+
+        # List files in SF output directory
+        if self.sf_output_dir.exists():
+            sf_files = list(self.sf_output_dir.iterdir())
+            print(f"    Files in directory ({len(sf_files)} total):")
+            for file in sorted(sf_files):
+                file_size = os.path.getsize(file)
+                print(f"      - {file.name} ({file_size:,} bytes)")
+        else:
+            print(f"    Directory not found!")
+        print()
+
         print(f"URL Coverage:")
         print(f"  ScreamingFrog found: {url_comparison['sf_total']} URLs")
         print(f"  BlueSnake found:     {url_comparison['bs_total']} URLs")
