@@ -104,6 +104,7 @@ func (d *DesktopApp) GetConfigForDomain(url string) (*types.ConfigResponse, erro
 func (d *DesktopApp) UpdateConfigForDomain(
 	url string,
 	jsRendering bool,
+	initialWaitMs, scrollWaitMs, finalWaitMs int,
 	parallelism int,
 	userAgent string,
 	includeSubdomains bool,
@@ -113,7 +114,7 @@ func (d *DesktopApp) UpdateConfigForDomain(
 	checkExternalResources bool,
 	singlePageMode bool,
 ) error {
-	return d.app.UpdateConfigForDomain(url, jsRendering, parallelism, userAgent, includeSubdomains, spiderEnabled, sitemapEnabled, sitemapURLs, checkExternalResources, singlePageMode)
+	return d.app.UpdateConfigForDomain(url, jsRendering, initialWaitMs, scrollWaitMs, finalWaitMs, parallelism, userAgent, includeSubdomains, spiderEnabled, sitemapEnabled, sitemapURLs, checkExternalResources, singlePageMode)
 }
 
 // GetPageLinksForURL wraps app.GetPageLinksForURL

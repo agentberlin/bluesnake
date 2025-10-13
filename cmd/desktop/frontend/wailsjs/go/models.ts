@@ -3,6 +3,9 @@ export namespace types {
 	export class ConfigResponse {
 	    domain: string;
 	    jsRenderingEnabled: boolean;
+	    initialWaitMs: number;
+	    scrollWaitMs: number;
+	    finalWaitMs: number;
 	    parallelism: number;
 	    userAgent: string;
 	    includeSubdomains: boolean;
@@ -19,6 +22,9 @@ export namespace types {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.domain = source["domain"];
 	        this.jsRenderingEnabled = source["jsRenderingEnabled"];
+	        this.initialWaitMs = source["initialWaitMs"];
+	        this.scrollWaitMs = source["scrollWaitMs"];
+	        this.finalWaitMs = source["finalWaitMs"];
 	        this.parallelism = source["parallelism"];
 	        this.userAgent = source["userAgent"];
 	        this.includeSubdomains = source["includeSubdomains"];

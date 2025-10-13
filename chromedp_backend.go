@@ -70,7 +70,7 @@ func (r *chromedpRenderer) Close() {
 // NOTE: This function has no internal rate limiting. Parallelism is controlled by
 // the LimitRule in http_backend.go. Setting very high parallelism (>10) may cause
 // high memory/CPU usage as each browser context consumes ~100-200MB RAM.
-func (r *chromedpRenderer) RenderPage(url string) (string, []string, error) {
+func (r *chromedpRenderer) RenderPage(url string, config *RenderingConfig) (string, []string, error) {
 	// Create a new browser context
 	ctx, cancel := chromedp.NewContext(r.allocCtx)
 	defer cancel()
@@ -82,6 +82,15 @@ func (r *chromedpRenderer) RenderPage(url string) (string, []string, error) {
 	var htmlContent string
 	discoveredURLs := make(map[string]bool) // Use map to deduplicate
 	var mu sync.Mutex
+
+	// Use default config if none provided
+	if config == nil {
+		config = &RenderingConfig{
+			InitialWaitMs: 1500,
+			ScrollWaitMs:  2000,
+			FinalWaitMs:   1000,
+		}
+	}
 
 	// Set up network event listener
 	chromedp.ListenTarget(ctx, func(ev interface{}) {
@@ -104,17 +113,18 @@ func (r *chromedpRenderer) RenderPage(url string) (string, []string, error) {
 		chromedp.Navigate(url),
 		// Wait for network to be idle (most dynamic content loaded)
 		chromedp.WaitReady("body", chromedp.ByQuery),
-		// Initial wait for JavaScript to execute
-		chromedp.Sleep(500*time.Millisecond),
+		// Initial wait for JavaScript to execute and React/Next.js to hydrate
+		// This allows client-side routing and link hydration to complete
+		chromedp.Sleep(time.Duration(config.InitialWaitMs)*time.Millisecond),
 		// Scroll to bottom to trigger lazy-loaded images
 		// This executes JavaScript to scroll the page smoothly to the bottom
 		chromedp.Evaluate(`window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'})`, nil),
 		// Wait for lazy-loaded content to trigger network requests
-		chromedp.Sleep(1*time.Second),
+		chromedp.Sleep(time.Duration(config.ScrollWaitMs)*time.Millisecond),
 		// Scroll back to top to ensure we capture all content
 		chromedp.Evaluate(`window.scrollTo({top: 0, behavior: 'smooth'})`, nil),
-		// Final wait for any remaining network requests
-		chromedp.Sleep(500*time.Millisecond),
+		// Final wait for any remaining network requests and DOM updates
+		chromedp.Sleep(time.Duration(config.FinalWaitMs)*time.Millisecond),
 		// Get the rendered HTML
 		chromedp.OuterHTML("html", &htmlContent, chromedp.ByQuery),
 	)

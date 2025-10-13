@@ -325,6 +325,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			URL                    string   `json:"url"`
 			JSRendering            bool     `json:"jsRendering"`
+			InitialWaitMs          int      `json:"initialWaitMs"`
+			ScrollWaitMs           int      `json:"scrollWaitMs"`
+			FinalWaitMs            int      `json:"finalWaitMs"`
 			Parallelism            int      `json:"parallelism"`
 			UserAgent              string   `json:"userAgent"`
 			IncludeSubdomains      bool     `json:"includeSubdomains"`
@@ -349,6 +352,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		if err := s.app.UpdateConfigForDomain(
 			req.URL,
 			req.JSRendering,
+			req.InitialWaitMs,
+			req.ScrollWaitMs,
+			req.FinalWaitMs,
 			req.Parallelism,
 			req.UserAgent,
 			req.IncludeSubdomains,

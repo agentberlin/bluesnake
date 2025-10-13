@@ -43,6 +43,9 @@ func (a *App) GetConfigForDomain(urlStr string) (*types.ConfigResponse, error) {
 	return &types.ConfigResponse{
 		Domain:                 config.Domain,
 		JSRenderingEnabled:     config.JSRenderingEnabled,
+		InitialWaitMs:          config.InitialWaitMs,
+		ScrollWaitMs:           config.ScrollWaitMs,
+		FinalWaitMs:            config.FinalWaitMs,
 		Parallelism:            config.Parallelism,
 		UserAgent:              config.UserAgent,
 		IncludeSubdomains:      config.IncludeSubdomains,
@@ -57,6 +60,7 @@ func (a *App) GetConfigForDomain(urlStr string) (*types.ConfigResponse, error) {
 func (a *App) UpdateConfigForDomain(
 	urlStr string,
 	jsRendering bool,
+	initialWaitMs, scrollWaitMs, finalWaitMs int,
 	parallelism int,
 	userAgent string,
 	includeSubdomains bool,
@@ -92,5 +96,5 @@ func (a *App) UpdateConfigForDomain(
 		mechanisms = []string{"spider"}
 	}
 
-	return a.store.UpdateConfig(project.ID, jsRendering, parallelism, userAgent, includeSubdomains, mechanisms, sitemapURLs, checkExternalResources, singlePageMode)
+	return a.store.UpdateConfig(project.ID, jsRendering, initialWaitMs, scrollWaitMs, finalWaitMs, parallelism, userAgent, includeSubdomains, mechanisms, sitemapURLs, checkExternalResources, singlePageMode)
 }
