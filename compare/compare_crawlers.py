@@ -127,6 +127,35 @@ class CrawlerComparison:
             print(f"Error running ScreamingFrog: {e}")
             return False
 
+    def check_prerequisites(self) -> Tuple[bool, List[str]]:
+        """
+        Check if all prerequisites are met before running comparison.
+        Returns: (success, list of error messages)
+        """
+        errors = []
+
+        # Check ScreamingFrog executable
+        if not os.path.exists(self.scream_executable):
+            errors.append(f"ScreamingFrog executable not found at: {self.scream_executable}")
+
+        # Check ScreamingFrog config file
+        if not os.path.exists(self.config_path):
+            errors.append(f"ScreamingFrog config file not found at: {self.config_path}")
+
+        # Check BlueSnake server
+        try:
+            response = requests.get(f"{self.server_url}/api/v1/health", timeout=5)
+            if response.status_code != 200:
+                errors.append(f"BlueSnake server health check failed with status {response.status_code}")
+        except requests.exceptions.ConnectionError:
+            errors.append(f"BlueSnake server is not running at {self.server_url}")
+        except requests.exceptions.Timeout:
+            errors.append(f"BlueSnake server at {self.server_url} timed out")
+        except Exception as e:
+            errors.append(f"Error connecting to BlueSnake server: {e}")
+
+        return len(errors) == 0, errors
+
     def check_server_running(self) -> bool:
         """Check if BlueSnake server is running"""
         try:
@@ -549,6 +578,19 @@ class CrawlerComparison:
         print("\n" + "=" * 80)
         print(f"CRAWLER COMPARISON: {self.domain}")
         print("=" * 80)
+
+        # Step 0: Check prerequisites
+        print(f"\n{'='*80}")
+        print("Checking Prerequisites")
+        print(f"{'='*80}\n")
+
+        success, errors = self.check_prerequisites()
+        if not success:
+            print("ERROR: Prerequisites check failed!\n")
+            for error in errors:
+                print(f"  ✗ {error}")
+            print("\nPlease fix the above issues and try again.")
+            return False
 
         # Step 1: Run ScreamingFrog
         if not self.run_screamingfrog():
