@@ -19,12 +19,14 @@ import './LinksPanel.css';
 
 interface Link {
   url: string;
+  linkType: string;  // "anchor", "image", "script", "stylesheet", etc.
   anchorText: string;
   context?: string;
   isInternal: boolean;
   status?: number;
   position?: string;
   domPath?: string;
+  urlAction: string;  // "crawl", "record", "skip"
 }
 
 interface LinksPanelProps {
@@ -37,6 +39,7 @@ interface LinksPanelProps {
 }
 
 type TabType = 'inlinks' | 'outlinks' | 'content';
+type OutlinkSubTab = 'all' | 'pages' | 'images' | 'scripts' | 'styles' | 'other';
 
 const DEFAULT_WIDTH = 480;
 const MIN_WIDTH = 400;
@@ -44,6 +47,7 @@ const MAX_WIDTH_VW = 90;
 
 function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks, crawlId }: LinksPanelProps) {
   const [activeTab, setActiveTab] = useState<TabType>('inlinks');
+  const [outlinkSubTab, setOutlinkSubTab] = useState<OutlinkSubTab>('all');
   const [showContentOnly, setShowContentOnly] = useState<boolean>(() => {
     // Load saved filter preference from localStorage, default to true (content only)
     const savedFilter = localStorage.getItem('linksPanelShowContentOnly');
@@ -144,9 +148,28 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks, crawlId }
 
   if (!isOpen) return null;
 
-  const allCurrentLinks = activeTab === 'inlinks' ? inlinks : outlinks;
-  // Filter links based on showContentOnly toggle
-  const currentLinks = showContentOnly
+  // Categorize outlinks by type (include all outlinks regardless of urlAction)
+  const outlinksByType = {
+    all: outlinks,
+    pages: outlinks.filter(link => link.linkType === 'anchor'),
+    images: outlinks.filter(link => link.linkType === 'image'),
+    scripts: outlinks.filter(link => link.linkType === 'script' || link.linkType === 'modulepreload'),
+    styles: outlinks.filter(link => link.linkType === 'stylesheet'),
+    other: outlinks.filter(link =>
+      !['anchor', 'image', 'script', 'modulepreload', 'stylesheet'].includes(link.linkType)
+    )
+  };
+
+  // Determine which links to show based on active tab
+  let allCurrentLinks: Link[];
+  if (activeTab === 'inlinks') {
+    allCurrentLinks = inlinks;
+  } else {
+    allCurrentLinks = outlinksByType[outlinkSubTab];
+  }
+
+  // Filter links based on showContentOnly toggle (only for inlinks and anchor outlinks)
+  const currentLinks = showContentOnly && (activeTab === 'inlinks' || outlinkSubTab === 'pages')
     ? allCurrentLinks.filter(link => link.position === 'content')
     : allCurrentLinks;
 
@@ -219,6 +242,48 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks, crawlId }
           </button>
         </div>
 
+        {/* Outlink Sub-tabs */}
+        {activeTab === 'outlinks' && (
+          <div className="links-panel-subtabs">
+            <button
+              className={`links-panel-subtab ${outlinkSubTab === 'all' ? 'active' : ''}`}
+              onClick={() => setOutlinkSubTab('all')}
+            >
+              All ({outlinksByType.all.length})
+            </button>
+            <button
+              className={`links-panel-subtab ${outlinkSubTab === 'pages' ? 'active' : ''}`}
+              onClick={() => setOutlinkSubTab('pages')}
+            >
+              Pages ({outlinksByType.pages.length})
+            </button>
+            <button
+              className={`links-panel-subtab ${outlinkSubTab === 'images' ? 'active' : ''}`}
+              onClick={() => setOutlinkSubTab('images')}
+            >
+              Images ({outlinksByType.images.length})
+            </button>
+            <button
+              className={`links-panel-subtab ${outlinkSubTab === 'scripts' ? 'active' : ''}`}
+              onClick={() => setOutlinkSubTab('scripts')}
+            >
+              Scripts ({outlinksByType.scripts.length})
+            </button>
+            <button
+              className={`links-panel-subtab ${outlinkSubTab === 'styles' ? 'active' : ''}`}
+              onClick={() => setOutlinkSubTab('styles')}
+            >
+              Styles ({outlinksByType.styles.length})
+            </button>
+            <button
+              className={`links-panel-subtab ${outlinkSubTab === 'other' ? 'active' : ''}`}
+              onClick={() => setOutlinkSubTab('other')}
+            >
+              Other ({outlinksByType.other.length})
+            </button>
+          </div>
+        )}
+
         {/* Content */}
         <div className="links-panel-content">
           {activeTab === 'content' ? (
@@ -264,7 +329,10 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks, crawlId }
             </div>
           ) : currentLinks.length === 0 ? (
             <div className="links-panel-empty">
-              <p>No {activeTab === 'inlinks' ? 'inlinks' : 'outlinks'} found</p>
+              <p>
+                {activeTab === 'inlinks' && 'No inlinks found'}
+                {activeTab === 'outlinks' && 'No outlinks found'}
+              </p>
             </div>
           ) : (
             <>
@@ -272,16 +340,17 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks, crawlId }
               <div className="links-legend">
                 <div className="legend-item">
                   <div className="legend-color legend-internal"></div>
-                  <span className="legend-label">Internal Link</span>
+                  <span className="legend-label">Internal</span>
                 </div>
                 <div className="legend-item">
                   <div className="legend-color legend-external"></div>
-                  <span className="legend-label">External Link</span>
+                  <span className="legend-label">External</span>
                 </div>
               </div>
               <div className="links-table">
               <div className="links-table-header">
                 <div className="links-header-cell url-column">URL</div>
+                <div className="links-header-cell type-column">Type</div>
                 <div className="links-header-cell anchor-column">Anchor Text</div>
                 <div className="links-header-cell position-column">Position</div>
                 <div className="links-header-cell status-column">Status</div>
@@ -296,6 +365,11 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks, crawlId }
                     >
                       {link.url}
                     </div>
+                    <div className="link-cell type-column">
+                      <span className="link-type-badge">
+                        {link.linkType || 'unknown'}
+                      </span>
+                    </div>
                     <div className="link-cell anchor-column" title={link.anchorText}>
                       {link.anchorText || '-'}
                     </div>
@@ -307,11 +381,15 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks, crawlId }
                       )}
                     </div>
                     <div className="link-cell status-column">
-                      {link.status && (
+                      {link.status ? (
                         <span className={`status-badge status-${Math.floor(link.status / 100)}`}>
                           {link.status}
                         </span>
-                      )}
+                      ) : link.urlAction === 'record' ? (
+                        <span className="status-badge status-not-crawled">
+                          Not crawled
+                        </span>
+                      ) : null}
                     </div>
                   </div>
                 ))}
@@ -326,7 +404,10 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks, crawlId }
           <div className="links-panel-footer">
             <div className="links-panel-stats">
               <span className="stat-item">
-                <span className="stat-label">Total {activeTab === 'inlinks' ? 'Inlinks' : 'Outlinks'}:</span>
+                <span className="stat-label">
+                  {activeTab === 'inlinks' && 'Total Inlinks:'}
+                  {activeTab === 'outlinks' && `${outlinkSubTab.charAt(0).toUpperCase() + outlinkSubTab.slice(1)}:`}
+                </span>
                 <span className="stat-value">{currentLinks.length}</span>
               </span>
             </div>

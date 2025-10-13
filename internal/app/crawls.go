@@ -40,7 +40,7 @@ func (a *App) GetCrawls(projectID uint) ([]types.CrawlInfo, error) {
 	return crawlInfos, nil
 }
 
-// GetCrawlWithResults returns a specific crawl with all its results
+// GetCrawlWithResults returns a specific crawl with all its results (both visited and unvisited URLs)
 func (a *App) GetCrawlWithResults(crawlID uint) (*types.CrawlResultDetailed, error) {
 	// Get crawl info
 	crawl, err := a.store.GetCrawlByID(crawlID)
@@ -48,7 +48,7 @@ func (a *App) GetCrawlWithResults(crawlID uint) (*types.CrawlResultDetailed, err
 		return nil, err
 	}
 
-	// Get crawled URLs
+	// Get discovered URLs (both visited and unvisited)
 	urls, err := a.store.GetCrawlResults(crawlID)
 	if err != nil {
 		return nil, err
@@ -57,10 +57,16 @@ func (a *App) GetCrawlWithResults(crawlID uint) (*types.CrawlResultDetailed, err
 	// Convert to CrawlResult for frontend
 	results := make([]types.CrawlResult, len(urls))
 	for i, u := range urls {
+		// For unvisited URLs, set a descriptive title
+		title := u.Title
+		if !u.Visited {
+			title = "Unvisited URL"
+		}
+
 		results[i] = types.CrawlResult{
 			URL:             u.URL,
 			Status:          u.Status,
-			Title:           u.Title,
+			Title:           title,
 			MetaDescription: u.MetaDescription,
 			ContentHash:     u.ContentHash,
 			Indexable:       u.Indexable,

@@ -112,21 +112,23 @@ type Project struct {
 
 // Crawl represents a single crawl session for a project
 type Crawl struct {
-	ID            uint         `gorm:"primaryKey"`
-	ProjectID     uint         `gorm:"not null;index"`
-	CrawlDateTime int64        `gorm:"not null"` // Unix timestamp
-	CrawlDuration int64        `gorm:"not null"` // Duration in milliseconds
-	PagesCrawled  int          `gorm:"not null"`
-	CrawledUrls   []CrawledUrl `gorm:"foreignKey:CrawlID;constraint:OnDelete:CASCADE"`
-	CreatedAt     int64        `gorm:"autoCreateTime"`
-	UpdatedAt     int64        `gorm:"autoUpdateTime"`
+	ID             uint            `gorm:"primaryKey"`
+	ProjectID      uint            `gorm:"not null;index"`
+	CrawlDateTime  int64           `gorm:"not null"` // Unix timestamp
+	CrawlDuration  int64           `gorm:"not null"` // Duration in milliseconds
+	PagesCrawled   int             `gorm:"not null"`
+	DiscoveredUrls []DiscoveredUrl `gorm:"foreignKey:CrawlID;constraint:OnDelete:CASCADE"`
+	CreatedAt      int64           `gorm:"autoCreateTime"`
+	UpdatedAt      int64           `gorm:"autoUpdateTime"`
 }
 
-// CrawledUrl represents a single URL that was crawled
-type CrawledUrl struct {
+// DiscoveredUrl represents a single URL that was discovered during crawling
+// This includes both URLs that were visited/crawled and URLs that were discovered but not visited (e.g., framework-specific URLs)
+type DiscoveredUrl struct {
 	ID              uint   `gorm:"primaryKey"`
 	CrawlID         uint   `gorm:"not null;index"`
 	URL             string `gorm:"not null"`
+	Visited         bool   `gorm:"not null;default:false;index"` // true = URL was crawled/visited, false = discovered but not visited
 	Status          int    `gorm:"not null"`
 	Title           string `gorm:"type:text"`
 	MetaDescription string `gorm:"type:text"`
@@ -152,6 +154,7 @@ type PageLink struct {
 	ContentType string `gorm:"type:text"`                       // Content type of target (if crawled)
 	Position    string `gorm:"type:text"`                       // Position: "content", "navigation", "header", "footer", "sidebar", "breadcrumbs", "pagination", "unknown"
 	DOMPath     string `gorm:"type:text"`                       // Simplified DOM path showing link's location in HTML structure
+	URLAction   string `gorm:"type:text;index"`                 // Action: "crawl" (normal), "record" (framework-specific), "skip" (ignored)
 	CreatedAt   int64  `gorm:"autoCreateTime"`
 }
 
@@ -167,6 +170,7 @@ type PageLinkData struct {
 	ContentType string
 	Position    string
 	DOMPath     string
+	URLAction   string
 }
 
 // DomainFramework represents the detected web framework for a specific domain

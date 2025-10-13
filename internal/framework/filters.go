@@ -32,11 +32,16 @@ func GetFilterConfig(fw Framework) FilterConfig {
 			QueryParams: []string{"__nuxt_"},
 		},
 		FrameworkWordPress: {
+			// Note: /wp-json/ is filtered for traditional WordPress sites.
+			// For headless WordPress setups where the REST API serves content,
+			// this filter may need to be disabled via configuration.
 			URLPatterns: []string{"/wp-json/", "/wp-admin/", "/wp-login.php"},
 			QueryParams: []string{"ver"},
 		},
 		FrameworkShopify: {
-			QueryParams: []string{"v"},
+			// Note: Not filtering generic "v" param as it often represents product variants
+			// (colors, sizes, etc.) which are important for e-commerce SEO
+			QueryParams: []string{},
 		},
 		FrameworkWebflow: {
 			// Webflow has internal asset versioning but typically no special filtering needed
