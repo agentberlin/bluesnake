@@ -21,7 +21,7 @@ import requests  # type: ignore
 
 
 class CrawlerComparison:
-    def __init__(self, domain: str, server_url: str = "http://localhost:8001"):
+    def __init__(self, domain: str, server_url: str = "http://localhost:8080"):
         self.domain = domain
         self.server_url = server_url
         self.sf_output_dir = Path("/tmp/crawlertest/sf")
@@ -146,7 +146,7 @@ class CrawlerComparison:
             "jsRendering": True,
             "parallelism": 10,
             "userAgent": "Mozilla/5.0 (compatible; BlueSnake/1.0)",
-            "includeSubdomains": False,
+            "includeSubdomains": True,
             "spiderEnabled": True,
             "sitemapEnabled": True,
             "sitemapURLs": [],
