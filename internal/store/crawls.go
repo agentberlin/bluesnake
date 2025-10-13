@@ -108,3 +108,47 @@ func (s *Store) SaveCrawledUrl(crawlID uint, url string, status int, title strin
 func (s *Store) DeleteCrawl(crawlID uint) error {
 	return s.db.Delete(&Crawl{}, crawlID).Error
 }
+
+// SearchCrawlResults searches crawled URLs for a specific crawl with filtering
+func (s *Store) SearchCrawlResults(crawlID uint, query string, contentTypeFilter string) ([]CrawledUrl, error) {
+	var urls []CrawledUrl
+
+	// Start with base query
+	db := s.db.Where("crawl_id = ?", crawlID)
+
+	// Apply content type filter if specified
+	if contentTypeFilter != "" && contentTypeFilter != "all" {
+		switch contentTypeFilter {
+		case "html":
+			db = db.Where("(content_type LIKE ? OR content_type LIKE ?)", "%text/html%", "%application/xhtml%")
+		case "javascript":
+			db = db.Where("(content_type LIKE ? OR content_type LIKE ? OR content_type LIKE ?)",
+				"%javascript%", "%application/x-javascript%", "%text/javascript%")
+		case "css":
+			db = db.Where("content_type LIKE ?", "%text/css%")
+		case "image":
+			db = db.Where("content_type LIKE ?", "%image/%")
+		case "font":
+			db = db.Where("(content_type LIKE ? OR content_type LIKE ? OR content_type LIKE ? OR content_type LIKE ? OR content_type LIKE ? OR content_type LIKE ?)",
+				"%font/%", "%application/font%", "%woff%", "%ttf%", "%eot%", "%otf%")
+		case "other":
+			// Other = not html, not js, not css, not image, not font
+			db = db.Where("content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ? AND content_type NOT LIKE ?",
+				"%text/html%", "%application/xhtml%", "%javascript%", "%application/x-javascript%", "%text/javascript%", "%text/css%", "%image/%", "%font/%", "%application/font%", "%woff%", "%ttf%", "%eot%", "%otf%")
+		}
+	}
+
+	// Apply search query if specified
+	if query != "" {
+		searchPattern := "%" + query + "%"
+		db = db.Where("(url LIKE ? OR title LIKE ? OR CAST(status AS TEXT) LIKE ? OR indexable LIKE ?)",
+			searchPattern, searchPattern, searchPattern, searchPattern)
+	}
+
+	result := db.Order("id ASC").Find(&urls)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to search crawl results: %v", result.Error)
+	}
+
+	return urls, nil
+}

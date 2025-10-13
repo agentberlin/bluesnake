@@ -41,6 +41,8 @@ export function GetServerStatus():Promise<types.ServerStatus>;
 
 export function GetVersion():Promise<string>;
 
+export function SearchCrawlResults(arg1:number,arg2:string,arg3:string):Promise<Array<types.CrawlResult>>;
+
 export function SetDomainFramework(arg1:number,arg2:string,arg3:string):Promise<void>;
 
 export function StartCrawl(arg1:string):Promise<void>;

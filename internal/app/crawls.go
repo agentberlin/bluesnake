@@ -85,3 +85,29 @@ func (a *App) GetCrawlWithResults(crawlID uint) (*types.CrawlResultDetailed, err
 func (a *App) DeleteCrawlByID(crawlID uint) error {
 	return a.store.DeleteCrawl(crawlID)
 }
+
+// SearchCrawlResults searches and filters crawl results
+func (a *App) SearchCrawlResults(crawlID uint, query string, contentTypeFilter string) ([]types.CrawlResult, error) {
+	// Get filtered URLs from store
+	urls, err := a.store.SearchCrawlResults(crawlID, query, contentTypeFilter)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to CrawlResult for frontend
+	results := make([]types.CrawlResult, len(urls))
+	for i, u := range urls {
+		results[i] = types.CrawlResult{
+			URL:             u.URL,
+			Status:          u.Status,
+			Title:           u.Title,
+			MetaDescription: u.MetaDescription,
+			ContentHash:     u.ContentHash,
+			Indexable:       u.Indexable,
+			ContentType:     u.ContentType,
+			Error:           u.Error,
+		}
+	}
+
+	return results, nil
+}
