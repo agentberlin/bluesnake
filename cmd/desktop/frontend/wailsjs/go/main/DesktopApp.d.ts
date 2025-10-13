@@ -17,11 +17,17 @@ export function GetActiveCrawlData(arg1:number):Promise<types.CrawlResultDetaile
 
 export function GetActiveCrawls():Promise<Array<types.CrawlProgress>>;
 
+export function GetAllFrameworks():Promise<Array<types.FrameworkInfo>>;
+
 export function GetConfigForDomain(arg1:string):Promise<types.ConfigResponse>;
 
 export function GetCrawlWithResults(arg1:number):Promise<types.CrawlResultDetailed>;
 
 export function GetCrawls(arg1:number):Promise<Array<types.CrawlInfo>>;
+
+export function GetDomainFramework(arg1:number,arg2:string):Promise<types.DomainFrameworkResponse>;
+
+export function GetDomainFrameworks(arg1:number):Promise<Array<types.DomainFrameworkResponse>>;
 
 export function GetFaviconData(arg1:string):Promise<string>;
 
@@ -34,6 +40,8 @@ export function GetProjects():Promise<Array<types.ProjectInfo>>;
 export function GetServerStatus():Promise<types.ServerStatus>;
 
 export function GetVersion():Promise<string>;
+
+export function SetDomainFramework(arg1:number,arg2:string,arg3:string):Promise<void>;
 
 export function StartCrawl(arg1:string):Promise<void>;
 

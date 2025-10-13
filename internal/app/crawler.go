@@ -16,6 +16,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	"github.com/agentberlin/bluesnake"
+	"github.com/agentberlin/bluesnake/internal/framework"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
@@ -339,6 +341,9 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		})
 	}
 
+	// Framework detection and filtering
+	a.setupFrameworkDetection(crawler, projectID, domain)
+
 	// Add the starting URL to discovered URLs so it shows up in the UI immediately
 	stats.discoveredURLs.Store(parsedURL.String(), true)
 
@@ -520,4 +525,97 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		case <-time.After(1 * time.Second):
 		}
 	}
+}
+
+// setupFrameworkDetection sets up framework detection and applies filtering rules
+// If framework is already known for this domain, apply filters immediately
+// Otherwise, apply analytics filters initially, then detect on first page and add framework filters
+func (a *App) setupFrameworkDetection(crawler *bluesnake.Crawler, projectID uint, domain string) {
+	// Check if we already have a framework detected for this domain
+	domainFW, err := a.store.GetDomainFramework(projectID, domain)
+
+	if err == nil && domainFW != nil && domainFW.Framework != "" {
+		// Framework already known, apply filters immediately
+		log.Printf("Using known framework '%s' for domain '%s'", domainFW.Framework, domain)
+		a.applyFrameworkFilters(crawler, framework.Framework(domainFW.Framework))
+		return
+	}
+
+	// No framework detected yet, apply analytics filters immediately
+	log.Printf("No framework known for domain '%s', will auto-detect", domain)
+	analyticsPatterns := getAnalyticsFilterPatterns()
+	crawler.SetCustomFilters(analyticsPatterns, []string{})
+
+	// Use a sync.Once to ensure we only detect once
+	var detectOnce sync.Once
+
+	// Hook into OnHTML to detect framework on first page
+	crawler.Collector.OnHTML("html", func(e *bluesnake.HTMLElement) {
+		detectOnce.Do(func() {
+			// Get HTML content
+			html, _ := e.DOM.Html()
+
+			// Get network-discovered URLs if available (from JS rendering)
+			var networkURLs []string
+			if networkURLsJSON := e.Request.Ctx.Get("networkDiscoveredURLs"); networkURLsJSON != "" {
+				json.Unmarshal([]byte(networkURLsJSON), &networkURLs)
+			}
+
+			// Detect framework
+			detector := framework.NewDetector()
+			detectedFW := detector.Detect(html, networkURLs)
+
+			log.Printf("Detected framework '%s' for domain '%s'", detectedFW, domain)
+
+			// Save to database (manuallySet = false for auto-detection)
+			if err := a.store.SaveDomainFramework(projectID, domain, string(detectedFW), false); err != nil {
+				log.Printf("Failed to save detected framework: %v", err)
+			}
+
+			// Apply framework-specific filters for the rest of the crawl
+			// (this will also re-apply analytics filters, which is fine)
+			a.applyFrameworkFilters(crawler, detectedFW)
+		})
+	})
+}
+
+// getAnalyticsFilterPatterns returns common analytics and tracking URL patterns
+// that should be filtered during crawling
+func getAnalyticsFilterPatterns() []string {
+	return []string{
+		"/g/collect",        // Google Analytics
+		"/gtm.js",           // Google Tag Manager
+		"/gtag/js",          // Google Global Site Tag
+		"/analytics.js",     // Generic analytics
+		"/ga.js",            // Google Analytics legacy
+		"google-analytics",  // Google Analytics domain
+		"googletagmanager",  // Tag Manager domain
+		"/pixel",            // Tracking pixels
+		"/track",            // Generic tracking
+		"/beacon",           // Beacon API
+		"/telemetry",        // Telemetry endpoints
+	}
+}
+
+// applyFrameworkFilters applies framework-specific and analytics filtering rules to the crawler
+func (a *App) applyFrameworkFilters(crawler *bluesnake.Crawler, fw framework.Framework) {
+	config := framework.GetFilterConfig(fw)
+
+	// Start with analytics patterns (always filter these)
+	allPatterns := append([]string{}, getAnalyticsFilterPatterns()...)
+
+	// Add framework-specific URL patterns
+	allPatterns = append(allPatterns, config.URLPatterns...)
+
+	// Also add query params to patterns (e.g., "_rsc=" for detection in URLs)
+	for _, param := range config.QueryParams {
+		allPatterns = append(allPatterns, param+"=")
+	}
+
+	// Query params include only framework-specific params (analytics patterns are URL-based)
+	queryParams := config.QueryParams
+
+	log.Printf("Applying filters for '%s': %d URL patterns, %d query params",
+		fw, len(allPatterns), len(queryParams))
+	crawler.SetCustomFilters(allPatterns, queryParams)
 }

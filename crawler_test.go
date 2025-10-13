@@ -559,7 +559,7 @@ func TestDiscoveryMechanism_NoSitemap(t *testing.T) {
 // TestCrawlerUserAgent tests that the UserAgent configuration is correctly applied
 func TestCrawlerUserAgent(t *testing.T) {
 	const customUserAgent = "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)"
-	const defaultUserAgent = "bluesnake - https://github.com/agentberlin/bluesnake"
+	const defaultUserAgent = "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)"
 
 	tests := []struct {
 		name              string
@@ -1182,4 +1182,262 @@ func TestResourceHintExtraction(t *testing.T) {
 	if missingCount == 0 && wrongTypeCount == 0 {
 		t.Logf("Successfully extracted all %d resource hints with correct types", len(expectedLinks))
 	}
+}
+
+// TestCustomFilters_SetCustomFilters tests setting custom filter patterns and params
+func TestCustomFilters_SetCustomFilters(t *testing.T) {
+	mock := NewMockTransport()
+	mock.RegisterHTML("https://example.com/", `<html><head><title>Test</title></head><body>Content</body></html>`)
+
+	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
+	crawler.Collector.WithTransport(mock)
+
+	// Set custom filters
+	filterPatterns := []string{"/_next/static/", "/analytics.js", "_rsc="}
+	filterParams := []string{"ver", "v"}
+	crawler.SetCustomFilters(filterPatterns, filterParams)
+
+	// Verify filters are set (check via internal state)
+	crawler.mutex.RLock()
+	if len(crawler.customFilterPatterns) != 3 {
+		t.Errorf("Expected 3 filter patterns, got %d", len(crawler.customFilterPatterns))
+	}
+	if len(crawler.customFilterParams) != 2 {
+		t.Errorf("Expected 2 filter params, got %d", len(crawler.customFilterParams))
+	}
+	crawler.mutex.RUnlock()
+
+	t.Log("SetCustomFilters correctly sets filter patterns and params")
+}
+
+// TestCustomFilters_URLPatternMatching tests that URL patterns are correctly matched
+func TestCustomFilters_URLPatternMatching(t *testing.T) {
+	tests := []struct {
+		name            string
+		filterPatterns  []string
+		filterParams    []string
+		testURL         string
+		shouldMatch     bool
+	}{
+		{
+			name:           "Exact pattern match",
+			filterPatterns: []string{"/_next/static/"},
+			filterParams:   []string{},
+			testURL:        "https://example.com/_next/static/chunk.js",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Pattern not in URL",
+			filterPatterns: []string{"/_next/static/"},
+			filterParams:   []string{},
+			testURL:        "https://example.com/page1",
+			shouldMatch:    false,
+		},
+		{
+			name:           "Multiple patterns - first matches",
+			filterPatterns: []string{"/analytics.js", "/gtag/js"},
+			filterParams:   []string{},
+			testURL:        "https://example.com/analytics.js",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Multiple patterns - second matches",
+			filterPatterns: []string{"/analytics.js", "/gtag/js"},
+			filterParams:   []string{},
+			testURL:        "https://example.com/gtag/js",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Case insensitive matching",
+			filterPatterns: []string{"/Analytics.js"},
+			filterParams:   []string{},
+			testURL:        "https://example.com/analytics.js",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Empty patterns",
+			filterPatterns: []string{},
+			filterParams:   []string{},
+			testURL:        "https://example.com/any-url",
+			shouldMatch:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
+			crawler.SetCustomFilters(tt.filterPatterns, tt.filterParams)
+
+			matched := crawler.matchesCustomFilters(tt.testURL)
+			if matched != tt.shouldMatch {
+				t.Errorf("matchesCustomFilters(%q) = %v, want %v", tt.testURL, matched, tt.shouldMatch)
+			}
+
+			t.Logf("URL pattern matching: %v (expected %v)", matched, tt.shouldMatch)
+		})
+	}
+}
+
+// TestCustomFilters_QueryParamMatching tests that query parameters are correctly matched
+func TestCustomFilters_QueryParamMatching(t *testing.T) {
+	tests := []struct {
+		name           string
+		filterPatterns []string
+		filterParams   []string
+		testURL        string
+		shouldMatch    bool
+	}{
+		{
+			name:           "Query param with ?",
+			filterPatterns: []string{},
+			filterParams:   []string{"ver"},
+			testURL:        "https://example.com/style.css?ver=1.2.3",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Query param with &",
+			filterPatterns: []string{},
+			filterParams:   []string{"ver"},
+			testURL:        "https://example.com/style.css?foo=bar&ver=1.2.3",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Query param not in URL",
+			filterPatterns: []string{},
+			filterParams:   []string{"ver"},
+			testURL:        "https://example.com/style.css?foo=bar",
+			shouldMatch:    false,
+		},
+		{
+			name:           "Multiple params - first matches",
+			filterPatterns: []string{},
+			filterParams:   []string{"ver", "v", "_rsc"},
+			testURL:        "https://example.com/page?ver=1",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Multiple params - second matches",
+			filterPatterns: []string{},
+			filterParams:   []string{"ver", "v", "_rsc"},
+			testURL:        "https://example.com/page?v=2",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Case insensitive param matching",
+			filterPatterns: []string{},
+			filterParams:   []string{"Ver"},
+			testURL:        "https://example.com/style.css?ver=1.0",
+			shouldMatch:    true,
+		},
+		{
+			name:           "Param without value",
+			filterPatterns: []string{},
+			filterParams:   []string{"ver"},
+			testURL:        "https://example.com/style.css?verify=true",
+			shouldMatch:    false, // should not match "verify" - needs exact param name
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
+			crawler.SetCustomFilters(tt.filterPatterns, tt.filterParams)
+
+			matched := crawler.matchesCustomFilters(tt.testURL)
+			if matched != tt.shouldMatch {
+				t.Errorf("matchesCustomFilters(%q) = %v, want %v", tt.testURL, matched, tt.shouldMatch)
+			}
+
+			t.Logf("Query param matching: %v (expected %v)", matched, tt.shouldMatch)
+		})
+	}
+}
+
+// TestCustomFilters_Integration tests that filtered URLs are excluded from link discovery
+func TestCustomFilters_Integration(t *testing.T) {
+	mock := NewMockTransport()
+
+	// Register home page with various links including analytics/tracking
+	mock.RegisterHTML("https://example.com/", `<html>
+		<head><title>Home</title></head>
+		<body>
+			<a href="/page1">Page 1</a>
+			<a href="/page2">Page 2</a>
+			<script src="/_next/static/chunk.js"></script>
+			<script src="/analytics.js"></script>
+			<link rel="stylesheet" href="/style.css?ver=1.0">
+			<img src="/image.jpg?v=2">
+			<img src="/logo.png">
+		</body>
+	</html>`)
+
+	var mu sync.Mutex
+	var discoveredLinks []Link
+
+	crawler := NewCrawler(&CollectorConfig{
+		AllowedDomains: []string{"example.com"},
+		Async:          true,
+	})
+	crawler.Collector.WithTransport(mock)
+
+	// Set custom filters for Next.js and analytics
+	filterPatterns := []string{"/_next/static/", "/analytics.js"}
+	filterParams := []string{"ver", "v"}
+	crawler.SetCustomFilters(filterPatterns, filterParams)
+
+	crawler.SetOnPageCrawled(func(result *PageResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		if result.Links != nil {
+			discoveredLinks = append(discoveredLinks, result.Links.Internal...)
+		}
+	})
+
+	err := crawler.Start("https://example.com/")
+	if err != nil {
+		t.Fatalf("Failed to start crawler: %v", err)
+	}
+
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Should include regular pages and unfiltered resources
+	expectedURLs := map[string]bool{
+		"https://example.com/page1":    false,
+		"https://example.com/page2":    false,
+		"https://example.com/logo.png": false,
+	}
+
+	// Should NOT include filtered URLs
+	filteredURLs := []string{
+		"https://example.com/_next/static/chunk.js",
+		"https://example.com/analytics.js",
+		"https://example.com/style.css?ver=1.0",
+		"https://example.com/image.jpg?v=2",
+	}
+
+	// Check that expected URLs were discovered
+	for _, link := range discoveredLinks {
+		if _, expected := expectedURLs[link.URL]; expected {
+			expectedURLs[link.URL] = true
+		}
+
+		// Check that filtered URLs were NOT discovered
+		for _, filteredURL := range filteredURLs {
+			if link.URL == filteredURL {
+				t.Errorf("Filtered URL should not be discovered: %s", filteredURL)
+			}
+		}
+	}
+
+	// Verify all expected URLs were found
+	for url, found := range expectedURLs {
+		if !found {
+			t.Errorf("Expected URL not found: %s", url)
+		}
+	}
+
+	t.Logf("Custom filters correctly excluded %d URLs from link discovery", len(filteredURLs))
 }

@@ -464,7 +464,7 @@ const (
 // NewDefaultConfig returns a CollectorConfig with sensible defaults
 func NewDefaultConfig() *CollectorConfig {
 	return &CollectorConfig{
-		UserAgent:              "bluesnake - https://github.com/agentberlin/bluesnake",
+		UserAgent:              "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)",
 		MaxBodySize:            10 * 1024 * 1024, // 10MB
 		IgnoreRobotsTxt:        true,
 		Context:                context.Background(),
@@ -655,7 +655,7 @@ func NewCollector(config *CollectorConfig) *Collector {
 // Init initializes the Collector's private variables and sets default
 // configuration for the Collector
 func (c *Collector) Init() {
-	c.UserAgent = "bluesnake - https://github.com/agentberlin/bluesnake"
+	c.UserAgent = "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)"
 	c.Headers = nil
 	c.MaxDepth = 0
 	c.MaxRequests = 0
