@@ -69,7 +69,7 @@ func TestConfigMerging(t *testing.T) {
 		}
 
 		// UserAgent should get the default since we didn't override it
-		defaultUserAgent := "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)"
+		defaultUserAgent := "bluesnake/1.0 (+https://snake.blue)"
 		if c.UserAgent != defaultUserAgent {
 			t.Errorf("UserAgent should be default, got %s", c.UserAgent)
 		}
@@ -131,7 +131,7 @@ func TestConfigMerging(t *testing.T) {
 			t.Errorf("MaxBodySize should be %d (default), got %d", expectedMaxBodySize, c.MaxBodySize)
 		}
 
-		defaultUserAgent := "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)"
+		defaultUserAgent := "bluesnake/1.0 (+https://snake.blue)"
 		if c.UserAgent != defaultUserAgent {
 			t.Errorf("UserAgent should be default, got %s", c.UserAgent)
 		}

@@ -558,14 +558,14 @@ func TestDiscoveryMechanism_NoSitemap(t *testing.T) {
 
 // TestCrawlerUserAgent tests that the UserAgent configuration is correctly applied
 func TestCrawlerUserAgent(t *testing.T) {
-	const customUserAgent = "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)"
-	const defaultUserAgent = "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)"
+	const customUserAgent = "bluesnake/1.0 (+https://snake.blue)"
+	const defaultUserAgent = "bluesnake/1.0 (+https://snake.blue)"
 
 	tests := []struct {
-		name              string
-		configuredUA      string
-		expectedUA        string
-		shouldSetUA       bool
+		name         string
+		configuredUA string
+		expectedUA   string
+		shouldSetUA  bool
 	}{
 		{
 			name:         "Default UserAgent",
@@ -1147,15 +1147,15 @@ func TestResourceHintExtraction(t *testing.T) {
 
 	// Verify we discovered the expected links
 	expectedLinks := map[string]string{
-		"https://example.com/js/app.js":          "script",
-		"https://example.com/css/main.css":       "stylesheet",
-		"https://example.com/fonts/Inter.woff2":  "font",
-		"https://example.com/images/hero.jpg":    "image",
-		"https://example.com/js/module.js":       "script",
-		"https://example.com/js/future.js":       "script",
-		"https://example.com/next-page.html":     "anchor",
-		"https://example.com/js/regular.js":      "script",
-		"https://example.com/css/regular.css":    "stylesheet",
+		"https://example.com/js/app.js":         "script",
+		"https://example.com/css/main.css":      "stylesheet",
+		"https://example.com/fonts/Inter.woff2": "font",
+		"https://example.com/images/hero.jpg":   "image",
+		"https://example.com/js/module.js":      "script",
+		"https://example.com/js/future.js":      "script",
+		"https://example.com/next-page.html":    "anchor",
+		"https://example.com/js/regular.js":     "script",
+		"https://example.com/css/regular.css":   "stylesheet",
 	}
 
 	foundLinks := make(map[string]string)
@@ -1184,40 +1184,65 @@ func TestResourceHintExtraction(t *testing.T) {
 	}
 }
 
-// TestCustomFilters_SetCustomFilters tests setting custom filter patterns and params
-func TestCustomFilters_SetCustomFilters(t *testing.T) {
+// createPatternFilterCallback creates a filter callback that matches patterns and query params
+// This helper function is used by tests to simulate application-layer filtering
+func createPatternFilterCallback(filterPatterns []string, filterParams []string) func(string) bool {
+	return func(urlStr string) bool {
+		urlLower := strings.ToLower(urlStr)
+
+		// Check URL patterns
+		for _, pattern := range filterPatterns {
+			if strings.Contains(urlLower, strings.ToLower(pattern)) {
+				return true
+			}
+		}
+
+		// Check query params
+		for _, param := range filterParams {
+			if strings.Contains(urlLower, "?"+strings.ToLower(param)+"=") ||
+				strings.Contains(urlLower, "&"+strings.ToLower(param)+"=") {
+				return true
+			}
+		}
+
+		return false
+	}
+}
+
+// TestCustomFilters_SetURLFilterCallback tests setting custom filter callback
+func TestCustomFilters_SetURLFilterCallback(t *testing.T) {
 	mock := NewMockTransport()
 	mock.RegisterHTML("https://example.com/", `<html><head><title>Test</title></head><body>Content</body></html>`)
 
 	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
 	crawler.Collector.WithTransport(mock)
 
-	// Set custom filters
+	// Set custom filter callback
 	filterPatterns := []string{"/_next/static/", "/analytics.js", "_rsc="}
 	filterParams := []string{"ver", "v"}
-	crawler.SetCustomFilters(filterPatterns, filterParams)
+	filterCallback := createPatternFilterCallback(filterPatterns, filterParams)
+	crawler.SetURLFilterCallback(filterCallback)
 
-	// Verify filters are set (check via internal state)
+	// Verify callback is set (check via internal state)
 	crawler.mutex.RLock()
-	if len(crawler.customFilterPatterns) != 3 {
-		t.Errorf("Expected 3 filter patterns, got %d", len(crawler.customFilterPatterns))
-	}
-	if len(crawler.customFilterParams) != 2 {
-		t.Errorf("Expected 2 filter params, got %d", len(crawler.customFilterParams))
-	}
+	hasCallback := crawler.urlFilterCallback != nil
 	crawler.mutex.RUnlock()
 
-	t.Log("SetCustomFilters correctly sets filter patterns and params")
+	if !hasCallback {
+		t.Error("Expected URL filter callback to be set")
+	}
+
+	t.Log("SetURLFilterCallback correctly sets filter callback")
 }
 
 // TestCustomFilters_URLPatternMatching tests that URL patterns are correctly matched
 func TestCustomFilters_URLPatternMatching(t *testing.T) {
 	tests := []struct {
-		name            string
-		filterPatterns  []string
-		filterParams    []string
-		testURL         string
-		shouldMatch     bool
+		name           string
+		filterPatterns []string
+		filterParams   []string
+		testURL        string
+		shouldMatch    bool
 	}{
 		{
 			name:           "Exact pattern match",
@@ -1266,7 +1291,8 @@ func TestCustomFilters_URLPatternMatching(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
-			crawler.SetCustomFilters(tt.filterPatterns, tt.filterParams)
+			filterCallback := createPatternFilterCallback(tt.filterPatterns, tt.filterParams)
+			crawler.SetURLFilterCallback(filterCallback)
 
 			matched := crawler.matchesCustomFilters(tt.testURL)
 			if matched != tt.shouldMatch {
@@ -1341,7 +1367,8 @@ func TestCustomFilters_QueryParamMatching(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
-			crawler.SetCustomFilters(tt.filterPatterns, tt.filterParams)
+			filterCallback := createPatternFilterCallback(tt.filterPatterns, tt.filterParams)
+			crawler.SetURLFilterCallback(filterCallback)
 
 			matched := crawler.matchesCustomFilters(tt.testURL)
 			if matched != tt.shouldMatch {
@@ -1380,10 +1407,11 @@ func TestCustomFilters_Integration(t *testing.T) {
 	})
 	crawler.Collector.WithTransport(mock)
 
-	// Set custom filters for Next.js and analytics
+	// Set custom filter callback for Next.js and analytics
 	filterPatterns := []string{"/_next/static/", "/analytics.js"}
 	filterParams := []string{"ver", "v"}
-	crawler.SetCustomFilters(filterPatterns, filterParams)
+	filterCallback := createPatternFilterCallback(filterPatterns, filterParams)
+	crawler.SetURLFilterCallback(filterCallback)
 
 	crawler.SetOnPageCrawled(func(result *PageResult) {
 		mu.Lock()

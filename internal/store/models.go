@@ -18,15 +18,15 @@ import "encoding/json"
 
 // Config represents the crawl configuration for a domain
 type Config struct {
-	ID                  uint     `gorm:"primaryKey"`
-	ProjectID           uint     `gorm:"uniqueIndex;not null"`
-	Domain              string   `gorm:"not null"`
-	JSRenderingEnabled  bool     `gorm:"default:false"`
-	InitialWaitMs       int      `gorm:"default:1500"` // Initial wait after page load for JS frameworks to hydrate (in milliseconds)
-	ScrollWaitMs        int      `gorm:"default:2000"` // Wait after scrolling to bottom for lazy-loaded content (in milliseconds)
-	FinalWaitMs         int      `gorm:"default:1000"` // Final wait before capturing HTML (in milliseconds)
-	Parallelism         int      `gorm:"default:5"`
-	UserAgent           string   `gorm:"type:text;default:'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)'"`
+	ID                     uint     `gorm:"primaryKey"`
+	ProjectID              uint     `gorm:"uniqueIndex;not null"`
+	Domain                 string   `gorm:"not null"`
+	JSRenderingEnabled     bool     `gorm:"default:false"`
+	InitialWaitMs          int      `gorm:"default:1500"` // Initial wait after page load for JS frameworks to hydrate (in milliseconds)
+	ScrollWaitMs           int      `gorm:"default:2000"` // Wait after scrolling to bottom for lazy-loaded content (in milliseconds)
+	FinalWaitMs            int      `gorm:"default:1000"` // Final wait before capturing HTML (in milliseconds)
+	Parallelism            int      `gorm:"default:5"`
+	UserAgent              string   `gorm:"type:text;default:'bluesnake/1.0 (+https://snake.blue)'"`
 	IncludeSubdomains      bool     `gorm:"default:false"`                                // When true, crawl all subdomains of the project domain
 	DiscoveryMechanisms    string   `gorm:"type:text;default:'[\"spider\",\"sitemap\"]'"` // JSON array
 	SitemapURLs            string   `gorm:"type:text"`                                    // JSON array, nullable
@@ -91,13 +91,13 @@ func (c *Config) SetSitemapURLsArray(urls []string) error {
 
 // Project represents a project (base URL) that can have multiple crawls
 type Project struct {
-	ID          uint     `gorm:"primaryKey"`
-	URL         string   `gorm:"not null"`                 // Normalized URL for the project
-	Domain      string   `gorm:"uniqueIndex;not null"`     // Domain identifier (includes subdomain)
-	FaviconPath string   `gorm:"type:text"`                // Path to cached favicon
-	Crawls      []Crawl  `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
-	CreatedAt   int64    `gorm:"autoCreateTime"`
-	UpdatedAt   int64    `gorm:"autoUpdateTime"`
+	ID          uint    `gorm:"primaryKey"`
+	URL         string  `gorm:"not null"`             // Normalized URL for the project
+	Domain      string  `gorm:"uniqueIndex;not null"` // Domain identifier (includes subdomain)
+	FaviconPath string  `gorm:"type:text"`            // Path to cached favicon
+	Crawls      []Crawl `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
+	CreatedAt   int64   `gorm:"autoCreateTime"`
+	UpdatedAt   int64   `gorm:"autoUpdateTime"`
 }
 
 // Crawl represents a single crawl session for a project
@@ -161,14 +161,14 @@ type PageLinkData struct {
 
 // DomainFramework represents the detected web framework for a specific domain
 type DomainFramework struct {
-	ID          uint    `gorm:"primaryKey"`
-	ProjectID   uint    `gorm:"not null;index:idx_project_domain"`
-	Domain      string  `gorm:"not null;index:idx_project_domain;index:idx_domain"`
-	Framework   string  `gorm:"not null"`
-	ManuallySet bool    `gorm:"default:false"`
+	ID          uint     `gorm:"primaryKey"`
+	ProjectID   uint     `gorm:"not null;index:idx_project_domain"`
+	Domain      string   `gorm:"not null;index:idx_project_domain;index:idx_domain"`
+	Framework   string   `gorm:"not null"`
+	ManuallySet bool     `gorm:"default:false"`
 	Project     *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
-	CreatedAt   int64   `gorm:"autoCreateTime"`
-	UpdatedAt   int64   `gorm:"autoUpdateTime"`
+	CreatedAt   int64    `gorm:"autoCreateTime"`
+	UpdatedAt   int64    `gorm:"autoUpdateTime"`
 }
 
 // Unique constraint on (ProjectID, Domain)

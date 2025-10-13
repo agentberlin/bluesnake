@@ -50,7 +50,7 @@ func TestEnvSettings(t *testing.T) {
 func TestUserAgent(t *testing.T) {
 	const exampleUserAgent1 = "Example/1.0"
 	const exampleUserAgent2 = "Example/2.0"
-	const defaultUserAgent = "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)"
+	const defaultUserAgent = "bluesnake/1.0 (+https://snake.blue)"
 
 	mock := setupMockTransport()
 

@@ -102,7 +102,7 @@ type RenderingConfig struct {
 }
 
 // CollectorConfig contains all configuration options for a Collector
-type CollectorConfig struct{
+type CollectorConfig struct {
 	// UserAgent is the User-Agent string used by HTTP requests
 	UserAgent string
 	// Headers contains custom headers for HTTP requests
@@ -464,7 +464,7 @@ const (
 // NewDefaultConfig returns a CollectorConfig with sensible defaults
 func NewDefaultConfig() *CollectorConfig {
 	return &CollectorConfig{
-		UserAgent:              "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)",
+		UserAgent:              "bluesnake/1.0 (+https://snake.blue)",
 		MaxBodySize:            10 * 1024 * 1024, // 10MB
 		IgnoreRobotsTxt:        true,
 		Context:                context.Background(),
@@ -482,9 +482,9 @@ func NewDefaultConfig() *CollectorConfig {
 			ScrollWaitMs:  2000, // 2s for lazy-loaded content
 			FinalWaitMs:   1000, // 1s for remaining DOM updates
 		},
-		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySpider}, // Default to spider mode
-		SitemapURLs:         nil,
-		EnableContentHash:   false,
+		DiscoveryMechanisms:  []DiscoveryMechanism{DiscoverySpider}, // Default to spider mode
+		SitemapURLs:          nil,
+		EnableContentHash:    false,
 		ContentHashAlgorithm: "xxhash",
 		ContentHashConfig: &ContentHashConfig{
 			ExcludeTags:        []string{"script", "style", "nav", "footer"},
@@ -655,7 +655,7 @@ func NewCollector(config *CollectorConfig) *Collector {
 // Init initializes the Collector's private variables and sets default
 // configuration for the Collector
 func (c *Collector) Init() {
-	c.UserAgent = "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)"
+	c.UserAgent = "bluesnake/1.0 (+https://snake.blue)"
 	c.Headers = nil
 	c.MaxDepth = 0
 	c.MaxRequests = 0

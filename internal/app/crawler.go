@@ -286,7 +286,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		config = &store.Config{
 			JSRenderingEnabled:     false,
 			Parallelism:            5,
-			UserAgent:              "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)",
+			UserAgent:              "bluesnake/1.0 (+https://snake.blue)",
 			IncludeSubdomains:      true, // Default to including subdomains
 			DiscoveryMechanisms:    "[\"spider\"]",
 			SitemapURLs:            "",
@@ -317,7 +317,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 	crawlerConfig := &bluesnake.CollectorConfig{
 		Context:             crawlCtx, // Pass context for proper cancellation support
 		UserAgent:           config.UserAgent,
-		MaxDepth:            maxDepth, // Set depth based on SinglePageMode
+		MaxDepth:            maxDepth,                       // Set depth based on SinglePageMode
 		URLFilters:          []*regexp.Regexp{domainFilter}, // Use URLFilters instead of AllowedDomains
 		Async:               true,
 		EnableRendering:     config.JSRenderingEnabled,
@@ -341,8 +341,19 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		})
 	}
 
-	// Framework detection and filtering
-	a.setupFrameworkDetection(crawler, projectID, domain)
+	// Track detected frameworks per domain
+	domainFrameworks := &sync.Map{} // map[domain]framework.Framework
+
+	// Initialize with known framework for main domain (if exists)
+	if domainFW, err := a.store.GetDomainFramework(projectID, domain); err == nil && domainFW != nil {
+		domainFrameworks.Store(domain, framework.Framework(domainFW.Framework))
+	}
+
+	// Set up domain-aware filtering callback
+	a.setupDomainAwareFiltering(crawler, domainFrameworks)
+
+	// Set up per-domain framework detection
+	a.setupPerDomainFrameworkDetection(crawler, projectID, domainFrameworks)
 
 	// Add the starting URL to discovered URLs so it shows up in the UI immediately
 	stats.discoveredURLs.Store(parsedURL.String(), true)
@@ -527,95 +538,140 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 	}
 }
 
-// setupFrameworkDetection sets up framework detection and applies filtering rules
-// If framework is already known for this domain, apply filters immediately
-// Otherwise, apply analytics filters initially, then detect on first page and add framework filters
-func (a *App) setupFrameworkDetection(crawler *bluesnake.Crawler, projectID uint, domain string) {
-	// Check if we already have a framework detected for this domain
-	domainFW, err := a.store.GetDomainFramework(projectID, domain)
-
-	if err == nil && domainFW != nil && domainFW.Framework != "" {
-		// Framework already known, apply filters immediately
-		log.Printf("Using known framework '%s' for domain '%s'", domainFW.Framework, domain)
-		a.applyFrameworkFilters(crawler, framework.Framework(domainFW.Framework))
-		return
+// extractDomainFromURL extracts the domain from a URL (including port if non-standard)
+func extractDomainFromURL(urlStr string) string {
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return ""
 	}
 
-	// No framework detected yet, apply analytics filters immediately
-	log.Printf("No framework known for domain '%s', will auto-detect", domain)
-	analyticsPatterns := getAnalyticsFilterPatterns()
-	crawler.SetCustomFilters(analyticsPatterns, []string{})
+	hostname := parsedURL.Hostname()
+	port := parsedURL.Port()
 
-	// Use a sync.Once to ensure we only detect once
-	var detectOnce sync.Once
+	// Include non-standard ports
+	if port != "" && port != "80" && port != "443" {
+		return strings.ToLower(hostname + ":" + port)
+	}
 
-	// Hook into OnHTML to detect framework on first page
-	crawler.Collector.OnHTML("html", func(e *bluesnake.HTMLElement) {
-		detectOnce.Do(func() {
-			// Get HTML content
-			html, _ := e.DOM.Html()
-
-			// Get network-discovered URLs if available (from JS rendering)
-			var networkURLs []string
-			if networkURLsJSON := e.Request.Ctx.Get("networkDiscoveredURLs"); networkURLsJSON != "" {
-				json.Unmarshal([]byte(networkURLsJSON), &networkURLs)
-			}
-
-			// Detect framework
-			detector := framework.NewDetector()
-			detectedFW := detector.Detect(html, networkURLs)
-
-			log.Printf("Detected framework '%s' for domain '%s'", detectedFW, domain)
-
-			// Save to database (manuallySet = false for auto-detection)
-			if err := a.store.SaveDomainFramework(projectID, domain, string(detectedFW), false); err != nil {
-				log.Printf("Failed to save detected framework: %v", err)
-			}
-
-			// Apply framework-specific filters for the rest of the crawl
-			// (this will also re-apply analytics filters, which is fine)
-			a.applyFrameworkFilters(crawler, detectedFW)
-		})
-	})
+	return strings.ToLower(hostname)
 }
 
 // getAnalyticsFilterPatterns returns common analytics and tracking URL patterns
 // that should be filtered during crawling
 func getAnalyticsFilterPatterns() []string {
 	return []string{
-		"/g/collect",        // Google Analytics
-		"/gtm.js",           // Google Tag Manager
-		"/gtag/js",          // Google Global Site Tag
-		"/analytics.js",     // Generic analytics
-		"/ga.js",            // Google Analytics legacy
-		"google-analytics",  // Google Analytics domain
-		"googletagmanager",  // Tag Manager domain
-		"/pixel",            // Tracking pixels
-		"/track",            // Generic tracking
-		"/beacon",           // Beacon API
-		"/telemetry",        // Telemetry endpoints
+		"/g/collect",       // Google Analytics
+		"/gtm.js",          // Google Tag Manager
+		"/gtag/js",         // Google Global Site Tag
+		"/analytics.js",    // Generic analytics
+		"/ga.js",           // Google Analytics legacy
+		"google-analytics", // Google Analytics domain
+		"googletagmanager", // Tag Manager domain
+		"/pixel",           // Tracking pixels
+		"/track",           // Generic tracking
+		"/beacon",          // Beacon API
+		"/telemetry",       // Telemetry endpoints
 	}
 }
 
-// applyFrameworkFilters applies framework-specific and analytics filtering rules to the crawler
-func (a *App) applyFrameworkFilters(crawler *bluesnake.Crawler, fw framework.Framework) {
-	config := framework.GetFilterConfig(fw)
+// matchesFrameworkFilters checks if a URL matches framework-specific filters
+func matchesFrameworkFilters(urlStr string, config framework.FilterConfig) bool {
+	urlLower := strings.ToLower(urlStr)
 
-	// Start with analytics patterns (always filter these)
-	allPatterns := append([]string{}, getAnalyticsFilterPatterns()...)
-
-	// Add framework-specific URL patterns
-	allPatterns = append(allPatterns, config.URLPatterns...)
-
-	// Also add query params to patterns (e.g., "_rsc=" for detection in URLs)
-	for _, param := range config.QueryParams {
-		allPatterns = append(allPatterns, param+"=")
+	// Check URL patterns
+	for _, pattern := range config.URLPatterns {
+		if strings.Contains(urlLower, strings.ToLower(pattern)) {
+			return true
+		}
 	}
 
-	// Query params include only framework-specific params (analytics patterns are URL-based)
-	queryParams := config.QueryParams
+	// Check query params
+	for _, param := range config.QueryParams {
+		if strings.Contains(urlLower, "?"+strings.ToLower(param)+"=") ||
+			strings.Contains(urlLower, "&"+strings.ToLower(param)+"=") {
+			return true
+		}
+	}
 
-	log.Printf("Applying filters for '%s': %d URL patterns, %d query params",
-		fw, len(allPatterns), len(queryParams))
-	crawler.SetCustomFilters(allPatterns, queryParams)
+	return false
+}
+
+// setupDomainAwareFiltering sets up domain-aware filtering callback
+func (a *App) setupDomainAwareFiltering(crawler *bluesnake.Crawler, domainFrameworks *sync.Map) {
+	// Get analytics patterns (always filtered)
+	analyticsPatterns := getAnalyticsFilterPatterns()
+
+	crawler.SetURLFilterCallback(func(urlStr string) bool {
+		urlLower := strings.ToLower(urlStr)
+
+		// Always filter analytics URLs
+		for _, pattern := range analyticsPatterns {
+			if strings.Contains(urlLower, strings.ToLower(pattern)) {
+				return true
+			}
+		}
+
+		// Extract domain from URL
+		domain := extractDomainFromURL(urlStr)
+		if domain == "" {
+			return false
+		}
+
+		// Get framework for this specific domain
+		fwInterface, ok := domainFrameworks.Load(domain)
+		if !ok {
+			// Framework not detected yet for this domain - don't filter
+			return false
+		}
+
+		fw := fwInterface.(framework.Framework)
+
+		// Get filter config for this domain's framework
+		config := framework.GetFilterConfig(fw)
+
+		// Check if URL matches this domain's framework-specific patterns
+		return matchesFrameworkFilters(urlStr, config)
+	})
+}
+
+// setupPerDomainFrameworkDetection sets up framework detection for each subdomain
+func (a *App) setupPerDomainFrameworkDetection(crawler *bluesnake.Crawler, projectID uint, domainFrameworks *sync.Map) {
+	detectedDomains := &sync.Map{} // Tracks which domains we've attempted detection for
+
+	crawler.Collector.OnHTML("html", func(e *bluesnake.HTMLElement) {
+		currentURL := e.Request.URL.String()
+		domain := extractDomainFromURL(currentURL)
+
+		// Check if we've already detected framework for this domain
+		if _, alreadyDetected := detectedDomains.LoadOrStore(domain, true); alreadyDetected {
+			return
+		}
+
+		// Check database first (might have been detected in previous crawl)
+		if dbFW, err := a.store.GetDomainFramework(projectID, domain); err == nil && dbFW != nil {
+			domainFrameworks.Store(domain, framework.Framework(dbFW.Framework))
+			log.Printf("Using known framework '%s' for domain '%s'", dbFW.Framework, domain)
+			return
+		}
+
+		// Detect framework for this new domain
+		html, _ := e.DOM.Html()
+		var networkURLs []string
+		if networkURLsJSON := e.Request.Ctx.Get("networkDiscoveredURLs"); networkURLsJSON != "" {
+			json.Unmarshal([]byte(networkURLsJSON), &networkURLs)
+		}
+
+		detector := framework.NewDetector()
+		detectedFW := detector.Detect(html, networkURLs)
+
+		log.Printf("Detected framework '%s' for domain '%s'", detectedFW, domain)
+
+		// Save to database (manuallySet = false for auto-detection)
+		if err := a.store.SaveDomainFramework(projectID, domain, string(detectedFW), false); err != nil {
+			log.Printf("Failed to save detected framework: %v", err)
+		}
+
+		// Store in memory for filtering
+		domainFrameworks.Store(domain, detectedFW)
+	})
 }
