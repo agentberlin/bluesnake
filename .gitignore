@@ -36,3 +36,4 @@ go.work.sum
 # Cloudflared binaries (downloaded by CI for embedding)
 cmd/desktop/binaries/
 tmp/
+bin/

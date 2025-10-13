@@ -22,6 +22,9 @@ type Config struct {
 	ProjectID           uint     `gorm:"uniqueIndex;not null"`
 	Domain              string   `gorm:"not null"`
 	JSRenderingEnabled  bool     `gorm:"default:false"`
+	InitialWaitMs       int      `gorm:"default:1500"` // Initial wait after page load for JS frameworks to hydrate (in milliseconds)
+	ScrollWaitMs        int      `gorm:"default:2000"` // Wait after scrolling to bottom for lazy-loaded content (in milliseconds)
+	FinalWaitMs         int      `gorm:"default:1000"` // Final wait before capturing HTML (in milliseconds)
 	Parallelism         int      `gorm:"default:5"`
 	UserAgent           string   `gorm:"type:text;default:'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)'"`
 	IncludeSubdomains      bool     `gorm:"default:false"`                                // When true, crawl all subdomains of the project domain

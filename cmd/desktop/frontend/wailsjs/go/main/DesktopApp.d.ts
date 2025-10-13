@@ -43,4 +43,4 @@ export function StopCrawl(arg1:number):Promise<void>;
 
 export function StopServerWithTunnel():Promise<void>;
 
-export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number,arg4:string,arg5:boolean,arg6:boolean,arg7:boolean,arg8:Array<string>,arg9:boolean,arg10:boolean):Promise<void>;
+export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number,arg4:number,arg5:number,arg6:number,arg7:string,arg8:boolean,arg9:boolean,arg10:boolean,arg11:Array<string>,arg12:boolean,arg13:boolean):Promise<void>;

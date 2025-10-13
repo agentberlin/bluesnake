@@ -32,6 +32,9 @@ func (s *Store) GetOrCreateConfig(projectID uint, domain string) (*Config, error
 			ProjectID:              projectID,
 			Domain:                 domain,
 			JSRenderingEnabled:     false,
+			InitialWaitMs:          1500, // 1.5s for React/Next.js hydration
+			ScrollWaitMs:           2000, // 2s for lazy-loaded content
+			FinalWaitMs:            1000, // 1s for remaining DOM updates
 			Parallelism:            5,
 			UserAgent:              "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)",
 			IncludeSubdomains:      true,                       // Default to including subdomains
@@ -56,7 +59,7 @@ func (s *Store) GetOrCreateConfig(projectID uint, domain string) (*Config, error
 }
 
 // UpdateConfig updates the configuration for a project
-func (s *Store) UpdateConfig(projectID uint, jsRendering bool, parallelism int, userAgent string, includeSubdomains bool, discoveryMechanisms []string, sitemapURLs []string, checkExternalResources bool, singlePageMode bool) error {
+func (s *Store) UpdateConfig(projectID uint, jsRendering bool, initialWaitMs, scrollWaitMs, finalWaitMs int, parallelism int, userAgent string, includeSubdomains bool, discoveryMechanisms []string, sitemapURLs []string, checkExternalResources bool, singlePageMode bool) error {
 	var config Config
 
 	result := s.db.Where("project_id = ?", projectID).First(&config)
@@ -67,6 +70,9 @@ func (s *Store) UpdateConfig(projectID uint, jsRendering bool, parallelism int, 
 
 	// Update existing config
 	config.JSRenderingEnabled = jsRendering
+	config.InitialWaitMs = initialWaitMs
+	config.ScrollWaitMs = scrollWaitMs
+	config.FinalWaitMs = finalWaitMs
 	config.Parallelism = parallelism
 	config.UserAgent = userAgent
 	config.IncludeSubdomains = includeSubdomains

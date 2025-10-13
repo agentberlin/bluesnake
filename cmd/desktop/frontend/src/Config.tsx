@@ -24,6 +24,9 @@ interface ConfigProps {
 interface ConfigData {
   domain: string;
   jsRenderingEnabled: boolean;
+  initialWaitMs: number;
+  scrollWaitMs: number;
+  finalWaitMs: number;
   parallelism: number;
   userAgent: string;
   includeSubdomains: boolean;
@@ -34,6 +37,9 @@ interface ConfigData {
 
 function Config({ url, onClose }: ConfigProps) {
   const [jsRendering, setJsRendering] = useState(false);
+  const [initialWaitMs, setInitialWaitMs] = useState(1500);
+  const [scrollWaitMs, setScrollWaitMs] = useState(2000);
+  const [finalWaitMs, setFinalWaitMs] = useState(1000);
   const [parallelism, setParallelism] = useState(5);
   const [userAgent, setUserAgent] = useState('bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)');
   const [domain, setDomain] = useState('');
@@ -58,6 +64,9 @@ function Config({ url, onClose }: ConfigProps) {
       const config: ConfigData = await GetConfigForDomain(url);
       setDomain(config.domain);
       setJsRendering(config.jsRenderingEnabled);
+      setInitialWaitMs(config.initialWaitMs || 1500);
+      setScrollWaitMs(config.scrollWaitMs || 2000);
+      setFinalWaitMs(config.finalWaitMs || 1000);
       setParallelism(config.parallelism);
       setUserAgent(config.userAgent || 'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)');
       setIncludeSubdomains(config.includeSubdomains !== undefined ? config.includeSubdomains : true);
@@ -83,6 +92,9 @@ function Config({ url, onClose }: ConfigProps) {
 
       // Set default values
       setJsRendering(false);
+      setInitialWaitMs(1500);
+      setScrollWaitMs(2000);
+      setFinalWaitMs(1000);
       setParallelism(5);
       setIncludeSubdomains(true); // Default to including subdomains
       setSitemapEnabled(false);
@@ -101,6 +113,9 @@ function Config({ url, onClose }: ConfigProps) {
       await UpdateConfigForDomain(
         url,
         jsRendering,
+        initialWaitMs,
+        scrollWaitMs,
+        finalWaitMs,
         parallelism,
         userAgent,
         includeSubdomains,
@@ -165,6 +180,64 @@ function Config({ url, onClose }: ConfigProps) {
                   </div>
                 </label>
               </div>
+
+              {jsRendering && (
+                <>
+                  <div className="config-field">
+                    <label className="config-label-text">
+                      Initial Wait Time (ms)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="30000"
+                      step="100"
+                      value={initialWaitMs}
+                      onChange={(e) => setInitialWaitMs(parseInt(e.target.value) || 0)}
+                      className="config-number-input"
+                    />
+                    <p className="config-hint">
+                      Wait time after page load for JavaScript frameworks (React/Next.js) to hydrate (default: 1500ms)
+                    </p>
+                  </div>
+
+                  <div className="config-field">
+                    <label className="config-label-text">
+                      Scroll Wait Time (ms)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="30000"
+                      step="100"
+                      value={scrollWaitMs}
+                      onChange={(e) => setScrollWaitMs(parseInt(e.target.value) || 0)}
+                      className="config-number-input"
+                    />
+                    <p className="config-hint">
+                      Wait time after scrolling to bottom to trigger lazy-loaded images and content (default: 2000ms)
+                    </p>
+                  </div>
+
+                  <div className="config-field">
+                    <label className="config-label-text">
+                      Final Wait Time (ms)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="30000"
+                      step="100"
+                      value={finalWaitMs}
+                      onChange={(e) => setFinalWaitMs(parseInt(e.target.value) || 0)}
+                      className="config-number-input"
+                    />
+                    <p className="config-hint">
+                      Final wait time before capturing HTML for remaining network requests and DOM updates (default: 1000ms)
+                    </p>
+                  </div>
+                </>
+              )}
 
               <div className="config-field">
                 <label className="config-label">

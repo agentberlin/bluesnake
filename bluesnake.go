@@ -85,8 +85,24 @@ type ResourceValidationConfig struct {
 	CheckExternal bool
 }
 
+// RenderingConfig controls JavaScript rendering behavior with headless Chrome
+type RenderingConfig struct {
+	// InitialWaitMs is the initial wait time after page load (in milliseconds)
+	// This allows time for JavaScript frameworks (React/Next.js) to hydrate
+	// Default: 1500ms (matching ScreamingFrog's 5s AJAX timeout approach)
+	InitialWaitMs int
+	// ScrollWaitMs is the wait time after scrolling to bottom (in milliseconds)
+	// This triggers lazy-loaded images and content
+	// Default: 2000ms
+	ScrollWaitMs int
+	// FinalWaitMs is the final wait time before capturing HTML (in milliseconds)
+	// This allows remaining network requests and DOM updates to complete
+	// Default: 1000ms
+	FinalWaitMs int
+}
+
 // CollectorConfig contains all configuration options for a Collector
-type CollectorConfig struct {
+type CollectorConfig struct{
 	// UserAgent is the User-Agent string used by HTTP requests
 	UserAgent string
 	// Headers contains custom headers for HTTP requests
@@ -140,6 +156,9 @@ type CollectorConfig struct {
 	MaxRequests uint32
 	// EnableRendering enables JavaScript rendering using headless Chrome.
 	EnableRendering bool
+	// RenderingConfig contains configuration for JavaScript rendering wait times
+	// Only applies when EnableRendering is true
+	RenderingConfig *RenderingConfig
 	// CacheExpiration sets the maximum age for cache files.
 	CacheExpiration time.Duration
 	// Debugger is the debugger instance to use
@@ -234,6 +253,9 @@ type Collector struct {
 	// EnableRendering enables JavaScript rendering using headless Chrome.
 	// When set to true, pages will be rendered with chromedp before parsing.
 	EnableRendering bool
+	// RenderingConfig contains configuration for JavaScript rendering wait times
+	// Only applies when EnableRendering is true
+	RenderingConfig *RenderingConfig
 	// EnableContentHash enables content-based duplicate detection
 	EnableContentHash bool
 	// ContentHashAlgorithm specifies the hash algorithm to use ("xxhash", "md5", "sha256")
@@ -455,10 +477,15 @@ func NewDefaultConfig() *CollectorConfig {
 		TraceHTTP:              false,
 		ParseHTTPErrorResponse: false,
 		EnableRendering:        false,
-		DiscoveryMechanisms:    []DiscoveryMechanism{DiscoverySpider}, // Default to spider mode
-		SitemapURLs:            nil,
-		EnableContentHash:      false,
-		ContentHashAlgorithm:   "xxhash",
+		RenderingConfig: &RenderingConfig{
+			InitialWaitMs: 1500, // 1.5s for React/Next.js hydration
+			ScrollWaitMs:  2000, // 2s for lazy-loaded content
+			FinalWaitMs:   1000, // 1s for remaining DOM updates
+		},
+		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySpider}, // Default to spider mode
+		SitemapURLs:         nil,
+		EnableContentHash:   false,
+		ContentHashAlgorithm: "xxhash",
 		ContentHashConfig: &ContentHashConfig{
 			ExcludeTags:        []string{"script", "style", "nav", "footer"},
 			IncludeOnlyTags:    nil,
@@ -545,6 +572,9 @@ func NewCollector(config *CollectorConfig) *Collector {
 		if config.EnableRendering {
 			defaults.EnableRendering = true
 		}
+		if config.RenderingConfig != nil {
+			defaults.RenderingConfig = config.RenderingConfig
+		}
 		if config.CacheExpiration != 0 {
 			defaults.CacheExpiration = config.CacheExpiration
 		}
@@ -606,6 +636,7 @@ func NewCollector(config *CollectorConfig) *Collector {
 	}
 	c.MaxRequests = config.MaxRequests
 	c.EnableRendering = config.EnableRendering
+	c.RenderingConfig = config.RenderingConfig
 	c.CacheExpiration = config.CacheExpiration
 	if config.Debugger != nil {
 		config.Debugger.Init()
@@ -1396,7 +1427,7 @@ func (c *Collector) handleOnHTML(resp *Response) error {
 	var bodyReader *bytes.Buffer
 	if c.EnableRendering {
 		renderer := getRenderer()
-		renderedHTML, discoveredURLs, err := renderer.RenderPage(resp.Request.URL.String())
+		renderedHTML, discoveredURLs, err := renderer.RenderPage(resp.Request.URL.String(), c.RenderingConfig)
 		if err != nil {
 			// If rendering fails, fall back to original HTML
 			log.Printf("Chromedp rendering failed for %s: %v. Falling back to non-rendered HTML", resp.Request.URL.String(), err)

@@ -134,6 +134,9 @@ interface CrawlProgress {
 interface ConfigData {
   domain: string;
   jsRenderingEnabled: boolean;
+  initialWaitMs: number;
+  scrollWaitMs: number;
+  finalWaitMs: number;
   parallelism: number;
   userAgent: string;
   includeSubdomains: boolean;
@@ -656,6 +659,9 @@ function App() {
         await UpdateConfigForDomain(
           url,
           existingConfig.jsRenderingEnabled,
+          existingConfig.initialWaitMs || 1500,
+          existingConfig.scrollWaitMs || 2000,
+          existingConfig.finalWaitMs || 1000,
           existingConfig.parallelism,
           existingConfig.userAgent || 'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)',
           existingConfig.includeSubdomains,
@@ -670,6 +676,9 @@ function App() {
         await UpdateConfigForDomain(
           url,
           false, // jsRendering - default
+          1500,  // initialWaitMs - default
+          2000,  // scrollWaitMs - default
+          1000,  // finalWaitMs - default
           5,     // parallelism - default
           'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)', // userAgent
           true,  // includeSubdomains - default
@@ -715,6 +724,9 @@ function App() {
         await UpdateConfigForDomain(
           url,
           existingConfig.jsRenderingEnabled,
+          existingConfig.initialWaitMs || 1500,
+          existingConfig.scrollWaitMs || 2000,
+          existingConfig.finalWaitMs || 1000,
           existingConfig.parallelism,
           existingConfig.userAgent || 'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)',
           existingConfig.includeSubdomains,
@@ -729,6 +741,9 @@ function App() {
         await UpdateConfigForDomain(
           url,
           false, // jsRendering - default
+          1500,  // initialWaitMs - default
+          2000,  // scrollWaitMs - default
+          1000,  // finalWaitMs - default
           5,     // parallelism - default
           'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)', // userAgent
           true,  // includeSubdomains - default (doesn't matter in single page mode)

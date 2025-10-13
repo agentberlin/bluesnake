@@ -69,6 +69,9 @@ type CrawlResultDetailed struct {
 type ConfigResponse struct {
 	Domain                 string   `json:"domain"`
 	JSRenderingEnabled     bool     `json:"jsRenderingEnabled"`
+	InitialWaitMs          int      `json:"initialWaitMs"`
+	ScrollWaitMs           int      `json:"scrollWaitMs"`
+	FinalWaitMs            int      `json:"finalWaitMs"`
 	Parallelism            int      `json:"parallelism"`
 	UserAgent              string   `json:"userAgent"`
 	IncludeSubdomains      bool     `json:"includeSubdomains"`
