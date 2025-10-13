@@ -496,7 +496,7 @@ func NewDefaultConfig() *CollectorConfig {
 		},
 		ResourceValidation: &ResourceValidationConfig{
 			Enabled:       true,
-			ResourceTypes: []string{"image", "script", "stylesheet"},
+			ResourceTypes: []string{"image", "script", "stylesheet", "font"},
 			CheckExternal: true,
 		},
 	}
