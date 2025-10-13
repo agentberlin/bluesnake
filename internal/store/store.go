@@ -49,10 +49,27 @@ func NewStore() (*Store, error) {
 
 // newStoreWithPath creates a store with a custom database path (used for testing)
 func newStoreWithPath(dbPath string) (*Store, error) {
-	database, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+	// Configure SQLite with pragmas for better concurrency
+	// WAL mode enables concurrent reads and writes
+	// busy_timeout prevents immediate "database is locked" errors
+	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL&_cache_size=1000000000", dbPath)
+
+	database, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %v", err)
 	}
+
+	// Get underlying SQL DB and configure connection pool
+	sqlDB, err := database.DB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get underlying SQL DB: %v", err)
+	}
+
+	// Set connection pool settings for better concurrency
+	sqlDB.SetMaxOpenConns(25)         // Max number of open connections
+	sqlDB.SetMaxIdleConns(5)          // Max number of idle connections
+	sqlDB.SetConnMaxLifetime(0)       // Connections never expire (reuse them)
+	sqlDB.SetConnMaxIdleTime(0)       // Idle connections never expire
 
 	// Auto migrate the schema
 	if err := database.AutoMigrate(&Config{}, &Project{}, &Crawl{}, &CrawledUrl{}, &PageLink{}); err != nil {
