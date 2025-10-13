@@ -1396,13 +1396,19 @@ func (c *Collector) handleOnHTML(resp *Response) error {
 	var bodyReader *bytes.Buffer
 	if c.EnableRendering {
 		renderer := getRenderer()
-		renderedHTML, err := renderer.RenderPage(resp.Request.URL.String())
+		renderedHTML, discoveredURLs, err := renderer.RenderPage(resp.Request.URL.String())
 		if err != nil {
 			// If rendering fails, fall back to original HTML
 			log.Printf("Chromedp rendering failed for %s: %v. Falling back to non-rendered HTML", resp.Request.URL.String(), err)
 			bodyReader = bytes.NewBuffer(resp.Body)
 		} else {
 			bodyReader = bytes.NewBufferString(renderedHTML)
+			// Store discovered URLs in context for crawler to use
+			if len(discoveredURLs) > 0 {
+				// Convert to JSON for storage in context
+				urlsJSON, _ := json.Marshal(discoveredURLs)
+				resp.Ctx.Put("networkDiscoveredURLs", string(urlsJSON))
+			}
 		}
 	} else {
 		bodyReader = bytes.NewBuffer(resp.Body)

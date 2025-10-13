@@ -440,3 +440,234 @@ func TestRootDomainExtraction(t *testing.T) {
 		})
 	}
 }
+
+// TestCSSResourceExtraction tests that fonts and images are extracted from CSS files
+func TestCSSResourceExtraction(t *testing.T) {
+	mock := NewMockTransport()
+
+	// Register HTML page with CSS link
+	mock.RegisterHTML("https://example.com/", `<html>
+		<head>
+			<title>Home Page</title>
+			<link rel="stylesheet" href="/styles.css">
+		</head>
+		<body>
+			<h1>Welcome</h1>
+		</body>
+	</html>`)
+
+	// Register CSS file with font and image references
+	cssContent := `
+	@font-face {
+		font-family: 'CustomFont';
+		src: url('/fonts/custom-regular.woff2') format('woff2'),
+		     url('/fonts/custom-regular.woff') format('woff');
+	}
+	@font-face {
+		font-family: 'CustomFont';
+		font-weight: bold;
+		src: url('/fonts/custom-bold.woff2') format('woff2');
+	}
+	body {
+		background-image: url('/images/background.png');
+	}
+	.icon {
+		background: url('/images/icon.svg');
+	}
+	`
+	mock.RegisterResponse("https://example.com/styles.css", &MockResponse{
+		StatusCode: 200,
+		Body:       cssContent,
+		Headers:    http.Header{"Content-Type": []string{"text/css"}},
+	})
+
+	// Register font files
+	mock.RegisterResponse("https://example.com/fonts/custom-regular.woff2", &MockResponse{
+		StatusCode: 200,
+		Body:       "FONT_DATA_WOFF2",
+		Headers:    http.Header{"Content-Type": []string{"font/woff2"}},
+	})
+	mock.RegisterResponse("https://example.com/fonts/custom-regular.woff", &MockResponse{
+		StatusCode: 200,
+		Body:       "FONT_DATA_WOFF",
+		Headers:    http.Header{"Content-Type": []string{"font/woff"}},
+	})
+	mock.RegisterResponse("https://example.com/fonts/custom-bold.woff2", &MockResponse{
+		StatusCode: 200,
+		Body:       "FONT_DATA_BOLD",
+		Headers:    http.Header{"Content-Type": []string{"font/woff2"}},
+	})
+
+	// Register image files
+	mock.RegisterResponse("https://example.com/images/background.png", &MockResponse{
+		StatusCode: 200,
+		Body:       "IMAGE_DATA_PNG",
+		Headers:    http.Header{"Content-Type": []string{"image/png"}},
+	})
+	mock.RegisterResponse("https://example.com/images/icon.svg", &MockResponse{
+		StatusCode: 200,
+		Body:       "IMAGE_DATA_SVG",
+		Headers:    http.Header{"Content-Type": []string{"image/svg+xml"}},
+	})
+
+	var mu sync.Mutex
+	visitedResources := make(map[string]*ResourceResult)
+
+	crawler := NewCrawler(&CollectorConfig{
+		AllowedDomains: []string{"example.com"},
+		Async:          true,
+		// Enable resource validation to crawl CSS resources
+		ResourceValidation: &ResourceValidationConfig{
+			Enabled:       true,
+			CheckExternal: false,
+			ResourceTypes: []string{"stylesheet", "font", "image"},
+		},
+	})
+	crawler.Collector.WithTransport(mock)
+
+	crawler.SetOnResourceVisit(func(result *ResourceResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		visitedResources[result.URL] = result
+	})
+
+	err := crawler.Start("https://example.com/")
+	if err != nil {
+		t.Fatalf("Failed to start crawler: %v", err)
+	}
+
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Verify CSS file was visited
+	if _, found := visitedResources["https://example.com/styles.css"]; !found {
+		t.Error("CSS file should be visited")
+	}
+
+	// Verify fonts extracted from CSS were visited
+	expectedFonts := []string{
+		"https://example.com/fonts/custom-regular.woff2",
+		"https://example.com/fonts/custom-regular.woff",
+		"https://example.com/fonts/custom-bold.woff2",
+	}
+	for _, fontURL := range expectedFonts {
+		if resource, found := visitedResources[fontURL]; !found {
+			t.Errorf("Font %s should be extracted from CSS and visited", fontURL)
+		} else if resource.Status != 200 {
+			t.Errorf("Font %s should have status 200, got %d", fontURL, resource.Status)
+		}
+	}
+
+	// Verify images extracted from CSS were visited
+	expectedImages := []string{
+		"https://example.com/images/background.png",
+		"https://example.com/images/icon.svg",
+	}
+	for _, imageURL := range expectedImages {
+		if resource, found := visitedResources[imageURL]; !found {
+			t.Errorf("Image %s should be extracted from CSS and visited", imageURL)
+		} else if resource.Status != 200 {
+			t.Errorf("Image %s should have status 200, got %d", imageURL, resource.Status)
+		}
+	}
+
+	t.Logf("Successfully extracted and crawled %d resources from CSS", len(visitedResources))
+}
+
+// TestCSSResourceExtractionInternalOnly tests that internal fonts are crawled even when font validation is disabled
+func TestCSSResourceExtractionInternalOnly(t *testing.T) {
+	mock := NewMockTransport()
+
+	// Register HTML page with CSS link
+	mock.RegisterHTML("https://example.com/", `<html>
+		<head>
+			<title>Home Page</title>
+			<link rel="stylesheet" href="/styles.css">
+		</head>
+		<body><h1>Welcome</h1></body>
+	</html>`)
+
+	// Register CSS file with internal and external font references
+	cssContent := `
+	@font-face {
+		font-family: 'InternalFont';
+		src: url('/fonts/internal.woff2') format('woff2');
+	}
+	@font-face {
+		font-family: 'ExternalFont';
+		src: url('https://external.com/fonts/external.woff2') format('woff2');
+	}
+	`
+	mock.RegisterResponse("https://example.com/styles.css", &MockResponse{
+		StatusCode: 200,
+		Body:       cssContent,
+		Headers:    http.Header{"Content-Type": []string{"text/css"}},
+	})
+
+	// Register internal font file
+	mock.RegisterResponse("https://example.com/fonts/internal.woff2", &MockResponse{
+		StatusCode: 200,
+		Body:       "INTERNAL_FONT_DATA",
+		Headers:    http.Header{"Content-Type": []string{"font/woff2"}},
+	})
+
+	// Register external font file (should NOT be crawled)
+	mock.RegisterResponse("https://external.com/fonts/external.woff2", &MockResponse{
+		StatusCode: 200,
+		Body:       "EXTERNAL_FONT_DATA",
+		Headers:    http.Header{"Content-Type": []string{"font/woff2"}},
+	})
+
+	var mu sync.Mutex
+	visitedResources := make(map[string]*ResourceResult)
+
+	crawler := NewCrawler(&CollectorConfig{
+		AllowedDomains: []string{"example.com"},
+		Async:          true,
+		// Enable stylesheet validation but NOT font validation
+		// Internal fonts should still be crawled, external fonts should not
+		ResourceValidation: &ResourceValidationConfig{
+			Enabled:       true,
+			CheckExternal: false,
+			ResourceTypes: []string{"stylesheet"}, // Only validate stylesheets, not fonts
+		},
+	})
+	crawler.Collector.WithTransport(mock)
+
+	crawler.SetOnResourceVisit(func(result *ResourceResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		visitedResources[result.URL] = result
+	})
+
+	err := crawler.Start("https://example.com/")
+	if err != nil {
+		t.Fatalf("Failed to start crawler: %v", err)
+	}
+
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Verify CSS file was visited
+	if _, found := visitedResources["https://example.com/styles.css"]; !found {
+		t.Error("CSS file should be visited")
+	}
+
+	// Verify internal font was crawled even without font validation enabled
+	internalFontURL := "https://example.com/fonts/internal.woff2"
+	if _, found := visitedResources[internalFontURL]; !found {
+		t.Errorf("Internal font %s should be crawled even without font validation", internalFontURL)
+	}
+
+	// Verify external font was NOT crawled (no font validation, external)
+	externalFontURL := "https://external.com/fonts/external.woff2"
+	if _, found := visitedResources[externalFontURL]; found {
+		t.Errorf("External font %s should NOT be crawled without font validation", externalFontURL)
+	}
+
+	t.Logf("Successfully crawled %d resources from CSS (internal only)", len(visitedResources))
+}

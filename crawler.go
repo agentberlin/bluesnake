@@ -15,8 +15,10 @@
 package bluesnake
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -282,6 +284,46 @@ func (cr *Crawler) setupCallbacks() {
 		// Extract ALL link types (anchors, images, scripts, etc.)
 		allLinks := cr.extractAllLinks(e)
 
+		// Add network-discovered URLs from browser network monitoring (if JS rendering is enabled)
+		if networkURLsJSON := e.Request.Ctx.Get("networkDiscoveredURLs"); networkURLsJSON != "" {
+			var networkURLs []string
+			if err := json.Unmarshal([]byte(networkURLsJSON), &networkURLs); err == nil {
+				// Convert network URLs to Link objects and add them to allLinks
+				for _, networkURL := range networkURLs {
+					// Skip analytics and tracking URLs
+					if isAnalyticsOrTracking(networkURL) {
+						continue
+					}
+
+					// Determine resource type from URL
+					linkType := inferResourceType(networkURL)
+					isInternal := cr.isInternalURL(networkURL)
+
+					// Create link object
+					link := Link{
+						URL:        networkURL,
+						Type:       linkType,
+						Text:       "",
+						Context:    "network",
+						IsInternal: isInternal,
+					}
+
+					// Add to allLinks for reporting
+					allLinks = append(allLinks, link)
+
+					// Queue network-discovered resources for crawling
+					// Internal resources are always crawled; external resources only if validation is enabled
+					shouldCrawl := isInternal || cr.shouldValidateResource(link)
+					if shouldCrawl && cr.isURLCrawlable(networkURL) {
+						// Only visit if not already queued
+						if _, alreadyQueued := cr.queuedURLs.LoadOrStore(networkURL, true); !alreadyQueued {
+							e.Request.Visit(networkURL)
+						}
+					}
+				}
+			}
+		}
+
 		// Store outbound links for this page
 		pageOutboundLinks.Store(e.Request.URL.String(), allLinks)
 
@@ -446,6 +488,44 @@ func (cr *Crawler) setupCallbacks() {
 
 			// Call OnResourceVisit callback if set
 			cr.callOnResourceVisit(result)
+
+			// Extract URLs from CSS files for font and resource discovery
+			if strings.Contains(contentType, "text/css") || strings.Contains(contentType, "stylesheet") {
+				cssContent := string(r.Body)
+				cssURLs := extractURLsFromCSS(cssContent)
+
+				// Queue extracted URLs for crawling (if resource validation is enabled)
+				for _, cssURL := range cssURLs {
+					// Convert to absolute URL
+					absoluteURL := r.Request.AbsoluteURL(cssURL)
+					if absoluteURL == "" {
+						continue
+					}
+
+					// Determine resource type from URL/extension
+					resourceType := inferResourceType(absoluteURL)
+
+					// Create a link object to check if we should validate this resource
+					isInternal := cr.isInternalURL(absoluteURL)
+					link := Link{
+						URL:        absoluteURL,
+						Type:       resourceType,
+						IsInternal: isInternal,
+					}
+
+					// Always crawl internal resources from CSS (like fonts, images)
+					// For external resources, only crawl if resource validation is enabled
+					shouldCrawl := isInternal || cr.shouldValidateResource(link)
+
+					if shouldCrawl && cr.isURLCrawlable(absoluteURL) {
+						// Only visit if not already queued
+						if _, alreadyQueued := cr.queuedURLs.LoadOrStore(absoluteURL, true); !alreadyQueued {
+							r.Request.Visit(absoluteURL)
+						}
+					}
+				}
+			}
+
 			// Note: We don't return here to allow extensions and low-level code that
 			// registers OnResponse callbacks on crawler.Collector to process all responses.
 			// For example, the Referer extension (extensions/referer.go) tracks all responses
@@ -984,4 +1064,115 @@ func (pr *PageResult) GetTextContent() string {
 		return ""
 	}
 	return extractMainContentText(pr.response.Body)
+}
+
+// extractURLsFromCSS extracts resource URLs from CSS content.
+// It finds URLs from url() functions in CSS, commonly used for:
+// - Font files (@font-face declarations)
+// - Background images
+// - Other resources
+// Returns a list of URLs found in the CSS.
+func extractURLsFromCSS(cssContent string) []string {
+	// Strip CSS comments (/* ... */) before extracting URLs
+	// This prevents extracting URLs from commented-out code
+	commentRegex := regexp.MustCompile(`/\*[\s\S]*?\*/`)
+	cssContent = commentRegex.ReplaceAllString(cssContent, "")
+
+	// Regex to match url() in CSS
+	// Matches: url("path"), url('path'), url(path)
+	re := regexp.MustCompile(`url\s*\(\s*['"]?([^'")]+)['"]?\s*\)`)
+	matches := re.FindAllStringSubmatch(cssContent, -1)
+
+	var urls []string
+	seen := make(map[string]bool)
+
+	for _, match := range matches {
+		if len(match) > 1 {
+			url := strings.TrimSpace(match[1])
+			// Skip data URLs and empty strings
+			if url != "" && !strings.HasPrefix(url, "data:") && !seen[url] {
+				urls = append(urls, url)
+				seen[url] = true
+			}
+		}
+	}
+
+	return urls
+}
+
+// inferResourceType determines the resource type from a URL based on its extension or path patterns
+func inferResourceType(urlStr string) string {
+	urlLower := strings.ToLower(urlStr)
+
+	// Check for common resource patterns and extensions
+	switch {
+	// Images
+	case strings.Contains(urlLower, ".jpg") || strings.Contains(urlLower, ".jpeg") ||
+		strings.Contains(urlLower, ".png") || strings.Contains(urlLower, ".gif") ||
+		strings.Contains(urlLower, ".webp") || strings.Contains(urlLower, ".svg") ||
+		strings.Contains(urlLower, ".ico") || strings.Contains(urlLower, "/image?"):
+		return "image"
+
+	// JavaScript
+	case strings.Contains(urlLower, ".js") || strings.Contains(urlLower, ".mjs"):
+		return "script"
+
+	// Stylesheets
+	case strings.Contains(urlLower, ".css"):
+		return "stylesheet"
+
+	// Fonts
+	case strings.Contains(urlLower, ".woff") || strings.Contains(urlLower, ".woff2") ||
+		strings.Contains(urlLower, ".ttf") || strings.Contains(urlLower, ".eot") ||
+		strings.Contains(urlLower, ".otf"):
+		return "font"
+
+	// Video
+	case strings.Contains(urlLower, ".mp4") || strings.Contains(urlLower, ".webm") ||
+		strings.Contains(urlLower, ".ogg") || strings.Contains(urlLower, ".avi"):
+		return "video"
+
+	// Audio
+	case strings.Contains(urlLower, ".mp3") || strings.Contains(urlLower, ".wav") ||
+		strings.Contains(urlLower, ".flac") || strings.Contains(urlLower, ".aac"):
+		return "audio"
+
+	// API endpoints (heuristic: contains /api/ in path)
+	case strings.Contains(urlLower, "/api/"):
+		return "api"
+
+	// Default to "other" for unknown types
+	default:
+		return "other"
+	}
+}
+
+// isAnalyticsOrTracking checks if a URL is an analytics or tracking endpoint
+// that should be excluded from crawling
+func isAnalyticsOrTracking(urlStr string) bool {
+	urlLower := strings.ToLower(urlStr)
+
+	// Common analytics and tracking patterns
+	analyticsPatterns := []string{
+		"/g/collect",        // Google Analytics
+		"/gtm.js",           // Google Tag Manager
+		"/gtag/js",          // Google Global Site Tag
+		"/analytics.js",     // Generic analytics
+		"/ga.js",            // Google Analytics legacy
+		"google-analytics", // Google Analytics domain
+		"googletagmanager", // Tag Manager domain
+		"/pixel",            // Tracking pixels
+		"/track",            // Generic tracking
+		"/beacon",           // Beacon API
+		"/telemetry",        // Telemetry endpoints
+		"_rsc=",             // React Server Components cache-busting tokens
+	}
+
+	for _, pattern := range analyticsPatterns {
+		if strings.Contains(urlLower, pattern) {
+			return true
+		}
+	}
+
+	return false
 }
