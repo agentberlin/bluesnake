@@ -16,6 +16,8 @@ import { useState, useEffect } from 'react';
 import { GetConfigForDomain, UpdateConfigForDomain } from "../wailsjs/go/main/DesktopApp";
 import './Config.css';
 
+type ConfigTab = 'scope' | 'rendering' | 'performance' | 'advanced';
+
 interface ConfigProps {
   url: string;
   onClose: () => void;
@@ -36,6 +38,7 @@ interface ConfigData {
 }
 
 function Config({ url, onClose }: ConfigProps) {
+  const [activeTab, setActiveTab] = useState<ConfigTab>('scope');
   const [jsRendering, setJsRendering] = useState(false);
   const [initialWaitMs, setInitialWaitMs] = useState(1500);
   const [scrollWaitMs, setScrollWaitMs] = useState(2000);
@@ -160,231 +163,272 @@ function Config({ url, onClose }: ConfigProps) {
             <div className="config-loading">Loading configuration...</div>
           </div>
         ) : (
-          <div className="config-content">
-            <div className="config-section">
-              {error && <div className="config-error">{error}</div>}
+          <>
+            <div className="config-tabs">
+              <button
+                className={`config-tab ${activeTab === 'scope' ? 'active' : ''}`}
+                onClick={() => setActiveTab('scope')}
+              >
+                Scope
+              </button>
+              <button
+                className={`config-tab ${activeTab === 'rendering' ? 'active' : ''}`}
+                onClick={() => setActiveTab('rendering')}
+              >
+                Rendering
+              </button>
+              <button
+                className={`config-tab ${activeTab === 'performance' ? 'active' : ''}`}
+                onClick={() => setActiveTab('performance')}
+              >
+                Performance
+              </button>
+              <button
+                className={`config-tab ${activeTab === 'advanced' ? 'active' : ''}`}
+                onClick={() => setActiveTab('advanced')}
+              >
+                Advanced
+              </button>
+            </div>
 
-              <div className="config-field">
-                <label className="config-label">
-                  <input
-                    type="checkbox"
-                    checked={jsRendering}
-                    onChange={(e) => setJsRendering(e.target.checked)}
-                    className="config-checkbox"
-                  />
-                  <div>
-                    <span className="checkbox-label">Enable JavaScript Rendering</span>
-                    <p className="config-hint">
-                      When enabled, pages will be rendered with a headless browser to execute JavaScript. On first crawl, this setting is automatically detected based on whether the site uses client-side rendering.
-                    </p>
-                  </div>
-                </label>
-              </div>
+            <div className="config-content">
+              <div className="config-tab-content">
+                {error && <div className="config-error">{error}</div>}
 
-              {jsRendering && (
-                <>
-                  <div className="config-field">
-                    <label className="config-label-text">
-                      Initial Wait Time (ms)
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      max="30000"
-                      step="100"
-                      value={initialWaitMs}
-                      onChange={(e) => setInitialWaitMs(parseInt(e.target.value) || 0)}
-                      className="config-number-input"
-                    />
-                    <p className="config-hint">
-                      Wait time after page load for JavaScript frameworks (React/Next.js) to hydrate (default: 1500ms)
-                    </p>
-                  </div>
+                {activeTab === 'scope' && (
+                  <div className="config-tab-panel">
+                    <div className="config-field">
+                      <label className="config-label">
+                        <input
+                          type="checkbox"
+                          checked={singlePageMode}
+                          onChange={(e) => setSinglePageMode(e.target.checked)}
+                          className="config-checkbox"
+                        />
+                        <div>
+                          <span className="checkbox-label">Single Page Mode</span>
+                          <p className="config-hint">
+                            When enabled, only the starting URL will be crawled without following any links or sitemaps. This overrides all discovery mechanism settings.
+                          </p>
+                        </div>
+                      </label>
+                    </div>
 
-                  <div className="config-field">
-                    <label className="config-label-text">
-                      Scroll Wait Time (ms)
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      max="30000"
-                      step="100"
-                      value={scrollWaitMs}
-                      onChange={(e) => setScrollWaitMs(parseInt(e.target.value) || 0)}
-                      className="config-number-input"
-                    />
-                    <p className="config-hint">
-                      Wait time after scrolling to bottom to trigger lazy-loaded images and content (default: 2000ms)
-                    </p>
-                  </div>
+                    {singlePageMode && (
+                      <div className="config-warning-box">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                          <line x1="12" y1="9" x2="12" y2="13"></line>
+                          <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                        </svg>
+                        <p>
+                          Note: Single Page Mode is active. Discovery mechanisms (Spider/Sitemap) will be ignored.
+                        </p>
+                      </div>
+                    )}
 
-                  <div className="config-field">
-                    <label className="config-label-text">
-                      Final Wait Time (ms)
-                    </label>
-                    <input
-                      type="number"
-                      min="0"
-                      max="30000"
-                      step="100"
-                      value={finalWaitMs}
-                      onChange={(e) => setFinalWaitMs(parseInt(e.target.value) || 0)}
-                      className="config-number-input"
-                    />
-                    <p className="config-hint">
-                      Final wait time before capturing HTML for remaining network requests and DOM updates (default: 1000ms)
-                    </p>
-                  </div>
-                </>
-              )}
+                    <div className="config-field">
+                      <label className="config-label">
+                        <input
+                          type="checkbox"
+                          checked={includeSubdomains}
+                          onChange={(e) => setIncludeSubdomains(e.target.checked)}
+                          className="config-checkbox"
+                        />
+                        <div>
+                          <span className="checkbox-label">Include Subdomains</span>
+                          <p className="config-hint">
+                            When enabled, the crawler will include all subdomains of the main domain (e.g., blog.example.com, api.example.com)
+                          </p>
+                        </div>
+                      </label>
+                    </div>
 
-              <div className="config-field">
-                <label className="config-label">
-                  <input
-                    type="checkbox"
-                    checked={includeSubdomains}
-                    onChange={(e) => setIncludeSubdomains(e.target.checked)}
-                    className="config-checkbox"
-                  />
-                  <div>
-                    <span className="checkbox-label">Include Subdomains</span>
-                    <p className="config-hint">
-                      When enabled, the crawler will include all subdomains of the main domain (e.g., blog.example.com, api.example.com)
-                    </p>
-                  </div>
-                </label>
-              </div>
+                    <div className="config-field">
+                      <label className="config-label-text">Discovery Mechanisms</label>
 
-              <div className="config-field">
-                <label className="config-label">
-                  <input
-                    type="checkbox"
-                    checked={checkExternalResources}
-                    onChange={(e) => setCheckExternalResources(e.target.checked)}
-                    className="config-checkbox"
-                  />
-                  <div>
-                    <span className="checkbox-label">Check External Resources</span>
-                    <p className="config-hint">
-                      When enabled, validates external resources (images, CSS, JS) for broken links
-                    </p>
-                  </div>
-                </label>
-              </div>
+                      <div style={{ opacity: singlePageMode ? 0.4 : 1, pointerEvents: singlePageMode ? 'none' : 'auto' }}>
+                        <label className="config-label">
+                          <input
+                            type="checkbox"
+                            checked={true}
+                            disabled={true}
+                            className="config-checkbox"
+                          />
+                          <div>
+                            <span className="checkbox-label">Spider</span>
+                            <p className="config-hint">Follow links discovered in HTML pages (always enabled{singlePageMode ? ', ignored in Single Page Mode' : ''})</p>
+                          </div>
+                        </label>
 
-              <div className="config-field">
-                <label className="config-label-text">
-                  Number of Concurrent Requests
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  max="100"
-                  value={parallelism}
-                  onChange={(e) => setParallelism(parseInt(e.target.value) || 1)}
-                  className="config-number-input"
-                />
-                <p className="config-hint">
-                  Maximum number of links to process at the same time (default: 5)
-                </p>
-              </div>
+                        <label className="config-label">
+                          <input
+                            type="checkbox"
+                            checked={sitemapEnabled}
+                            onChange={(e) => setSitemapEnabled(e.target.checked)}
+                            className="config-checkbox"
+                            disabled={singlePageMode}
+                          />
+                          <div>
+                            <span className="checkbox-label">Sitemap</span>
+                            <p className="config-hint">
+                              Discover URLs from sitemap.xml at default location (/sitemap.xml). When enabled, Spider is automatically included for comprehensive crawling{singlePageMode ? ' (ignored in Single Page Mode)' : ''}.
+                            </p>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
 
-              <div className="config-field">
-                <label className="config-label-text">
-                  User Agent
-                </label>
-                <input
-                  type="text"
-                  value={userAgent}
-                  onChange={(e) => setUserAgent(e.target.value)}
-                  className="config-number-input"
-                  placeholder="bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)"
-                />
-                <p className="config-hint">
-                  Custom User-Agent string for HTTP requests (default: bluesnake/1.0)
-                </p>
-              </div>
-
-              <div className="config-field">
-                <label className="config-label">
-                  <input
-                    type="checkbox"
-                    checked={singlePageMode}
-                    onChange={(e) => setSinglePageMode(e.target.checked)}
-                    className="config-checkbox"
-                  />
-                  <div>
-                    <span className="checkbox-label">Single Page Mode</span>
-                    <p className="config-hint">
-                      When enabled, only the starting URL will be crawled without following any links or sitemaps. This overrides all discovery mechanism settings.
-                    </p>
-                  </div>
-                </label>
-              </div>
-
-              {singlePageMode && (
-                <div className="config-field" style={{ marginTop: '-8px', marginBottom: '16px' }}>
-                  <div style={{ padding: '12px', backgroundColor: 'rgba(255, 196, 0, 0.1)', border: '1px solid rgba(255, 196, 0, 0.3)', borderRadius: '4px' }}>
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgb(255, 196, 0)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '2px' }}>
-                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-                        <line x1="12" y1="9" x2="12" y2="13"></line>
-                        <line x1="12" y1="17" x2="12.01" y2="17"></line>
-                      </svg>
-                      <p style={{ margin: 0, fontSize: '13px', lineHeight: '1.5', color: 'rgb(255, 196, 0)' }}>
-                        Note: Single Page Mode is active. Discovery mechanisms (Spider/Sitemap) will be ignored.
-                      </p>
+                    <div className="config-field">
+                      <label className="config-label">
+                        <input
+                          type="checkbox"
+                          checked={checkExternalResources}
+                          onChange={(e) => setCheckExternalResources(e.target.checked)}
+                          className="config-checkbox"
+                        />
+                        <div>
+                          <span className="checkbox-label">Check External Resources</span>
+                          <p className="config-hint">
+                            When enabled, validates external resources (images, CSS, JS) for broken links
+                          </p>
+                        </div>
+                      </label>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              <div className="config-field">
-                <label className="config-label-text">Discovery Mechanisms</label>
-
-                <div style={{ opacity: singlePageMode ? 0.4 : 1, pointerEvents: singlePageMode ? 'none' : 'auto' }}>
-                  <label className="config-label">
-                    <input
-                      type="checkbox"
-                      checked={true}
-                      disabled={true}
-                      className="config-checkbox"
-                    />
-                    <div>
-                      <span className="checkbox-label">Spider</span>
-                      <p className="config-hint">Follow links discovered in HTML pages (always enabled{singlePageMode ? ', ignored in Single Page Mode' : ''})</p>
+                {activeTab === 'rendering' && (
+                  <div className="config-tab-panel">
+                    <div className="config-field">
+                      <label className="config-label">
+                        <input
+                          type="checkbox"
+                          checked={jsRendering}
+                          onChange={(e) => setJsRendering(e.target.checked)}
+                          className="config-checkbox"
+                        />
+                        <div>
+                          <span className="checkbox-label">Enable JavaScript Rendering</span>
+                          <p className="config-hint">
+                            When enabled, pages will be rendered with a headless browser to execute JavaScript. On first crawl, this setting is automatically detected based on whether the site uses client-side rendering.
+                          </p>
+                        </div>
+                      </label>
                     </div>
-                  </label>
 
-                  <label className="config-label">
-                    <input
-                      type="checkbox"
-                      checked={sitemapEnabled}
-                      onChange={(e) => setSitemapEnabled(e.target.checked)}
-                      className="config-checkbox"
-                      disabled={singlePageMode}
-                    />
-                    <div>
-                      <span className="checkbox-label">Sitemap</span>
+                    {jsRendering && (
+                      <>
+                        <div className="config-field">
+                          <label className="config-label-text">
+                            Initial Wait Time (ms)
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            max="30000"
+                            step="100"
+                            value={initialWaitMs}
+                            onChange={(e) => setInitialWaitMs(parseInt(e.target.value) || 0)}
+                            className="config-number-input"
+                          />
+                          <p className="config-hint">
+                            Wait time after page load for JavaScript frameworks (React/Next.js) to hydrate (default: 1500ms)
+                          </p>
+                        </div>
+
+                        <div className="config-field">
+                          <label className="config-label-text">
+                            Scroll Wait Time (ms)
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            max="30000"
+                            step="100"
+                            value={scrollWaitMs}
+                            onChange={(e) => setScrollWaitMs(parseInt(e.target.value) || 0)}
+                            className="config-number-input"
+                          />
+                          <p className="config-hint">
+                            Wait time after scrolling to bottom to trigger lazy-loaded images and content (default: 2000ms)
+                          </p>
+                        </div>
+
+                        <div className="config-field">
+                          <label className="config-label-text">
+                            Final Wait Time (ms)
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            max="30000"
+                            step="100"
+                            value={finalWaitMs}
+                            onChange={(e) => setFinalWaitMs(parseInt(e.target.value) || 0)}
+                            className="config-number-input"
+                          />
+                          <p className="config-hint">
+                            Final wait time before capturing HTML for remaining network requests and DOM updates (default: 1000ms)
+                          </p>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {activeTab === 'performance' && (
+                  <div className="config-tab-panel">
+                    <div className="config-field">
+                      <label className="config-label-text">
+                        Number of Concurrent Requests
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="100"
+                        value={parallelism}
+                        onChange={(e) => setParallelism(parseInt(e.target.value) || 1)}
+                        className="config-number-input"
+                      />
                       <p className="config-hint">
-                        Discover URLs from sitemap.xml at default location (/sitemap.xml). When enabled, Spider is automatically included for comprehensive crawling{singlePageMode ? ' (ignored in Single Page Mode)' : ''}.
+                        Maximum number of links to process at the same time (default: 5)
                       </p>
                     </div>
-                  </label>
-                </div>
-              </div>
+                  </div>
+                )}
 
-              <div className="config-actions">
-                <button className="config-cancel-button" onClick={onClose}>
-                  Cancel
-                </button>
-                <button className="config-save-button" onClick={handleSave} disabled={saving}>
-                  {saving ? 'Saving...' : 'Save Configuration'}
-                </button>
+                {activeTab === 'advanced' && (
+                  <div className="config-tab-panel">
+                    <div className="config-field">
+                      <label className="config-label-text">
+                        User Agent
+                      </label>
+                      <input
+                        type="text"
+                        value={userAgent}
+                        onChange={(e) => setUserAgent(e.target.value)}
+                        className="config-number-input"
+                        placeholder="bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)"
+                      />
+                      <p className="config-hint">
+                        Custom User-Agent string for HTTP requests (default: bluesnake/1.0)
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <div className="config-actions">
+                  <button className="config-cancel-button" onClick={onClose}>
+                    Cancel
+                  </button>
+                  <button className="config-save-button" onClick={handleSave} disabled={saving}>
+                    {saving ? 'Saving...' : 'Save Configuration'}
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
+          </>
         )}
       </div>
     </div>
