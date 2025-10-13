@@ -94,12 +94,14 @@ interface CrawlResult {
 
 interface Link {
   url: string;
+  linkType: string;  // "anchor", "image", "script", "stylesheet", etc.
   anchorText: string;
   context?: string;
   isInternal: boolean;
   status?: number;
   position?: string;
   domPath?: string;
+  urlAction: string;  // "crawl", "record", "skip"
 }
 
 interface ProjectInfo {
@@ -520,9 +522,16 @@ function App() {
   const performSearch = (query: string, typeFilter: string, data: CrawlResult[]): CrawlResult[] => {
     let filtered = data;
 
-    // Filter by content type first
-    if (typeFilter !== 'all') {
-      filtered = filtered.filter(result => categorizeContentType(result.contentType) === typeFilter);
+    // Filter by type
+    if (typeFilter === 'unvisited') {
+      // Show only unvisited URLs (status === 0 and title === "Unvisited URL")
+      filtered = filtered.filter(result => result.status === 0 && result.title === 'Unvisited URL');
+    } else if (typeFilter !== 'all') {
+      // Filter by content type, but exclude unvisited URLs
+      filtered = filtered.filter(result => {
+        const isUnvisited = result.status === 0 && result.title === 'Unvisited URL';
+        return !isUnvisited && categorizeContentType(result.contentType) === typeFilter;
+      });
     }
 
     // Then apply search query if present
@@ -865,6 +874,7 @@ function App() {
       const crawlData = await GetCrawlWithResults(crawlId);
       setSelectedCrawl(crawlData.crawlInfo);
       setResults(crawlData.results);
+
       setIsCrawlDropdownOpen(false);
     } catch (error) {
       console.error('Failed to load crawl:', error);
@@ -1444,37 +1454,43 @@ function App() {
                 className={`filter-tab ${contentTypeFilter === 'html' ? 'active' : ''}`}
                 onClick={() => setContentTypeFilter('html')}
               >
-                HTML ({results.filter(r => categorizeContentType(r.contentType) === 'html').length})
+                HTML ({results.filter(r => !(r.status === 0 && r.title === 'Unvisited URL') && categorizeContentType(r.contentType) === 'html').length})
               </button>
               <button
                 className={`filter-tab ${contentTypeFilter === 'javascript' ? 'active' : ''}`}
                 onClick={() => setContentTypeFilter('javascript')}
               >
-                JavaScript ({results.filter(r => categorizeContentType(r.contentType) === 'javascript').length})
+                JavaScript ({results.filter(r => !(r.status === 0 && r.title === 'Unvisited URL') && categorizeContentType(r.contentType) === 'javascript').length})
               </button>
               <button
                 className={`filter-tab ${contentTypeFilter === 'css' ? 'active' : ''}`}
                 onClick={() => setContentTypeFilter('css')}
               >
-                CSS ({results.filter(r => categorizeContentType(r.contentType) === 'css').length})
+                CSS ({results.filter(r => !(r.status === 0 && r.title === 'Unvisited URL') && categorizeContentType(r.contentType) === 'css').length})
               </button>
               <button
                 className={`filter-tab ${contentTypeFilter === 'image' ? 'active' : ''}`}
                 onClick={() => setContentTypeFilter('image')}
               >
-                Images ({results.filter(r => categorizeContentType(r.contentType) === 'image').length})
+                Images ({results.filter(r => !(r.status === 0 && r.title === 'Unvisited URL') && categorizeContentType(r.contentType) === 'image').length})
               </button>
               <button
                 className={`filter-tab ${contentTypeFilter === 'font' ? 'active' : ''}`}
                 onClick={() => setContentTypeFilter('font')}
               >
-                Fonts ({results.filter(r => categorizeContentType(r.contentType) === 'font').length})
+                Fonts ({results.filter(r => !(r.status === 0 && r.title === 'Unvisited URL') && categorizeContentType(r.contentType) === 'font').length})
+              </button>
+              <button
+                className={`filter-tab ${contentTypeFilter === 'unvisited' ? 'active' : ''}`}
+                onClick={() => setContentTypeFilter('unvisited')}
+              >
+                Unvisited ({results.filter(r => r.status === 0 && r.title === 'Unvisited URL').length})
               </button>
               <button
                 className={`filter-tab ${contentTypeFilter === 'other' ? 'active' : ''}`}
                 onClick={() => setContentTypeFilter('other')}
               >
-                Others ({results.filter(r => categorizeContentType(r.contentType) === 'other').length})
+                Others ({results.filter(r => !(r.status === 0 && r.title === 'Unvisited URL') && categorizeContentType(r.contentType) === 'other').length})
               </button>
             </div>
             <div className="results-header">
@@ -1489,44 +1505,46 @@ function App() {
             <div className="results-body">
               {filteredResults.map((result, index) => {
                 const isInProgress = result.status === 0 && result.title === 'In progress...';
+                const isUnvisitedURL = result.status === 0 && result.title === 'Unvisited URL';
+                const isClickable = !isInProgress && !isUnvisitedURL;
                 return (
                   <div
                     key={index}
                     className="result-row"
-                    onClick={() => !isInProgress && handleUrlClick(result.url)}
-                    style={{ cursor: isInProgress ? 'default' : 'pointer' }}
-                    title={isInProgress ? '' : 'Click row to view internal links'}
+                    onClick={() => isClickable && handleUrlClick(result.url)}
+                    style={{ cursor: isClickable ? 'pointer' : 'default' }}
+                    title={isClickable ? 'Click row to view internal links' : ''}
                   >
                     <div className="result-cell url-col">
                       <span
                         className="url-link"
-                        style={{ opacity: isInProgress ? 0.6 : 1 }}
+                        style={{ opacity: isClickable ? 1 : 0.6 }}
                         onClick={(e) => {
-                          if (!isInProgress) {
+                          if (isClickable) {
                             e.stopPropagation();
                             handleOpenUrl(result.url);
                           }
                         }}
-                        title={isInProgress ? '' : 'Click to open URL in browser'}
+                        title={isClickable ? 'Click to open URL in browser' : ''}
                       >
                         {result.url}
                       </span>
                     </div>
-                    <div className={`result-cell status-col ${getStatusColor(result.status)}`} style={{ opacity: isInProgress ? 0.6 : 1 }}>
-                      {isInProgress ? 'Queued' : (result.error ? 'Error' : result.status)}
+                    <div className={`result-cell status-col ${getStatusColor(result.status)}`} style={{ opacity: isClickable ? 1 : 0.6 }}>
+                      {isInProgress ? 'Queued' : isUnvisitedURL ? 'Not visited' : (result.error ? 'Error' : result.status)}
                     </div>
-                    <div className="result-cell title-col" style={{ opacity: isInProgress ? 0.6 : 1 }}>
+                    <div className="result-cell title-col" style={{ opacity: isClickable ? 1 : 0.6 }}>
                       {result.error ? result.error : result.title || '(no title)'}
                     </div>
-                    <div className="result-cell meta-desc-col" style={{ opacity: isInProgress ? 0.6 : 1 }} title={result.metaDescription || ''}>
+                    <div className="result-cell meta-desc-col" style={{ opacity: isClickable ? 1 : 0.6 }} title={result.metaDescription || ''}>
                       {result.metaDescription || '-'}
                     </div>
-                    <div className="result-cell indexable-col" style={{ opacity: isInProgress ? 0.6 : 1 }}>
+                    <div className="result-cell indexable-col" style={{ opacity: isClickable ? 1 : 0.6 }}>
                       <span className={`indexable-badge ${result.indexable === 'Yes' ? 'indexable-yes' : 'indexable-no'}`}>
                         {result.indexable}
                       </span>
                     </div>
-                    <div className="result-cell content-type-col" style={{ opacity: isInProgress ? 0.6 : 1 }}>
+                    <div className="result-cell content-type-col" style={{ opacity: isClickable ? 1 : 0.6 }}>
                       <span className={`content-type-badge content-type-${categorizeContentType(result.contentType)}`}>
                         {getContentTypeDisplay(result.contentType)}
                       </span>

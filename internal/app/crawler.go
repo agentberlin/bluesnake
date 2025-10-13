@@ -349,8 +349,8 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		domainFrameworks.Store(domain, framework.Framework(domainFW.Framework))
 	}
 
-	// Set up domain-aware filtering callback
-	a.setupDomainAwareFiltering(crawler, domainFrameworks)
+	// Set up URL discovery handler for categorization
+	a.setupURLDiscoveryHandler(crawler, domainFrameworks)
 
 	// Set up per-domain framework detection
 	a.setupPerDomainFrameworkDetection(crawler, projectID, domainFrameworks)
@@ -370,7 +370,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		// Save resource to database (same table as pages, but won't count as "page crawled")
 		// Status 0 means error/unreachable
 		indexable := "-" // Resources are not indexable by search engines
-		if err := a.store.SaveCrawledUrl(stats.crawlID, result.URL, result.Status, "", "", "", indexable, result.ContentType, result.Error); err != nil {
+		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, "", "", "", indexable, result.ContentType, result.Error); err != nil {
 			log.Printf("Failed to save resource URL: %v", err)
 		}
 
@@ -404,7 +404,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		}
 
 		// Save to database - all crawling logic handled by bluesnake
-		if err := a.store.SaveCrawledUrl(stats.crawlID, result.URL, result.Status, result.Title, result.MetaDescription, result.ContentHash, result.Indexable, result.ContentType, result.Error); err != nil {
+		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, result.Title, result.MetaDescription, result.ContentHash, result.Indexable, result.ContentType, result.Error); err != nil {
 			log.Printf("Failed to save crawled URL: %v", err)
 		}
 
@@ -430,7 +430,17 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 					ContentType: link.ContentType,
 					Position:    link.Position,
 					DOMPath:     link.DOMPath,
+					URLAction:   string(link.Action),
 				})
+
+				// If this is an unvisited URL (URLAction="record"), save it to DiscoveredUrl table
+				if link.Action == bluesnake.URLActionRecordOnly {
+					// Save to DiscoveredUrl with visited=false
+					indexable := "-" // Unvisited URLs don't have indexability info
+					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", indexable, link.ContentType, ""); err != nil {
+						log.Printf("Failed to save unvisited URL: %v", err)
+					}
+				}
 			}
 			for _, link := range result.Links.External {
 				status := 0
@@ -448,7 +458,17 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 					ContentType: link.ContentType,
 					Position:    link.Position,
 					DOMPath:     link.DOMPath,
+					URLAction:   string(link.Action),
 				})
+
+				// If this is an unvisited URL (URLAction="record"), save it to DiscoveredUrl table
+				if link.Action == bluesnake.URLActionRecordOnly {
+					// Save to DiscoveredUrl with visited=false
+					indexable := "-" // Unvisited URLs don't have indexability info
+					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", indexable, link.ContentType, ""); err != nil {
+						log.Printf("Failed to save unvisited URL: %v", err)
+					}
+				}
 			}
 
 			// Save outbound links
@@ -595,32 +615,32 @@ func matchesFrameworkFilters(urlStr string, config framework.FilterConfig) bool 
 	return false
 }
 
-// setupDomainAwareFiltering sets up domain-aware filtering callback
-func (a *App) setupDomainAwareFiltering(crawler *bluesnake.Crawler, domainFrameworks *sync.Map) {
-	// Get analytics patterns (always filtered)
+// setupURLDiscoveryHandler sets up URL discovery callback for categorizing URLs
+func (a *App) setupURLDiscoveryHandler(crawler *bluesnake.Crawler, domainFrameworks *sync.Map) {
+	// Get analytics patterns (always skipped)
 	analyticsPatterns := getAnalyticsFilterPatterns()
 
-	crawler.SetURLFilterCallback(func(urlStr string) bool {
+	crawler.SetOnURLDiscovered(func(urlStr string) bluesnake.URLAction {
 		urlLower := strings.ToLower(urlStr)
 
-		// Always filter analytics URLs
+		// 1. Check analytics (always skip completely)
 		for _, pattern := range analyticsPatterns {
 			if strings.Contains(urlLower, strings.ToLower(pattern)) {
-				return true
+				return bluesnake.URLActionSkip
 			}
 		}
 
-		// Extract domain from URL
+		// 2. Extract domain and check framework-specific patterns
 		domain := extractDomainFromURL(urlStr)
 		if domain == "" {
-			return false
+			return bluesnake.URLActionCrawl
 		}
 
 		// Get framework for this specific domain
 		fwInterface, ok := domainFrameworks.Load(domain)
 		if !ok {
-			// Framework not detected yet for this domain - don't filter
-			return false
+			// Framework not detected yet for this domain - crawl normally
+			return bluesnake.URLActionCrawl
 		}
 
 		fw := fwInterface.(framework.Framework)
@@ -628,8 +648,13 @@ func (a *App) setupDomainAwareFiltering(crawler *bluesnake.Crawler, domainFramew
 		// Get filter config for this domain's framework
 		config := framework.GetFilterConfig(fw)
 
-		// Check if URL matches this domain's framework-specific patterns
-		return matchesFrameworkFilters(urlStr, config)
+		// 3. Framework-specific URLs - record but don't crawl
+		if matchesFrameworkFilters(urlStr, config) {
+			return bluesnake.URLActionRecordOnly
+		}
+
+		// 4. Normal URLs - crawl
+		return bluesnake.URLActionCrawl
 	})
 }
 
