@@ -171,9 +171,7 @@ func sanitizeURLToFilename(urlStr string) string {
 	}
 
 	// Remove leading slash
-	if strings.HasPrefix(fullPath, "/") {
-		fullPath = fullPath[1:]
-	}
+	fullPath = strings.TrimPrefix(fullPath, "/")
 
 	// Replace non-disk-friendly characters with underscores
 	// Characters to replace: / ? = & # : * " < > | spaces
