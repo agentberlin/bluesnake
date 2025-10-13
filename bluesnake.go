@@ -340,36 +340,36 @@ const (
 var (
 	// ErrForbiddenDomain is the error thrown if visiting
 	// a domain which is not allowed in AllowedDomains
-	ErrForbiddenDomain = errors.New("Forbidden domain")
+	ErrForbiddenDomain = errors.New("forbidden domain")
 	// ErrMissingURL is the error type for missing URL errors
-	ErrMissingURL = errors.New("Missing URL")
+	ErrMissingURL = errors.New("missing URL")
 	// ErrMaxDepth is the error type for exceeding max depth
-	ErrMaxDepth = errors.New("Max depth limit reached")
+	ErrMaxDepth = errors.New("max depth limit reached")
 	// ErrForbiddenURL is the error thrown if visiting
 	// a URL which is not allowed by URLFilters
-	ErrForbiddenURL = errors.New("ForbiddenURL")
+	ErrForbiddenURL = errors.New("forbidden URL")
 
 	// ErrNoURLFiltersMatch is the error thrown if visiting
 	// a URL which is not allowed by URLFilters
-	ErrNoURLFiltersMatch = errors.New("No URLFilters match")
+	ErrNoURLFiltersMatch = errors.New("no URLFilters match")
 	// ErrRobotsTxtBlocked is the error type for robots.txt errors
 	ErrRobotsTxtBlocked = errors.New("URL blocked by robots.txt")
 	// ErrNoCookieJar is the error type for missing cookie jar
-	ErrNoCookieJar = errors.New("Cookie jar is not available")
+	ErrNoCookieJar = errors.New("cookie jar is not available")
 	// ErrNoPattern is the error type for LimitRules without patterns
-	ErrNoPattern = errors.New("No pattern defined in LimitRule")
+	ErrNoPattern = errors.New("no pattern defined in LimitRule")
 	// ErrEmptyProxyURL is the error type for empty Proxy URL list
-	ErrEmptyProxyURL = errors.New("Proxy URL list is empty")
+	ErrEmptyProxyURL = errors.New("proxy URL list is empty")
 	// ErrAbortedAfterHeaders is the error returned when OnResponseHeaders aborts the transfer.
-	ErrAbortedAfterHeaders = errors.New("Aborted after receiving response headers")
+	ErrAbortedAfterHeaders = errors.New("aborted after receiving response headers")
 	// ErrAbortedBeforeRequest is the error returned when OnResponseHeaders aborts the transfer.
-	ErrAbortedBeforeRequest = errors.New("Aborted before Do Request")
+	ErrAbortedBeforeRequest = errors.New("aborted before Do Request")
 	// ErrQueueFull is the error returned when the queue is full
-	ErrQueueFull = errors.New("Queue MaxSize reached")
+	ErrQueueFull = errors.New("queue MaxSize reached")
 	// ErrMaxRequests is the error returned when exceeding max requests
-	ErrMaxRequests = errors.New("Max Requests limit reached")
+	ErrMaxRequests = errors.New("max requests limit reached")
 	// ErrRetryBodyUnseekable is the error when retry with not seekable body
-	ErrRetryBodyUnseekable = errors.New("Retry Body Unseekable")
+	ErrRetryBodyUnseekable = errors.New("retry body unseekable")
 )
 
 var envMap = map[string]func(*Collector, string){
@@ -468,9 +468,9 @@ func NewDefaultConfig() *CollectorConfig {
 			CollapseWhitespace: true,
 		},
 		ResourceValidation: &ResourceValidationConfig{
-			Enabled:        true,
-			ResourceTypes:  []string{"image", "script", "stylesheet"},
-			CheckExternal:  true,
+			Enabled:       true,
+			ResourceTypes: []string{"image", "script", "stylesheet"},
+			CheckExternal: true,
 		},
 	}
 }
@@ -1018,7 +1018,7 @@ func (c *Collector) isDomainAllowed(domain string) bool {
 	if slices.Contains(c.DisallowedDomains, domain) {
 		return false
 	}
-	if c.AllowedDomains == nil || len(c.AllowedDomains) == 0 {
+	if len(c.AllowedDomains) == 0 {
 		return true
 	}
 	return slices.Contains(c.AllowedDomains, domain)
@@ -1661,7 +1661,7 @@ func (c *Collector) Clone() *Collector {
 func (c *Collector) checkRedirectFunc() func(req *http.Request, via []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
 		if err := c.checkFilters(req.URL.String(), req.URL.Hostname()); err != nil {
-			return fmt.Errorf("Not following redirect to %q: %w", req.URL, err)
+			return fmt.Errorf("not following redirect to %q: %w", req.URL, err)
 		}
 
 		// allow redirects to the original destination

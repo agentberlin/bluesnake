@@ -1,0 +1,3 @@
+I have a script compare_crawlers.py in this directory that will run screamingfrog and bluesnake (this project) for a given domain and will print the stats to the terminal. You need to look at the diff and pick one most important issue to be worked up on and fix it. Note that the output files may have a lot of content in it, be smart to read it in chunks or something.
+
+Do whatever it takes to get to the fix.

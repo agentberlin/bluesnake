@@ -122,10 +122,10 @@ type PageMetadata struct {
 // Crawler provides a high-level interface for web crawling with callbacks for page results
 type Crawler struct {
 	// Collector is the underlying low-level collector (exported for advanced configuration)
-	Collector        *Collector
-	onPageCrawled    OnPageCrawledFunc
-	onResourceVisit  OnResourceVisitFunc
-	onCrawlComplete  OnCrawlCompleteFunc
+	Collector       *Collector
+	onPageCrawled   OnPageCrawledFunc
+	onResourceVisit OnResourceVisitFunc
+	onCrawlComplete OnCrawlCompleteFunc
 
 	// Internal state tracking
 	queuedURLs   *sync.Map // map[string]bool - tracks all discovered URLs
@@ -461,12 +461,17 @@ func (cr *Crawler) setupCallbacks() {
 			return
 		}
 
+		// Handle nil response
+		if r == nil || r.Request == nil || r.Request.URL == nil {
+			return
+		}
+
 		pageURL := r.Request.URL.String()
 
 		// Determine if this error is for a resource or a page
 		// 1. Try to get Content-Type from response headers (if available)
 		contentType := ""
-		if r != nil && r.Headers != nil {
+		if r.Headers != nil {
 			contentType = r.Headers.Get("Content-Type")
 		}
 
@@ -589,11 +594,11 @@ func (cr *Crawler) isLikelyResource(urlStr string) bool {
 	// Common resource extensions
 	resourceExtensions := []string{
 		".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", // Images
-		".css",                                                     // Stylesheets
-		".js",                                                      // Scripts
-		".woff", ".woff2", ".ttf", ".eot", ".otf",                 // Fonts
-		".mp4", ".webm", ".ogg", ".mp3", ".wav",                   // Media
-		".pdf", ".zip", ".gz", ".tar",                             // Documents/Archives
+		".css",                                    // Stylesheets
+		".js",                                     // Scripts
+		".woff", ".woff2", ".ttf", ".eot", ".otf", // Fonts
+		".mp4", ".webm", ".ogg", ".mp3", ".wav", // Media
+		".pdf", ".zip", ".gz", ".tar", // Documents/Archives
 	}
 
 	for _, ext := range resourceExtensions {
