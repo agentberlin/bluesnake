@@ -1,4 +1,4 @@
-I have a script compare/compare_crawlers.py in this directory that will run screamingfrog and bluesnake (this project) for a given domain and will print the stats to the terminal. You need to look at the diff and pick one most important issue to be worked up on and fix it. Note that the output files may have a lot of content in it, be smart to read it in chunks or something.
+I have a script compare/compare_crawlers.py in this directory that will run screamingfrog and bluesnake (this project) for a given domain and will print the stats to the terminal. Note that we are using the server of bluesnake directly, not the desktop application. You need to look at the diff and pick one most important issue to be worked up on and fix it. Note that the output files may have a lot of content in it, be smart to read it in chunks or something.
 
 - You don't need to read compare_crawlers.py file unless you feel compelled to do so
 - You don't need to read historical diff comparisions because that can get very context intensive
@@ -7,6 +7,11 @@ Run the script with the command to generate a new report. Always generate a new 
 
 ```bash
 uv run compare/compare_crawlers.py <domain>
+```
+
+To validate fixes without re-running ScreamingFrog (uses existing SF data):
+```bash
+uv run compare/compare_crawlers.py <domain> --bluesnake-only
 ```
 
 Ask for the domain if not provided already. After the crawl, you have access to the outputs from screamingfrog (html, text, other reports) incase you need to do more analysis. You can (and probably should) also check internet incase you need to find how screamingfrog does something, before planning a fix. Also, if the fix is changing a design decision or an internal assumption, you should get the approval before the change.

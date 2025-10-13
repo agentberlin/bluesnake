@@ -21,9 +21,10 @@ import requests  # type: ignore
 
 
 class CrawlerComparison:
-    def __init__(self, domain: str, server_url: str = "http://localhost:8080"):
+    def __init__(self, domain: str, server_url: str = "http://localhost:8080", bluesnake_only: bool = False):
         self.domain = domain
         self.server_url = server_url
+        self.bluesnake_only = bluesnake_only
         self.sf_output_dir = Path("/tmp/crawlertest/sf")
         self.scream_executable = (
             "/Applications/Screaming Frog SEO Spider.app/Contents/MacOS/ScreamingFrogSEOSpiderLauncher"
@@ -592,10 +593,16 @@ class CrawlerComparison:
             print("\nPlease fix the above issues and try again.")
             return False
 
-        # Step 1: Run ScreamingFrog
-        if not self.run_screamingfrog():
-            print("ScreamingFrog crawl failed. Exiting.")
-            return False
+        # Step 1: Run ScreamingFrog (skip if bluesnake-only mode)
+        if self.bluesnake_only:
+            print(f"\n{'='*80}")
+            print("Skipping ScreamingFrog (bluesnake-only mode)")
+            print(f"{'='*80}\n")
+            print("Will use existing ScreamingFrog data from previous run if available.")
+        else:
+            if not self.run_screamingfrog():
+                print("ScreamingFrog crawl failed. Exiting.")
+                return False
 
         # Step 2: Run BlueSnake
         if not self.start_crawl():
@@ -699,10 +706,15 @@ def main():
     parser.add_argument(
         "--server-url", default="http://localhost:8080", help="BlueSnake server URL (default: http://localhost:8080)"
     )
+    parser.add_argument(
+        "--bluesnake-only",
+        action="store_true",
+        help="Run BlueSnake only and use existing ScreamingFrog data (useful for validating fixes)",
+    )
 
     args = parser.parse_args()
 
-    comparison = CrawlerComparison(args.domain, args.server_url)
+    comparison = CrawlerComparison(args.domain, args.server_url, args.bluesnake_only)
     success = comparison.run()
 
     sys.exit(0 if success else 1)

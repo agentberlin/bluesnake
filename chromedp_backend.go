@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 )
 
@@ -65,11 +66,11 @@ func (r *chromedpRenderer) Close() {
 	}
 }
 
-// RenderPage renders a page using headless Chrome and returns the HTML
+// RenderPage renders a page using headless Chrome and returns the HTML and discovered resources
 // NOTE: This function has no internal rate limiting. Parallelism is controlled by
 // the LimitRule in http_backend.go. Setting very high parallelism (>10) may cause
 // high memory/CPU usage as each browser context consumes ~100-200MB RAM.
-func (r *chromedpRenderer) RenderPage(url string) (string, error) {
+func (r *chromedpRenderer) RenderPage(url string) (string, []string, error) {
 	// Create a new browser context
 	ctx, cancel := chromedp.NewContext(r.allocCtx)
 	defer cancel()
@@ -79,23 +80,56 @@ func (r *chromedpRenderer) RenderPage(url string) (string, error) {
 	defer cancel()
 
 	var htmlContent string
+	discoveredURLs := make(map[string]bool) // Use map to deduplicate
+	var mu sync.Mutex
+
+	// Set up network event listener
+	chromedp.ListenTarget(ctx, func(ev interface{}) {
+		switch ev := ev.(type) {
+		case *network.EventRequestWillBeSent:
+			// Capture all network requests (JS, CSS, images, fonts, API calls, etc.)
+			requestURL := ev.Request.URL
+			if requestURL != "" && requestURL != url {
+				mu.Lock()
+				discoveredURLs[requestURL] = true
+				mu.Unlock()
+			}
+		}
+	})
 
 	// Run the chromedp tasks
 	err := chromedp.Run(ctx,
+		// Enable network tracking
+		network.Enable(),
 		chromedp.Navigate(url),
 		// Wait for network to be idle (most dynamic content loaded)
 		chromedp.WaitReady("body", chromedp.ByQuery),
-		// Additional wait for JavaScript to execute
+		// Initial wait for JavaScript to execute
+		chromedp.Sleep(500*time.Millisecond),
+		// Scroll to bottom to trigger lazy-loaded images
+		// This executes JavaScript to scroll the page smoothly to the bottom
+		chromedp.Evaluate(`window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'})`, nil),
+		// Wait for lazy-loaded content to trigger network requests
+		chromedp.Sleep(1*time.Second),
+		// Scroll back to top to ensure we capture all content
+		chromedp.Evaluate(`window.scrollTo({top: 0, behavior: 'smooth'})`, nil),
+		// Final wait for any remaining network requests
 		chromedp.Sleep(500*time.Millisecond),
 		// Get the rendered HTML
 		chromedp.OuterHTML("html", &htmlContent, chromedp.ByQuery),
 	)
 
 	if err != nil {
-		return "", fmt.Errorf("chromedp rendering failed: %w", err)
+		return "", nil, fmt.Errorf("chromedp rendering failed: %w", err)
 	}
 
-	return htmlContent, nil
+	// Convert map to slice
+	urls := make([]string, 0, len(discoveredURLs))
+	for discoveredURL := range discoveredURLs {
+		urls = append(urls, discoveredURL)
+	}
+
+	return htmlContent, urls, nil
 }
 
 // CloseGlobalRenderer closes the global renderer instance
