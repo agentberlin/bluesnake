@@ -44,6 +44,11 @@ func NewStore() (*Store, error) {
 
 	// Open database connection
 	dbPath := filepath.Join(dbDir, "bluesnake.db")
+	return newStoreWithPath(dbPath)
+}
+
+// newStoreWithPath creates a store with a custom database path (used for testing)
+func newStoreWithPath(dbPath string) (*Store, error) {
 	database, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %v", err)

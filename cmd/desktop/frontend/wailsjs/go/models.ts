@@ -9,6 +9,7 @@ export namespace types {
 	    discoveryMechanisms: string[];
 	    sitemapURLs: string[];
 	    checkExternalResources: boolean;
+	    singlePageMode: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigResponse(source);
@@ -24,6 +25,7 @@ export namespace types {
 	        this.discoveryMechanisms = source["discoveryMechanisms"];
 	        this.sitemapURLs = source["sitemapURLs"];
 	        this.checkExternalResources = source["checkExternalResources"];
+	        this.singlePageMode = source["singlePageMode"];
 	    }
 	}
 	export class CrawlInfo {

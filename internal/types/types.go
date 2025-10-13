@@ -75,6 +75,7 @@ type ConfigResponse struct {
 	DiscoveryMechanisms    []string `json:"discoveryMechanisms"`
 	SitemapURLs            []string `json:"sitemapURLs"`
 	CheckExternalResources bool     `json:"checkExternalResources"`
+	SinglePageMode         bool     `json:"singlePageMode"`
 }
 
 // VersionRule represents a version-specific rule (warning or block)
