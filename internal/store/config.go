@@ -34,10 +34,11 @@ func (s *Store) GetOrCreateConfig(projectID uint, domain string) (*Config, error
 			JSRenderingEnabled:     false,
 			Parallelism:            5,
 			UserAgent:              "bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)",
-			IncludeSubdomains:      true,           // Default to including subdomains
-			DiscoveryMechanisms:    "[\"spider\"]", // Default to spider mode
-			SitemapURLs:            "",             // Empty = use defaults when sitemap enabled
-			CheckExternalResources: true,           // Default to checking external resources
+			IncludeSubdomains:      true,                       // Default to including subdomains
+			DiscoveryMechanisms:    "[\"spider\",\"sitemap\"]", // Default to both spider and sitemap mode
+			SitemapURLs:            "",                         // Empty = use defaults when sitemap enabled
+			CheckExternalResources: true,                       // Default to checking external resources
+			SinglePageMode:         false,                      // Default to full website crawl
 		}
 
 		if err := s.db.Create(&config).Error; err != nil {
@@ -55,7 +56,7 @@ func (s *Store) GetOrCreateConfig(projectID uint, domain string) (*Config, error
 }
 
 // UpdateConfig updates the configuration for a project
-func (s *Store) UpdateConfig(projectID uint, jsRendering bool, parallelism int, userAgent string, includeSubdomains bool, discoveryMechanisms []string, sitemapURLs []string, checkExternalResources bool) error {
+func (s *Store) UpdateConfig(projectID uint, jsRendering bool, parallelism int, userAgent string, includeSubdomains bool, discoveryMechanisms []string, sitemapURLs []string, checkExternalResources bool, singlePageMode bool) error {
 	var config Config
 
 	result := s.db.Where("project_id = ?", projectID).First(&config)
@@ -70,6 +71,7 @@ func (s *Store) UpdateConfig(projectID uint, jsRendering bool, parallelism int, 
 	config.UserAgent = userAgent
 	config.IncludeSubdomains = includeSubdomains
 	config.CheckExternalResources = checkExternalResources
+	config.SinglePageMode = singlePageMode
 
 	// Update discovery mechanisms
 	if err := config.SetDiscoveryMechanismsArray(discoveryMechanisms); err != nil {

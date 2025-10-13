@@ -25,9 +25,10 @@ type Config struct {
 	Parallelism         int      `gorm:"default:5"`
 	UserAgent           string   `gorm:"type:text;default:'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)'"`
 	IncludeSubdomains      bool     `gorm:"default:false"`                                // When true, crawl all subdomains of the project domain
-	DiscoveryMechanisms    string   `gorm:"type:text;default:'[\"spider\"]'"`             // JSON array
+	DiscoveryMechanisms    string   `gorm:"type:text;default:'[\"spider\",\"sitemap\"]'"` // JSON array
 	SitemapURLs            string   `gorm:"type:text"`                                    // JSON array, nullable
 	CheckExternalResources bool     `gorm:"default:true"`                                 // When true, validate external resources for broken links
+	SinglePageMode         bool     `gorm:"default:false"`                                // When true, only crawl the starting URL (MaxDepth=1)
 	Project                *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
 	CreatedAt              int64    `gorm:"autoCreateTime"`
 	UpdatedAt              int64    `gorm:"autoUpdateTime"`

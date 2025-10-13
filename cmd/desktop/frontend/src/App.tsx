@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL } from "../wailsjs/go/main/DesktopApp";
+import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL, UpdateConfigForDomain, GetConfigForDomain } from "../wailsjs/go/main/DesktopApp";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
@@ -131,7 +131,16 @@ interface CrawlProgress {
   isCrawling: boolean;
 }
 
-
+interface ConfigData {
+  domain: string;
+  jsRenderingEnabled: boolean;
+  parallelism: number;
+  userAgent: string;
+  includeSubdomains: boolean;
+  discoveryMechanisms: string[];
+  checkExternalResources: boolean;
+  singlePageMode: boolean;
+}
 
 type View = 'start' | 'crawl' | 'config';
 
@@ -275,7 +284,9 @@ function App() {
   const [isCrawlDropdownOpen, setIsCrawlDropdownOpen] = useState(false);
   const crawlDropdownRef = useRef<HTMLDivElement>(null);
   const [appVersion, setAppVersion] = useState<string>('');
-  const [contentTypeFilter, setContentTypeFilter] = useState<string>('all');
+  const [contentTypeFilter, setContentTypeFilter] = useState<string>('html');
+  const [isCrawlTypeDropdownOpen, setIsCrawlTypeDropdownOpen] = useState(false);
+  const crawlTypeDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // Load projects on start
@@ -608,10 +619,63 @@ function App() {
     }
   }, [isCrawlDropdownOpen]);
 
+  // Handle click outside crawl type dropdown
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (crawlTypeDropdownRef.current && !crawlTypeDropdownRef.current.contains(event.target as Node)) {
+        setIsCrawlTypeDropdownOpen(false);
+      }
+    };
+
+    if (isCrawlTypeDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [isCrawlTypeDropdownOpen]);
+
   const handleNewCrawl = async () => {
     if (!url.trim()) return;
 
     try {
+      // Close the dropdown
+      setIsCrawlTypeDropdownOpen(false);
+
+      // First, get existing config to preserve user settings
+      try {
+        const existingConfig: ConfigData = await GetConfigForDomain(url);
+
+        // Update config with singlePageMode disabled, preserving other settings
+        const mechanisms = existingConfig.discoveryMechanisms || ["spider"];
+        await UpdateConfigForDomain(
+          url,
+          existingConfig.jsRenderingEnabled,
+          existingConfig.parallelism,
+          existingConfig.userAgent || 'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)',
+          existingConfig.includeSubdomains,
+          true,  // spiderEnabled - always true
+          mechanisms.includes("sitemap"),
+          [],    // sitemapURLs
+          existingConfig.checkExternalResources,
+          false  // singlePageMode - DISABLE for full crawl
+        );
+      } catch {
+        // If config fetch fails (e.g., project doesn't exist yet), create with defaults
+        await UpdateConfigForDomain(
+          url,
+          false, // jsRendering - default
+          5,     // parallelism - default
+          'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)', // userAgent
+          true,  // includeSubdomains - default
+          true,  // spiderEnabled - always true
+          false, // sitemapEnabled - default
+          [],    // sitemapURLs
+          true,  // checkExternalResources - default
+          false  // singlePageMode - DISABLE for full crawl
+        ).catch(() => {
+          // If this also fails, that's okay - config will be created with defaults
+        });
+      }
+
       await StartCrawl(url);
 
       // Immediately load the project and navigate to crawl view
@@ -624,6 +688,65 @@ function App() {
       setView('crawl');
     } catch (error) {
       console.error('Failed to start crawl:', error);
+      setIsCrawling(false);
+    }
+  };
+
+  const handleSinglePageCrawl = async () => {
+    if (!url.trim()) return;
+
+    try {
+      // Close the dropdown
+      setIsCrawlTypeDropdownOpen(false);
+
+      // First, get existing config to preserve user settings
+      try {
+        const existingConfig: ConfigData = await GetConfigForDomain(url);
+
+        // Update config with singlePageMode enabled, preserving other settings
+        const mechanisms = existingConfig.discoveryMechanisms || ["spider"];
+        await UpdateConfigForDomain(
+          url,
+          existingConfig.jsRenderingEnabled,
+          existingConfig.parallelism,
+          existingConfig.userAgent || 'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)',
+          existingConfig.includeSubdomains,
+          true,  // spiderEnabled - always true (won't be used in single page mode)
+          mechanisms.includes("sitemap"),
+          [],    // sitemapURLs
+          existingConfig.checkExternalResources,
+          true   // singlePageMode - ENABLE for single page crawl
+        );
+      } catch {
+        // If config fetch fails (e.g., project doesn't exist yet), create with defaults
+        await UpdateConfigForDomain(
+          url,
+          false, // jsRendering - default
+          5,     // parallelism - default
+          'bluesnake/1.0 (+https://github.com/agentberlin/bluesnake)', // userAgent
+          true,  // includeSubdomains - default (doesn't matter in single page mode)
+          true,  // spiderEnabled - always true (won't be used in single page mode)
+          false, // sitemapEnabled - default (won't be used in single page mode)
+          [],    // sitemapURLs
+          true,  // checkExternalResources - default
+          true   // singlePageMode - ENABLE for single page crawl
+        ).catch(() => {
+          // If this also fails, that's okay - config will be created with defaults
+        });
+      }
+
+      await StartCrawl(url);
+
+      // Immediately load the project and navigate to crawl view
+      await loadCurrentProjectFromUrl(url);
+
+      // Set crawling state to start polling
+      setIsCrawling(true);
+
+      // Navigate to crawl view
+      setView('crawl');
+    } catch (error) {
+      console.error('Failed to start single page crawl:', error);
       setIsCrawling(false);
     }
   };
@@ -949,17 +1072,45 @@ function App() {
                 <line x1="17" y1="16" x2="23" y2="16"></line>
               </svg>
             </button>
-            <button
-              className="go-button"
-              onClick={handleNewCrawl}
-              disabled={!url.trim()}
-              title="Start crawl now"
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="5" y1="12" x2="19" y2="12"></line>
-                <polyline points="12 5 19 12 12 19"></polyline>
-              </svg>
-            </button>
+            <div className="split-button-container" ref={crawlTypeDropdownRef}>
+              <button
+                className="go-button"
+                onClick={handleNewCrawl}
+                disabled={!url.trim()}
+                title="Start full website crawl"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="5" y1="12" x2="19" y2="12"></line>
+                  <polyline points="12 5 19 12 12 19"></polyline>
+                </svg>
+              </button>
+              <button
+                className="go-button-dropdown"
+                onClick={() => setIsCrawlTypeDropdownOpen(!isCrawlTypeDropdownOpen)}
+                disabled={!url.trim()}
+                title="More crawl options"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </button>
+              {isCrawlTypeDropdownOpen && (
+                <div className="crawl-type-dropdown">
+                  <div className="crawl-type-option" onClick={handleNewCrawl}>
+                    <div className="crawl-type-option-content">
+                      <span className="crawl-type-option-title">Full Website Crawl</span>
+                      <span className="crawl-type-option-desc">Discover and crawl pages by following links and sitemaps</span>
+                    </div>
+                  </div>
+                  <div className="crawl-type-option" onClick={handleSinglePageCrawl}>
+                    <div className="crawl-type-option-content">
+                      <span className="crawl-type-option-title">Single Page Crawl</span>
+                      <span className="crawl-type-option-desc">Analyze only this specific URL without following any links</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           {projects.length > 0 && (
@@ -1225,9 +1376,37 @@ function App() {
                   {stoppingProjects.has(currentProject.id) ? 'Stopping...' : 'Stop Crawl'}
                 </button>
               )}
-              <button className="new-crawl-button" onClick={handleNewCrawl} disabled={isCrawling}>
-                New Crawl
-              </button>
+              <div className="header-split-button-container" ref={crawlTypeDropdownRef}>
+                <button className="new-crawl-button" onClick={handleNewCrawl} disabled={isCrawling} title="Start full website crawl">
+                  New Crawl
+                </button>
+                <button
+                  className="new-crawl-button-dropdown"
+                  onClick={() => setIsCrawlTypeDropdownOpen(!isCrawlTypeDropdownOpen)}
+                  disabled={isCrawling}
+                  title="More crawl options"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="6 9 12 15 18 9"></polyline>
+                  </svg>
+                </button>
+                {isCrawlTypeDropdownOpen && (
+                  <div className="crawl-type-dropdown">
+                    <div className="crawl-type-option" onClick={handleNewCrawl}>
+                      <div className="crawl-type-option-content">
+                        <span className="crawl-type-option-title">Full Website Crawl</span>
+                        <span className="crawl-type-option-desc">Discover and crawl pages by following links and sitemaps</span>
+                      </div>
+                    </div>
+                    <div className="crawl-type-option" onClick={handleSinglePageCrawl}>
+                      <div className="crawl-type-option-content">
+                        <span className="crawl-type-option-title">Single Page Crawl</span>
+                        <span className="crawl-type-option-desc">Analyze only this specific URL without following any links</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
