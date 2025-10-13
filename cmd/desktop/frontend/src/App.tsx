@@ -20,6 +20,7 @@ import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
 import LinksPanel from './LinksPanel';
 import ServerControl from './ServerControl';
+import Sidebar from './Sidebar';
 import { types } from "../wailsjs/go/models";
 
 interface CustomDropdownProps {
@@ -145,7 +146,8 @@ interface ConfigData {
   singlePageMode: boolean;
 }
 
-type View = 'start' | 'crawl' | 'config';
+type View = 'start' | 'dashboard';
+type DashboardSection = 'crawl-list' | 'config';
 
 interface CircularProgressProps {
   crawled: number;
@@ -257,6 +259,7 @@ function App() {
   const [isCrawling, setIsCrawling] = useState(false);
   const [results, setResults] = useState<CrawlResult[]>([]);
   const [view, setView] = useState<View>('start');
+  const [dashboardSection, setDashboardSection] = useState<DashboardSection>('crawl-list');
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [currentProject, setCurrentProject] = useState<ProjectInfo | null>(null);
   const [availableCrawls, setAvailableCrawls] = useState<CrawlInfo[]>([]);
@@ -399,9 +402,9 @@ function App() {
     }
   }, [view, activeCrawls.size]);
 
-  // Crawl page polling: Poll for crawl data when on crawl page and crawl is active or stopping
+  // Dashboard polling: Poll for crawl data when on dashboard and crawl is active or stopping
   useEffect(() => {
-    if (view !== 'crawl' || !currentProject) return;
+    if (view !== 'dashboard' || !currentProject) return;
 
     const pollCrawlData = async () => {
       try {
@@ -710,8 +713,9 @@ function App() {
       // Set crawling state to start polling
       setIsCrawling(true);
 
-      // Navigate to crawl view
-      setView('crawl');
+      // Navigate to dashboard
+      setDashboardSection('crawl-list');
+      setView('dashboard');
     } catch (error) {
       console.error('Failed to start crawl:', error);
       setIsCrawling(false);
@@ -785,8 +789,9 @@ function App() {
       // Set crawling state to start polling
       setIsCrawling(true);
 
-      // Navigate to crawl view
-      setView('crawl');
+      // Navigate to dashboard
+      setDashboardSection('crawl-list');
+      setView('dashboard');
     } catch (error) {
       console.error('Failed to start single page crawl:', error);
       setIsCrawling(false);
@@ -794,7 +799,7 @@ function App() {
   };
 
   const handleOpenConfig = () => {
-    setView('config');
+    setDashboardSection('config');
   };
 
   const handleOpenConfigFromHome = async () => {
@@ -806,52 +811,13 @@ function App() {
     // Try to load the project if it exists
     await loadCurrentProjectFromUrl(url);
 
-    setView('config');
+    setDashboardSection('config');
+    setView('dashboard');
   };
 
   const handleCloseConfig = async () => {
-    // If we came from home page with a URL, try to load the project and go to crawl page
-    if (url.trim()) {
-      await loadCurrentProjectFromUrl(url);
-
-      // Try to find the project - it might exist if user saved config after a previous crawl
-      const projectList = await GetProjects();
-      let normalizedUrl = url.trim();
-      if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
-        normalizedUrl = 'https://' + normalizedUrl;
-      }
-
-      const project = projectList?.find(p => {
-        if (p.url === normalizedUrl) return true;
-        try {
-          const urlObj = new URL(normalizedUrl);
-          return p.domain === urlObj.hostname;
-        } catch {
-          return false;
-        }
-      });
-
-      if (project) {
-        // Project exists - load its crawls
-        setCurrentProject(project);
-        const crawls = await GetCrawls(project.id);
-        setAvailableCrawls(crawls);
-      } else {
-        // Project doesn't exist yet (config was just saved for a new URL)
-        // Clear project state and show empty state
-        setCurrentProject(null);
-        setAvailableCrawls([]);
-        setResults([]);
-      }
-
-      // Always go to crawl view (will show empty state if no project/crawls)
-      setView('crawl');
-    } else if (currentProject) {
-      // If we already have a current project, stay on crawl page
-      setView('crawl');
-    } else {
-      setView('start');
-    }
+    // Switch back to crawl list section
+    setDashboardSection('crawl-list');
   };
 
   const handleProjectClick = async (project: ProjectInfo) => {
@@ -879,7 +845,8 @@ function App() {
         setResults(crawlData.results);
       }
 
-      setView('crawl');
+      setDashboardSection('crawl-list');
+      setView('dashboard');
     } catch (error) {
       console.error('Failed to load project crawls:', error);
     }
@@ -1070,11 +1037,6 @@ function App() {
   const handleClosePanel = () => {
     setIsPanelOpen(false);
   };
-
-  // Config page
-  if (view === 'config') {
-    return <Config url={url} onClose={handleCloseConfig} />;
-  }
 
   // Start screen
   if (view === 'start') {
@@ -1275,20 +1237,24 @@ function App() {
     );
   }
 
-  // Crawl screen
+  // Dashboard screen
   const hasNoCrawls = availableCrawls.length === 0;
 
   return (
     <div className="app">
-      <div className="crawl-screen">
+      <div className="dashboard-container">
+        <Sidebar
+          activeSection={dashboardSection}
+          onSectionChange={setDashboardSection}
+          onHomeClick={handleHome}
+        />
+        <div className="dashboard-main">
+          {dashboardSection === 'config' ? (
+            <Config url={url} onClose={handleCloseConfig} />
+          ) : (
+            <div className="crawl-screen">
         <div className="header">
           <div className="header-left">
-            <button className="icon-button" onClick={handleHome} title="Home">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-                <polyline points="9 22 9 12 15 12 15 22"></polyline>
-              </svg>
-            </button>
             <div className="domain-info">
               <div className="domain-info-header">
                 <FaviconImage
@@ -1390,19 +1356,6 @@ function App() {
 
           {!hasNoCrawls && (
             <div className="header-right">
-              <button className="icon-button" onClick={handleOpenConfig} title="Settings">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="4" y1="21" x2="4" y2="14"></line>
-                  <line x1="4" y1="10" x2="4" y2="3"></line>
-                  <line x1="12" y1="21" x2="12" y2="12"></line>
-                  <line x1="12" y1="8" x2="12" y2="3"></line>
-                  <line x1="20" y1="21" x2="20" y2="16"></line>
-                  <line x1="20" y1="12" x2="20" y2="3"></line>
-                  <line x1="1" y1="14" x2="7" y2="14"></line>
-                  <line x1="9" y1="8" x2="15" y2="8"></line>
-                  <line x1="17" y1="16" x2="23" y2="16"></line>
-                </svg>
-              </button>
               {isCrawling && currentProject && (
                 <button
                   className="stop-crawl-button"
@@ -1665,6 +1618,9 @@ function App() {
           outlinks={outlinksData}
           crawlId={currentCrawlId ?? undefined}
         />
+      </div>
+          )}
+        </div>
       </div>
 
       {/* Version Warning Modal */}
