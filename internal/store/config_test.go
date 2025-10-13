@@ -61,8 +61,8 @@ func TestGetOrCreateConfigDefaults(t *testing.T) {
 		t.Errorf("Expected SinglePageMode = false, got %v", config.SinglePageMode)
 	}
 	mechanisms := config.GetDiscoveryMechanismsArray()
-	if len(mechanisms) != 1 || mechanisms[0] != "spider" {
-		t.Errorf("Expected DiscoveryMechanisms = [spider], got %v", mechanisms)
+	if len(mechanisms) != 2 || mechanisms[0] != "spider" || mechanisms[1] != "sitemap" {
+		t.Errorf("Expected DiscoveryMechanisms = [spider sitemap], got %v", mechanisms)
 	}
 }
 
