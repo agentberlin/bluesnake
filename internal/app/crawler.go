@@ -325,7 +325,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		SitemapURLs:         config.GetSitemapURLsArray(),
 		ResourceValidation: &bluesnake.ResourceValidationConfig{
 			Enabled:       true,
-			ResourceTypes: []string{"image", "script", "stylesheet"},
+			ResourceTypes: []string{"image", "script", "stylesheet", "font"},
 			CheckExternal: config.CheckExternalResources,
 		},
 	}
