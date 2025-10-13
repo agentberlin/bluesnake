@@ -3,7 +3,7 @@ I have a script compare/compare_crawlers.py in this directory that will run scre
 - You don't need to read compare_crawlers.py file unless you feel compelled to do so
 - You don't need to read historical diff comparisions because that can get very context intensive
 
-Run the script with the command to generate a new report. Always generate a new report, instead of looking at past reports.
+Run the script with the command to generate a new report. Always generate a new report, instead of looking at past reports. Note that when you make changes to bluesnake, the bluesnake server automatically restarts because it is running with air.
 
 ```bash
 uv run compare/compare_crawlers.py <domain>
@@ -14,6 +14,32 @@ To validate fixes without re-running ScreamingFrog (uses existing SF data):
 uv run compare/compare_crawlers.py <domain> --bluesnake-only
 ```
 
-Ask for the domain if not provided already. After the crawl, you have access to the outputs from screamingfrog (html, text, other reports) incase you need to do more analysis. You can (and probably should) also check internet incase you need to find how screamingfrog does something, before planning a fix. Also, if the fix is changing a design decision or an internal assumption, you should get the approval before the change.
+Ask for the domain if not provided already. You can (and probably should) also check internet incase you need to find how screamingfrog does something, before planning a fix. Also, if the fix is changing a design decision or an internal assumption, you should get the approval before the change.
+
+## Script Output Files
+
+After running the comparison script, you'll have access to:
+
+**1. JSON Diff File** (`/tmp/crawler_diff_{domain}_{timestamp}.json`):
+- `metadata`: domain, timestamp, screamingfrog_log path
+- `url_diffs`:
+  - `missing_in_bluesnake_by_type`: Object with resource types (html, css, javascript, image, pdf, font, etc.) as keys and arrays of missing URLs
+  - `only_in_bluesnake`: URLs found only in BlueSnake
+- `status_diffs`: Array of objects with `url`, `sf_status`, `bs_status` for URLs with different HTTP status codes
+- `outlink_diffs`: Array of objects with `url`, `sf_count`, `bs_count`, `only_in_sf`, `only_in_bs` for pages with different outlinks
+
+**2. ScreamingFrog CSV Files** (`/tmp/crawlertest/sf/`):
+- `internal_all.csv`: All crawled URLs with columns: Address, Status Code, Content Type, Title, Indexability
+- `all_outlinks.csv`: Outlinks with columns: Source, Destination, Anchor Text, Type
+- Other exports: `all_page_text.csv`, `all_page_source.csv` (if you need to analyze page content)
+
+**3. ScreamingFrog Log** (`/tmp/screamingfrog_{domain}_{timestamp}.log`):
+- Console output from ScreamingFrog crawl execution
+
+**4. BlueSnake API Access**:
+- The script prints the crawl ID which you can use with: `http://localhost:8080/api/v1/crawls/{crawl_id}`
+- Get page links: `/api/v1/crawls/{crawl_id}/pages/{url_encoded}/links`
+
+Read large files in chunks (e.g., with limit/offset parameters). Focus on patterns rather than individual URLs when analyzing large datasets.
 
 Do whatever it takes to get to the fix.
