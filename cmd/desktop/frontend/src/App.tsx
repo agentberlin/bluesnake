@@ -1041,7 +1041,7 @@ function App() {
             <img src={logo} alt="BlueSnake Logo" className="logo-image" />
           </div>
           <h1 className="title">Blue Snake</h1>
-          <p className="subtitle">World's #1 AI Native Web Crawler</p>
+          <p className="subtitle">AI-ready Crawler. For those who never compromise</p>
 
           <div className="input-container">
             <input

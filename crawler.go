@@ -768,6 +768,61 @@ func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 		addLink(href, "canonical", "", "", elem)
 	})
 
+	// Extract preload hints <link rel="preload" href="">
+	// Modern frameworks (Next.js, etc.) use these extensively for critical resources
+	e.ForEach("link[rel='preload'][href]", func(_ int, elem *HTMLElement) {
+		href := elem.Attr("href")
+		as := elem.Attr("as") // Get the resource type hint
+
+		// Map "as" attribute to link type
+		linkType := "other"
+		switch as {
+		case "script":
+			linkType = "script"
+		case "style":
+			linkType = "stylesheet"
+		case "image":
+			linkType = "image"
+		case "font":
+			linkType = "font"
+		case "video":
+			linkType = "video"
+		case "audio":
+			linkType = "audio"
+		}
+
+		addLink(href, linkType, "", "", elem)
+	})
+
+	// Extract modulepreload hints <link rel="modulepreload" href="">
+	// Used for ES modules that should be preloaded
+	e.ForEach("link[rel='modulepreload'][href]", func(_ int, elem *HTMLElement) {
+		href := elem.Attr("href")
+		addLink(href, "script", "", "", elem)
+	})
+
+	// Extract prefetch hints <link rel="prefetch" href="">
+	// Used for resources that might be needed for future navigation
+	e.ForEach("link[rel='prefetch'][href]", func(_ int, elem *HTMLElement) {
+		href := elem.Attr("href")
+		as := elem.Attr("as") // Get the resource type hint
+
+		// Map "as" attribute to link type
+		linkType := "other"
+		switch as {
+		case "script":
+			linkType = "script"
+		case "style":
+			linkType = "stylesheet"
+		case "image":
+			linkType = "image"
+		case "document":
+			linkType = "anchor" // Prefetched HTML pages
+		}
+
+		addLink(href, linkType, "", "", elem)
+	})
+
 	// Extract iframe links <iframe src="">
 	e.ForEach("iframe[src]", func(_ int, elem *HTMLElement) {
 		src := elem.Attr("src")
