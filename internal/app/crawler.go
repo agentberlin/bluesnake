@@ -568,7 +568,6 @@ func getAnalyticsFilterPatterns() []string {
 		"google-analytics", // Google Analytics domain
 		"googletagmanager", // Tag Manager domain
 		"/pixel",           // Tracking pixels
-		"/track",           // Generic tracking
 		"/beacon",          // Beacon API
 		"/telemetry",       // Telemetry endpoints
 	}
