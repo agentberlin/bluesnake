@@ -783,7 +783,7 @@
   stroke-linecap: round;
 }
 
-.progress-text {
+.circular-progress .progress-text {
   font-size: 12px;
   font-weight: 400;
   color: #666;

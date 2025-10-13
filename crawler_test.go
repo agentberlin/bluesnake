@@ -1186,14 +1186,15 @@ func TestResourceHintExtraction(t *testing.T) {
 
 // createPatternFilterCallback creates a filter callback that matches patterns and query params
 // This helper function is used by tests to simulate application-layer filtering
-func createPatternFilterCallback(filterPatterns []string, filterParams []string) func(string) bool {
-	return func(urlStr string) bool {
+// Returns URLActionSkip for URLs matching patterns/params, URLActionCrawl otherwise
+func createPatternFilterCallback(filterPatterns []string, filterParams []string) func(string) URLAction {
+	return func(urlStr string) URLAction {
 		urlLower := strings.ToLower(urlStr)
 
 		// Check URL patterns
 		for _, pattern := range filterPatterns {
 			if strings.Contains(urlLower, strings.ToLower(pattern)) {
-				return true
+				return URLActionSkip
 			}
 		}
 
@@ -1201,11 +1202,11 @@ func createPatternFilterCallback(filterPatterns []string, filterParams []string)
 		for _, param := range filterParams {
 			if strings.Contains(urlLower, "?"+strings.ToLower(param)+"=") ||
 				strings.Contains(urlLower, "&"+strings.ToLower(param)+"=") {
-				return true
+				return URLActionSkip
 			}
 		}
 
-		return false
+		return URLActionCrawl
 	}
 }
 
@@ -1217,22 +1218,37 @@ func TestCustomFilters_SetURLFilterCallback(t *testing.T) {
 	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
 	crawler.Collector.WithTransport(mock)
 
-	// Set custom filter callback
+	// Track callback invocations
+	var callbackInvoked bool
+	var mu sync.Mutex
+
+	// Set custom URL discovered callback
 	filterPatterns := []string{"/_next/static/", "/analytics.js", "_rsc="}
 	filterParams := []string{"ver", "v"}
 	filterCallback := createPatternFilterCallback(filterPatterns, filterParams)
-	crawler.SetURLFilterCallback(filterCallback)
 
-	// Verify callback is set (check via internal state)
-	crawler.mutex.RLock()
-	hasCallback := crawler.urlFilterCallback != nil
-	crawler.mutex.RUnlock()
+	crawler.SetOnURLDiscovered(func(url string) URLAction {
+		mu.Lock()
+		callbackInvoked = true
+		mu.Unlock()
+		return filterCallback(url)
+	})
 
-	if !hasCallback {
-		t.Error("Expected URL filter callback to be set")
+	// Start crawl to trigger callback
+	err := crawler.Start("https://example.com/")
+	if err != nil {
+		t.Fatalf("Failed to start crawler: %v", err)
+	}
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !callbackInvoked {
+		t.Error("Expected OnURLDiscovered callback to be invoked")
 	}
 
-	t.Log("SetURLFilterCallback correctly sets filter callback")
+	t.Log("SetOnURLDiscovered correctly sets and invokes callback")
 }
 
 // TestCustomFilters_URLPatternMatching tests that URL patterns are correctly matched
@@ -1242,64 +1258,66 @@ func TestCustomFilters_URLPatternMatching(t *testing.T) {
 		filterPatterns []string
 		filterParams   []string
 		testURL        string
-		shouldMatch    bool
+		shouldSkip     bool // true if URL should be skipped (filtered)
 	}{
 		{
 			name:           "Exact pattern match",
 			filterPatterns: []string{"/_next/static/"},
 			filterParams:   []string{},
 			testURL:        "https://example.com/_next/static/chunk.js",
-			shouldMatch:    true,
+			shouldSkip:     true,
 		},
 		{
 			name:           "Pattern not in URL",
 			filterPatterns: []string{"/_next/static/"},
 			filterParams:   []string{},
 			testURL:        "https://example.com/page1",
-			shouldMatch:    false,
+			shouldSkip:     false,
 		},
 		{
 			name:           "Multiple patterns - first matches",
 			filterPatterns: []string{"/analytics.js", "/gtag/js"},
 			filterParams:   []string{},
 			testURL:        "https://example.com/analytics.js",
-			shouldMatch:    true,
+			shouldSkip:     true,
 		},
 		{
 			name:           "Multiple patterns - second matches",
 			filterPatterns: []string{"/analytics.js", "/gtag/js"},
 			filterParams:   []string{},
 			testURL:        "https://example.com/gtag/js",
-			shouldMatch:    true,
+			shouldSkip:     true,
 		},
 		{
 			name:           "Case insensitive matching",
 			filterPatterns: []string{"/Analytics.js"},
 			filterParams:   []string{},
 			testURL:        "https://example.com/analytics.js",
-			shouldMatch:    true,
+			shouldSkip:     true,
 		},
 		{
 			name:           "Empty patterns",
 			filterPatterns: []string{},
 			filterParams:   []string{},
 			testURL:        "https://example.com/any-url",
-			shouldMatch:    false,
+			shouldSkip:     false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
+			// Create filter callback
 			filterCallback := createPatternFilterCallback(tt.filterPatterns, tt.filterParams)
-			crawler.SetURLFilterCallback(filterCallback)
 
-			matched := crawler.matchesCustomFilters(tt.testURL)
-			if matched != tt.shouldMatch {
-				t.Errorf("matchesCustomFilters(%q) = %v, want %v", tt.testURL, matched, tt.shouldMatch)
+			// Test the callback directly
+			action := filterCallback(tt.testURL)
+			isSkipped := (action == URLActionSkip)
+
+			if isSkipped != tt.shouldSkip {
+				t.Errorf("filterCallback(%q) = %v, want skip=%v", tt.testURL, action, tt.shouldSkip)
 			}
 
-			t.Logf("URL pattern matching: %v (expected %v)", matched, tt.shouldMatch)
+			t.Logf("URL pattern matching: skip=%v (expected %v)", isSkipped, tt.shouldSkip)
 		})
 	}
 }
@@ -1311,71 +1329,73 @@ func TestCustomFilters_QueryParamMatching(t *testing.T) {
 		filterPatterns []string
 		filterParams   []string
 		testURL        string
-		shouldMatch    bool
+		shouldSkip     bool // true if URL should be skipped (filtered)
 	}{
 		{
 			name:           "Query param with ?",
 			filterPatterns: []string{},
 			filterParams:   []string{"ver"},
 			testURL:        "https://example.com/style.css?ver=1.2.3",
-			shouldMatch:    true,
+			shouldSkip:     true,
 		},
 		{
 			name:           "Query param with &",
 			filterPatterns: []string{},
 			filterParams:   []string{"ver"},
 			testURL:        "https://example.com/style.css?foo=bar&ver=1.2.3",
-			shouldMatch:    true,
+			shouldSkip:     true,
 		},
 		{
 			name:           "Query param not in URL",
 			filterPatterns: []string{},
 			filterParams:   []string{"ver"},
 			testURL:        "https://example.com/style.css?foo=bar",
-			shouldMatch:    false,
+			shouldSkip:     false,
 		},
 		{
 			name:           "Multiple params - first matches",
 			filterPatterns: []string{},
 			filterParams:   []string{"ver", "v", "_rsc"},
 			testURL:        "https://example.com/page?ver=1",
-			shouldMatch:    true,
+			shouldSkip:     true,
 		},
 		{
 			name:           "Multiple params - second matches",
 			filterPatterns: []string{},
 			filterParams:   []string{"ver", "v", "_rsc"},
 			testURL:        "https://example.com/page?v=2",
-			shouldMatch:    true,
+			shouldSkip:     true,
 		},
 		{
 			name:           "Case insensitive param matching",
 			filterPatterns: []string{},
 			filterParams:   []string{"Ver"},
 			testURL:        "https://example.com/style.css?ver=1.0",
-			shouldMatch:    true,
+			shouldSkip:     true,
 		},
 		{
 			name:           "Param without value",
 			filterPatterns: []string{},
 			filterParams:   []string{"ver"},
 			testURL:        "https://example.com/style.css?verify=true",
-			shouldMatch:    false, // should not match "verify" - needs exact param name
+			shouldSkip:     false, // should not match "verify" - needs exact param name
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
+			// Create filter callback
 			filterCallback := createPatternFilterCallback(tt.filterPatterns, tt.filterParams)
-			crawler.SetURLFilterCallback(filterCallback)
 
-			matched := crawler.matchesCustomFilters(tt.testURL)
-			if matched != tt.shouldMatch {
-				t.Errorf("matchesCustomFilters(%q) = %v, want %v", tt.testURL, matched, tt.shouldMatch)
+			// Test the callback directly
+			action := filterCallback(tt.testURL)
+			isSkipped := (action == URLActionSkip)
+
+			if isSkipped != tt.shouldSkip {
+				t.Errorf("filterCallback(%q) = %v, want skip=%v", tt.testURL, action, tt.shouldSkip)
 			}
 
-			t.Logf("Query param matching: %v (expected %v)", matched, tt.shouldMatch)
+			t.Logf("Query param matching: skip=%v (expected %v)", isSkipped, tt.shouldSkip)
 		})
 	}
 }
@@ -1407,11 +1427,11 @@ func TestCustomFilters_Integration(t *testing.T) {
 	})
 	crawler.Collector.WithTransport(mock)
 
-	// Set custom filter callback for Next.js and analytics
+	// Set custom URL discovered callback for Next.js and analytics
 	filterPatterns := []string{"/_next/static/", "/analytics.js"}
 	filterParams := []string{"ver", "v"}
 	filterCallback := createPatternFilterCallback(filterPatterns, filterParams)
-	crawler.SetURLFilterCallback(filterCallback)
+	crawler.SetOnURLDiscovered(filterCallback)
 
 	crawler.SetOnPageCrawled(func(result *PageResult) {
 		mu.Lock()
