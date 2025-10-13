@@ -323,19 +323,24 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 	case "PUT":
 		var req struct {
-			URL                    string   `json:"url"`
-			JSRendering            bool     `json:"jsRendering"`
-			InitialWaitMs          int      `json:"initialWaitMs"`
-			ScrollWaitMs           int      `json:"scrollWaitMs"`
-			FinalWaitMs            int      `json:"finalWaitMs"`
-			Parallelism            int      `json:"parallelism"`
-			UserAgent              string   `json:"userAgent"`
-			IncludeSubdomains      bool     `json:"includeSubdomains"`
-			SpiderEnabled          bool     `json:"spiderEnabled"`
-			SitemapEnabled         bool     `json:"sitemapEnabled"`
-			SitemapURLs            []string `json:"sitemapURLs"`
-			CheckExternalResources *bool    `json:"checkExternalResources,omitempty"` // Pointer to distinguish between false and not-provided
-			SinglePageMode         bool     `json:"singlePageMode"`
+			URL                      string   `json:"url"`
+			JSRendering              bool     `json:"jsRendering"`
+			InitialWaitMs            int      `json:"initialWaitMs"`
+			ScrollWaitMs             int      `json:"scrollWaitMs"`
+			FinalWaitMs              int      `json:"finalWaitMs"`
+			Parallelism              int      `json:"parallelism"`
+			UserAgent                string   `json:"userAgent"`
+			IncludeSubdomains        bool     `json:"includeSubdomains"`
+			SpiderEnabled            bool     `json:"spiderEnabled"`
+			SitemapEnabled           bool     `json:"sitemapEnabled"`
+			SitemapURLs              []string `json:"sitemapURLs"`
+			CheckExternalResources   *bool    `json:"checkExternalResources,omitempty"`   // Pointer to distinguish between false and not-provided
+			SinglePageMode           bool     `json:"singlePageMode"`
+			RobotsTxtMode            *string  `json:"robotsTxtMode,omitempty"`            // Pointer to distinguish between empty and not-provided
+			FollowInternalNofollow   *bool    `json:"followInternalNofollow,omitempty"`   // Pointer to distinguish between false and not-provided
+			FollowExternalNofollow   *bool    `json:"followExternalNofollow,omitempty"`   // Pointer to distinguish between false and not-provided
+			RespectMetaRobotsNoindex *bool    `json:"respectMetaRobotsNoindex,omitempty"` // Pointer to distinguish between false and not-provided
+			RespectNoindex           *bool    `json:"respectNoindex,omitempty"`           // Pointer to distinguish between false and not-provided
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -347,6 +352,32 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		checkExternal := true
 		if req.CheckExternalResources != nil {
 			checkExternal = *req.CheckExternalResources
+		}
+
+		// Crawler directive defaults (matching ScreamingFrog defaults)
+		robotsTxtMode := "respect"
+		if req.RobotsTxtMode != nil {
+			robotsTxtMode = *req.RobotsTxtMode
+		}
+
+		followInternalNofollow := false
+		if req.FollowInternalNofollow != nil {
+			followInternalNofollow = *req.FollowInternalNofollow
+		}
+
+		followExternalNofollow := false
+		if req.FollowExternalNofollow != nil {
+			followExternalNofollow = *req.FollowExternalNofollow
+		}
+
+		respectMetaRobotsNoindex := true
+		if req.RespectMetaRobotsNoindex != nil {
+			respectMetaRobotsNoindex = *req.RespectMetaRobotsNoindex
+		}
+
+		respectNoindex := true
+		if req.RespectNoindex != nil {
+			respectNoindex = *req.RespectNoindex
 		}
 
 		if err := s.app.UpdateConfigForDomain(
@@ -363,6 +394,11 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			req.SitemapURLs,
 			checkExternal,
 			req.SinglePageMode,
+			robotsTxtMode,
+			followInternalNofollow,
+			followExternalNofollow,
+			respectMetaRobotsNoindex,
+			respectNoindex,
 		); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

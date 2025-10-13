@@ -41,18 +41,23 @@ func (a *App) GetConfigForDomain(urlStr string) (*types.ConfigResponse, error) {
 
 	// Convert to response struct with deserialized arrays
 	return &types.ConfigResponse{
-		Domain:                 config.Domain,
-		JSRenderingEnabled:     config.JSRenderingEnabled,
-		InitialWaitMs:          config.InitialWaitMs,
-		ScrollWaitMs:           config.ScrollWaitMs,
-		FinalWaitMs:            config.FinalWaitMs,
-		Parallelism:            config.Parallelism,
-		UserAgent:              config.UserAgent,
-		IncludeSubdomains:      config.IncludeSubdomains,
-		DiscoveryMechanisms:    config.GetDiscoveryMechanismsArray(),
-		SitemapURLs:            config.GetSitemapURLsArray(),
-		CheckExternalResources: config.CheckExternalResources,
-		SinglePageMode:         config.SinglePageMode,
+		Domain:                   config.Domain,
+		JSRenderingEnabled:       config.JSRenderingEnabled,
+		InitialWaitMs:            config.InitialWaitMs,
+		ScrollWaitMs:             config.ScrollWaitMs,
+		FinalWaitMs:              config.FinalWaitMs,
+		Parallelism:              config.Parallelism,
+		UserAgent:                config.UserAgent,
+		IncludeSubdomains:        config.IncludeSubdomains,
+		DiscoveryMechanisms:      config.GetDiscoveryMechanismsArray(),
+		SitemapURLs:              config.GetSitemapURLsArray(),
+		CheckExternalResources:   config.CheckExternalResources,
+		SinglePageMode:           config.SinglePageMode,
+		RobotsTxtMode:            config.RobotsTxtMode,
+		FollowInternalNofollow:   config.FollowInternalNofollow,
+		FollowExternalNofollow:   config.FollowExternalNofollow,
+		RespectMetaRobotsNoindex: config.RespectMetaRobotsNoindex,
+		RespectNoindex:           config.RespectNoindex,
 	}, nil
 }
 
@@ -69,6 +74,11 @@ func (a *App) UpdateConfigForDomain(
 	sitemapURLs []string,
 	checkExternalResources bool,
 	singlePageMode bool,
+	robotsTxtMode string,
+	followInternalNofollow bool,
+	followExternalNofollow bool,
+	respectMetaRobotsNoindex bool,
+	respectNoindex bool,
 ) error {
 	// Normalize the URL to extract domain
 	normalizedURL, domain, err := normalizeURL(urlStr)
@@ -96,5 +106,5 @@ func (a *App) UpdateConfigForDomain(
 		mechanisms = []string{"spider"}
 	}
 
-	return a.store.UpdateConfig(project.ID, jsRendering, initialWaitMs, scrollWaitMs, finalWaitMs, parallelism, userAgent, includeSubdomains, mechanisms, sitemapURLs, checkExternalResources, singlePageMode)
+	return a.store.UpdateConfig(project.ID, jsRendering, initialWaitMs, scrollWaitMs, finalWaitMs, parallelism, userAgent, includeSubdomains, mechanisms, sitemapURLs, checkExternalResources, singlePageMode, robotsTxtMode, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex)
 }

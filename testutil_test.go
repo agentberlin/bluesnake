@@ -388,7 +388,9 @@ var newCollectorTests = map[string]func(*testing.T){
 		}
 	},
 	"IgnoreRobotsTxt": func(t *testing.T) {
-		c := NewCollector(&CollectorConfig{IgnoreRobotsTxt: true})
+		// IgnoreRobotsTxt is now controlled by RobotsTxtMode
+		// "ignore" mode sets IgnoreRobotsTxt to true
+		c := NewCollector(&CollectorConfig{RobotsTxtMode: "ignore"})
 
 		if !c.IgnoreRobotsTxt {
 			t.Fatal("c.IgnoreRobotsTxt = false, want true")

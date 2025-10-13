@@ -42,6 +42,12 @@ func (s *Store) GetOrCreateConfig(projectID uint, domain string) (*Config, error
 			SitemapURLs:            "",                         // Empty = use defaults when sitemap enabled
 			CheckExternalResources: true,                       // Default to checking external resources
 			SinglePageMode:         false,                      // Default to full website crawl
+			// Crawler directive defaults (following ScreamingFrog's defaults)
+			RobotsTxtMode:            "respect", // Default to respecting robots.txt
+			FollowInternalNofollow:   false,     // Default to NOT following internal nofollow links
+			FollowExternalNofollow:   false,     // Default to NOT following external nofollow links
+			RespectMetaRobotsNoindex: true,      // Default to respecting meta robots noindex
+			RespectNoindex:           true,      // Default to respecting X-Robots-Tag noindex
 		}
 
 		if err := s.db.Create(&config).Error; err != nil {
@@ -59,7 +65,7 @@ func (s *Store) GetOrCreateConfig(projectID uint, domain string) (*Config, error
 }
 
 // UpdateConfig updates the configuration for a project
-func (s *Store) UpdateConfig(projectID uint, jsRendering bool, initialWaitMs, scrollWaitMs, finalWaitMs int, parallelism int, userAgent string, includeSubdomains bool, discoveryMechanisms []string, sitemapURLs []string, checkExternalResources bool, singlePageMode bool) error {
+func (s *Store) UpdateConfig(projectID uint, jsRendering bool, initialWaitMs, scrollWaitMs, finalWaitMs int, parallelism int, userAgent string, includeSubdomains bool, discoveryMechanisms []string, sitemapURLs []string, checkExternalResources bool, singlePageMode bool, robotsTxtMode string, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex bool) error {
 	var config Config
 
 	result := s.db.Where("project_id = ?", projectID).First(&config)
@@ -78,6 +84,11 @@ func (s *Store) UpdateConfig(projectID uint, jsRendering bool, initialWaitMs, sc
 	config.IncludeSubdomains = includeSubdomains
 	config.CheckExternalResources = checkExternalResources
 	config.SinglePageMode = singlePageMode
+	config.RobotsTxtMode = robotsTxtMode
+	config.FollowInternalNofollow = followInternalNofollow
+	config.FollowExternalNofollow = followExternalNofollow
+	config.RespectMetaRobotsNoindex = respectMetaRobotsNoindex
+	config.RespectNoindex = respectNoindex
 
 	// Update discovery mechanisms
 	if err := config.SetDiscoveryMechanismsArray(discoveryMechanisms); err != nil {

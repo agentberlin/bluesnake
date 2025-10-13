@@ -1,5 +1,110 @@
 export namespace types {
 	
+	export class BotAccess {
+	    allowed: boolean;
+	    domain: string;
+	    message?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BotAccess(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.allowed = source["allowed"];
+	        this.domain = source["domain"];
+	        this.message = source["message"];
+	    }
+	}
+	export class ContentVisibilityResult {
+	    score: number;
+	    statusCode: number;
+	    isError: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ContentVisibilityResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.score = source["score"];
+	        this.statusCode = source["statusCode"];
+	        this.isError = source["isError"];
+	    }
+	}
+	export class AICrawlerData {
+	    contentVisibility?: ContentVisibilityResult;
+	    robotsTxt?: Record<string, BotAccess>;
+	    httpCheck?: Record<string, BotAccess>;
+	    checkedAt: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new AICrawlerData(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.contentVisibility = this.convertValues(source["contentVisibility"], ContentVisibilityResult);
+	        this.robotsTxt = this.convertValues(source["robotsTxt"], BotAccess, true);
+	        this.httpCheck = this.convertValues(source["httpCheck"], BotAccess, true);
+	        this.checkedAt = source["checkedAt"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class AICrawlerResponse {
+	    data?: AICrawlerData;
+	    ssrScreenshot?: string;
+	    jsScreenshot?: string;
+	    noJSScreenshot?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AICrawlerResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.data = this.convertValues(source["data"], AICrawlerData);
+	        this.ssrScreenshot = source["ssrScreenshot"];
+	        this.jsScreenshot = source["jsScreenshot"];
+	        this.noJSScreenshot = source["noJSScreenshot"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class ConfigResponse {
 	    domain: string;
 	    jsRenderingEnabled: boolean;
@@ -13,6 +118,11 @@ export namespace types {
 	    sitemapURLs: string[];
 	    checkExternalResources: boolean;
 	    singlePageMode: boolean;
+	    robotsTxtMode: string;
+	    followInternalNofollow: boolean;
+	    followExternalNofollow: boolean;
+	    respectMetaRobotsNoindex: boolean;
+	    respectNoindex: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigResponse(source);
@@ -32,8 +142,14 @@ export namespace types {
 	        this.sitemapURLs = source["sitemapURLs"];
 	        this.checkExternalResources = source["checkExternalResources"];
 	        this.singlePageMode = source["singlePageMode"];
+	        this.robotsTxtMode = source["robotsTxtMode"];
+	        this.followInternalNofollow = source["followInternalNofollow"];
+	        this.followExternalNofollow = source["followExternalNofollow"];
+	        this.respectMetaRobotsNoindex = source["respectMetaRobotsNoindex"];
+	        this.respectNoindex = source["respectNoindex"];
 	    }
 	}
+	
 	export class CrawlInfo {
 	    id: number;
 	    projectId: number;

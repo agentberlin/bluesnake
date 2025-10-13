@@ -22,6 +22,10 @@ export function DownloadAndInstallUpdate() {
   return window['go']['main']['DesktopApp']['DownloadAndInstallUpdate']();
 }
 
+export function GetAICrawlerData(arg1) {
+  return window['go']['main']['DesktopApp']['GetAICrawlerData'](arg1);
+}
+
 export function GetActiveCrawlData(arg1) {
   return window['go']['main']['DesktopApp']['GetActiveCrawlData'](arg1);
 }
@@ -78,6 +82,14 @@ export function GetVersion() {
   return window['go']['main']['DesktopApp']['GetVersion']();
 }
 
+export function RunAICrawlerChecks(arg1) {
+  return window['go']['main']['DesktopApp']['RunAICrawlerChecks'](arg1);
+}
+
+export function SaveAICrawlerData(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['DesktopApp']['SaveAICrawlerData'](arg1, arg2, arg3, arg4, arg5);
+}
+
 export function SearchCrawlResults(arg1, arg2, arg3) {
   return window['go']['main']['DesktopApp']['SearchCrawlResults'](arg1, arg2, arg3);
 }
@@ -106,6 +118,6 @@ export function StopServerWithTunnel() {
   return window['go']['main']['DesktopApp']['StopServerWithTunnel']();
 }
 
-export function UpdateConfigForDomain(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13) {
-  return window['go']['main']['DesktopApp']['UpdateConfigForDomain'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13);
+export function UpdateConfigForDomain(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18) {
+  return window['go']['main']['DesktopApp']['UpdateConfigForDomain'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18);
 }

@@ -26,16 +26,16 @@ import (
 func TestConfigMerging(t *testing.T) {
 	t.Run("AllowURLRevisit preserves IgnoreRobotsTxt default", func(t *testing.T) {
 		// This was the bug that caused TestQueue to fail:
-		// Setting AllowURLRevisit was inadvertently setting IgnoreRobotsTxt to false
+		// Setting AllowURLRevisit was inadvertently changing IgnoreRobotsTxt from its default
 		c := NewCollector(&CollectorConfig{AllowURLRevisit: true})
 
 		if !c.AllowURLRevisit {
 			t.Error("AllowURLRevisit should be true")
 		}
 
-		// IgnoreRobotsTxt should remain true (the default), not become false
-		if !c.IgnoreRobotsTxt {
-			t.Error("IgnoreRobotsTxt should remain true (default) when only setting AllowURLRevisit")
+		// IgnoreRobotsTxt should remain false (the default, controlled by RobotsTxtMode="respect")
+		if c.IgnoreRobotsTxt {
+			t.Error("IgnoreRobotsTxt should remain false (default) when only setting AllowURLRevisit")
 		}
 	})
 
@@ -48,9 +48,9 @@ func TestConfigMerging(t *testing.T) {
 			t.Error("UserAgent should be 'test-agent'")
 		}
 
-		// IgnoreRobotsTxt should preserve default (true)
-		if !c.IgnoreRobotsTxt {
-			t.Error("IgnoreRobotsTxt should remain true (default)")
+		// IgnoreRobotsTxt should preserve default (false, controlled by RobotsTxtMode="respect")
+		if c.IgnoreRobotsTxt {
+			t.Error("IgnoreRobotsTxt should remain false (default)")
 		}
 	})
 
@@ -64,8 +64,8 @@ func TestConfigMerging(t *testing.T) {
 		}
 
 		// Important bool defaults should be preserved
-		if !c.IgnoreRobotsTxt {
-			t.Error("IgnoreRobotsTxt should remain true (default)")
+		if c.IgnoreRobotsTxt {
+			t.Error("IgnoreRobotsTxt should remain false (default)")
 		}
 
 		// UserAgent should get the default since we didn't override it
@@ -94,8 +94,8 @@ func TestConfigMerging(t *testing.T) {
 		}
 
 		// Defaults preserved for fields not in config
-		if !c.IgnoreRobotsTxt {
-			t.Error("IgnoreRobotsTxt should remain true (default)")
+		if c.IgnoreRobotsTxt {
+			t.Error("IgnoreRobotsTxt should remain false (default)")
 		}
 	})
 
@@ -122,8 +122,13 @@ func TestConfigMerging(t *testing.T) {
 		c := NewCollector(nil)
 
 		// Check key defaults
-		if !c.IgnoreRobotsTxt {
-			t.Error("IgnoreRobotsTxt should be true by default")
+		if c.IgnoreRobotsTxt {
+			t.Error("IgnoreRobotsTxt should be false by default (controlled by RobotsTxtMode=respect)")
+		}
+
+		// Check that RobotsTxtMode is set to default
+		if c.RobotsTxtMode != "respect" {
+			t.Errorf("RobotsTxtMode should be 'respect' by default, got %s", c.RobotsTxtMode)
 		}
 
 		expectedMaxBodySize := 10 * 1024 * 1024 // 10MB

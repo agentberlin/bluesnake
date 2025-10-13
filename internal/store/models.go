@@ -32,9 +32,15 @@ type Config struct {
 	SitemapURLs            string   `gorm:"type:text"`                                    // JSON array, nullable
 	CheckExternalResources bool     `gorm:"default:true"`                                 // When true, validate external resources for broken links
 	SinglePageMode         bool     `gorm:"default:false"`                                // When true, only crawl the starting URL (MaxDepth=1)
-	Project                *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
-	CreatedAt              int64    `gorm:"autoCreateTime"`
-	UpdatedAt              int64    `gorm:"autoUpdateTime"`
+	// Crawler directive configuration (robots.txt, nofollow, noindex, etc.)
+	RobotsTxtMode            string `gorm:"default:'respect'"`  // "respect", "ignore", or "ignore-report"
+	FollowInternalNofollow   bool   `gorm:"default:false"`      // When true, follow links with rel="nofollow" on same domain
+	FollowExternalNofollow   bool   `gorm:"default:false"`      // When true, follow links with rel="nofollow" on external domains
+	RespectMetaRobotsNoindex bool   `gorm:"default:true"`       // When true, respect <meta name="robots" content="noindex">
+	RespectNoindex           bool   `gorm:"default:true"`       // When true, respect X-Robots-Tag: noindex headers
+	Project                  *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
+	CreatedAt                int64  `gorm:"autoCreateTime"`
+	UpdatedAt                int64  `gorm:"autoUpdateTime"`
 }
 
 // GetDiscoveryMechanismsArray deserializes the DiscoveryMechanisms JSON to []string
@@ -91,13 +97,17 @@ func (c *Config) SetSitemapURLsArray(urls []string) error {
 
 // Project represents a project (base URL) that can have multiple crawls
 type Project struct {
-	ID          uint    `gorm:"primaryKey"`
-	URL         string  `gorm:"not null"`             // Normalized URL for the project
-	Domain      string  `gorm:"uniqueIndex;not null"` // Domain identifier (includes subdomain)
-	FaviconPath string  `gorm:"type:text"`            // Path to cached favicon
-	Crawls      []Crawl `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
-	CreatedAt   int64   `gorm:"autoCreateTime"`
-	UpdatedAt   int64   `gorm:"autoUpdateTime"`
+	ID             uint    `gorm:"primaryKey"`
+	URL            string  `gorm:"not null"`             // Normalized URL for the project
+	Domain         string  `gorm:"uniqueIndex;not null"` // Domain identifier (includes subdomain)
+	FaviconPath    string  `gorm:"type:text"`            // Path to cached favicon
+	AICrawlerData  string  `gorm:"type:text"`            // JSON data for AI Crawler results
+	SSRScreenshot  string  `gorm:"type:text"`            // Path to SSR screenshot
+	JSScreenshot   string  `gorm:"type:text"`            // Path to JS-enabled screenshot
+	NoJSScreenshot string  `gorm:"type:text"`            // Path to JS-disabled screenshot
+	Crawls         []Crawl `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
+	CreatedAt      int64   `gorm:"autoCreateTime"`
+	UpdatedAt      int64   `gorm:"autoUpdateTime"`
 }
 
 // Crawl represents a single crawl session for a project

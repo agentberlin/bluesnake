@@ -99,6 +99,11 @@ func TestUpdateConfigSinglePageMode(t *testing.T) {
 		[]string{},                 // sitemapURLs
 		false,                      // checkExternalResources
 		true,                       // singlePageMode
+		"respect",                  // robotsTxtMode
+		false,                      // followInternalNofollow
+		false,                      // followExternalNofollow
+		true,                       // respectMetaRobotsNoindex
+		true,                       // respectNoindex
 	)
 	if err != nil {
 		t.Fatalf("UpdateConfig() error = %v", err)
@@ -153,7 +158,12 @@ func TestUpdateConfigToggleSinglePageMode(t *testing.T) {
 		[]string{"spider", "sitemap"},
 		[]string{},
 		true,
-		true, // Enable single page mode
+		true,      // Enable single page mode
+		"respect", // robotsTxtMode
+		false,     // followInternalNofollow
+		false,     // followExternalNofollow
+		true,      // respectMetaRobotsNoindex
+		true,      // respectNoindex
 	)
 	if err != nil {
 		t.Fatalf("UpdateConfig() error = %v", err)
@@ -180,7 +190,12 @@ func TestUpdateConfigToggleSinglePageMode(t *testing.T) {
 		[]string{"spider", "sitemap"},
 		[]string{},
 		true,
-		false, // Disable single page mode
+		false,     // Disable single page mode
+		"respect", // robotsTxtMode
+		false,     // followInternalNofollow
+		false,     // followExternalNofollow
+		true,      // respectMetaRobotsNoindex
+		true,      // respectNoindex
 	)
 	if err != nil {
 		t.Fatalf("UpdateConfig() error = %v", err)
@@ -215,7 +230,7 @@ func TestConfigPersistence(t *testing.T) {
 			t.Fatalf("GetOrCreateConfig() error = %v", err)
 		}
 
-		err = store.UpdateConfig(projectID, true, 1500, 2000, 1000, 20, "test", false, []string{"spider"}, []string{}, false, true)
+		err = store.UpdateConfig(projectID, true, 1500, 2000, 1000, 20, "test", false, []string{"spider"}, []string{}, false, true, "respect", false, false, true, true)
 		if err != nil {
 			t.Fatalf("UpdateConfig() error = %v", err)
 		}

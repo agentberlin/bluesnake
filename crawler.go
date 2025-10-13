@@ -352,6 +352,16 @@ func (cr *Crawler) setupCallbacks() {
 					continue
 				}
 
+				// Check nofollow status and respect configuration
+				if strings.HasPrefix(link.Context, "nofollow:") {
+					// Link has nofollow attribute - check if we should respect it
+					// For internal links, check FollowInternalNofollow setting
+					if !cr.Collector.FollowInternalNofollow {
+						// We should respect nofollow for internal links - skip this link
+						continue
+					}
+				}
+
 				// Check if crawlable (filters, robots.txt)
 				if !cr.isURLCrawlable(link.URL) {
 					continue
@@ -390,10 +400,12 @@ func (cr *Crawler) setupCallbacks() {
 		metaDesc := e.ChildAttr("meta[name='description']", "content")
 		e.Request.Ctx.Put("metaDescription", metaDesc)
 
-		// Check for meta robots noindex
-		metaRobots := e.ChildAttr("meta[name='robots']", "content")
-		if strings.Contains(strings.ToLower(metaRobots), "noindex") {
-			e.Request.Ctx.Put("metaNoindex", "true")
+		// Check for meta robots noindex (only if configured to respect it)
+		if cr.Collector.RespectMetaRobotsNoindex {
+			metaRobots := e.ChildAttr("meta[name='robots']", "content")
+			if strings.Contains(strings.ToLower(metaRobots), "noindex") {
+				e.Request.Ctx.Put("metaNoindex", "true")
+			}
 		}
 	})
 
@@ -465,10 +477,14 @@ func (cr *Crawler) setupCallbacks() {
 	// Handle all responses (HTML and non-HTML)
 	cr.Collector.OnResponse(func(r *Response) {
 		contentType := r.Headers.Get("Content-Type")
-		xRobotsTag := r.Headers.Get("X-Robots-Tag")
+
+		// Check X-Robots-Tag header for noindex (only if configured to respect it)
 		isIndexable := "Yes"
-		if strings.Contains(strings.ToLower(xRobotsTag), "noindex") {
-			isIndexable = "No"
+		if cr.Collector.RespectNoindex {
+			xRobotsTag := r.Headers.Get("X-Robots-Tag")
+			if strings.Contains(strings.ToLower(xRobotsTag), "noindex") {
+				isIndexable = "No"
+			}
 		}
 
 		// Store in context for OnHTML to use
@@ -842,6 +858,19 @@ func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 		href := elem.Attr("href")
 		text := strings.TrimSpace(elem.Text)
 		context := extractLinkContext(elem)
+
+		// Check for nofollow attributes (rel="nofollow", rel="sponsored", rel="ugc")
+		// Store this information so we can respect it during crawling
+		rel := strings.ToLower(elem.Attr("rel"))
+		hasNofollow := strings.Contains(rel, "nofollow") ||
+			strings.Contains(rel, "sponsored") ||
+			strings.Contains(rel, "ugc")
+
+		// Store nofollow status in context for later use
+		if hasNofollow {
+			context = "nofollow:" + context
+		}
+
 		addLink(href, "anchor", text, context, elem)
 	})
 
