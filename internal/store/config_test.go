@@ -89,6 +89,9 @@ func TestUpdateConfigSinglePageMode(t *testing.T) {
 	err = store.UpdateConfig(
 		projectID,
 		true,                       // jsRendering
+		1500,                       // initialWaitMs
+		2000,                       // scrollWaitMs
+		1000,                       // finalWaitMs
 		10,                         // parallelism
 		"test-agent",               // userAgent
 		false,                      // includeSubdomains
@@ -141,6 +144,9 @@ func TestUpdateConfigToggleSinglePageMode(t *testing.T) {
 	err = store.UpdateConfig(
 		projectID,
 		false,
+		1500,
+		2000,
+		1000,
 		5,
 		"bluesnake/1.0",
 		true,
@@ -165,6 +171,9 @@ func TestUpdateConfigToggleSinglePageMode(t *testing.T) {
 	err = store.UpdateConfig(
 		projectID,
 		false,
+		1500,
+		2000,
+		1000,
 		5,
 		"bluesnake/1.0",
 		true,
@@ -206,7 +215,7 @@ func TestConfigPersistence(t *testing.T) {
 			t.Fatalf("GetOrCreateConfig() error = %v", err)
 		}
 
-		err = store.UpdateConfig(projectID, true, 20, "test", false, []string{"spider"}, []string{}, false, true)
+		err = store.UpdateConfig(projectID, true, 1500, 2000, 1000, 20, "test", false, []string{"spider"}, []string{}, false, true)
 		if err != nil {
 			t.Fatalf("UpdateConfig() error = %v", err)
 		}

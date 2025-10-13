@@ -171,3 +171,8 @@ func (d *DesktopApp) StopServerWithTunnel() error {
 func (d *DesktopApp) GetServerStatus() *types.ServerStatus {
 	return d.serverManager.GetStatus()
 }
+
+// DetectJSRenderingNeed detects if a URL needs JavaScript rendering
+func (d *DesktopApp) DetectJSRenderingNeed(url string) (bool, error) {
+	return detectJSRenderingNeed(url)
+}

@@ -14,6 +14,10 @@ export function DeleteProjectByID(arg1) {
   return window['go']['main']['DesktopApp']['DeleteProjectByID'](arg1);
 }
 
+export function DetectJSRenderingNeed(arg1) {
+  return window['go']['main']['DesktopApp']['DetectJSRenderingNeed'](arg1);
+}
+
 export function DownloadAndInstallUpdate() {
   return window['go']['main']['DesktopApp']['DownloadAndInstallUpdate']();
 }
