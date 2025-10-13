@@ -30,6 +30,10 @@ export function GetActiveCrawls() {
   return window['go']['main']['DesktopApp']['GetActiveCrawls']();
 }
 
+export function GetAllFrameworks() {
+  return window['go']['main']['DesktopApp']['GetAllFrameworks']();
+}
+
 export function GetConfigForDomain(arg1) {
   return window['go']['main']['DesktopApp']['GetConfigForDomain'](arg1);
 }
@@ -40,6 +44,14 @@ export function GetCrawlWithResults(arg1) {
 
 export function GetCrawls(arg1) {
   return window['go']['main']['DesktopApp']['GetCrawls'](arg1);
+}
+
+export function GetDomainFramework(arg1, arg2) {
+  return window['go']['main']['DesktopApp']['GetDomainFramework'](arg1, arg2);
+}
+
+export function GetDomainFrameworks(arg1) {
+  return window['go']['main']['DesktopApp']['GetDomainFrameworks'](arg1);
 }
 
 export function GetFaviconData(arg1) {
@@ -64,6 +76,10 @@ export function GetServerStatus() {
 
 export function GetVersion() {
   return window['go']['main']['DesktopApp']['GetVersion']();
+}
+
+export function SetDomainFramework(arg1, arg2, arg3) {
+  return window['go']['main']['DesktopApp']['SetDomainFramework'](arg1, arg2, arg3);
 }
 
 export function StartCrawl(arg1) {

@@ -176,3 +176,23 @@ func (d *DesktopApp) GetServerStatus() *types.ServerStatus {
 func (d *DesktopApp) DetectJSRenderingNeed(url string) (bool, error) {
 	return detectJSRenderingNeed(url)
 }
+
+// GetDomainFrameworks returns all frameworks for domains in a project
+func (d *DesktopApp) GetDomainFrameworks(projectID uint) ([]types.DomainFrameworkResponse, error) {
+	return d.app.GetDomainFrameworks(projectID)
+}
+
+// GetDomainFramework returns the framework for a specific domain
+func (d *DesktopApp) GetDomainFramework(projectID uint, domain string) (*types.DomainFrameworkResponse, error) {
+	return d.app.GetDomainFramework(projectID, domain)
+}
+
+// SetDomainFramework sets the framework for a specific domain
+func (d *DesktopApp) SetDomainFramework(projectID uint, domain string, frameworkID string) error {
+	return d.app.SetDomainFramework(projectID, domain, frameworkID)
+}
+
+// GetAllFrameworks returns a list of all supported frameworks
+func (d *DesktopApp) GetAllFrameworks() []types.FrameworkInfo {
+	return d.app.GetAllFrameworks()
+}

@@ -126,3 +126,19 @@ type PageLinksResponse struct {
 	Inlinks  []LinkInfo `json:"inlinks"`
 	Outlinks []LinkInfo `json:"outlinks"`
 }
+
+// DomainFrameworkResponse represents the response for a single domain's framework
+type DomainFrameworkResponse struct {
+	Domain      string `json:"domain"`
+	Framework   string `json:"framework"`
+	DetectedAt  int64  `json:"detectedAt"`
+	ManuallySet bool   `json:"manuallySet"`
+}
+
+// FrameworkInfo contains metadata about a framework
+type FrameworkInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Category    string `json:"category"`
+	Description string `json:"description"`
+}

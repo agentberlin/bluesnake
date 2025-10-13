@@ -158,3 +158,20 @@ type PageLinkData struct {
 	Position    string
 	DOMPath     string
 }
+
+// DomainFramework represents the detected web framework for a specific domain
+type DomainFramework struct {
+	ID          uint    `gorm:"primaryKey"`
+	ProjectID   uint    `gorm:"not null;index:idx_project_domain"`
+	Domain      string  `gorm:"not null;index:idx_project_domain;index:idx_domain"`
+	Framework   string  `gorm:"not null"`
+	ManuallySet bool    `gorm:"default:false"`
+	Project     *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
+	CreatedAt   int64   `gorm:"autoCreateTime"`
+	UpdatedAt   int64   `gorm:"autoUpdateTime"`
+}
+
+// Unique constraint on (ProjectID, Domain)
+func (DomainFramework) TableName() string {
+	return "domain_frameworks"
+}

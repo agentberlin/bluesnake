@@ -141,6 +141,10 @@ type Crawler struct {
 	// Discovery configuration
 	discoveryMechanisms []DiscoveryMechanism // Enabled discovery mechanisms
 	sitemapURLs         []string             // Custom sitemap URLs (nil = try defaults)
+
+	// Framework-specific filtering (passed from application layer)
+	customFilterPatterns []string // URL patterns to filter (e.g., "/_next/static/", "_rsc=")
+	customFilterParams   []string // Query param keys to filter (e.g., "rsc", "ver")
 }
 
 // NewCrawler creates a high-level crawler with the specified collector configuration.
@@ -219,6 +223,17 @@ func (cr *Crawler) SetOnCrawlComplete(f OnCrawlCompleteFunc) {
 	cr.onCrawlComplete = f
 }
 
+// SetCustomFilters sets custom URL patterns and query params to filter during crawling.
+// This allows the application layer to pass framework-specific filtering rules.
+// filterPatterns: URL patterns to match (e.g., "/_next/static/", "_rsc=")
+// filterParams: Query parameter keys to filter (e.g., "rsc", "ver")
+func (cr *Crawler) SetCustomFilters(filterPatterns []string, filterParams []string) {
+	cr.mutex.Lock()
+	defer cr.mutex.Unlock()
+	cr.customFilterPatterns = filterPatterns
+	cr.customFilterParams = filterParams
+}
+
 // Start begins crawling from the specified starting URL.
 // It returns immediately if the crawler is in Async mode, or blocks until completion otherwise.
 func (cr *Crawler) Start(url string) error {
@@ -290,8 +305,8 @@ func (cr *Crawler) setupCallbacks() {
 			if err := json.Unmarshal([]byte(networkURLsJSON), &networkURLs); err == nil {
 				// Convert network URLs to Link objects and add them to allLinks
 				for _, networkURL := range networkURLs {
-					// Skip analytics and tracking URLs
-					if isAnalyticsOrTracking(networkURL) {
+					// Skip URLs matching custom filters (analytics, tracking, framework-specific, etc.)
+					if cr.matchesCustomFilters(networkURL) {
 						continue
 					}
 
@@ -791,6 +806,11 @@ func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 			return
 		}
 
+		// Skip URLs matching custom filters (analytics, tracking, framework-specific, etc.)
+		if cr.matchesCustomFilters(absoluteURL) {
+			return
+		}
+
 		isInternal := cr.isInternalURL(absoluteURL)
 
 		// Get metadata if this URL has been crawled
@@ -1147,29 +1167,30 @@ func inferResourceType(urlStr string) string {
 	}
 }
 
-// isAnalyticsOrTracking checks if a URL is an analytics or tracking endpoint
-// that should be excluded from crawling
-func isAnalyticsOrTracking(urlStr string) bool {
+// matchesCustomFilters checks if a URL matches any custom filter patterns or query params
+// that were passed from the application layer. This provides a generic filtering mechanism
+// that can be used for framework-specific filters, analytics/tracking filters, etc.
+func (cr *Crawler) matchesCustomFilters(urlStr string) bool {
 	urlLower := strings.ToLower(urlStr)
 
-	// Common analytics and tracking patterns
-	analyticsPatterns := []string{
-		"/g/collect",        // Google Analytics
-		"/gtm.js",           // Google Tag Manager
-		"/gtag/js",          // Google Global Site Tag
-		"/analytics.js",     // Generic analytics
-		"/ga.js",            // Google Analytics legacy
-		"google-analytics", // Google Analytics domain
-		"googletagmanager", // Tag Manager domain
-		"/pixel",            // Tracking pixels
-		"/track",            // Generic tracking
-		"/beacon",           // Beacon API
-		"/telemetry",        // Telemetry endpoints
-		"_rsc=",             // React Server Components prefetch URLs (Next.js)
+	// Check custom URL patterns (passed from application layer)
+	cr.mutex.RLock()
+	customPatterns := cr.customFilterPatterns
+	customParams := cr.customFilterParams
+	cr.mutex.RUnlock()
+
+	for _, pattern := range customPatterns {
+		if strings.Contains(urlLower, strings.ToLower(pattern)) {
+			return true
+		}
 	}
 
-	for _, pattern := range analyticsPatterns {
-		if strings.Contains(urlLower, pattern) {
+	// Check custom query params
+	// Simply check if the URL contains the query parameter (e.g., "?param=" or "&param=")
+	for _, param := range customParams {
+		// Check for ?param= or &param= in the URL
+		if strings.Contains(urlLower, "?"+strings.ToLower(param)+"=") ||
+			strings.Contains(urlLower, "&"+strings.ToLower(param)+"=") {
 			return true
 		}
 	}
