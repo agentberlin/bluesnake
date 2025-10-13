@@ -1499,7 +1499,7 @@ function App() {
                 className={`filter-tab ${contentTypeFilter === 'other' ? 'active' : ''}`}
                 onClick={() => setContentTypeFilter('other')}
               >
-                Others ({results.filter(r => categorizeContentType(r.contentType) === 'other').length})
+                Others ({results.filter(r => !(r.status === 0 && r.title === 'Unvisited URL') && categorizeContentType(r.contentType) === 'other').length})
               </button>
             </div>
             <div className="results-header">
