@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL, UpdateConfigForDomain, GetConfigForDomain } from "../wailsjs/go/main/DesktopApp";
+import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL, UpdateConfigForDomain, GetConfigForDomain, DetectJSRenderingNeed } from "../wailsjs/go/main/DesktopApp";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
@@ -672,10 +672,20 @@ function App() {
           false  // singlePageMode - DISABLE for full crawl
         );
       } catch {
-        // If config fetch fails (e.g., project doesn't exist yet), create with defaults
+        // If config fetch fails (e.g., project doesn't exist yet), this is a first crawl
+        // Detect if JS rendering is needed
+        let jsRenderingEnabled = false;
+        try {
+          jsRenderingEnabled = await DetectJSRenderingNeed(url);
+          console.log(`JS rendering detection for ${url}: ${jsRenderingEnabled ? 'ENABLED' : 'DISABLED'}`);
+        } catch (detectionError) {
+          console.warn('JS rendering detection failed, using default (disabled):', detectionError);
+        }
+
+        // Create config with detected or default settings
         await UpdateConfigForDomain(
           url,
-          false, // jsRendering - default
+          jsRenderingEnabled, // jsRendering - auto-detected or default false
           1500,  // initialWaitMs - default
           2000,  // scrollWaitMs - default
           1000,  // finalWaitMs - default
@@ -737,10 +747,20 @@ function App() {
           true   // singlePageMode - ENABLE for single page crawl
         );
       } catch {
-        // If config fetch fails (e.g., project doesn't exist yet), create with defaults
+        // If config fetch fails (e.g., project doesn't exist yet), this is a first crawl
+        // Detect if JS rendering is needed
+        let jsRenderingEnabled = false;
+        try {
+          jsRenderingEnabled = await DetectJSRenderingNeed(url);
+          console.log(`JS rendering detection for ${url}: ${jsRenderingEnabled ? 'ENABLED' : 'DISABLED'}`);
+        } catch (detectionError) {
+          console.warn('JS rendering detection failed, using default (disabled):', detectionError);
+        }
+
+        // Create config with detected or default settings
         await UpdateConfigForDomain(
           url,
-          false, // jsRendering - default
+          jsRenderingEnabled, // jsRendering - auto-detected or default false
           1500,  // initialWaitMs - default
           2000,  // scrollWaitMs - default
           1000,  // finalWaitMs - default

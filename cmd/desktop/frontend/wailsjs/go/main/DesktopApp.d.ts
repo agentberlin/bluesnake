@@ -9,6 +9,8 @@ export function DeleteCrawlByID(arg1:number):Promise<void>;
 
 export function DeleteProjectByID(arg1:number):Promise<void>;
 
+export function DetectJSRenderingNeed(arg1:string):Promise<boolean>;
+
 export function DownloadAndInstallUpdate():Promise<void>;
 
 export function GetActiveCrawlData(arg1:number):Promise<types.CrawlResultDetailed>;

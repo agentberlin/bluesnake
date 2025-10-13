@@ -175,7 +175,7 @@ function Config({ url, onClose }: ConfigProps) {
                   <div>
                     <span className="checkbox-label">Enable JavaScript Rendering</span>
                     <p className="config-hint">
-                      When enabled, pages will be rendered with a headless browser to execute JavaScript
+                      When enabled, pages will be rendered with a headless browser to execute JavaScript. On first crawl, this setting is automatically detected based on whether the site uses client-side rendering.
                     </p>
                   </div>
                 </label>
