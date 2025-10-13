@@ -47,6 +47,9 @@ type Link struct {
 	// DOMPath is a simplified DOM path showing the link's location in the HTML structure
 	// Example: "body > main > article > p > a"
 	DOMPath string `json:"domPath,omitempty"`
+	// Action indicates how this URL should be handled
+	// Values: "crawl" (normal), "record" (framework-specific, don't crawl), "skip" (ignored)
+	Action URLAction `json:"action,omitempty"`
 }
 
 // Links contains outbound links from a page
@@ -114,6 +117,27 @@ type OnResourceVisitFunc func(*ResourceResult)
 //   - totalDiscovered: total number of unique URLs discovered during the crawl
 type OnCrawlCompleteFunc func(wasStopped bool, totalPages int, totalDiscovered int)
 
+// URLAction represents the action to take when a URL is discovered during crawling
+type URLAction string
+
+const (
+	// URLActionCrawl indicates the URL should be added to links and crawled
+	URLActionCrawl URLAction = "crawl"
+	// URLActionRecordOnly indicates the URL should be added to links but NOT crawled (e.g., framework-specific paths)
+	URLActionRecordOnly URLAction = "record"
+	// URLActionSkip indicates the URL should be ignored completely (e.g., analytics/tracking URLs)
+	URLActionSkip URLAction = "skip"
+)
+
+// OnURLDiscoveredFunc is called when a new URL is discovered during crawling.
+// This callback is invoked exactly once per unique URL to determine how it should be handled.
+// The return value indicates whether the URL should be crawled, recorded only, or skipped entirely.
+// Use cases:
+//   - Return URLActionCrawl for normal URLs that should be crawled
+//   - Return URLActionRecordOnly for framework-specific paths that should appear in links but not be crawled
+//   - Return URLActionSkip for analytics/tracking URLs that should be ignored completely
+type OnURLDiscoveredFunc func(url string) URLAction
+
 // PageMetadata stores cached metadata for crawled pages
 type PageMetadata struct {
 	Status      int
@@ -128,9 +152,10 @@ type Crawler struct {
 	onPageCrawled   OnPageCrawledFunc
 	onResourceVisit OnResourceVisitFunc
 	onCrawlComplete OnCrawlCompleteFunc
+	onURLDiscovered OnURLDiscoveredFunc
 
 	// Internal state tracking
-	queuedURLs   *sync.Map // map[string]bool - tracks all discovered URLs
+	queuedURLs   *sync.Map // map[string]URLAction - tracks discovered URLs and their actions
 	crawledPages int
 	mutex        sync.RWMutex
 
@@ -141,9 +166,6 @@ type Crawler struct {
 	// Discovery configuration
 	discoveryMechanisms []DiscoveryMechanism // Enabled discovery mechanisms
 	sitemapURLs         []string             // Custom sitemap URLs (nil = try defaults)
-
-	// URL filtering callback (provided by application layer)
-	urlFilterCallback func(string) bool // Application-provided URL filter
 }
 
 // NewCrawler creates a high-level crawler with the specified collector configuration.
@@ -222,13 +244,42 @@ func (cr *Crawler) SetOnCrawlComplete(f OnCrawlCompleteFunc) {
 	cr.onCrawlComplete = f
 }
 
-// SetURLFilterCallback sets a custom URL filter callback function.
-// The callback should return true if the URL should be filtered (skipped), false otherwise.
-// This allows the application layer to implement domain-aware, framework-specific filtering.
-func (cr *Crawler) SetURLFilterCallback(filter func(string) bool) {
+// SetOnURLDiscovered registers a callback function that will be called when a new URL is discovered.
+// This callback is invoked exactly once per unique URL to determine the action to take.
+// The callback should return:
+//   - URLActionCrawl to crawl the URL normally
+//   - URLActionRecordOnly to add the URL to links but not crawl it (e.g., framework-specific paths)
+//   - URLActionSkip to ignore the URL completely (e.g., analytics/tracking URLs)
+func (cr *Crawler) SetOnURLDiscovered(f OnURLDiscoveredFunc) {
 	cr.mutex.Lock()
 	defer cr.mutex.Unlock()
-	cr.urlFilterCallback = filter
+	cr.onURLDiscovered = f
+}
+
+// getOrDetermineURLAction determines the action for a URL by calling the OnURLDiscovered callback.
+// The callback is invoked only once per unique URL (results are memoized in queuedURLs).
+// On subsequent calls for the same URL, the cached action is returned.
+// This ensures deduplication - the application callback won't be called multiple times for the same URL.
+func (cr *Crawler) getOrDetermineURLAction(urlStr string) URLAction {
+	// Check if we've already determined action for this URL
+	if actionInterface, exists := cr.queuedURLs.Load(urlStr); exists {
+		return actionInterface.(URLAction)
+	}
+
+	// First time seeing this URL - determine action via callback
+	action := URLActionCrawl // default action if no callback is set
+	cr.mutex.RLock()
+	callback := cr.onURLDiscovered
+	cr.mutex.RUnlock()
+
+	if callback != nil {
+		action = callback(urlStr)
+	}
+
+	// Store the action in queuedURLs (memoization - callback won't be called again for this URL)
+	cr.queuedURLs.Store(urlStr, action)
+
+	return action
 }
 
 // Start begins crawling from the specified starting URL.
@@ -237,8 +288,8 @@ func (cr *Crawler) Start(url string) error {
 	// Extract and set root domain for internal/external classification
 	cr.rootDomain = cr.extractRootDomain(url)
 
-	// ALWAYS queue the base URL first
-	cr.queuedURLs.Store(url, true)
+	// Determine action for base URL (always crawl it, but track it)
+	cr.getOrDetermineURLAction(url)
 
 	// Start crawling from base URL first
 	if err := cr.Collector.Visit(url); err != nil {
@@ -249,8 +300,11 @@ func (cr *Crawler) Start(url string) error {
 	if cr.hasDiscoveryMechanism(DiscoverySitemap) {
 		sitemapURLs := cr.fetchSitemapURLs(url)
 		for _, sitemapURL := range sitemapURLs {
-			// De-duplicate automatically - only queue if not already seen
-			if _, alreadyQueued := cr.queuedURLs.LoadOrStore(sitemapURL, true); !alreadyQueued {
+			// Determine action for this sitemap URL
+			action := cr.getOrDetermineURLAction(sitemapURL)
+
+			// Only visit URLs marked for crawling
+			if action == URLActionCrawl {
 				// Visit each sitemap URL (errors are logged but don't stop the crawl)
 				cr.Collector.Visit(sitemapURL)
 			}
@@ -302,8 +356,11 @@ func (cr *Crawler) setupCallbacks() {
 			if err := json.Unmarshal([]byte(networkURLsJSON), &networkURLs); err == nil {
 				// Convert network URLs to Link objects and add them to allLinks
 				for _, networkURL := range networkURLs {
-					// Skip URLs matching custom filters (analytics, tracking, framework-specific, etc.)
-					if cr.matchesCustomFilters(networkURL) {
+					// Determine action for this URL (callback called once, result memoized)
+					action := cr.getOrDetermineURLAction(networkURL)
+
+					// Skip URLs marked for complete skip
+					if action == URLActionSkip {
 						continue
 					}
 
@@ -311,26 +368,24 @@ func (cr *Crawler) setupCallbacks() {
 					linkType := inferResourceType(networkURL)
 					isInternal := cr.isInternalURL(networkURL)
 
-					// Create link object
+					// Create link object with action
 					link := Link{
 						URL:        networkURL,
 						Type:       linkType,
 						Text:       "",
 						Context:    "network",
 						IsInternal: isInternal,
+						Action:     action,
 					}
 
-					// Add to allLinks for reporting
+					// Add to allLinks for reporting (both Crawl and RecordOnly)
 					allLinks = append(allLinks, link)
 
-					// Queue network-discovered resources for crawling
-					// Internal resources are always crawled; external resources only if validation is enabled
+					// Only queue for crawling if action is Crawl
 					shouldCrawl := isInternal || cr.shouldValidateResource(link)
-					if shouldCrawl && cr.isURLCrawlable(networkURL) {
-						// Only visit if not already queued
-						if _, alreadyQueued := cr.queuedURLs.LoadOrStore(networkURL, true); !alreadyQueued {
-							e.Request.Visit(networkURL)
-						}
+					if action == URLActionCrawl && shouldCrawl && cr.isURLCrawlable(networkURL) {
+						// Visit this URL (action already stored in queuedURLs by getOrDetermineURLAction)
+						e.Request.Visit(networkURL)
 					}
 				}
 			}
@@ -352,30 +407,36 @@ func (cr *Crawler) setupCallbacks() {
 					continue
 				}
 
+				// Only crawl links with Crawl action (skip RecordOnly and Skip)
+				if link.Action != URLActionCrawl {
+					continue
+				}
+
 				// Check if crawlable (filters, robots.txt)
 				if !cr.isURLCrawlable(link.URL) {
 					continue
 				}
 
-				// Only visit if not already queued
-				if _, alreadyQueued := cr.queuedURLs.LoadOrStore(link.URL, true); !alreadyQueued {
-					e.Request.Visit(link.URL)
-				}
+				// Visit this URL (action already stored in queuedURLs)
+				e.Request.Visit(link.URL)
 			}
 		}
 
 		// Resource validation: check configured resource types for broken links
 		for _, link := range allLinks {
 			if cr.shouldValidateResource(link) {
+				// Only crawl resources with Crawl action
+				if link.Action != URLActionCrawl {
+					continue
+				}
+
 				// Check if crawlable (filters, robots.txt)
 				if !cr.isURLCrawlable(link.URL) {
 					continue
 				}
 
-				// Only visit if not already queued
-				if _, alreadyQueued := cr.queuedURLs.LoadOrStore(link.URL, true); !alreadyQueued {
-					e.Request.Visit(link.URL)
-				}
+				// Visit this resource (action already stored in queuedURLs)
+				e.Request.Visit(link.URL)
 			}
 		}
 	})
@@ -514,6 +575,14 @@ func (cr *Crawler) setupCallbacks() {
 						continue
 					}
 
+					// Determine action for this URL (callback called once, result memoized)
+					action := cr.getOrDetermineURLAction(absoluteURL)
+
+					// Skip URLs marked for complete skip
+					if action == URLActionSkip {
+						continue
+					}
+
 					// Determine resource type from URL/extension
 					resourceType := inferResourceType(absoluteURL)
 
@@ -523,17 +592,17 @@ func (cr *Crawler) setupCallbacks() {
 						URL:        absoluteURL,
 						Type:       resourceType,
 						IsInternal: isInternal,
+						Action:     action,
 					}
 
 					// Always crawl internal resources from CSS (like fonts, images)
 					// For external resources, only crawl if resource validation is enabled
 					shouldCrawl := isInternal || cr.shouldValidateResource(link)
 
-					if shouldCrawl && cr.isURLCrawlable(absoluteURL) {
-						// Only visit if not already queued
-						if _, alreadyQueued := cr.queuedURLs.LoadOrStore(absoluteURL, true); !alreadyQueued {
-							r.Request.Visit(absoluteURL)
-						}
+					// Only visit URLs marked for crawling
+					if action == URLActionCrawl && shouldCrawl && cr.isURLCrawlable(absoluteURL) {
+						// Visit this URL (action already stored in queuedURLs)
+						r.Request.Visit(absoluteURL)
 					}
 				}
 			}
@@ -803,8 +872,11 @@ func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 			return
 		}
 
-		// Skip URLs matching custom filters (analytics, tracking, framework-specific, etc.)
-		if cr.matchesCustomFilters(absoluteURL) {
+		// Determine action for this URL (callback called once, result memoized)
+		action := cr.getOrDetermineURLAction(absoluteURL)
+
+		// Skip URLs marked for complete skip
+		if action == URLActionSkip {
 			return
 		}
 
@@ -834,6 +906,7 @@ func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 			ContentType: contentType,
 			Position:    position,
 			DOMPath:     domPath,
+			Action:      action,
 		})
 	}
 
@@ -1164,18 +1237,3 @@ func inferResourceType(urlStr string) string {
 	}
 }
 
-// matchesCustomFilters checks if a URL should be filtered using the application-provided callback.
-// This provides a generic filtering mechanism that can be used for framework-specific filters,
-// analytics/tracking filters, etc.
-func (cr *Crawler) matchesCustomFilters(urlStr string) bool {
-	// Check if application-provided callback is set
-	cr.mutex.RLock()
-	callback := cr.urlFilterCallback
-	cr.mutex.RUnlock()
-
-	if callback != nil {
-		return callback(urlStr)
-	}
-
-	return false
-}

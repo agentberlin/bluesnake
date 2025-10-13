@@ -47,7 +47,7 @@ func (s *Store) UpdateCrawlStats(crawlID uint, crawlDuration int64, pagesCrawled
 // GetCrawlByID gets a crawl by ID
 func (s *Store) GetCrawlByID(id uint) (*Crawl, error) {
 	var crawl Crawl
-	result := s.db.Preload("CrawledUrls").First(&crawl, id)
+	result := s.db.Preload("DiscoveredUrls").First(&crawl, id)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get crawl: %v", result.Error)
 	}
@@ -77,9 +77,9 @@ func (s *Store) GetLatestCrawl(projectID uint) (*Crawl, error) {
 	return &crawl, nil
 }
 
-// GetCrawlResults gets all crawled URLs for a specific crawl
-func (s *Store) GetCrawlResults(crawlID uint) ([]CrawledUrl, error) {
-	var urls []CrawledUrl
+// GetCrawlResults gets all discovered URLs for a specific crawl (both visited and unvisited)
+func (s *Store) GetCrawlResults(crawlID uint) ([]DiscoveredUrl, error) {
+	var urls []DiscoveredUrl
 	result := s.db.Where("crawl_id = ?", crawlID).Order("id ASC").Find(&urls)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get crawl results: %v", result.Error)
@@ -87,11 +87,12 @@ func (s *Store) GetCrawlResults(crawlID uint) ([]CrawledUrl, error) {
 	return urls, nil
 }
 
-// SaveCrawledUrl saves a crawled URL result
-func (s *Store) SaveCrawledUrl(crawlID uint, url string, status int, title string, metaDescription string, contentHash string, indexable string, contentType string, errorMsg string) error {
-	crawledUrl := CrawledUrl{
+// SaveDiscoveredUrl saves a discovered URL (whether visited or not)
+func (s *Store) SaveDiscoveredUrl(crawlID uint, url string, visited bool, status int, title string, metaDescription string, contentHash string, indexable string, contentType string, errorMsg string) error {
+	discoveredUrl := DiscoveredUrl{
 		CrawlID:         crawlID,
 		URL:             url,
+		Visited:         visited,
 		Status:          status,
 		Title:           title,
 		MetaDescription: metaDescription,
@@ -101,7 +102,7 @@ func (s *Store) SaveCrawledUrl(crawlID uint, url string, status int, title strin
 		Error:           errorMsg,
 	}
 
-	return s.db.Create(&crawledUrl).Error
+	return s.db.Create(&discoveredUrl).Error
 }
 
 // DeleteCrawl deletes a crawl and all its crawled URLs (cascade)
