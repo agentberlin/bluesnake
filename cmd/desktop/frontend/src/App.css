@@ -375,11 +375,28 @@
   font-style: italic;
 }
 
+/* Dashboard Container */
+.dashboard-container {
+  display: flex;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+}
+
+.dashboard-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
 /* Crawl Screen */
 .crawl-screen {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
+  flex: 1;
 }
 
 .header {
@@ -389,12 +406,13 @@
   padding: 20px 32px;
   border-bottom: 1px solid #e8e8e8;
   gap: 32px;
+  height: 68px;
+  box-sizing: border-box;
 }
 
 .header-left {
   display: flex;
   align-items: center;
-  gap: 16px;
   flex-shrink: 0;
 }
 
