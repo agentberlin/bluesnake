@@ -48,6 +48,19 @@ class CrawlerComparison:
             "outlink_diffs": {},
         }
 
+    def should_filter_url(self, url: str) -> bool:
+        """
+        Check if a URL should be filtered from comparison.
+        Returns True for URLs that should be excluded (RSC prefetch URLs, etc.)
+        """
+        url_lower = url.lower()
+
+        # Filter Next.js RSC prefetch URLs (these are duplicates with cache-busting tokens)
+        if "_rsc=" in url_lower:
+            return True
+
+        return False
+
     def categorize_resource_type(self, content_type: str) -> str:
         """Categorize content type into resource types"""
         ct = content_type.lower()
@@ -327,11 +340,17 @@ class CrawlerComparison:
             return {}
 
         urls = {}
+        filtered_count = 0
         with open(internal_file, "r", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 url = row.get("Address", "")
                 if url:
+                    # Filter URLs that should be excluded
+                    if self.should_filter_url(url):
+                        filtered_count += 1
+                        continue
+
                     urls[url] = {
                         "status": int(row.get("Status Code", 0)) if row.get("Status Code") else 0,
                         "content_type": row.get("Content Type", ""),
@@ -339,7 +358,7 @@ class CrawlerComparison:
                         "indexable": row.get("Indexability", ""),
                     }
 
-        print(f"Parsed {len(urls)} URLs from ScreamingFrog Internal:All")
+        print(f"Parsed {len(urls)} URLs from ScreamingFrog Internal:All (filtered {filtered_count} URLs)")
         return urls
 
     def parse_screamingfrog_outlinks(self) -> Dict[str, List[Dict[str, str]]]:
@@ -350,17 +369,23 @@ class CrawlerComparison:
             return {}
 
         outlinks = defaultdict(list)
+        filtered_outlinks = 0
         with open(outlinks_file, "r", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 source = row.get("Source", "")
                 target = row.get("Destination", "")
                 if source and target:
+                    # Filter outlinks where source or target should be excluded
+                    if self.should_filter_url(source) or self.should_filter_url(target):
+                        filtered_outlinks += 1
+                        continue
+
                     outlinks[source].append(
                         {"to": target, "anchor": row.get("Anchor Text", ""), "type": row.get("Type", "")}
                     )
 
-        print(f"Parsed outlinks for {len(outlinks)} URLs from ScreamingFrog")
+        print(f"Parsed outlinks for {len(outlinks)} URLs from ScreamingFrog (filtered {filtered_outlinks} outlinks)")
         return outlinks
 
     def normalize_url(self, url: str) -> str:

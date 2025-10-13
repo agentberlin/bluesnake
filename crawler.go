@@ -1165,7 +1165,7 @@ func isAnalyticsOrTracking(urlStr string) bool {
 		"/track",            // Generic tracking
 		"/beacon",           // Beacon API
 		"/telemetry",        // Telemetry endpoints
-		"_rsc=",             // React Server Components cache-busting tokens
+		"_rsc=",             // React Server Components prefetch URLs (Next.js)
 	}
 
 	for _, pattern := range analyticsPatterns {
