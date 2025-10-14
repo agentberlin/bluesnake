@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl, GetProjects, GetCrawls, GetCrawlWithResults, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlData, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL, UpdateConfigForDomain, GetConfigForDomain, DetectJSRenderingNeed, SearchCrawlResults } from "../wailsjs/go/main/DesktopApp";
+import { StartCrawl, GetProjects, GetCrawls, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlStats, GetCrawlStats, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL, UpdateConfigForDomain, GetConfigForDomain, DetectJSRenderingNeed, SearchCrawlResultsPaginated } from "../wailsjs/go/main/DesktopApp";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
@@ -93,6 +93,12 @@ interface CrawlResult {
   error?: string;
 }
 
+interface CrawlResultPaginated {
+  results: CrawlResult[];
+  nextCursor: number;
+  hasMore: boolean;
+}
+
 interface Link {
   url: string;
   linkType: string;  // "anchor", "image", "script", "stylesheet", etc.
@@ -133,6 +139,20 @@ interface CrawlProgress {
   totalDiscovered: number;
   discoveredUrls: string[];
   isCrawling: boolean;
+}
+
+interface ActiveCrawlStats {
+  crawlId: number;
+  total: number;
+  crawled: number;
+  queued: number;
+  html: number;
+  javascript: number;
+  css: number;
+  images: number;
+  fonts: number;
+  unvisited: number;
+  others: number;
 }
 
 interface ConfigData {
@@ -296,6 +316,15 @@ function App() {
   const [contentTypeFilter, setContentTypeFilter] = useState<string>('html');
   const [isCrawlTypeDropdownOpen, setIsCrawlTypeDropdownOpen] = useState(false);
   const crawlTypeDropdownRef = useRef<HTMLDivElement>(null);
+  const [activeCrawlStats, setActiveCrawlStats] = useState<ActiveCrawlStats | null>(null);
+  const [crawlStats, setCrawlStats] = useState<ActiveCrawlStats | null>(null);
+
+  // Pagination state
+  const [cursor, setCursor] = useState<number>(0);
+  const [hasMore, setHasMore] = useState<boolean>(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const resultsBodyRef = useRef<HTMLDivElement>(null);
+  const PAGINATION_LIMIT = 100;
 
   useEffect(() => {
     // Load projects on start
@@ -416,25 +445,9 @@ function App() {
         const activeCrawl = crawls.find((c: CrawlProgress) => c.projectId === currentProject.id);
 
         if (activeCrawl) {
-          // Active crawl - get crawled data from database
-          const crawlData = await GetActiveCrawlData(currentProject.id);
-
-          // Create a set of crawled URLs for quick lookup
-          const crawledUrlSet = new Set(crawlData.results.map(r => r.url));
-
-          // Add discovered URLs that haven't been crawled yet as "queued" items
-          const queuedResults: CrawlResult[] = activeCrawl.discoveredUrls
-            .filter(url => !crawledUrlSet.has(url))
-            .map(url => ({
-              url,
-              status: 0,
-              title: 'In progress...',
-              indexable: '-',
-              error: undefined
-            }));
-
-          // Combine crawled results with queued URLs
-          setResults([...crawlData.results, ...queuedResults]);
+          // Active crawl - get stats from backend (efficient COUNT queries)
+          const stats = await GetActiveCrawlStats(currentProject.id);
+          setActiveCrawlStats(stats);
           setIsCrawling(true);
           setCurrentCrawlId(activeCrawl.crawlId);
 
@@ -445,12 +458,10 @@ function App() {
             setCurrentProject(updatedProject);
           }
         } else {
-          // No active crawl - get data from database if we have a crawl ID
-          if (currentCrawlId) {
-            const crawlData = await GetCrawlWithResults(currentCrawlId);
-            setResults(crawlData.results);
-          }
+          // No active crawl - just update the isCrawling state
+          // The pagination/search effect will handle loading the data
           setIsCrawling(false);
+          setActiveCrawlStats(null);
 
           // Clear from stopping projects if it was there
           setStoppingProjects(prev => {
@@ -519,6 +530,25 @@ function App() {
     return category.charAt(0).toUpperCase() + category.slice(1);
   };
 
+  // Fetch stats for completed crawls (when not actively crawling)
+  useEffect(() => {
+    // Only fetch stats if we have a crawl ID and are NOT crawling
+    if (!currentCrawlId || isCrawling) {
+      setCrawlStats(null);
+      return;
+    }
+
+    // Fetch stats from backend
+    GetCrawlStats(currentCrawlId)
+      .then((stats: ActiveCrawlStats) => {
+        setCrawlStats(stats);
+      })
+      .catch((error: any) => {
+        console.error('Failed to fetch crawl stats:', error);
+        setCrawlStats(null);
+      });
+  }, [currentCrawlId, isCrawling]);
+
   // Update filtered results when debounced search query, content type filter, or currentCrawlId change
   // Note: This uses debouncedSearchQuery (not searchQuery) to reduce database load
   // The debounce happens 300ms after the user stops typing (see useEffect above)
@@ -526,20 +556,70 @@ function App() {
     // Only perform search if we have a crawl ID
     if (!currentCrawlId) {
       setFilteredResults([]);
+      setCursor(0);
+      setHasMore(false);
       return;
     }
 
-    // Call backend search with debounced query and content type filter
-    SearchCrawlResults(currentCrawlId, debouncedSearchQuery, contentTypeFilter)
-      .then((searchResults: CrawlResult[]) => {
-        setFilteredResults(searchResults);
+    // Reset pagination when filters change
+    setCursor(0);
+    setHasMore(false);
+
+    // Call backend search with debounced query, content type filter, and pagination
+    SearchCrawlResultsPaginated(currentCrawlId, debouncedSearchQuery, contentTypeFilter, PAGINATION_LIMIT, 0)
+      .then((paginatedResults: CrawlResultPaginated) => {
+        setFilteredResults(paginatedResults.results);
+        setCursor(paginatedResults.nextCursor);
+        setHasMore(paginatedResults.hasMore);
       })
       .catch((error: any) => {
         console.error('Failed to search crawl results:', error);
-        // On error, fall back to showing all results
-        setFilteredResults(results);
+        // On error, fall back to empty results
+        setFilteredResults([]);
+        setCursor(0);
+        setHasMore(false);
       });
-  }, [debouncedSearchQuery, contentTypeFilter, currentCrawlId, results.length]);
+  }, [debouncedSearchQuery, contentTypeFilter, currentCrawlId]);
+
+  // Poll for URL list updates during active crawling
+  // This keeps the first page of results fresh without refetching everything
+  useEffect(() => {
+    // Only poll if we're actively crawling and have a crawl ID
+    if (!isCrawling || !currentCrawlId) return;
+
+    const pollUrls = async () => {
+      try {
+        // Fetch first page of results for current filter
+        const paginatedResults: CrawlResultPaginated = await SearchCrawlResultsPaginated(
+          currentCrawlId,
+          debouncedSearchQuery,
+          contentTypeFilter,
+          PAGINATION_LIMIT,
+          0
+        );
+
+        // Update the results
+        setFilteredResults(paginatedResults.results);
+        setCursor(paginatedResults.nextCursor);
+        setHasMore(paginatedResults.hasMore);
+      } catch (error) {
+        console.error('Failed to poll URL list:', error);
+      }
+    };
+
+    // Initial poll
+    pollUrls();
+
+    // Stop polling when we have a full page (optimization)
+    // If we have PAGINATION_LIMIT results, we likely have more than enough to show
+    if (filteredResults.length >= PAGINATION_LIMIT) {
+      return;
+    }
+
+    // Poll every 2 seconds during crawling
+    const interval = setInterval(pollUrls, 2000);
+    return () => clearInterval(interval);
+  }, [isCrawling, currentCrawlId, debouncedSearchQuery, contentTypeFilter, filteredResults.length]);
 
   const loadCurrentProjectFromUrl = async (currentUrl: string) => {
     try {
@@ -574,10 +654,14 @@ function App() {
       const crawls = await GetCrawls(project.id);
       setAvailableCrawls(crawls);
 
-      // Load the latest crawl
+      // Load the latest crawl - just set the ID, pagination will handle loading data
       if (project.latestCrawlId) {
-        const crawlData = await GetCrawlWithResults(project.latestCrawlId);
-        setSelectedCrawl(crawlData.crawlInfo);
+        // Get crawl info only (without results)
+        const crawls = await GetCrawls(project.id);
+        const latestCrawl = crawls.find(c => c.id === project.latestCrawlId);
+        if (latestCrawl) {
+          setSelectedCrawl(latestCrawl);
+        }
       }
     } catch (error) {
       console.error('Failed to load current project:', error);
@@ -855,11 +939,12 @@ function App() {
       const crawls = await GetCrawls(project.id);
       setAvailableCrawls(crawls);
 
-      // Load the crawl results (either active or latest completed)
+      // Set the selected crawl info (pagination will handle loading results)
       if (crawlIdToLoad) {
-        const crawlData = await GetCrawlWithResults(crawlIdToLoad);
-        setSelectedCrawl(crawlData.crawlInfo);
-        setResults(crawlData.results);
+        const selectedCrawlInfo = crawls.find(c => c.id === crawlIdToLoad);
+        if (selectedCrawlInfo) {
+          setSelectedCrawl(selectedCrawlInfo);
+        }
       }
 
       setDashboardSection('crawl-list');
@@ -879,10 +964,14 @@ function App() {
                        activeCrawls.get(currentProject.id)?.crawlId === crawlId);
       setIsCrawling(isActive);
 
-      const crawlData = await GetCrawlWithResults(crawlId);
-      setSelectedCrawl(crawlData.crawlInfo);
-      setResults(crawlData.results);
+      // Find the selected crawl info from available crawls
+      const selectedCrawlInfo = availableCrawls.find(c => c.id === crawlId);
+      if (selectedCrawlInfo) {
+        setSelectedCrawl(selectedCrawlInfo);
+      }
+
       setIsCrawlDropdownOpen(false);
+      // Pagination effect will handle loading the results based on currentCrawlId change
     } catch (error) {
       console.error('Failed to load crawl:', error);
     }
@@ -955,10 +1044,9 @@ function App() {
       if (selectedCrawl && crawlToDelete === selectedCrawl.id) {
         if (crawls.length > 0) {
           const latestCrawl = crawls[0];
-          const crawlData = await GetCrawlWithResults(latestCrawl.id);
-          setSelectedCrawl(crawlData.crawlInfo);
-          setResults(crawlData.results);
+          setSelectedCrawl(latestCrawl);
           setCurrentCrawlId(latestCrawl.id);
+          // Pagination effect will handle loading the results
         } else {
           // No more crawls, go back to home
           handleHome();
@@ -1054,6 +1142,46 @@ function App() {
   const handleClosePanel = () => {
     setIsPanelOpen(false);
   };
+
+  const loadMoreResults = async () => {
+    if (!currentCrawlId || !hasMore || isLoadingMore) return;
+
+    setIsLoadingMore(true);
+    try {
+      const paginatedResults: CrawlResultPaginated = await SearchCrawlResultsPaginated(
+        currentCrawlId,
+        debouncedSearchQuery,
+        contentTypeFilter,
+        PAGINATION_LIMIT,
+        cursor
+      );
+
+      setFilteredResults(prev => [...prev, ...paginatedResults.results]);
+      setCursor(paginatedResults.nextCursor);
+      setHasMore(paginatedResults.hasMore);
+    } catch (error) {
+      console.error('Failed to load more results:', error);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
+  // Infinite scroll effect
+  useEffect(() => {
+    const resultsBody = resultsBodyRef.current;
+    if (!resultsBody) return;
+
+    const handleScroll = () => {
+      const { scrollTop, scrollHeight, clientHeight } = resultsBody;
+      // Trigger load more when user is within 200px of the bottom
+      if (scrollHeight - scrollTop - clientHeight < 200) {
+        loadMoreResults();
+      }
+    };
+
+    resultsBody.addEventListener('scroll', handleScroll);
+    return () => resultsBody.removeEventListener('scroll', handleScroll);
+  }, [hasMore, isLoadingMore, cursor, currentCrawlId, debouncedSearchQuery, contentTypeFilter]);
 
   // Start screen
   if (view === 'start') {
@@ -1457,49 +1585,49 @@ function App() {
                 className={`filter-tab ${contentTypeFilter === 'all' ? 'active' : ''}`}
                 onClick={() => setContentTypeFilter('all')}
               >
-                All ({results.length})
+                All ({(isCrawling ? activeCrawlStats : crawlStats)?.total || 0})
               </button>
               <button
                 className={`filter-tab ${contentTypeFilter === 'html' ? 'active' : ''}`}
                 onClick={() => setContentTypeFilter('html')}
               >
-                HTML ({results.filter(r => categorizeContentType(r.contentType) === 'html').length})
+                HTML ({(isCrawling ? activeCrawlStats : crawlStats)?.html || 0})
               </button>
               <button
                 className={`filter-tab ${contentTypeFilter === 'javascript' ? 'active' : ''}`}
                 onClick={() => setContentTypeFilter('javascript')}
               >
-                JavaScript ({results.filter(r => categorizeContentType(r.contentType) === 'javascript').length})
+                JavaScript ({(isCrawling ? activeCrawlStats : crawlStats)?.javascript || 0})
               </button>
               <button
                 className={`filter-tab ${contentTypeFilter === 'css' ? 'active' : ''}`}
                 onClick={() => setContentTypeFilter('css')}
               >
-                CSS ({results.filter(r => categorizeContentType(r.contentType) === 'css').length})
+                CSS ({(isCrawling ? activeCrawlStats : crawlStats)?.css || 0})
               </button>
               <button
                 className={`filter-tab ${contentTypeFilter === 'image' ? 'active' : ''}`}
                 onClick={() => setContentTypeFilter('image')}
               >
-                Images ({results.filter(r => categorizeContentType(r.contentType) === 'image').length})
+                Images ({(isCrawling ? activeCrawlStats : crawlStats)?.images || 0})
               </button>
               <button
                 className={`filter-tab ${contentTypeFilter === 'font' ? 'active' : ''}`}
                 onClick={() => setContentTypeFilter('font')}
               >
-                Fonts ({results.filter(r => categorizeContentType(r.contentType) === 'font').length})
+                Fonts ({(isCrawling ? activeCrawlStats : crawlStats)?.fonts || 0})
               </button>
               <button
                 className={`filter-tab ${contentTypeFilter === 'unvisited' ? 'active' : ''}`}
                 onClick={() => setContentTypeFilter('unvisited')}
               >
-                Unvisited ({results.filter(r => r.status === 0 && r.title === 'Unvisited URL').length})
+                Unvisited ({(isCrawling ? activeCrawlStats : crawlStats)?.unvisited || 0})
               </button>
               <button
                 className={`filter-tab ${contentTypeFilter === 'other' ? 'active' : ''}`}
                 onClick={() => setContentTypeFilter('other')}
               >
-                Others ({results.filter(r => !(r.status === 0 && r.title === 'Unvisited URL') && categorizeContentType(r.contentType) === 'other').length})
+                Others ({(isCrawling ? activeCrawlStats : crawlStats)?.others || 0})
               </button>
             </div>
             <div className="results-header">
@@ -1511,7 +1639,7 @@ function App() {
               <div className="header-cell content-type-col">Type</div>
             </div>
 
-            <div className="results-body">
+            <div className="results-body" ref={resultsBodyRef}>
               {filteredResults.map((result, index) => {
                 const isInProgress = result.status === 0 && result.title === 'In progress...';
                 const isUnvisitedURL = result.status === 0 && result.title === 'Unvisited URL';
@@ -1561,6 +1689,15 @@ function App() {
                   </div>
                 );
               })}
+              {isLoadingMore && (
+                <div className="loading-more-indicator">
+                  <SmallLoadingSpinner />
+                  <span>Loading more results...</span>
+                </div>
+              )}
+              {!isLoadingMore && hasMore && filteredResults.length > 0 && (
+                <div className="load-more-trigger" style={{ height: '1px' }}></div>
+              )}
             </div>
           </div>
         )}
@@ -1571,8 +1708,8 @@ function App() {
               {isCrawling && currentProject && (
                 <div className="status-indicator">
                   <CircularProgress
-                    crawled={results.filter(r => !(r.status === 0 && r.title === 'In progress...')).length}
-                    total={results.length}
+                    crawled={activeCrawlStats ? activeCrawlStats.crawled : 0}
+                    total={activeCrawlStats ? activeCrawlStats.total : 0}
                   />
                   <span className="status-text">Crawling...</span>
                 </div>
@@ -1584,16 +1721,16 @@ function App() {
               )}
               <div className="stats">
                 <span className="stat-item">
-                  <span className="stat-label">{searchQuery ? 'Showing:' : 'Total:'}</span>
-                  <span className="stat-value">{filteredResults.length}{searchQuery && ` of ${results.length}`}</span>
+                  <span className="stat-label">Total:</span>
+                  <span className="stat-value">{(isCrawling ? activeCrawlStats : crawlStats)?.total || 0}</span>
                 </span>
                 <span className="stat-item">
-                  <span className="stat-label">Indexable:</span>
-                  <span className="stat-value">{filteredResults.filter(r => r.indexable === 'Yes').length}</span>
+                  <span className="stat-label">Crawled:</span>
+                  <span className="stat-value">{(isCrawling ? activeCrawlStats : crawlStats)?.crawled || 0}</span>
                 </span>
                 <span className="stat-item">
-                  <span className="stat-label">Non-indexable:</span>
-                  <span className="stat-value">{filteredResults.filter(r => r.indexable === 'No').length}</span>
+                  <span className="stat-label">Unvisited:</span>
+                  <span className="stat-value">{(isCrawling ? activeCrawlStats : crawlStats)?.unvisited || 0}</span>
                 </span>
               </div>
             </div>

@@ -15,6 +15,8 @@
 package app
 
 import (
+	"log"
+
 	"github.com/agentberlin/bluesnake/internal/types"
 )
 
@@ -40,62 +42,15 @@ func (a *App) GetCrawls(projectID uint) ([]types.CrawlInfo, error) {
 	return crawlInfos, nil
 }
 
-// GetCrawlWithResults returns a specific crawl with all its results (both visited and unvisited URLs)
-func (a *App) GetCrawlWithResults(crawlID uint) (*types.CrawlResultDetailed, error) {
-	// Get crawl info
-	crawl, err := a.store.GetCrawlByID(crawlID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Get discovered URLs (both visited and unvisited)
-	urls, err := a.store.GetCrawlResults(crawlID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert to CrawlResult for frontend
-	results := make([]types.CrawlResult, len(urls))
-	for i, u := range urls {
-		// For unvisited URLs, set a descriptive title
-		title := u.Title
-		if !u.Visited {
-			title = "Unvisited URL"
-		}
-
-		results[i] = types.CrawlResult{
-			URL:             u.URL,
-			Status:          u.Status,
-			Title:           title,
-			MetaDescription: u.MetaDescription,
-			ContentHash:     u.ContentHash,
-			Indexable:       u.Indexable,
-			ContentType:     u.ContentType,
-			Error:           u.Error,
-		}
-	}
-
-	return &types.CrawlResultDetailed{
-		CrawlInfo: types.CrawlInfo{
-			ID:            crawl.ID,
-			ProjectID:     crawl.ProjectID,
-			CrawlDateTime: crawl.CrawlDateTime,
-			CrawlDuration: crawl.CrawlDuration,
-			PagesCrawled:  crawl.PagesCrawled,
-		},
-		Results: results,
-	}, nil
-}
-
 // DeleteCrawlByID deletes a specific crawl
 func (a *App) DeleteCrawlByID(crawlID uint) error {
 	return a.store.DeleteCrawl(crawlID)
 }
 
-// SearchCrawlResults searches and filters crawl results
-func (a *App) SearchCrawlResults(crawlID uint, query string, contentTypeFilter string) ([]types.CrawlResult, error) {
-	// Get filtered URLs from store
-	urls, err := a.store.SearchCrawlResults(crawlID, query, contentTypeFilter)
+// GetCrawlWithResultsPaginated returns a specific crawl with paginated results
+func (a *App) GetCrawlWithResultsPaginated(crawlID uint, limit int, cursor uint, contentTypeFilter string) (*types.CrawlResultPaginated, error) {
+	// Get paginated URLs from store
+	urls, nextCursor, hasMore, err := a.store.GetCrawlResultsPaginated(crawlID, limit, cursor, contentTypeFilter)
 	if err != nil {
 		return nil, err
 	}
@@ -121,5 +76,78 @@ func (a *App) SearchCrawlResults(crawlID uint, query string, contentTypeFilter s
 		}
 	}
 
-	return results, nil
+	return &types.CrawlResultPaginated{
+		Results:    results,
+		NextCursor: nextCursor,
+		HasMore:    hasMore,
+	}, nil
+}
+
+// SearchCrawlResultsPaginated searches and filters crawl results with pagination
+func (a *App) SearchCrawlResultsPaginated(crawlID uint, query string, contentTypeFilter string, limit int, cursor uint) (*types.CrawlResultPaginated, error) {
+	log.Printf("=== DEBUG: SearchCrawlResultsPaginated START - crawlID=%d, query='%s', filter='%s', limit=%d, cursor=%d ===",
+		crawlID, query, contentTypeFilter, limit, cursor)
+
+	// Get paginated filtered URLs from store
+	urls, nextCursor, hasMore, err := a.store.SearchCrawlResultsPaginated(crawlID, query, contentTypeFilter, limit, cursor)
+	if err != nil {
+		log.Printf("=== DEBUG: SearchCrawlResultsPaginated ERROR - error=%v ===", err)
+		return nil, err
+	}
+
+	log.Printf("DEBUG: Store returned %d URLs, nextCursor=%d, hasMore=%v", len(urls), nextCursor, hasMore)
+
+	// Convert to CrawlResult for frontend
+	results := make([]types.CrawlResult, len(urls))
+	for i, u := range urls {
+		// For unvisited URLs, set a descriptive title
+		title := u.Title
+		if !u.Visited {
+			title = "Unvisited URL"
+		}
+
+		results[i] = types.CrawlResult{
+			URL:             u.URL,
+			Status:          u.Status,
+			Title:           title,
+			MetaDescription: u.MetaDescription,
+			ContentHash:     u.ContentHash,
+			Indexable:       u.Indexable,
+			ContentType:     u.ContentType,
+			Error:           u.Error,
+		}
+	}
+
+	log.Printf("=== DEBUG: SearchCrawlResultsPaginated END - returning %d results, nextCursor=%d, hasMore=%v ===",
+		len(results), nextCursor, hasMore)
+
+	return &types.CrawlResultPaginated{
+		Results:    results,
+		NextCursor: nextCursor,
+		HasMore:    hasMore,
+	}, nil
+}
+
+// GetCrawlStats returns statistics for any crawl (active or completed)
+// This works by querying the database directly, regardless of crawl status
+func (a *App) GetCrawlStats(crawlID uint) (*types.ActiveCrawlStats, error) {
+	// Get stats from store (efficient COUNT queries)
+	stats, err := a.store.GetActiveCrawlStats(crawlID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &types.ActiveCrawlStats{
+		CrawlID:    crawlID,
+		Total:      stats["total"],
+		Crawled:    stats["crawled"],
+		Queued:     stats["queued"],
+		HTML:       stats["html"],
+		JavaScript: stats["javascript"],
+		CSS:        stats["css"],
+		Images:     stats["images"],
+		Fonts:      stats["fonts"],
+		Unvisited:  stats["unvisited"],
+		Others:     stats["others"],
+	}, nil
 }

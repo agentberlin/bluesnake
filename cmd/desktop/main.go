@@ -17,6 +17,8 @@ package main
 import (
 	"context"
 	"embed"
+	"log"
+	"os"
 
 	"github.com/agentberlin/bluesnake/internal/app"
 	"github.com/agentberlin/bluesnake/internal/store"
@@ -44,11 +46,16 @@ func main() {
 		BackgroundColour: &options.RGBA{R: 255, G: 255, B: 255, A: 1},
 		OnStartup: func(ctx context.Context) {
 			// Initialize the database store
+			log.Println("=== Starting database initialization ===")
 			st, err := store.NewStore()
 			if err != nil {
-				println("Failed to initialize database:", err.Error())
-				return
+				log.Printf("FATAL: Failed to initialize database: %v\n", err)
+				// Show error to user and exit
+				println("FATAL ERROR: Failed to initialize database. Please check logs and restart the application.")
+				println("Error:", err.Error())
+				os.Exit(1)
 			}
+			log.Println("=== Database initialized successfully ===")
 
 			// Create Wails-specific event emitter
 			emitter := NewWailsEmitter(ctx)

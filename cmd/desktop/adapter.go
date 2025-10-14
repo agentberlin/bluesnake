@@ -70,11 +70,6 @@ func (d *DesktopApp) GetCrawls(projectID uint) ([]types.CrawlInfo, error) {
 	return d.app.GetCrawls(projectID)
 }
 
-// GetCrawlWithResults wraps app.GetCrawlWithResults
-func (d *DesktopApp) GetCrawlWithResults(crawlID uint) (*types.CrawlResultDetailed, error) {
-	return d.app.GetCrawlWithResults(crawlID)
-}
-
 // StartCrawl wraps app.StartCrawl
 func (d *DesktopApp) StartCrawl(url string) error {
 	return d.app.StartCrawl(url)
@@ -90,9 +85,14 @@ func (d *DesktopApp) GetActiveCrawls() []types.CrawlProgress {
 	return d.app.GetActiveCrawls()
 }
 
-// GetActiveCrawlData wraps app.GetActiveCrawlData
-func (d *DesktopApp) GetActiveCrawlData(projectID uint) (*types.CrawlResultDetailed, error) {
-	return d.app.GetActiveCrawlData(projectID)
+// GetActiveCrawlStats wraps app.GetActiveCrawlStats
+func (d *DesktopApp) GetActiveCrawlStats(projectID uint) (*types.ActiveCrawlStats, error) {
+	return d.app.GetActiveCrawlStats(projectID)
+}
+
+// GetCrawlStats wraps app.GetCrawlStats
+func (d *DesktopApp) GetCrawlStats(crawlID uint) (*types.ActiveCrawlStats, error) {
+	return d.app.GetCrawlStats(crawlID)
 }
 
 // GetConfigForDomain wraps app.GetConfigForDomain
@@ -202,9 +202,14 @@ func (d *DesktopApp) GetAllFrameworks() []types.FrameworkInfo {
 	return d.app.GetAllFrameworks()
 }
 
-// SearchCrawlResults wraps app.SearchCrawlResults
-func (d *DesktopApp) SearchCrawlResults(crawlID uint, query string, contentTypeFilter string) ([]types.CrawlResult, error) {
-	return d.app.SearchCrawlResults(crawlID, query, contentTypeFilter)
+// GetCrawlWithResultsPaginated wraps app.GetCrawlWithResultsPaginated
+func (d *DesktopApp) GetCrawlWithResultsPaginated(crawlID uint, limit int, cursor uint, contentTypeFilter string) (*types.CrawlResultPaginated, error) {
+	return d.app.GetCrawlWithResultsPaginated(crawlID, limit, cursor, contentTypeFilter)
+}
+
+// SearchCrawlResultsPaginated wraps app.SearchCrawlResultsPaginated
+func (d *DesktopApp) SearchCrawlResultsPaginated(crawlID uint, query string, contentTypeFilter string, limit int, cursor uint) (*types.CrawlResultPaginated, error) {
+	return d.app.SearchCrawlResultsPaginated(crawlID, query, contentTypeFilter, limit, cursor)
 }
 
 // GetAICrawlerData wraps app.GetAICrawlerData
