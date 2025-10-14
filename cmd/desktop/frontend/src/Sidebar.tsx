@@ -16,8 +16,8 @@ import { useState } from 'react';
 import './Sidebar.css';
 
 interface SidebarProps {
-  activeSection: 'crawl-list' | 'config' | 'ai-crawlers';
-  onSectionChange: (section: 'crawl-list' | 'config' | 'ai-crawlers') => void;
+  activeSection: 'crawl-results' | 'config' | 'ai-crawlers';
+  onSectionChange: (section: 'crawl-results' | 'config' | 'ai-crawlers') => void;
   onHomeClick: () => void;
 }
 
@@ -57,9 +57,9 @@ function Sidebar({ activeSection, onSectionChange, onHomeClick }: SidebarProps) 
 
       <nav className="sidebar-nav">
         <div
-          className={`sidebar-nav-item ${activeSection === 'crawl-list' ? 'active' : ''}`}
-          onClick={() => onSectionChange('crawl-list')}
-          title={isExpanded ? '' : 'Crawl List'}
+          className={`sidebar-nav-item ${activeSection === 'crawl-results' ? 'active' : ''}`}
+          onClick={() => onSectionChange('crawl-results')}
+          title={isExpanded ? '' : 'Crawl Results'}
         >
           <div className="sidebar-nav-icon">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -71,8 +71,26 @@ function Sidebar({ activeSection, onSectionChange, onHomeClick }: SidebarProps) 
               <path d="M3 18h.01"></path>
             </svg>
           </div>
-          {isExpanded && <span className="sidebar-nav-label">Crawl List</span>}
-          {!isExpanded && <div className="sidebar-tooltip">Crawl List</div>}
+          {isExpanded && <span className="sidebar-nav-label">Crawl Results</span>}
+          {!isExpanded && <div className="sidebar-tooltip">Crawl Results</div>}
+        </div>
+
+        <div
+          className={`sidebar-nav-item ${activeSection === 'ai-crawlers' ? 'active' : ''}`}
+          onClick={() => onSectionChange('ai-crawlers')}
+          title={isExpanded ? '' : 'AI Crawlers'}
+        >
+          <div className="sidebar-nav-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="11" width="18" height="10" rx="2"></rect>
+              <circle cx="12" cy="5" r="2"></circle>
+              <path d="M12 7v4"></path>
+              <line x1="8" y1="16" x2="8" y2="16"></line>
+              <line x1="16" y1="16" x2="16" y2="16"></line>
+            </svg>
+          </div>
+          {isExpanded && <span className="sidebar-nav-label">AI Crawlers</span>}
+          {!isExpanded && <div className="sidebar-tooltip">AI Crawlers</div>}
         </div>
 
         <div
@@ -95,24 +113,6 @@ function Sidebar({ activeSection, onSectionChange, onHomeClick }: SidebarProps) 
           </div>
           {isExpanded && <span className="sidebar-nav-label">Configuration</span>}
           {!isExpanded && <div className="sidebar-tooltip">Configuration</div>}
-        </div>
-
-        <div
-          className={`sidebar-nav-item ${activeSection === 'ai-crawlers' ? 'active' : ''}`}
-          onClick={() => onSectionChange('ai-crawlers')}
-          title={isExpanded ? '' : 'AI Crawlers'}
-        >
-          <div className="sidebar-nav-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="11" width="18" height="10" rx="2"></rect>
-              <circle cx="12" cy="5" r="2"></circle>
-              <path d="M12 7v4"></path>
-              <line x1="8" y1="16" x2="8" y2="16"></line>
-              <line x1="16" y1="16" x2="16" y2="16"></line>
-            </svg>
-          </div>
-          {isExpanded && <span className="sidebar-nav-label">AI Crawlers</span>}
-          {!isExpanded && <div className="sidebar-tooltip">AI Crawlers</div>}
         </div>
       </nav>
     </div>

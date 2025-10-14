@@ -16,14 +16,15 @@ package types
 
 // CrawlProgress represents the progress of an active crawl
 type CrawlProgress struct {
-	ProjectID       uint     `json:"projectId"`
-	CrawlID         uint     `json:"crawlId"`
-	Domain          string   `json:"domain"`
-	URL             string   `json:"url"`
-	PagesCrawled    int      `json:"pagesCrawled"`
-	TotalDiscovered int      `json:"totalDiscovered"` // Total URLs discovered (both crawled and queued)
-	DiscoveredURLs  []string `json:"discoveredUrls"`  // URLs discovered but not yet crawled
-	IsCrawling      bool     `json:"isCrawling"`
+	ProjectID        uint     `json:"projectId"`
+	CrawlID          uint     `json:"crawlId"`
+	Domain           string   `json:"domain"`
+	URL              string   `json:"url"`
+	PagesCrawled     int      `json:"pagesCrawled"`     // HTML pages crawled successfully
+	TotalURLsCrawled int      `json:"totalUrlsCrawled"` // Total URLs crawled (including resources)
+	TotalDiscovered  int      `json:"totalDiscovered"`  // Total URLs discovered (both crawled and queued)
+	DiscoveredURLs   []string `json:"discoveredUrls"`   // URLs discovered but not yet crawled
+	IsCrawling       bool     `json:"isCrawling"`
 }
 
 // CrawlResult represents a single crawl result
@@ -46,7 +47,8 @@ type ProjectInfo struct {
 	FaviconPath   string `json:"faviconPath"`
 	CrawlDateTime int64  `json:"crawlDateTime"`
 	CrawlDuration int64  `json:"crawlDuration"`
-	PagesCrawled  int    `json:"pagesCrawled"`
+	PagesCrawled  int    `json:"pagesCrawled"` // Number of HTML pages crawled
+	TotalURLs     int    `json:"totalUrls"`    // Total number of URLs discovered (including all resources)
 	LatestCrawlID uint   `json:"latestCrawlId"`
 }
 

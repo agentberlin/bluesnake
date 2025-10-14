@@ -176,6 +176,7 @@ export namespace types {
 	    domain: string;
 	    url: string;
 	    pagesCrawled: number;
+	    totalUrlsCrawled: number;
 	    totalDiscovered: number;
 	    discoveredUrls: string[];
 	    isCrawling: boolean;
@@ -191,6 +192,7 @@ export namespace types {
 	        this.domain = source["domain"];
 	        this.url = source["url"];
 	        this.pagesCrawled = source["pagesCrawled"];
+	        this.totalUrlsCrawled = source["totalUrlsCrawled"];
 	        this.totalDiscovered = source["totalDiscovered"];
 	        this.discoveredUrls = source["discoveredUrls"];
 	        this.isCrawling = source["isCrawling"];
@@ -360,6 +362,7 @@ export namespace types {
 	    crawlDateTime: number;
 	    crawlDuration: number;
 	    pagesCrawled: number;
+	    totalUrls: number;
 	    latestCrawlId: number;
 	
 	    static createFrom(source: any = {}) {
@@ -375,6 +378,7 @@ export namespace types {
 	        this.crawlDateTime = source["crawlDateTime"];
 	        this.crawlDuration = source["crawlDuration"];
 	        this.pagesCrawled = source["pagesCrawled"];
+	        this.totalUrls = source["totalUrls"];
 	        this.latestCrawlId = source["latestCrawlId"];
 	    }
 	}

@@ -52,14 +52,15 @@ func (a *App) GetActiveCrawls() []types.CrawlProgress {
 		}
 
 		progress = append(progress, types.CrawlProgress{
-			ProjectID:       ac.projectID,
-			CrawlID:         ac.crawlID,
-			Domain:          ac.domain,
-			URL:             ac.url,
-			PagesCrawled:    ac.stats.pagesCrawled,
-			TotalDiscovered: totalDiscovered,
-			DiscoveredURLs:  discoveredURLs,
-			IsCrawling:      true,
+			ProjectID:        ac.projectID,
+			CrawlID:          ac.crawlID,
+			Domain:           ac.domain,
+			URL:              ac.url,
+			PagesCrawled:     ac.stats.pagesCrawled,
+			TotalURLsCrawled: ac.stats.totalURLsCrawled,
+			TotalDiscovered:  totalDiscovered,
+			DiscoveredURLs:   discoveredURLs,
+			IsCrawling:       true,
 		})
 		ac.statusMutex.RUnlock()
 	}

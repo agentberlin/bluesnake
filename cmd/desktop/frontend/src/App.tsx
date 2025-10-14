@@ -113,6 +113,7 @@ interface ProjectInfo {
   crawlDateTime: number;
   crawlDuration: number;
   pagesCrawled: number;
+  totalUrls: number;
   latestCrawlId: number;
 }
 
@@ -130,6 +131,7 @@ interface CrawlProgress {
   domain: string;
   url: string;
   pagesCrawled: number;
+  totalUrlsCrawled: number;
   totalDiscovered: number;
   discoveredUrls: string[];
   isCrawling: boolean;
@@ -150,7 +152,7 @@ interface ConfigData {
 }
 
 type View = 'start' | 'dashboard';
-type DashboardSection = 'crawl-list' | 'config' | 'ai-crawlers';
+type DashboardSection = 'crawl-results' | 'config' | 'ai-crawlers';
 
 interface CircularProgressProps {
   crawled: number;
@@ -262,7 +264,7 @@ function App() {
   const [isCrawling, setIsCrawling] = useState(false);
   const [results, setResults] = useState<CrawlResult[]>([]);
   const [view, setView] = useState<View>('start');
-  const [dashboardSection, setDashboardSection] = useState<DashboardSection>('crawl-list');
+  const [dashboardSection, setDashboardSection] = useState<DashboardSection>('crawl-results');
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [currentProject, setCurrentProject] = useState<ProjectInfo | null>(null);
   const [availableCrawls, setAvailableCrawls] = useState<CrawlInfo[]>([]);
@@ -398,12 +400,11 @@ function App() {
     // Initial load
     pollHomeData();
 
-    // Poll every 500ms if there are active crawls
-    if (activeCrawls.size > 0) {
-      const interval = setInterval(pollHomeData, 500);
-      return () => clearInterval(interval);
-    }
-  }, [view, activeCrawls.size]);
+    // Always poll every 500ms when on home page to detect new crawls
+    // The interval will be cleaned up when we leave the home page
+    const interval = setInterval(pollHomeData, 500);
+    return () => clearInterval(interval);
+  }, [view]);
 
   // Dashboard polling: Poll for crawl data when on dashboard and crawl is active or stopping
   useEffect(() => {
@@ -721,7 +722,7 @@ function App() {
       setIsCrawling(true);
 
       // Navigate to dashboard
-      setDashboardSection('crawl-list');
+      setDashboardSection('crawl-results');
       setView('dashboard');
     } catch (error) {
       console.error('Failed to start crawl:', error);
@@ -807,7 +808,7 @@ function App() {
       setIsCrawling(true);
 
       // Navigate to dashboard
-      setDashboardSection('crawl-list');
+      setDashboardSection('crawl-results');
       setView('dashboard');
     } catch (error) {
       console.error('Failed to start single page crawl:', error);
@@ -833,8 +834,8 @@ function App() {
   };
 
   const handleCloseConfig = async () => {
-    // Switch back to crawl list section
-    setDashboardSection('crawl-list');
+    // Switch back to crawl results section
+    setDashboardSection('crawl-results');
   };
 
   const handleProjectClick = async (project: ProjectInfo) => {
@@ -862,7 +863,7 @@ function App() {
         setResults(crawlData.results);
       }
 
-      setDashboardSection('crawl-list');
+      setDashboardSection('crawl-results');
       setView('dashboard');
     } catch (error) {
       console.error('Failed to load project crawls:', error);
@@ -1172,7 +1173,7 @@ function App() {
                           <div className="project-date">Currently crawling...</div>
                           <div className="project-stats">
                             <CircularProgress
-                              crawled={activeCrawl.pagesCrawled}
+                              crawled={activeCrawl.totalUrlsCrawled}
                               total={activeCrawl.totalDiscovered}
                             />
                           </div>
@@ -1191,6 +1192,10 @@ function App() {
                             <div className="project-stat">
                               <span className="project-stat-value">{project.pagesCrawled}</span>
                               <span className="project-stat-label">pages</span>
+                            </div>
+                            <div className="project-stat">
+                              <span className="project-stat-value">{project.totalUrls}</span>
+                              <span className="project-stat-label">total URLs</span>
                             </div>
                             <div className="project-stat">
                               <span className="project-stat-value">{formatDuration(project.crawlDuration)}</span>
