@@ -1,45 +1,149 @@
-I have a script compare/compare_crawlers.py in this directory that will run screamingfrog and bluesnake (this project) for a given domain and will print the stats to the terminal. Note that we are using the server of bluesnake directly, not the desktop application. You need to look at the diff and pick one most important issue to be worked up on and fix it. Note that the output files may have a lot of content in it, be smart to read it in chunks or something.
+# BlueSnake vs ScreamingFrog Comparison Workflow
 
-- You don't need to read compare_crawlers.py file unless you feel compelled to do so
-- You don't need to read historical diff comparisions because that can get very context intensive
+This workflow helps identify and fix discrepancies between BlueSnake and ScreamingFrog crawlers by running a comparison script and analyzing the results.
 
-Run the script with the command to generate a new report. Always generate a new report, instead of looking at past reports. Note that when you make changes to bluesnake, the bluesnake server automatically restarts because it is running with air.
+## Quick Start
+
+### Generate a New Comparison Report
+
+Always generate a fresh report before analysis:
 
 ```bash
 uv run compare/compare_crawlers.py <domain>
 ```
 
-To validate fixes without re-running ScreamingFrog (uses existing SF data):
+Ask for the domain if not provided.
+
+### Fast Validation (Skip ScreamingFrog)
+
+When validating fixes without re-running ScreamingFrog (uses existing SF data):
+
 ```bash
 uv run compare/compare_crawlers.py <domain> --bluesnake-only
 ```
 
-Ask for the domain if not provided already. You can (and probably should) also check internet incase you need to find how screamingfrog does something, before planning a fix. Also, if the fix is changing a design decision or an internal assumption, you should get the approval before the change.
+**Note**: The BlueSnake server automatically restarts when you make changes (running with `air`), so you can validate fixes quickly.
 
-## Script Output Files
+## Analysis Approach
 
-After running the comparison script, you'll have access to:
+### Primary Analysis: JSON Diff File
 
-**1. JSON Diff File** (`/tmp/crawler_diff_{domain}_{timestamp}.json`):
-- `metadata`: domain, timestamp, screamingfrog_log path
-- `url_diffs`:
-  - `missing_in_bluesnake_by_type`: Object with resource types (html, css, javascript, image, pdf, font, etc.) as keys and arrays of missing URLs
-  - `only_in_bluesnake`: URLs found only in BlueSnake
-- `status_diffs`: Array of objects with `url`, `sf_status`, `bs_status` for URLs with different HTTP status codes
-- `outlink_diffs`: Array of objects with `url`, `sf_count`, `bs_count`, `only_in_sf`, `only_in_bs` for pages with different outlinks
+**Start here for all investigations.** The comparison script generates a JSON diff file that compares:
+- **BlueSnake data**: Retrieved via API from the running server
+- **ScreamingFrog data**: Parsed from exported CSV files
 
-**2. ScreamingFrog CSV Files** (`/tmp/crawlertest/sf/`):
-- `internal_all.csv`: All crawled URLs with columns: Address, Status Code, Content Type, Title, Indexability
-- `all_outlinks.csv`: Outlinks with columns: Source, Destination, Anchor Text, Type
-- Other exports: `all_page_text.csv`, `all_page_source.csv` (if you need to analyze page content)
+**Location**: `/tmp/crawler_diff_{domain}_{timestamp}.json`
 
-**3. ScreamingFrog Log** (`/tmp/screamingfrog_{domain}_{timestamp}.log`):
-- Console output from ScreamingFrog crawl execution
+This file contains the structured differences between both crawlers. Use this as your primary source for identifying issues.
 
-**4. BlueSnake API Access**:
-- The script prints the crawl ID which you can use with: `http://localhost:8080/api/v1/crawls/{crawl_id}`
-- Get page links: `/api/v1/crawls/{crawl_id}/pages/{url_encoded}/links`
+**Structure**:
+```json
+{
+  "metadata": {
+    "domain": "example.com",
+    "timestamp": "2025-10-14T10:30:00",
+    "bluesnake_crawl_id": "abc123",
+    "screamingfrog_log": "/tmp/screamingfrog_example.com_20251014.log"
+  },
+  "url_diffs": {
+    "missing_in_bluesnake_by_type": {
+      "html": ["https://example.com/page1", ...],
+      "css": ["https://example.com/style.css", ...],
+      "javascript": ["https://example.com/app.js", ...],
+      "image": ["https://example.com/logo.png", ...],
+      "pdf": [...],
+      "font": [...],
+      "data": [...],
+      "other": [...]
+    },
+    "only_in_bluesnake": ["https://example.com/extra-page", ...],
+    "sf_by_type": {"html": 150, "css": 20, ...},
+    "bs_by_type": {"html": 145, "css": 18, ...}
+  },
+  "status_diffs": [
+    {
+      "url": "https://example.com/page",
+      "sf_status": 200,
+      "bs_status": 404
+    }
+  ],
+  "outlink_diffs": [
+    {
+      "url": "https://example.com/page1",
+      "sf_count": 25,
+      "bs_count": 20,
+      "only_in_sf": ["https://example.com/link1", ...],
+      "only_in_bs": ["https://example.com/link2", ...]
+    }
+  ]
+}
+```
 
-Read large files in chunks (e.g., with limit/offset parameters). Focus on patterns rather than individual URLs when analyzing large datasets.
+### Secondary Analysis: Detailed Investigation
 
-Do whatever it takes to get to the fix.
+**Only use these when the JSON diff doesn't provide enough context:**
+
+#### Option 1: BlueSnake API
+
+Use the `bluesnake_crawl_id` to query the API directly:
+
+- **Get crawl results**:
+  ```
+  http://localhost:8080/api/v1/crawls/{crawl_id}
+  ```
+
+- **Get page links**:
+  ```
+  http://localhost:8080/api/v1/crawls/{crawl_id}/pages/{url_encoded}/links
+  ```
+
+#### Option 2: ScreamingFrog Raw Files
+
+**Location**: `/tmp/crawlertest/sf/`
+
+**Key Files**:
+
+1. **`internal_all.csv`** - All crawled URLs with metadata
+   - Columns: `Address`, `Status Code`, `Content Type`, `Title`, `Indexability`, `Indexability Status`
+   - Use to understand why SF found certain URLs
+
+2. **`all_outlinks.csv`** - Link relationships between pages
+   - Columns: `Source`, `Destination`, `Anchor Text`, `Type`, `Follow`, `Target`, `Alt Text`
+   - Shows which page links to which (Source → Destination)
+   - `Type`: "Hyperlink", "JavaScript", "Image", etc.
+   - Use to debug missing links in BlueSnake
+
+3. **`all_page_text.csv`** - Extracted text content from pages
+   - Use if you need to analyze page content
+
+4. **`all_page_source.csv`** - Raw HTML source of pages
+   - Use if you need to inspect actual HTML
+
+5. **ScreamingFrog Log**: `/tmp/screamingfrog_{domain}_{timestamp}.log`
+   - Console output from ScreamingFrog execution
+   - Useful for debugging SF crawl issues
+
+**Reading Tips**:
+- Read large CSV files in chunks using Read tool with `limit` and `offset` parameters
+- Focus on patterns rather than individual URLs
+- Use these files to investigate specific issues identified in the JSON diff
+
+## Problem-Solving Process
+
+1. **Run the comparison script** to generate a fresh JSON diff
+2. **Analyze the JSON diff** to identify the most important discrepancy
+3. **Research if needed**: Check how ScreamingFrog handles the issue (internet search, documentation)
+4. **Investigate deeper** (only if JSON diff is insufficient):
+   - Query BlueSnake API for specific page/link details
+   - Examine ScreamingFrog CSV files for link extraction patterns
+5. **Propose a fix**: If the fix changes a design decision or internal assumption, get approval first
+6. **Implement and validate**: Use `--bluesnake-only` flag for quick validation
+
+## Important Notes
+
+- **Don't read** `compare_crawlers.py` unless necessary (you can trust it works)
+- **Don't read** historical diff comparisons (too context-intensive)
+- **Always generate** a new report instead of using past reports
+- **Pick one** most important issue to fix at a time
+- **Be smart** about reading large files - use chunks, focus on patterns
+- Do whatever it takes to get to the fix
