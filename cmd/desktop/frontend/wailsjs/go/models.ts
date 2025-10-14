@@ -104,6 +104,38 @@ export namespace types {
 		    return a;
 		}
 	}
+	export class ActiveCrawlStats {
+	    crawlId: number;
+	    total: number;
+	    crawled: number;
+	    queued: number;
+	    html: number;
+	    javascript: number;
+	    css: number;
+	    images: number;
+	    fonts: number;
+	    unvisited: number;
+	    others: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ActiveCrawlStats(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.crawlId = source["crawlId"];
+	        this.total = source["total"];
+	        this.crawled = source["crawled"];
+	        this.queued = source["queued"];
+	        this.html = source["html"];
+	        this.javascript = source["javascript"];
+	        this.css = source["css"];
+	        this.images = source["images"];
+	        this.fonts = source["fonts"];
+	        this.unvisited = source["unvisited"];
+	        this.others = source["others"];
+	    }
+	}
 	
 	export class ConfigResponse {
 	    domain: string;
@@ -224,18 +256,20 @@ export namespace types {
 	        this.error = source["error"];
 	    }
 	}
-	export class CrawlResultDetailed {
-	    crawlInfo: CrawlInfo;
+	export class CrawlResultPaginated {
 	    results: CrawlResult[];
+	    nextCursor: number;
+	    hasMore: boolean;
 	
 	    static createFrom(source: any = {}) {
-	        return new CrawlResultDetailed(source);
+	        return new CrawlResultPaginated(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.crawlInfo = this.convertValues(source["crawlInfo"], CrawlInfo);
 	        this.results = this.convertValues(source["results"], CrawlResult);
+	        this.nextCursor = source["nextCursor"];
+	        this.hasMore = source["hasMore"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

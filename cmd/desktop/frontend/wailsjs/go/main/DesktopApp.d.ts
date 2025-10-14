@@ -15,7 +15,7 @@ export function DownloadAndInstallUpdate():Promise<void>;
 
 export function GetAICrawlerData(arg1:string):Promise<types.AICrawlerResponse>;
 
-export function GetActiveCrawlData(arg1:number):Promise<types.CrawlResultDetailed>;
+export function GetActiveCrawlStats(arg1:number):Promise<types.ActiveCrawlStats>;
 
 export function GetActiveCrawls():Promise<Array<types.CrawlProgress>>;
 
@@ -23,7 +23,9 @@ export function GetAllFrameworks():Promise<Array<types.FrameworkInfo>>;
 
 export function GetConfigForDomain(arg1:string):Promise<types.ConfigResponse>;
 
-export function GetCrawlWithResults(arg1:number):Promise<types.CrawlResultDetailed>;
+export function GetCrawlStats(arg1:number):Promise<types.ActiveCrawlStats>;
+
+export function GetCrawlWithResultsPaginated(arg1:number,arg2:number,arg3:number,arg4:string):Promise<types.CrawlResultPaginated>;
 
 export function GetCrawls(arg1:number):Promise<Array<types.CrawlInfo>>;
 
@@ -47,7 +49,7 @@ export function RunAICrawlerChecks(arg1:string):Promise<void>;
 
 export function SaveAICrawlerData(arg1:string,arg2:types.AICrawlerData,arg3:string,arg4:string,arg5:string):Promise<void>;
 
-export function SearchCrawlResults(arg1:number,arg2:string,arg3:string):Promise<Array<types.CrawlResult>>;
+export function SearchCrawlResultsPaginated(arg1:number,arg2:string,arg3:string,arg4:number,arg5:number):Promise<types.CrawlResultPaginated>;
 
 export function SetDomainFramework(arg1:number,arg2:string,arg3:string):Promise<void>;
 

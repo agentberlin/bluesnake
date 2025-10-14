@@ -38,26 +38,48 @@ func NewStore() (*Store, error) {
 
 	// Create ~/.bluesnake directory if it doesn't exist
 	dbDir := filepath.Join(homeDir, ".bluesnake")
+	fmt.Printf("DEBUG: Creating database directory: %s\n", dbDir)
+
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create database directory: %v", err)
 	}
 
+	// Verify directory was created
+	if info, err := os.Stat(dbDir); err != nil {
+		return nil, fmt.Errorf("database directory does not exist after creation: %v", err)
+	} else if !info.IsDir() {
+		return nil, fmt.Errorf("database path exists but is not a directory: %s", dbDir)
+	}
+
 	// Open database connection
 	dbPath := filepath.Join(dbDir, "bluesnake.db")
+	fmt.Printf("DEBUG: Database path: %s\n", dbPath)
 	return newStoreWithPath(dbPath)
 }
 
 // newStoreWithPath creates a store with a custom database path (used for testing)
 func newStoreWithPath(dbPath string) (*Store, error) {
+	fmt.Printf("DEBUG: Initializing database at path: %s\n", dbPath)
+
+	// Check if parent directory exists
+	dbDir := filepath.Dir(dbPath)
+	if info, err := os.Stat(dbDir); err != nil {
+		return nil, fmt.Errorf("database directory does not exist: %s, error: %v", dbDir, err)
+	} else {
+		fmt.Printf("DEBUG: Database directory exists: %s (IsDir: %v, Permissions: %v)\n", dbDir, info.IsDir(), info.Mode())
+	}
+
 	// Configure SQLite with pragmas for better concurrency
 	// WAL mode enables concurrent reads and writes
 	// busy_timeout prevents immediate "database is locked" errors
 	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL&_cache_size=1000000000", dbPath)
+	fmt.Printf("DEBUG: Opening database with DSN: %s\n", dsn)
 
 	database, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %v", err)
 	}
+	fmt.Printf("DEBUG: Database connection opened successfully\n")
 
 	// Get underlying SQL DB and configure connection pool
 	sqlDB, err := database.DB()
@@ -71,10 +93,13 @@ func newStoreWithPath(dbPath string) (*Store, error) {
 	sqlDB.SetConnMaxLifetime(0)       // Connections never expire (reuse them)
 	sqlDB.SetConnMaxIdleTime(0)       // Idle connections never expire
 
+	fmt.Printf("DEBUG: Starting database migration...\n")
 	// Auto migrate the schema
 	if err := database.AutoMigrate(&Config{}, &Project{}, &Crawl{}, &DiscoveredUrl{}, &PageLink{}, &DomainFramework{}); err != nil {
+		fmt.Printf("DEBUG: Migration failed with error: %v\n", err)
 		return nil, fmt.Errorf("failed to migrate database: %v", err)
 	}
+	fmt.Printf("DEBUG: Database migration completed successfully\n")
 
 	// Add unique constraint on (ProjectID, Domain) for domain_frameworks
 	if err := database.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_project_domain_unique ON domain_frameworks(project_id, domain)").Error; err != nil {

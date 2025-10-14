@@ -152,15 +152,15 @@ func (s *Server) handleProjectsWithID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// GET /api/v1/projects/{id}/active-data
-	if len(parts) == 2 && parts[1] == "active-data" && r.Method == "GET" {
-		data, err := s.app.GetActiveCrawlData(uint(projectID))
+	// GET /api/v1/projects/{id}/active-stats
+	if len(parts) == 2 && parts[1] == "active-stats" && r.Method == "GET" {
+		stats, err := s.app.GetActiveCrawlStats(uint(projectID))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(data)
+		json.NewEncoder(w).Encode(stats)
 		return
 	}
 
@@ -183,15 +183,42 @@ func (s *Server) handleCrawls(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// GET /api/v1/crawls/{id}
+	// GET /api/v1/crawls/{id}?limit=100&cursor=0&type=html
 	if len(parts) == 1 && r.Method == "GET" {
-		crawl, err := s.app.GetCrawlWithResults(uint(crawlID))
+		// Parse pagination parameters
+		limitStr := r.URL.Query().Get("limit")
+		cursorStr := r.URL.Query().Get("cursor")
+		contentTypeFilter := r.URL.Query().Get("type")
+
+		// Default values
+		limit := 100
+		if limitStr != "" {
+			parsedLimit, err := strconv.Atoi(limitStr)
+			if err == nil && parsedLimit > 0 {
+				limit = parsedLimit
+			}
+		}
+
+		var cursor uint
+		if cursorStr != "" {
+			parsedCursor, err := strconv.ParseUint(cursorStr, 10, 32)
+			if err == nil {
+				cursor = uint(parsedCursor)
+			}
+		}
+
+		if contentTypeFilter == "" {
+			contentTypeFilter = "all"
+		}
+
+		// Use paginated endpoint only (non-paginated endpoint removed for scalability)
+		result, err := s.app.GetCrawlWithResultsPaginated(uint(crawlID), limit, cursor, contentTypeFilter)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(crawl)
+		json.NewEncoder(w).Encode(result)
 		return
 	}
 
@@ -415,7 +442,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleSearch handles GET /api/v1/search/{crawlID}?q={query}&type={contentType}
+// handleSearch handles GET /api/v1/search/{crawlID}?q={query}&type={contentType}&limit=100&cursor=0
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -437,13 +464,32 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		contentTypeFilter = "all"
 	}
 
-	// Search results
-	results, err := s.app.SearchCrawlResults(uint(crawlID), query, contentTypeFilter)
+	limitStr := r.URL.Query().Get("limit")
+	cursorStr := r.URL.Query().Get("cursor")
+
+	// Parse pagination parameters with defaults
+	limit := 100
+	if limitStr != "" {
+		parsedLimit, err := strconv.Atoi(limitStr)
+		if err == nil && parsedLimit > 0 {
+			limit = parsedLimit
+		}
+	}
+
+	var cursor uint
+	if cursorStr != "" {
+		parsedCursor, err := strconv.ParseUint(cursorStr, 10, 32)
+		if err == nil {
+			cursor = uint(parsedCursor)
+		}
+	}
+
+	// Use paginated search endpoint only (non-paginated endpoint removed for scalability)
+	result, err := s.app.SearchCrawlResultsPaginated(uint(crawlID), query, contentTypeFilter, limit, cursor)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(results)
+	json.NewEncoder(w).Encode(result)
 }

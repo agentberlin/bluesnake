@@ -26,8 +26,8 @@ export function GetAICrawlerData(arg1) {
   return window['go']['main']['DesktopApp']['GetAICrawlerData'](arg1);
 }
 
-export function GetActiveCrawlData(arg1) {
-  return window['go']['main']['DesktopApp']['GetActiveCrawlData'](arg1);
+export function GetActiveCrawlStats(arg1) {
+  return window['go']['main']['DesktopApp']['GetActiveCrawlStats'](arg1);
 }
 
 export function GetActiveCrawls() {
@@ -42,8 +42,12 @@ export function GetConfigForDomain(arg1) {
   return window['go']['main']['DesktopApp']['GetConfigForDomain'](arg1);
 }
 
-export function GetCrawlWithResults(arg1) {
-  return window['go']['main']['DesktopApp']['GetCrawlWithResults'](arg1);
+export function GetCrawlStats(arg1) {
+  return window['go']['main']['DesktopApp']['GetCrawlStats'](arg1);
+}
+
+export function GetCrawlWithResultsPaginated(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['DesktopApp']['GetCrawlWithResultsPaginated'](arg1, arg2, arg3, arg4);
 }
 
 export function GetCrawls(arg1) {
@@ -90,8 +94,8 @@ export function SaveAICrawlerData(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['DesktopApp']['SaveAICrawlerData'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function SearchCrawlResults(arg1, arg2, arg3) {
-  return window['go']['main']['DesktopApp']['SearchCrawlResults'](arg1, arg2, arg3);
+export function SearchCrawlResultsPaginated(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['DesktopApp']['SearchCrawlResultsPaginated'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function SetDomainFramework(arg1, arg2, arg3) {

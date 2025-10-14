@@ -68,8 +68,8 @@ func (a *App) GetActiveCrawls() []types.CrawlProgress {
 	return progress
 }
 
-// GetActiveCrawlData returns the data for an active crawl from database
-func (a *App) GetActiveCrawlData(projectID uint) (*types.CrawlResultDetailed, error) {
+// GetActiveCrawlStats returns statistics for an active crawl (no URL list, just counts)
+func (a *App) GetActiveCrawlStats(projectID uint) (*types.ActiveCrawlStats, error) {
 	a.crawlsMutex.RLock()
 	ac, exists := a.activeCrawls[projectID]
 	a.crawlsMutex.RUnlock()
@@ -78,47 +78,28 @@ func (a *App) GetActiveCrawlData(projectID uint) (*types.CrawlResultDetailed, er
 		return nil, fmt.Errorf("no active crawl found for project %d", projectID)
 	}
 
-	// Read stats
+	// Get the crawl ID
 	ac.statusMutex.RLock()
-	pagesCrawled := ac.stats.pagesCrawled
 	crawlID := ac.crawlID
 	ac.statusMutex.RUnlock()
 
-	// Fetch crawled results from database
-	urls, err := a.store.GetCrawlResults(crawlID)
+	// Get stats from store (efficient COUNT queries)
+	stats, err := a.store.GetActiveCrawlStats(crawlID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert crawled URLs to CrawlResult for frontend
-	results := make([]types.CrawlResult, len(urls))
-	for i, u := range urls {
-		// For unvisited URLs, set a descriptive title
-		title := u.Title
-		if !u.Visited {
-			title = "Unvisited URL"
-		}
-
-		results[i] = types.CrawlResult{
-			URL:             u.URL,
-			Status:          u.Status,
-			Title:           title,
-			MetaDescription: u.MetaDescription,
-			ContentHash:     u.ContentHash,
-			Indexable:       u.Indexable,
-			ContentType:     u.ContentType,
-			Error:           u.Error,
-		}
-	}
-
-	return &types.CrawlResultDetailed{
-		CrawlInfo: types.CrawlInfo{
-			ID:            crawlID,
-			ProjectID:     ac.projectID,
-			CrawlDateTime: 0, // Not applicable for active crawl
-			CrawlDuration: 0, // Not applicable for active crawl
-			PagesCrawled:  pagesCrawled,
-		},
-		Results: results,
+	return &types.ActiveCrawlStats{
+		CrawlID:    crawlID,
+		Total:      stats["total"],
+		Crawled:    stats["crawled"],
+		Queued:     stats["queued"],
+		HTML:       stats["html"],
+		JavaScript: stats["javascript"],
+		CSS:        stats["css"],
+		Images:     stats["images"],
+		Fonts:      stats["fonts"],
+		Unvisited:  stats["unvisited"],
+		Others:     stats["others"],
 	}, nil
 }

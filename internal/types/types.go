@@ -61,12 +61,6 @@ type CrawlInfo struct {
 	PagesCrawled  int   `json:"pagesCrawled"`
 }
 
-// CrawlResultDetailed represents a crawl with all its URLs
-type CrawlResultDetailed struct {
-	CrawlInfo CrawlInfo     `json:"crawlInfo"`
-	Results   []CrawlResult `json:"results"`
-}
-
 // ConfigResponse represents the configuration response for the frontend
 type ConfigResponse struct {
 	Domain                   string   `json:"domain"`
@@ -180,4 +174,26 @@ type AICrawlerResponse struct {
 	SSRScreenshot  string         `json:"ssrScreenshot,omitempty"`  // Base64 or path
 	JSScreenshot   string         `json:"jsScreenshot,omitempty"`   // Base64 or path
 	NoJSScreenshot string         `json:"noJSScreenshot,omitempty"` // Base64 or path
+}
+
+// CrawlResultPaginated represents a paginated crawl result response
+type CrawlResultPaginated struct {
+	Results    []CrawlResult `json:"results"`
+	NextCursor uint          `json:"nextCursor"`
+	HasMore    bool          `json:"hasMore"`
+}
+
+// ActiveCrawlStats represents statistics for an active crawl (no URL list, just counts)
+type ActiveCrawlStats struct {
+	CrawlID        uint `json:"crawlId"`
+	Total          int  `json:"total"`          // Total URLs (crawled + queued)
+	Crawled        int  `json:"crawled"`        // URLs that have been crawled
+	Queued         int  `json:"queued"`         // URLs discovered but not yet crawled
+	HTML           int  `json:"html"`           // Count of HTML pages
+	JavaScript     int  `json:"javascript"`     // Count of JS files
+	CSS            int  `json:"css"`            // Count of CSS files
+	Images         int  `json:"images"`         // Count of images
+	Fonts          int  `json:"fonts"`          // Count of fonts
+	Unvisited      int  `json:"unvisited"`      // Count of unvisited URLs
+	Others         int  `json:"others"`         // Count of other content types
 }
