@@ -1593,3 +1593,20 @@
   background: #ffebee;
   color: #f44336;
 }
+
+/* Pagination Loading Indicator */
+.loading-more-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  font-size: 13px;
+  font-weight: 300;
+  color: #999;
+}
+
+.load-more-trigger {
+  height: 1px;
+  width: 100%;
+}
