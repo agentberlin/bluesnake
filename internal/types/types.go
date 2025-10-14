@@ -130,22 +130,6 @@ type PageLinksResponse struct {
 	Outlinks []LinkInfo `json:"outlinks"`
 }
 
-// DomainFrameworkResponse represents the response for a single domain's framework
-type DomainFrameworkResponse struct {
-	Domain      string `json:"domain"`
-	Framework   string `json:"framework"`
-	DetectedAt  int64  `json:"detectedAt"`
-	ManuallySet bool   `json:"manuallySet"`
-}
-
-// FrameworkInfo contains metadata about a framework
-type FrameworkInfo struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Category    string `json:"category"`
-	Description string `json:"description"`
-}
-
 // AICrawlerData represents AI crawler check results
 type AICrawlerData struct {
 	ContentVisibility *ContentVisibilityResult `json:"contentVisibility,omitempty"`

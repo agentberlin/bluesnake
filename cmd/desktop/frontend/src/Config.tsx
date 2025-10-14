@@ -12,41 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { useState, useEffect, useRef } from 'react';
-import { GetConfigForDomain, UpdateConfigForDomain, GetDomainFrameworks, GetAllFrameworks, SetDomainFramework, GetProjects } from "../wailsjs/go/main/DesktopApp";
+import { useState, useEffect } from 'react';
+import { GetConfigForDomain, UpdateConfigForDomain } from "../wailsjs/go/main/DesktopApp";
 import './Config.css';
 
-// Framework icons
-import nextjsIcon from './assets/images/frameworks/nextjs.svg';
-import reactIcon from './assets/images/frameworks/react.svg';
-import vueIcon from './assets/images/frameworks/vue.svg';
-import angularIcon from './assets/images/frameworks/angular.svg';
-import nuxtjsIcon from './assets/images/frameworks/nuxtjs.svg';
-import gatsbyIcon from './assets/images/frameworks/gatsby.svg';
-import wordpressIcon from './assets/images/frameworks/wordpress.svg';
-import shopifyIcon from './assets/images/frameworks/shopify.svg';
-import webflowIcon from './assets/images/frameworks/webflow.svg';
-import wixIcon from './assets/images/frameworks/wix.svg';
-import drupalIcon from './assets/images/frameworks/drupal.svg';
-import joomlaIcon from './assets/images/frameworks/joomla.svg';
-
-type ConfigTab = 'scope' | 'rendering' | 'performance' | 'advanced' | 'frameworks';
-
-// Map framework IDs to their icons
-const frameworkIcons: Record<string, string> = {
-  nextjs: nextjsIcon,
-  react: reactIcon,
-  vue: vueIcon,
-  angular: angularIcon,
-  nuxtjs: nuxtjsIcon,
-  gatsby: gatsbyIcon,
-  wordpress: wordpressIcon,
-  shopify: shopifyIcon,
-  webflow: webflowIcon,
-  wix: wixIcon,
-  drupal: drupalIcon,
-  joomla: joomlaIcon,
-};
+type ConfigTab = 'scope' | 'rendering' | 'performance' | 'advanced';
 
 interface ConfigProps {
   url: string;
@@ -72,94 +42,6 @@ interface ConfigData {
   respectNoindex?: boolean;
 }
 
-interface FrameworkInfo {
-  id: string;
-  name: string;
-  category: string;
-  description: string;
-}
-
-interface DomainFramework {
-  domain: string;
-  framework: string;
-  detectedAt: number;
-  manuallySet: boolean;
-}
-
-interface FrameworkDropdownProps {
-  value: string;
-  options: FrameworkInfo[];
-  onChange: (frameworkId: string) => void;
-}
-
-function FrameworkDropdown({ value, options, onChange }: FrameworkDropdownProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const selectedOption = options.find(opt => opt.id === value && opt.id !== 'unknown');
-  const displayName = selectedOption ? selectedOption.name : ((value === 'other' || value === 'unknown') ? 'Other' : 'Select framework');
-  const selectedIcon = value !== 'other' && value !== 'unknown' && frameworkIcons[value];
-
-  return (
-    <div className="framework-custom-dropdown" ref={dropdownRef}>
-      <div
-        className={`framework-dropdown-header ${isOpen ? 'open' : ''}`}
-        onClick={() => setIsOpen(!isOpen)}
-      >
-        <span className="framework-dropdown-value">
-          {selectedIcon && <img src={selectedIcon} alt={displayName} className="framework-icon" />}
-          {displayName}
-        </span>
-        <svg className="framework-dropdown-arrow" width="12" height="8" viewBox="0 0 12 8" fill="none">
-          <path d="M1 1.5L6 6.5L11 1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-      </div>
-      {isOpen && (
-        <div className="framework-dropdown-menu">
-          {options.filter(opt => opt.id !== 'unknown').map((option) => {
-            const icon = frameworkIcons[option.id];
-            return (
-              <div
-                key={option.id}
-                className={`framework-dropdown-option ${option.id === value ? 'selected' : ''}`}
-                onClick={() => {
-                  onChange(option.id);
-                  setIsOpen(false);
-                }}
-              >
-                <span className="framework-option-name">
-                  {icon && <img src={icon} alt={option.name} className="framework-icon" />}
-                  {option.name}
-                </span>
-              </div>
-            );
-          })}
-          <div
-            className={`framework-dropdown-option ${value === 'other' || value === 'unknown' ? 'selected' : ''}`}
-            onClick={() => {
-              onChange('other');
-              setIsOpen(false);
-            }}
-          >
-            <span className="framework-option-name">Other</span>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function Config({ url, onClose }: ConfigProps) {
   const [activeTab, setActiveTab] = useState<ConfigTab>('scope');
   const [jsRendering, setJsRendering] = useState(false);
@@ -176,10 +58,6 @@ function Config({ url, onClose }: ConfigProps) {
   const [sitemapEnabled, setSitemapEnabled] = useState(false);
   const [checkExternalResources, setCheckExternalResources] = useState(true); // Default to true
   const [singlePageMode, setSinglePageMode] = useState(false); // Default to false
-  const [projectID, setProjectID] = useState<number | null>(null);
-  const [allFrameworks, setAllFrameworks] = useState<FrameworkInfo[]>([]);
-  const [domainFrameworks, setDomainFrameworks] = useState<DomainFramework[]>([]);
-  const [frameworksLoading, setFrameworksLoading] = useState(false);
 
   // Crawler directive settings
   const [respectRobotsTxt, setRespectRobotsTxt] = useState(true);
@@ -191,7 +69,6 @@ function Config({ url, onClose }: ConfigProps) {
   useEffect(() => {
     if (url) {
       loadConfig();
-      loadFrameworks();
     }
   }, [url]);
 
@@ -254,52 +131,6 @@ function Config({ url, onClose }: ConfigProps) {
       setRespectNoindex(true);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const loadFrameworks = async () => {
-    setFrameworksLoading(true);
-    try {
-      // Get all supported frameworks
-      const frameworks = await GetAllFrameworks();
-      setAllFrameworks(frameworks || []);
-
-      // Get the project for this URL to fetch domain frameworks
-      const projects = await GetProjects();
-      let normalizedUrl = url.trim();
-      if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
-        normalizedUrl = 'https://' + normalizedUrl;
-      }
-      const urlObj = new URL(normalizedUrl);
-      const urlDomain = urlObj.hostname;
-
-      const project = projects.find(p => p.domain === urlDomain || p.url === url);
-      if (project) {
-        setProjectID(project.id);
-        const domainFws = await GetDomainFrameworks(project.id);
-        setDomainFrameworks(domainFws || []);
-      }
-    } catch (err) {
-      console.error('Error loading frameworks:', err);
-      // Ensure arrays are set even on error
-      setAllFrameworks([]);
-      setDomainFrameworks([]);
-    } finally {
-      setFrameworksLoading(false);
-    }
-  };
-
-  const handleFrameworkChange = async (domain: string, frameworkID: string) => {
-    if (!projectID) return;
-
-    try {
-      await SetDomainFramework(projectID, domain, frameworkID);
-      // Reload frameworks to get updated data
-      const domainFws = await GetDomainFrameworks(projectID);
-      setDomainFrameworks(domainFws);
-    } catch (err) {
-      console.error('Error setting framework:', err);
-      setError('Failed to update framework');
     }
   };
 
@@ -382,12 +213,6 @@ function Config({ url, onClose }: ConfigProps) {
                 onClick={() => setActiveTab('performance')}
               >
                 Performance
-              </button>
-              <button
-                className={`config-tab ${activeTab === 'frameworks' ? 'active' : ''}`}
-                onClick={() => setActiveTab('frameworks')}
-              >
-                Frameworks
               </button>
               <button
                 className={`config-tab ${activeTab === 'advanced' ? 'active' : ''}`}
@@ -601,48 +426,6 @@ function Config({ url, onClose }: ConfigProps) {
                         Maximum number of links to process at the same time (default: 5)
                       </p>
                     </div>
-                  </div>
-                )}
-
-                {activeTab === 'frameworks' && (
-                  <div className="config-tab-panel">
-                    {frameworksLoading ? (
-                      <div className="config-loading">Loading frameworks...</div>
-                    ) : !projectID ? (
-                      <div className="config-hint">
-                        No project found. Please run a crawl first to detect frameworks.
-                      </div>
-                    ) : (!domainFrameworks || domainFrameworks.length === 0) ? (
-                      <div className="config-hint">
-                        No domains found. Frameworks will be detected during the crawl.
-                      </div>
-                    ) : (
-                      <div className="config-field">
-                        <label className="config-label-text">
-                          Domain Frameworks
-                        </label>
-                        <p className="config-hint">
-                          Select the framework for each domain. Frameworks are automatically detected during crawls, but you can override them here.
-                        </p>
-                        <div className="frameworks-list">
-                          {domainFrameworks && domainFrameworks.map((df) => (
-                            <div key={df.domain} className="framework-item">
-                              <div className="framework-domain">
-                                <span className="domain-name">{df.domain}</span>
-                                {df.manuallySet && (
-                                  <span className="manual-badge" title="Manually set by user">Manual</span>
-                                )}
-                              </div>
-                              <FrameworkDropdown
-                                value={df.framework}
-                                options={allFrameworks}
-                                onChange={(frameworkId) => handleFrameworkChange(df.domain, frameworkId)}
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
                   </div>
                 )}
 

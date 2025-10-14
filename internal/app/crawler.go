@@ -16,7 +16,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
@@ -28,7 +27,6 @@ import (
 	"time"
 
 	"github.com/agentberlin/bluesnake"
-	"github.com/agentberlin/bluesnake/internal/framework"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
@@ -341,19 +339,8 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		})
 	}
 
-	// Track detected frameworks per domain
-	domainFrameworks := &sync.Map{} // map[domain]framework.Framework
-
-	// Initialize with known framework for main domain (if exists)
-	if domainFW, err := a.store.GetDomainFramework(projectID, domain); err == nil && domainFW != nil {
-		domainFrameworks.Store(domain, framework.Framework(domainFW.Framework))
-	}
-
-	// Set up URL discovery handler for categorization
-	a.setupURLDiscoveryHandler(crawler, domainFrameworks)
-
-	// Set up per-domain framework detection
-	a.setupPerDomainFrameworkDetection(crawler, projectID, domainFrameworks)
+	// Set up URL discovery handler for categorization (analytics filtering only)
+	a.setupURLDiscoveryHandler(crawler)
 
 	// Add the starting URL to discovered URLs so it shows up in the UI immediately
 	stats.discoveredURLs.Store(parsedURL.String(), true)
@@ -582,126 +569,17 @@ func extractDomainFromURL(urlStr string) string {
 	return strings.ToLower(hostname)
 }
 
-// getAnalyticsFilterPatterns returns common analytics and tracking URL patterns
-// that should be filtered during crawling
-func getAnalyticsFilterPatterns() []string {
-	return []string{
-		"/g/collect",       // Google Analytics
-		"/gtm.js",          // Google Tag Manager
-		"/gtag/js",         // Google Global Site Tag
-		"/analytics.js",    // Generic analytics
-		"/ga.js",           // Google Analytics legacy
-		"google-analytics", // Google Analytics domain
-		"googletagmanager", // Tag Manager domain
-		"/pixel",           // Tracking pixels
-		"/beacon",          // Beacon API
-		"/telemetry",       // Telemetry endpoints
-	}
-}
-
-// matchesFrameworkFilters checks if a URL matches framework-specific filters
-func matchesFrameworkFilters(urlStr string, config framework.FilterConfig) bool {
-	urlLower := strings.ToLower(urlStr)
-
-	// Check URL patterns
-	for _, pattern := range config.URLPatterns {
-		if strings.Contains(urlLower, strings.ToLower(pattern)) {
-			return true
-		}
-	}
-
-	// Check query params
-	for _, param := range config.QueryParams {
-		if strings.Contains(urlLower, "?"+strings.ToLower(param)+"=") ||
-			strings.Contains(urlLower, "&"+strings.ToLower(param)+"=") {
-			return true
-		}
-	}
-
-	return false
-}
-
 // setupURLDiscoveryHandler sets up URL discovery callback for categorizing URLs
-func (a *App) setupURLDiscoveryHandler(crawler *bluesnake.Crawler, domainFrameworks *sync.Map) {
-	// Get analytics patterns (always skipped)
-	analyticsPatterns := getAnalyticsFilterPatterns()
-
+func (a *App) setupURLDiscoveryHandler(crawler *bluesnake.Crawler) {
 	crawler.SetOnURLDiscovered(func(urlStr string) bluesnake.URLAction {
-		urlLower := strings.ToLower(urlStr)
-
-		// 1. Check analytics (always skip completely)
-		for _, pattern := range analyticsPatterns {
-			if strings.Contains(urlLower, strings.ToLower(pattern)) {
-				return bluesnake.URLActionSkip
-			}
-		}
-
-		// 2. Extract domain and check framework-specific patterns
-		domain := extractDomainFromURL(urlStr)
-		if domain == "" {
-			return bluesnake.URLActionCrawl
-		}
-
-		// Get framework for this specific domain
-		fwInterface, ok := domainFrameworks.Load(domain)
-		if !ok {
-			// Framework not detected yet for this domain - crawl normally
-			return bluesnake.URLActionCrawl
-		}
-
-		fw := fwInterface.(framework.Framework)
-
-		// Get filter config for this domain's framework
-		config := framework.GetFilterConfig(fw)
-
-		// 3. Framework-specific URLs - record but don't crawl
-		if matchesFrameworkFilters(urlStr, config) {
-			return bluesnake.URLActionRecordOnly
-		}
-
-		// 4. Normal URLs - crawl
+		// No filtering applied - crawl all URLs
+		// Potential filters that could be added in the future:
+		// - Analytics: /g/collect, /gtm.js, /gtag/js, google-analytics, googletagmanager
+		// - Next.js: /_next/data/, URLs with _rsc query param
+		// - Nuxt.js: /_nuxt/
+		// - WordPress: /wp-json/, /wp-admin/
+		// - Tracking: /pixel, /beacon, /telemetry
 		return bluesnake.URLActionCrawl
 	})
 }
 
-// setupPerDomainFrameworkDetection sets up framework detection for each subdomain
-func (a *App) setupPerDomainFrameworkDetection(crawler *bluesnake.Crawler, projectID uint, domainFrameworks *sync.Map) {
-	detectedDomains := &sync.Map{} // Tracks which domains we've attempted detection for
-
-	crawler.Collector.OnHTML("html", func(e *bluesnake.HTMLElement) {
-		currentURL := e.Request.URL.String()
-		domain := extractDomainFromURL(currentURL)
-
-		// Check if we've already detected framework for this domain
-		if _, alreadyDetected := detectedDomains.LoadOrStore(domain, true); alreadyDetected {
-			return
-		}
-
-		// Check database first (might have been detected in previous crawl)
-		if dbFW, err := a.store.GetDomainFramework(projectID, domain); err == nil && dbFW != nil {
-			domainFrameworks.Store(domain, framework.Framework(dbFW.Framework))
-			log.Printf("Using known framework '%s' for domain '%s'", dbFW.Framework, domain)
-			return
-		}
-
-		// Detect framework for this new domain
-		html, _ := e.DOM.Html()
-		var networkURLs []string
-		if networkURLsJSON := e.Request.Ctx.Get("networkDiscoveredURLs"); networkURLsJSON != "" {
-			json.Unmarshal([]byte(networkURLsJSON), &networkURLs)
-		}
-
-		detector := framework.NewDetector()
-		detectedFW := detector.Detect(html, networkURLs)
-
-		log.Printf("Detected framework '%s' for domain '%s'", detectedFW, domain)
-
-		// Save to database (manuallySet = false for auto-detection)
-		if err := a.store.SaveDomainFramework(projectID, domain, string(detectedFW), false); err != nil {
-			log.Printf("Failed to save detected framework: %v", err)
-		}
-
-		// Store in memory for filtering
-		domainFrameworks.Store(domain, detectedFW)
-	})
-}
