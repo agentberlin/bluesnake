@@ -173,6 +173,18 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks, crawlId }
     ? allCurrentLinks.filter(link => link.position === 'content')
     : allCurrentLinks;
 
+  // Calculate filtered counts for tab headers
+  const inlinksCount = showContentOnly
+    ? inlinks.filter(link => link.position === 'content').length
+    : inlinks.length;
+  const outlinksCount = showContentOnly
+    ? outlinksByType.pages.filter(link => link.position === 'content').length +
+      outlinksByType.images.length +
+      outlinksByType.scripts.length +
+      outlinksByType.styles.length +
+      outlinksByType.other.length
+    : outlinks.length;
+
   // Sort links: internal links first, then external links
   const sortedLinks = [...currentLinks].sort((a, b) => {
     if (a.isInternal && !b.isInternal) return -1;
@@ -205,7 +217,7 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks, crawlId }
           </div>
           <div className="links-panel-url">{selectedUrl}</div>
 
-          {/* Filter Toggle */}
+          {/* Filter Toggle and Legend */}
           <div className="links-panel-filter">
             <label className="filter-toggle-label">
               <input
@@ -217,6 +229,16 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks, crawlId }
               <span className="filter-toggle-switch"></span>
               <span className="filter-toggle-text">Show only content links</span>
             </label>
+            <div className="links-legend-inline">
+              <div className="legend-item">
+                <div className="legend-color legend-internal"></div>
+                <span className="legend-label">Internal</span>
+              </div>
+              <div className="legend-item">
+                <div className="legend-color legend-external"></div>
+                <span className="legend-label">External</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -226,13 +248,13 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks, crawlId }
             className={`links-panel-tab ${activeTab === 'inlinks' ? 'active' : ''}`}
             onClick={() => setActiveTab('inlinks')}
           >
-            Inlinks ({inlinks.length})
+            Inlinks ({inlinksCount})
           </button>
           <button
             className={`links-panel-tab ${activeTab === 'outlinks' ? 'active' : ''}`}
             onClick={() => setActiveTab('outlinks')}
           >
-            Outlinks ({outlinks.length})
+            Outlinks ({outlinksCount})
           </button>
           <button
             className={`links-panel-tab ${activeTab === 'content' ? 'active' : ''}`}
@@ -336,17 +358,6 @@ function LinksPanel({ isOpen, onClose, selectedUrl, inlinks, outlinks, crawlId }
             </div>
           ) : (
             <>
-              {/* Legend */}
-              <div className="links-legend">
-                <div className="legend-item">
-                  <div className="legend-color legend-internal"></div>
-                  <span className="legend-label">Internal</span>
-                </div>
-                <div className="legend-item">
-                  <div className="legend-color legend-external"></div>
-                  <span className="legend-label">External</span>
-                </div>
-              </div>
               <div className="links-table">
               <div className="links-table-header">
                 <div className="links-header-cell url-column">URL</div>

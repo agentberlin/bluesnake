@@ -137,9 +137,12 @@ body:has(.resize-handle.resizing) {
   border-radius: 2px;
 }
 
-/* Filter Toggle */
+/* Filter Toggle and Legend */
 .links-panel-filter {
   margin-top: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .filter-toggle-label {
@@ -262,13 +265,11 @@ body:has(.resize-handle.resizing) {
   flex-direction: column;
 }
 
-/* Legend */
-.links-legend {
+/* Legend Inline (next to toggle) */
+.links-legend-inline {
   display: flex;
   gap: 20px;
-  padding: 12px 24px;
-  background: #fafafa;
-  border-bottom: 1px solid #e8e8e8;
+  align-items: center;
 }
 
 .legend-item {
@@ -278,19 +279,17 @@ body:has(.resize-handle.resizing) {
 }
 
 .legend-color {
-  width: 24px;
+  width: 3px;
   height: 16px;
-  border-radius: 2px;
+  border-radius: 1px;
 }
 
 .legend-color.legend-internal {
-  background-color: #e8f5e9;
-  border: 1px solid #c8e6c9;
+  background-color: #4caf50;
 }
 
 .legend-color.legend-external {
-  background-color: #e3f2fd;
-  border: 1px solid #bbdefb;
+  background-color: #2196f3;
 }
 
 .legend-label {
