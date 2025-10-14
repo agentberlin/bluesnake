@@ -587,6 +587,13 @@ function App() {
     // Only poll if we're actively crawling and have a crawl ID
     if (!isCrawling || !currentCrawlId) return;
 
+    // Stop polling when we have a full page (optimization)
+    // If we have PAGINATION_LIMIT results, stop polling to allow infinite scroll to work
+    // Pagination will handle loading more pages when user scrolls
+    if (filteredResults.length >= PAGINATION_LIMIT) {
+      return;
+    }
+
     const pollUrls = async () => {
       try {
         // Fetch first page of results for current filter
@@ -609,12 +616,6 @@ function App() {
 
     // Initial poll
     pollUrls();
-
-    // Stop polling when we have a full page (optimization)
-    // If we have PAGINATION_LIMIT results, we likely have more than enough to show
-    if (filteredResults.length >= PAGINATION_LIMIT) {
-      return;
-    }
 
     // Poll every 2 seconds during crawling
     const interval = setInterval(pollUrls, 2000);
