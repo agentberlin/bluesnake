@@ -19,8 +19,6 @@ export function GetActiveCrawlStats(arg1:number):Promise<types.ActiveCrawlStats>
 
 export function GetActiveCrawls():Promise<Array<types.CrawlProgress>>;
 
-export function GetAllFrameworks():Promise<Array<types.FrameworkInfo>>;
-
 export function GetConfigForDomain(arg1:string):Promise<types.ConfigResponse>;
 
 export function GetCrawlStats(arg1:number):Promise<types.ActiveCrawlStats>;
@@ -28,10 +26,6 @@ export function GetCrawlStats(arg1:number):Promise<types.ActiveCrawlStats>;
 export function GetCrawlWithResultsPaginated(arg1:number,arg2:number,arg3:number,arg4:string):Promise<types.CrawlResultPaginated>;
 
 export function GetCrawls(arg1:number):Promise<Array<types.CrawlInfo>>;
-
-export function GetDomainFramework(arg1:number,arg2:string):Promise<types.DomainFrameworkResponse>;
-
-export function GetDomainFrameworks(arg1:number):Promise<Array<types.DomainFrameworkResponse>>;
 
 export function GetFaviconData(arg1:string):Promise<string>;
 
@@ -50,8 +44,6 @@ export function RunAICrawlerChecks(arg1:string):Promise<void>;
 export function SaveAICrawlerData(arg1:string,arg2:types.AICrawlerData,arg3:string,arg4:string,arg5:string):Promise<void>;
 
 export function SearchCrawlResultsPaginated(arg1:number,arg2:string,arg3:string,arg4:number,arg5:number):Promise<types.CrawlResultPaginated>;
-
-export function SetDomainFramework(arg1:number,arg2:string,arg3:string):Promise<void>;
 
 export function StartCrawl(arg1:string):Promise<void>;
 

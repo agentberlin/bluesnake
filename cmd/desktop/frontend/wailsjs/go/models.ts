@@ -290,42 +290,6 @@ export namespace types {
 		    return a;
 		}
 	}
-	export class DomainFrameworkResponse {
-	    domain: string;
-	    framework: string;
-	    detectedAt: number;
-	    manuallySet: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new DomainFrameworkResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.domain = source["domain"];
-	        this.framework = source["framework"];
-	        this.detectedAt = source["detectedAt"];
-	        this.manuallySet = source["manuallySet"];
-	    }
-	}
-	export class FrameworkInfo {
-	    id: string;
-	    name: string;
-	    category: string;
-	    description: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new FrameworkInfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.name = source["name"];
-	        this.category = source["category"];
-	        this.description = source["description"];
-	    }
-	}
 	export class LinkInfo {
 	    url: string;
 	    linkType: string;
