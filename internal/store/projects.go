@@ -186,3 +186,13 @@ func fetchAndSaveFavicon(projectID uint, domain string) (string, error) {
 
 	return faviconPath, nil
 }
+
+// GetTotalURLsForCrawl returns the total number of discovered URLs for a crawl
+func (s *Store) GetTotalURLsForCrawl(crawlID uint) (int, error) {
+	var count int64
+	result := s.db.Model(&DiscoveredUrl{}).Where("crawl_id = ?", crawlID).Count(&count)
+	if result.Error != nil {
+		return 0, fmt.Errorf("failed to count URLs for crawl %d: %v", crawlID, result.Error)
+	}
+	return int(count), nil
+}

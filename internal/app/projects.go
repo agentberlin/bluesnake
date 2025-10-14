@@ -42,6 +42,12 @@ func (a *App) GetProjects() ([]types.ProjectInfo, error) {
 			projectInfo.CrawlDuration = latestCrawl.CrawlDuration
 			projectInfo.PagesCrawled = latestCrawl.PagesCrawled
 			projectInfo.LatestCrawlID = latestCrawl.ID
+
+			// Get total URLs count for this crawl
+			totalURLs, err := a.store.GetTotalURLsForCrawl(latestCrawl.ID)
+			if err == nil {
+				projectInfo.TotalURLs = totalURLs
+			}
 		}
 		// If no crawls, fields will be zero values (0 for int64/uint)
 

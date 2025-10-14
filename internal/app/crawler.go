@@ -47,13 +47,14 @@ type activeCrawl struct {
 
 // crawlStats tracks crawl statistics for the desktop app
 type crawlStats struct {
-	startTime       time.Time
-	pagesCrawled    int
-	totalDiscovered int // Total unique URLs discovered (from bluesnake)
-	url             string
-	domain          string
-	projectID       uint
-	crawlID         uint
+	startTime        time.Time
+	pagesCrawled     int // HTML pages crawled successfully
+	totalURLsCrawled int // Total URLs crawled (including resources like images, CSS, JS, fonts)
+	totalDiscovered  int // Total unique URLs discovered (from bluesnake)
+	url              string
+	domain           string
+	projectID        uint
+	crawlID          uint
 	// Track discovered vs crawled URLs for UI display
 	discoveredURLs *sync.Map // URLs discovered but not yet crawled (from bluesnake)
 	crawledURLs    *sync.Map // URLs that have been crawled
@@ -237,15 +238,16 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 
 	// Initialize crawl stats
 	stats := &crawlStats{
-		startTime:       time.Now(),
-		pagesCrawled:    0,
-		totalDiscovered: 0,
-		url:             normalizedURL,
-		domain:          domain,
-		projectID:       projectID,
-		crawlID:         crawl.ID,
-		discoveredURLs:  &sync.Map{}, // Initialize for tracking discovered URLs
-		crawledURLs:     &sync.Map{}, // Initialize for tracking crawled URLs
+		startTime:        time.Now(),
+		pagesCrawled:     0,
+		totalURLsCrawled: 0,
+		totalDiscovered:  0,
+		url:              normalizedURL,
+		domain:           domain,
+		projectID:        projectID,
+		crawlID:          crawl.ID,
+		discoveredURLs:   &sync.Map{}, // Initialize for tracking discovered URLs
+		crawledURLs:      &sync.Map{}, // Initialize for tracking crawled URLs
 	}
 
 	// Create cancellation context
@@ -372,6 +374,11 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 			log.Printf("Failed to save resource URL: %v", err)
 		}
 
+		// Count successful resource fetches toward totalURLsCrawled
+		if result.Error == "" {
+			stats.totalURLsCrawled++
+		}
+
 		// Note: Resources are NOT counted toward pagesCrawled stat
 		// They're tracked separately for resource validation purposes
 	})
@@ -398,7 +405,8 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 
 		// Only count successful crawls (not errors)
 		if result.Error == "" {
-			stats.pagesCrawled++
+			stats.pagesCrawled++     // HTML pages only
+			stats.totalURLsCrawled++ // All URLs including pages
 		}
 
 		// Save to database - all crawling logic handled by bluesnake
