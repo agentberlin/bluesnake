@@ -88,10 +88,6 @@ class CrawlerComparison:
 
     def run_screamingfrog(self) -> bool:
         """Run ScreamingFrog crawl"""
-        print(f"\n{'='*80}")
-        print(f"Running ScreamingFrog for {self.domain}")
-        print(f"{'='*80}\n")
-
         # Create output directory
         self.sf_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -117,28 +113,23 @@ class CrawlerComparison:
             self.config_path,
         ]
 
-        print(f"Running ScreamingFrog (output will be logged to {self.sf_log_file})...")
-
         try:
             # Capture output to log file
             with open(self.sf_log_file, "w") as log_file:
                 result = subprocess.run(args, stdout=log_file, stderr=subprocess.STDOUT, timeout=3600)
 
             if result.returncode != 0:
-                print(f"\nScreamingFrog failed with return code {result.returncode}")
-                print(f"Check log file for details: {self.sf_log_file}")
+                print(f"ERROR: ScreamingFrog failed with return code {result.returncode}")
+                print(f"Log file: {self.sf_log_file}")
                 return False
 
-            log_size = os.path.getsize(self.sf_log_file)
-            print(f"ScreamingFrog crawl completed successfully")
-            print(f"Log file: {self.sf_log_file} ({log_size:,} bytes)\n")
             return True
         except subprocess.TimeoutExpired:
-            print("ScreamingFrog timed out after 1 hour")
-            print(f"Check log file for details: {self.sf_log_file}")
+            print("ERROR: ScreamingFrog timed out after 1 hour")
+            print(f"Log file: {self.sf_log_file}")
             return False
         except Exception as e:
-            print(f"Error running ScreamingFrog: {e}")
+            print(f"ERROR: Running ScreamingFrog: {e}")
             return False
 
     def check_prerequisites(self) -> Tuple[bool, List[str]]:
@@ -199,29 +190,23 @@ class CrawlerComparison:
         try:
             response = requests.put(f"{self.server_url}/api/v1/config", json=config, timeout=10)
             if response.status_code != 200:
-                print(f"Warning: Failed to update config: {response.status_code}")
+                print(f"ERROR: Failed to update config: {response.status_code}")
                 print(response.text)
                 return False
-            print("BlueSnake configured with JS rendering enabled")
             return True
         except Exception as e:
-            print(f"Error configuring BlueSnake: {e}")
+            print(f"ERROR: Configuring BlueSnake: {e}")
             return False
 
     def start_crawl(self) -> bool:
         """Start BlueSnake crawl"""
-        print(f"\n{'='*80}")
-        print(f"Running BlueSnake crawler for {self.domain}")
-        print(f"{'='*80}\n")
-
         if not self.check_server_running():
             print(f"ERROR: BlueSnake server is not running at {self.server_url}")
-            print("Please start the server with: cd cmd/server && go run . &")
             return False
 
         # Configure crawler settings
         if not self.configure_bluesnake():
-            print("Warning: Failed to configure BlueSnake, continuing with default settings")
+            print("WARNING: Failed to configure BlueSnake, continuing with default settings")
 
         # Ensure domain has protocol
         crawl_url = self.domain
@@ -233,14 +218,13 @@ class CrawlerComparison:
             response = requests.post(f"{self.server_url}/api/v1/crawl", json={"url": crawl_url}, timeout=10)
 
             if response.status_code != 202:
-                print(f"Failed to start crawl: {response.status_code}")
+                print(f"ERROR: Failed to start crawl: {response.status_code}")
                 print(response.text)
                 return False
 
-            print("Crawl started successfully")
             return True
         except Exception as e:
-            print(f"Error starting crawl: {e}")
+            print(f"ERROR: Starting crawl: {e}")
             return False
 
     def wait_for_crawl_completion(self, max_wait_seconds: int = 3600) -> Tuple[bool, int, int]:
@@ -248,15 +232,12 @@ class CrawlerComparison:
         Wait for crawl to complete
         Returns: (success, project_id, crawl_id)
         """
-        print("\nWaiting for crawl to complete...")
         start_time = time.time()
-        last_progress = 0
 
         while time.time() - start_time < max_wait_seconds:
             try:
                 response = requests.get(f"{self.server_url}/api/v1/active-crawls", timeout=10)
                 if response.status_code != 200:
-                    print(f"Error checking crawl status: {response.status_code}")
                     time.sleep(5)
                     continue
 
@@ -270,13 +251,8 @@ class CrawlerComparison:
                         break
 
                 if our_crawl:
-                    pages = our_crawl.get("pagesCrawled", 0)
-                    if pages != last_progress:
-                        print(f"Progress: {pages} pages crawled")
-                        last_progress = pages
-
                     if not our_crawl.get("isCrawling", True):
-                        print(f"\nCrawl completed! Total pages: {pages}")
+                        pages = our_crawl.get("pagesCrawled", 0)
                         return True, our_crawl.get("projectId"), our_crawl.get("crawlId")
                 else:
                     # No active crawl found - might be completed
@@ -286,37 +262,28 @@ class CrawlerComparison:
                         projects = projects_response.json()
                         for project in projects:
                             if self.domain in project.get("url", "") or self.domain in project.get("domain", ""):
-                                print(f"\nCrawl completed! Found project {project['id']}")
                                 return True, project["id"], project.get("latestCrawlId", 0)
-
-                    print("No active crawl found, but no completed crawl either. Still waiting...")
 
                 time.sleep(5)
 
             except Exception as e:
-                print(f"Error checking crawl status: {e}")
                 time.sleep(5)
 
-        print(f"\nTimeout waiting for crawl completion after {max_wait_seconds} seconds")
+        print(f"ERROR: Timeout waiting for crawl completion after {max_wait_seconds} seconds")
         return False, 0, 0
 
     def fetch_bluesnake_data(self, crawl_id: int) -> Optional[Dict[str, Any]]:
         """Fetch crawl results from BlueSnake API"""
-        print(f"\n{'='*80}")
-        print(f"Fetching BlueSnake crawl data")
-        print(f"{'='*80}\n")
-
         try:
             response = requests.get(f"{self.server_url}/api/v1/crawls/{crawl_id}", timeout=30)
             if response.status_code != 200:
-                print(f"Failed to fetch crawl data: {response.status_code}")
+                print(f"ERROR: Failed to fetch crawl data: {response.status_code}")
                 return None
 
             data = response.json()
-            print(f"Fetched {len(data.get('results', []))} URLs from BlueSnake")
             return data
         except Exception as e:
-            print(f"Error fetching BlueSnake data: {e}")
+            print(f"ERROR: Fetching BlueSnake data: {e}")
             return None
 
     def fetch_bluesnake_links(self, crawl_id: int, url: str) -> Optional[Dict[str, Any]]:
@@ -336,7 +303,7 @@ class CrawlerComparison:
         """Parse ScreamingFrog Internal:All export"""
         internal_file = self.sf_output_dir / "internal_all.csv"
         if not internal_file.exists():
-            print(f"Warning: {internal_file} not found")
+            print(f"ERROR: {internal_file} not found")
             return {}
 
         urls = {}
@@ -358,14 +325,13 @@ class CrawlerComparison:
                         "indexable": row.get("Indexability", ""),
                     }
 
-        print(f"Parsed {len(urls)} URLs from ScreamingFrog Internal:All (filtered {filtered_count} URLs)")
         return urls
 
     def parse_screamingfrog_outlinks(self) -> Dict[str, List[Dict[str, str]]]:
         """Parse ScreamingFrog All Outlinks export"""
         outlinks_file = self.sf_output_dir / "all_outlinks.csv"
         if not outlinks_file.exists():
-            print(f"Warning: {outlinks_file} not found")
+            print(f"ERROR: {outlinks_file} not found")
             return {}
 
         outlinks = defaultdict(list)
@@ -385,7 +351,6 @@ class CrawlerComparison:
                         {"to": target, "anchor": row.get("Anchor Text", ""), "type": row.get("Type", "")}
                     )
 
-        print(f"Parsed outlinks for {len(outlinks)} URLs from ScreamingFrog (filtered {filtered_outlinks} outlinks)")
         return outlinks
 
     def normalize_url(self, url: str) -> str:
@@ -398,10 +363,6 @@ class CrawlerComparison:
 
     def compare_urls(self, sf_urls: Dict[str, Dict[str, Any]], bs_data: Dict[str, Any]) -> Dict[str, Any]:
         """Compare crawled URLs between ScreamingFrog and BlueSnake"""
-        print(f"\n{'='*80}")
-        print("Comparing Crawled URLs")
-        print(f"{'='*80}\n")
-
         bs_results = bs_data.get("results", [])
 
         # Build URL maps with resource types
@@ -430,35 +391,23 @@ class CrawlerComparison:
         common = sf_set & bs_set
 
         # Calculate differences by type
-        print(f"Resource Type Breakdown:")
-        print(f"{'Type':<15} {'SF':<8} {'BS':<8} {'Missing in BS':<15}")
-        print("-" * 50)
-
         total_missing = 0
         missing_by_type = {}
 
         for resource_type in sorted(set(list(sf_by_type.keys()) + list(bs_by_type.keys()))):
-            sf_count = len(sf_by_type.get(resource_type, set()))
-            bs_count = len(bs_by_type.get(resource_type, set()))
             missing = sf_by_type.get(resource_type, set()) - bs_by_type.get(resource_type, set())
             missing_count = len(missing)
-
-            print(f"{resource_type:<15} {sf_count:<8} {bs_count:<8} {missing_count:<15}")
 
             total_missing += missing_count
             if missing_count > 0:
                 missing_by_type[resource_type] = list(missing)
 
-        print(f"\nTotal URLs:")
-        print(f"  ScreamingFrog: {len(sf_set)}")
-        print(f"  BlueSnake:     {len(bs_set)}")
-        print(f"  Common:        {len(common)}")
-        print(f"  Missing in BS: {total_missing}")
-
         # Store detailed diff
         self.detailed_diff["url_diffs"] = {
             "missing_in_bluesnake_by_type": missing_by_type,
             "only_in_bluesnake": list(bs_set - sf_set),
+            "sf_by_type": {k: len(v) for k, v in sf_by_type.items()},
+            "bs_by_type": {k: len(v) for k, v in bs_by_type.items()},
         }
 
         return {
@@ -466,14 +415,12 @@ class CrawlerComparison:
             "bs_total": len(bs_set),
             "common": len(common),
             "missing_in_bs": total_missing,
+            "sf_by_type": sf_by_type,
+            "bs_by_type": bs_by_type,
         }
 
     def compare_status_codes(self, sf_urls: Dict[str, Dict[str, Any]], bs_data: Dict[str, Any]) -> Dict[str, int]:
         """Compare HTTP status codes"""
-        print(f"\n{'='*80}")
-        print("Comparing Status Codes")
-        print(f"{'='*80}\n")
-
         bs_results = bs_data.get("results", [])
 
         # Build status maps
@@ -501,15 +448,6 @@ class CrawlerComparison:
                     }
                 )
 
-        print(f"URLs with different status codes: {len(status_diffs)}")
-
-        if status_diffs and len(status_diffs) > 0:
-            print(f"\nExample:")
-            example = status_diffs[0]
-            print(f"  URL: {example['url'][:80]}")
-            print(f"  ScreamingFrog: {example['sf_status']}")
-            print(f"  BlueSnake:     {example['bs_status']}")
-
         # Store detailed diff
         self.detailed_diff["status_diffs"] = status_diffs
 
@@ -521,23 +459,12 @@ class CrawlerComparison:
         self, crawl_id: int, sf_outlinks: Dict[str, List[Dict[str, str]]], bs_results: List[Dict[str, Any]]
     ) -> Dict[str, int]:
         """Compare outlinks for ALL pages"""
-        print(f"\n{'='*80}")
-        print("Comparing Outlinks")
-        print(f"{'='*80}\n")
-
-        print(f"Fetching outlinks from BlueSnake API for {len(bs_results)} URLs...")
-        print("(This may take a while...)\n")
-
         outlink_diffs = []
         checked_count = 0
 
-        for i, result in enumerate(bs_results):
+        for result in bs_results:
             url = result["url"]
             norm_url = self.normalize_url(url)
-
-            # Progress indicator every 10 URLs
-            if (i + 1) % 10 == 0:
-                print(f"Progress: {i + 1}/{len(bs_results)} URLs checked")
 
             # Get BlueSnake outlinks
             bs_links_data = self.fetch_bluesnake_links(crawl_id, url)
@@ -563,22 +490,6 @@ class CrawlerComparison:
                     }
                 )
 
-        print(f"\nCompleted checking {checked_count} URLs")
-        print(f"URLs with different outlinks: {len(outlink_diffs)}")
-
-        if outlink_diffs:
-            print(f"\nExample:")
-            example = outlink_diffs[0]
-            print(f"  URL: {example['url'][:80]}")
-            print(f"  ScreamingFrog outlinks: {example['sf_count']}")
-            print(f"  BlueSnake outlinks:     {example['bs_count']}")
-            print(f"  Only in ScreamingFrog:  {len(example['only_in_sf'])} links")
-            if example["only_in_sf"]:
-                print(f"    Example: {example['only_in_sf'][0][:80]}")
-            print(f"  Only in BlueSnake:      {len(example['only_in_bs'])} links")
-            if example["only_in_bs"]:
-                print(f"    Example: {example['only_in_bs'][0][:80]}")
-
         # Store detailed diff
         self.detailed_diff["outlink_diffs"] = outlink_diffs
 
@@ -601,55 +512,40 @@ class CrawlerComparison:
 
     def run(self):
         """Run the full comparison"""
-        print("\n" + "=" * 80)
-        print(f"CRAWLER COMPARISON: {self.domain}")
-        print("=" * 80)
-
-        # Step 0: Check prerequisites
-        print(f"\n{'='*80}")
-        print("Checking Prerequisites")
-        print(f"{'='*80}\n")
-
+        # Check prerequisites
         success, errors = self.check_prerequisites()
         if not success:
-            print("ERROR: Prerequisites check failed!\n")
+            print("=" * 80)
+            print("CRAWLER COMPARISON FAILED - PREREQUISITES NOT MET")
+            print("=" * 80)
             for error in errors:
-                print(f"  ✗ {error}")
-            print("\nPlease fix the above issues and try again.")
+                print(f"  • {error}")
+            print("=" * 80)
             return False
 
         # Step 1: Run ScreamingFrog (skip if bluesnake-only mode)
-        if self.bluesnake_only:
-            print(f"\n{'='*80}")
-            print("Skipping ScreamingFrog (bluesnake-only mode)")
-            print(f"{'='*80}\n")
-            print("Will use existing ScreamingFrog data from previous run if available.")
-        else:
+        if not self.bluesnake_only:
             if not self.run_screamingfrog():
-                print("ScreamingFrog crawl failed. Exiting.")
+                print("ERROR: ScreamingFrog crawl failed")
                 return False
 
         # Step 2: Run BlueSnake
         if not self.start_crawl():
-            print("BlueSnake crawl failed to start. Exiting.")
+            print("ERROR: BlueSnake crawl failed to start")
             return False
 
         success, project_id, crawl_id = self.wait_for_crawl_completion()
         if not success:
-            print("BlueSnake crawl did not complete. Exiting.")
+            print("ERROR: BlueSnake crawl did not complete")
             return False
 
         # Step 3: Fetch BlueSnake data
         bs_data = self.fetch_bluesnake_data(crawl_id)
         if not bs_data:
-            print("Failed to fetch BlueSnake data. Exiting.")
+            print("ERROR: Failed to fetch BlueSnake data")
             return False
 
         # Step 4: Parse ScreamingFrog data
-        print(f"\n{'='*80}")
-        print("Parsing ScreamingFrog Data")
-        print(f"{'='*80}\n")
-
         sf_urls = self.parse_screamingfrog_internal()
         sf_outlinks = self.parse_screamingfrog_outlinks()
 
@@ -665,27 +561,71 @@ class CrawlerComparison:
         # Step 8: Write detailed diff
         diff_file, diff_size = self.write_detailed_diff()
 
-        # Final summary
-        print(f"\n{'='*80}")
-        print("FINAL SUMMARY")
-        print(f"{'='*80}\n")
+        # Print concise summary for LLM consumption
+        print("\n" + "=" * 80)
+        print(f"CRAWLER COMPARISON RESULTS: {self.domain}")
+        print("=" * 80)
 
-        print(f"Crawl ID: {crawl_id}")
-        print(f"ScreamingFrog: {url_comparison['sf_total']} URLs")
-        print(f"BlueSnake: {url_comparison['bs_total']} URLs")
-        print(f"Common: {url_comparison['common']} URLs")
-        print(f"Missing in BS: {url_comparison['missing_in_bs']} URLs")
+        # Configuration
+        print("\nConfiguration:")
+        print(f"  • Domain: {self.domain}")
+        print(f"  • Crawl ID: {crawl_id}")
+        print(f"  • Mode: {'BlueSnake only (using existing ScreamingFrog data)' if self.bluesnake_only else 'Full comparison (both crawlers)'}")
+        print(f"  • BlueSnake config: JS rendering enabled, parallelism=10, check external resources")
+
+        # URL Coverage
+        print("\nURL Coverage:")
+        print(f"  • ScreamingFrog total: {url_comparison['sf_total']} URLs")
+        print(f"  • BlueSnake total: {url_comparison['bs_total']} URLs")
+        print(f"  • Common URLs: {url_comparison['common']}")
+        print(f"  • Missing in BlueSnake: {url_comparison['missing_in_bs']}")
+        print(f"  • Only in BlueSnake: {len(self.detailed_diff['url_diffs']['only_in_bluesnake'])}")
 
         if url_comparison["sf_total"] > 0:
             coverage = url_comparison["common"] / url_comparison["sf_total"] * 100
-            print(f"Coverage: {coverage:.1f}%")
+            print(f"  • Coverage: {coverage:.1f}%")
 
-        print(f"\nStatus differences: {status_comparison['diff_count']} URLs")
-        print(f"Outlink differences: {outlink_comparison['diff_count']}/{outlink_comparison['checked_count']} URLs")
+        # Resource Type Breakdown
+        print("\nResource Type Breakdown:")
+        print(f"  {'Type':<15} {'ScreamingFrog':<18} {'BlueSnake':<18} {'Missing in BS':<15}")
+        print("  " + "-" * 66)
+        for resource_type in sorted(set(list(url_comparison['sf_by_type'].keys()) + list(url_comparison['bs_by_type'].keys()))):
+            sf_count = len(url_comparison['sf_by_type'].get(resource_type, set()))
+            bs_count = len(url_comparison['bs_by_type'].get(resource_type, set()))
+            missing_count = len(self.detailed_diff['url_diffs']['missing_in_bluesnake_by_type'].get(resource_type, []))
+            print(f"  {resource_type:<15} {sf_count:<18} {bs_count:<18} {missing_count:<15}")
 
-        print(f"\nDiff file: {diff_file}")
+        # Status Code Differences
+        print("\nStatus Code Differences:")
+        print(f"  • URLs with different status codes: {status_comparison['diff_count']}")
+        if status_comparison['diff_count'] > 0 and self.detailed_diff['status_diffs']:
+            print(f"  • Example: {self.detailed_diff['status_diffs'][0]['url'][:60]}")
+            print(f"    - ScreamingFrog: {self.detailed_diff['status_diffs'][0]['sf_status']}")
+            print(f"    - BlueSnake: {self.detailed_diff['status_diffs'][0]['bs_status']}")
 
-        print("\n" + "=" * 80 + "\n")
+        # Outlink Differences
+        print("\nOutlink Differences:")
+        print(f"  • URLs checked: {outlink_comparison['checked_count']}")
+        print(f"  • URLs with different outlinks: {outlink_comparison['diff_count']}")
+        if outlink_comparison['diff_count'] > 0 and self.detailed_diff['outlink_diffs']:
+            example = self.detailed_diff['outlink_diffs'][0]
+            print(f"  • Example: {example['url'][:60]}")
+            print(f"    - ScreamingFrog outlinks: {example['sf_count']}")
+            print(f"    - BlueSnake outlinks: {example['bs_count']}")
+            print(f"    - Only in ScreamingFrog: {len(example['only_in_sf'])}")
+            print(f"    - Only in BlueSnake: {len(example['only_in_bs'])}")
+
+        # Detailed output files
+        print("\nDetailed Analysis Files:")
+        print(f"  • JSON diff file: {diff_file}")
+        print(f"    (Contains comparison results, {diff_size:,} bytes)")
+        print(f"  • ScreamingFrog directory: {self.sf_output_dir}/")
+        print(f"    (Contains internal_all.csv, all_outlinks.csv, and other SF exports)")
+        if not self.bluesnake_only:
+            print(f"  • ScreamingFrog log: {self.sf_log_file}")
+        print(f"\n  Use BOTH the JSON diff and ScreamingFrog CSVs for complete analysis.")
+
+        print("=" * 80 + "\n")
 
         return True
 

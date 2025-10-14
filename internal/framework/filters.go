@@ -24,7 +24,12 @@ type FilterConfig struct {
 func GetFilterConfig(fw Framework) FilterConfig {
 	configs := map[Framework]FilterConfig{
 		FrameworkNextJS: {
-			URLPatterns: []string{"/_next/static/", "/_next/data/"},
+			// Note: We don't filter /_next/static/ because it contains legitimate resources
+			// (JS, CSS, fonts) that should be crawled for resource validation.
+			// We only filter:
+			// - /_next/data/ (server-side data fetching endpoints)
+			// - URLs with _rsc query param (React Server Components prefetch)
+			URLPatterns: []string{"/_next/data/"},
 			QueryParams: []string{"_rsc"},
 		},
 		FrameworkNuxtJS: {
