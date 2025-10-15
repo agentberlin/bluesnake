@@ -141,26 +141,29 @@ func TestCrawlerIntegration(t *testing.T) {
 	// In the real UI, this is handled by polling GetActiveCrawls() and GetActiveCrawlStats()
 	// For the test, we'll wait up to 30 seconds and check periodically
 	maxWaitTime := 30 * time.Second
-	checkInterval := 500 * time.Millisecond
+	checkInterval := 100 * time.Millisecond // Use shorter interval to catch fast crawls
 	startTime := time.Now()
 
 	var crawlCompleted bool
 
 	for time.Since(startTime) < maxWaitTime {
-		// Check if there are any active crawls
-		activeCrawls := coreApp.GetActiveCrawls()
-
-		if len(activeCrawls) == 0 {
-			// No active crawls means the crawl has completed
-			crawlCompleted = true
-			t.Log("Crawl completed (no active crawls)")
-			break
-		}
-
-		// Log progress
-		if len(activeCrawls) > 0 {
-			crawl := activeCrawls[0]
-			t.Logf("Crawl progress: %d/%d URLs crawled", crawl.TotalURLsCrawled, crawl.TotalDiscovered)
+		// Check if crawl exists in database (more reliable than checking active crawls)
+		projects, err := coreApp.GetProjects()
+		if err == nil && len(projects) > 0 {
+			crawls, err := coreApp.GetCrawls(projects[0].ID)
+			if err == nil && len(crawls) > 0 {
+				// Crawl record exists in database
+				activeCrawls := coreApp.GetActiveCrawls()
+				if len(activeCrawls) == 0 {
+					// Crawl is in database but not active = completed
+					crawlCompleted = true
+					t.Log("Crawl completed (found in database, not in active crawls)")
+					break
+				} else {
+					// Still actively crawling
+					t.Logf("Crawl progress: %d/%d URLs crawled", activeCrawls[0].TotalURLsCrawled, activeCrawls[0].TotalDiscovered)
+				}
+			}
 		}
 
 		time.Sleep(checkInterval)

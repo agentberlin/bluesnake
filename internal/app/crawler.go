@@ -127,17 +127,25 @@ func (a *App) StopCrawl(projectID uint) error {
 //   - includeSubdomains=false: matches "example.com" but not "blog.example.com"
 //   - includeSubdomains=true: matches "example.com", "blog.example.com", "api.example.com", etc.
 func buildDomainFilter(domain string, includeSubdomains bool) (*regexp.Regexp, error) {
-	// Escape special regex characters in the domain
-	escapedDomain := regexp.QuoteMeta(domain)
-
 	var pattern string
 	if includeSubdomains {
 		// Match domain or any subdomain: (.*\.)?example\.com
-		// Remove port if present for pattern matching
-		domainWithoutPort := strings.Split(escapedDomain, ":")[0]
-		pattern = fmt.Sprintf(`^https?://(.*\.)?%s(/|$|\?)`, domainWithoutPort)
+		// If domain has a port, keep it in the pattern
+		parts := strings.Split(domain, ":")
+		domainWithoutPort := parts[0]
+		escapedDomain := regexp.QuoteMeta(domainWithoutPort)
+
+		if len(parts) > 1 {
+			// Domain has a port, include it in the pattern
+			port := parts[1]
+			pattern = fmt.Sprintf(`^https?://(.*\.)?%s:%s(/|$|\?)`, escapedDomain, port)
+		} else {
+			// No port in domain
+			pattern = fmt.Sprintf(`^https?://(.*\.)?%s(/|$|\?)`, escapedDomain)
+		}
 	} else {
-		// Match exact domain only: example\.com
+		// Match exact domain only: example\.com or example\.com:port
+		escapedDomain := regexp.QuoteMeta(domain)
 		pattern = fmt.Sprintf(`^https?://%s(/|$|\?)`, escapedDomain)
 	}
 
@@ -549,24 +557,6 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		case <-time.After(1 * time.Second):
 		}
 	}
-}
-
-// extractDomainFromURL extracts the domain from a URL (including port if non-standard)
-func extractDomainFromURL(urlStr string) string {
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		return ""
-	}
-
-	hostname := parsedURL.Hostname()
-	port := parsedURL.Port()
-
-	// Include non-standard ports
-	if port != "" && port != "80" && port != "443" {
-		return strings.ToLower(hostname + ":" + port)
-	}
-
-	return strings.ToLower(hostname)
 }
 
 // setupURLDiscoveryHandler sets up URL discovery callback for categorizing URLs

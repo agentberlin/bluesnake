@@ -52,12 +52,15 @@ func normalizeURL(input string) (string, string, error) {
 
 	// Build normalized URL
 	// Keep port if it's non-standard (not 80 for http, not 443 for https)
-	normalizedURL := "https://" + hostname
+	// Preserve the original scheme (http or https)
+	scheme := parsedURL.Scheme
+	normalizedURL := scheme + "://" + hostname
 	if parsedURL.Port() != "" {
 		port := parsedURL.Port()
-		// Only keep port if it's not the default for https (443)
-		if port != "443" {
-			normalizedURL = "https://" + hostname + ":" + port
+		// Only keep port if it's not the default for the scheme
+		isDefaultPort := (scheme == "http" && port == "80") || (scheme == "https" && port == "443")
+		if !isDefaultPort {
+			normalizedURL = scheme + "://" + hostname + ":" + port
 			// Include port in domain identifier for non-standard ports
 			hostname = hostname + ":" + port
 		}
