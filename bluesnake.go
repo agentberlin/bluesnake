@@ -197,6 +197,21 @@ type CollectorConfig struct {
 	// RespectNoindex respects X-Robots-Tag: noindex headers
 	// Default: true
 	RespectNoindex bool
+
+	// DiscoveryChannelSize is the buffer size for the URL discovery channel
+	// Larger values reduce blocking but use more memory
+	// Default: 50000
+	DiscoveryChannelSize int
+
+	// WorkQueueSize is the buffer size for the worker pool work queue
+	// Should be smaller than DiscoveryChannelSize
+	// Default: 1000
+	WorkQueueSize int
+
+	// Parallelism is the number of concurrent HTTP requests (worker pool size)
+	// This replaces/complements the existing async goroutine model
+	// Default: 10
+	Parallelism int
 }
 
 // Collector provides the scraper instance for a scraping job
@@ -910,6 +925,7 @@ func (c *Collector) scrape(u, method string, depth int, requestData io.Reader, c
 		return err
 	}
 	u = parsedURL.String()
+	log.Printf("[SCRAPE] WaitGroup Add(1) for: %s", u)
 	c.wg.Add(1)
 	// Check before adding to queue
 	select {
@@ -926,7 +942,10 @@ func (c *Collector) scrape(u, method string, depth int, requestData io.Reader, c
 }
 
 func (c *Collector) fetch(u, method string, depth int, requestData io.Reader, ctx *Context, hdr http.Header, req *http.Request) error {
-	defer c.wg.Done()
+	defer func() {
+		log.Printf("[FETCH] WaitGroup Done() for: %s", u)
+		c.wg.Done()
+	}()
 
 	// Check cancellation before processing
 	select {
@@ -1064,33 +1083,13 @@ func (c *Collector) requestCheck(parsedURL *url.URL, method string, getBody func
 			return err
 		}
 	}
-	if checkRevisit && !c.AllowURLRevisit {
-		// TODO weird behaviour, it allows CheckHead to work correctly,
-		// but it should probably better be solved with
-		// "check-but-not-save" flag or something
-		if method != "GET" && getBody == nil {
-			return nil
-		}
-
-		var body io.ReadCloser
-		if getBody != nil {
-			var err error
-			body, err = getBody()
-			if err != nil {
-				return err
-			}
-			defer body.Close()
-		}
-		uHash := requestHash(u, body)
-		visited, err := c.store.IsVisited(uHash)
-		if err != nil {
-			return err
-		}
-		if visited {
-			return &AlreadyVisitedError{parsedURL}
-		}
-		return c.store.Visited(uHash)
-	}
+	// Visit checking has been removed from Collector.
+	// The Crawler is now responsible for all visit tracking (single-threaded processor).
+	// This eliminates race conditions where multiple goroutines could mark the same URL
+	// as visited but never actually crawl it.
+	//
+	// If checkRevisit is true and you need visit checking, you must handle it externally
+	// before calling this method (see Crawler.processDiscoveredURL for the proper pattern).
 	return nil
 }
 

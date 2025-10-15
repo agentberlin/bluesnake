@@ -38,6 +38,10 @@ type Storage interface {
 	// IsVisited returns true if the request was visited before IsVisited
 	// is called
 	IsVisited(requestID uint64) (bool, error)
+	// VisitIfNotVisited atomically checks if a request ID has been visited,
+	// and if not, marks it as visited. Returns true if the URL was already visited.
+	// This is the atomic equivalent of IsVisited() + Visited() and prevents race conditions.
+	VisitIfNotVisited(requestID uint64) (bool, error)
 	// Cookies retrieves stored cookies for a given host
 	Cookies(u *url.URL) string
 	// SetCookies stores cookies for a given host
@@ -99,6 +103,23 @@ func (s *InMemoryStorage) IsVisited(requestID uint64) (bool, error) {
 	visited := s.visitedURLs[requestID]
 	s.lock.RUnlock()
 	return visited, nil
+}
+
+// VisitIfNotVisited implements Storage.VisitIfNotVisited()
+// Atomically checks if a request ID has been visited, and if not, marks it as visited.
+// Returns true if the URL was already visited, false if it was newly marked as visited.
+func (s *InMemoryStorage) VisitIfNotVisited(requestID uint64) (bool, error) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	// Check if already visited
+	if s.visitedURLs[requestID] {
+		return true, nil // Already visited
+	}
+
+	// Mark as visited
+	s.visitedURLs[requestID] = true
+	return false, nil // Newly marked as visited
 }
 
 // Cookies implements Storage.Cookies()
