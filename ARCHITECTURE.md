@@ -2173,3 +2173,243 @@ BlueSnake demonstrates a clean layered architecture with separation between:
 The channel-based architecture eliminates race conditions by serializing all visit decisions in a single goroutine, while the polling-based design with database as single source of truth enables reliable UI updates at scale. The callback pattern provides extensibility without modifying core code. Indicational events provide immediate feedback triggers, while polling handles the actual data synchronization.
 
 The architecture is designed to be **future-proof**: adding new transports (MCP, CLI, gRPC) requires only creating a new `cmd/` directory and implementing a thin adapter - no changes to business logic required.
+
+
+## Architecture Flow: Start to Panic
+
+Initial Setup (Simplified - 1 URL, sitemap with 6 URLs)
+
+Starting state:
+- Initial URL: https://agentberlin.ai
+- Sitemap URLs: 6 URLs (blog, pricing, newsletter, tools/bot-access, 2 blog posts)
+- Configuration: Parallelism=10 workers, Async=true
+
+---
+Phase 1: Startup
+
+[App Code] StartCrawl("https://agentberlin.ai")
+↓
+[crawler.go:445] crawler.Start(url)
+├─ [crawler.go:450] go runURLProcessor()  // Goroutine 1: Processor
+│   └─ Listening on discoveryChannel
+│
+├─ [crawler.go:453] queueURL(initial URL)
+│   └─ discoveryChannel <- {URL: "agentberlin.ai", Source: "initial"}
+│
+└─ [crawler.go:460-468] Fetch sitemap, queue 6 URLs
+    ├─ queueURL({URL: "agentberlin.ai", Source: "sitemap"})
+    ├─ queueURL({URL: "agentberlin.ai/blog", Source: "sitemap"})
+    ├─ queueURL({URL: "agentberlin.ai/pricing", Source: "sitemap"})
+    ├─ queueURL({URL: "agentberlin.ai/newsletter", Source: "sitemap"})
+    ├─ queueURL({URL: "agentberlin.ai/tools/bot-access", Source: "sitemap"})
+    └─ queueURL({URL: "agentberlin.ai/blog/...", Source: "sitemap"}) x2
+
+[App Code] crawler.Wait()  // Blocks, waiting for completion
+
+State after startup:
+- discoveryChannel: 7 URLs queued (1 initial + 6 sitemap)
+- Processor: Reading from channel
+- Workers: 10 workers idle, waiting for work
+- Collector.wg: 0 (no scrape() calls yet)
+
+---
+Phase 2: URL Processing Begins
+
+[Goroutine 1: Processor] runURLProcessor()
+↓
+Receives: {URL: "agentberlin.ai", Source: "initial"}
+↓
+[crawler.go:349] processDiscoveredURL(req)
+├─ [crawler.go:353] action = getOrDetermineURLAction("agentberlin.ai")
+│   └─ Returns: URLActionCrawl
+│
+├─ [crawler.go:360] isURLCrawlable() → true
+│
+├─ [crawler.go:368] store.VisitIfNotVisited() → false (not visited)
+│   └─ Marks URL as visited in storage
+│
+└─ [crawler.go:389] workerPool.Submit(func() { ... })
+    └─ workQueue <- func() { scrape("agentberlin.ai") }
+
+[Goroutine 2: Worker] worker()
+↓
+Picks up work from workQueue
+↓
+Executes: work()
+    ├─ [App logs] "[WORKER] Starting to process: https://agentberlin.ai"
+    │
+    └─ [crawler.go:394] cr.Collector.scrape(url, ...)
+        ↓
+        [bluesnake.go:881] scrape(url, ...)
+        ├─ [bluesnake.go:929] c.wg.Add(1)  // Collector.wg = 1
+        │   └─ [Logs] "[SCRAPE] WaitGroup Add(1) for: https://agentberlin.ai"
+        │
+        └─ [bluesnake.go:938] go c.fetch(...)  // Goroutine 3: Async fetch
+            └─ [App logs] "[WORKER] Finished scraping: https://agentberlin.ai"
+                (scrape() returns immediately in Async mode)
+
+State after first URL submitted:
+- discoveryChannel: 6 URLs remaining
+- Processor: Processing next URL
+- Worker pool queue: empty (work picked up)
+- Collector.wg: 1 (fetch goroutine running)
+- Active fetch goroutines: 1 (Goroutine 3)
+
+---
+Phase 3: Fetch & Callbacks
+
+[Goroutine 3: Fetch] fetch(url, ...)
+├─ [bluesnake.go:945] defer wg.Done()  // Will execute at END
+│
+├─ [bluesnake.go:1004] response = HTTP GET
+│
+├─ [bluesnake.go:1046] handleOnResponse(response)
+│
+├─ [bluesnake.go:1048] handleOnHTML(response)
+│   └─ [Logs] "[FETCH-CALLBACKS] Starting OnHTML for: https://agentberlin.ai"
+│
+└─ [bluesnake.go:1543] handleOnHTML()
+    ├─ Parses HTML with goquery
+    │
+    └─ For each registered OnHTML callback:
+        [crawler.go:526-647] OnHTML("html", func(e) { ... })
+            ├─ [crawler.go:528] allLinks = extractAllLinks(e)
+            │   └─ Finds internal links from page
+            │
+            ├─ [crawler.go:210-251] Spider mode enabled, iterate links
+            │   └─ For each internal anchor link:
+            │       [crawler.go:614-620] queueURL({URL: link.URL, Source: "spider"})
+            │           ↓
+            │           discoveryChannel <- URLDiscoveryRequest
+            │           (Successfully queued - channel has space)
+            │
+            └─ [crawler.go:253-275] Resource validation
+                └─ For each resource link:
+                    [crawler.go:638-644] queueURL({URL: resource.URL, Source: "resource"})
+
+├─ [Logs] "[FETCH-CALLBACKS] Finished OnHTML"
+│
+├─ [bluesnake.go:1060] handleOnScraped(response)
+│   └─ [Logs] "[FETCH-CALLBACKS] Starting OnScraped"
+│   └─ [crawler.go:296-358] OnScraped callback
+│       └─ Builds PageResult, calls onPageCrawled
+│   └─ [Logs] "[FETCH-CALLBACKS] Finished OnScraped"
+│
+└─ [bluesnake.go:1064] return
+    ↓
+    Defer executes: wg.Done()  // Collector.wg = 0
+    └─ [Logs] "[FETCH] WaitGroup Done() for: https://agentberlin.ai"
+
+State after first fetch completes:
+- discoveryChannel: 6 sitemap URLs + N discovered URLs from page
+- Processor: Still processing queued URLs
+- Collector.wg: 0 (first fetch done)
+- Worker pool queue: May have pending work from processor
+
+---
+Phase 4: The Race Begins (CRITICAL!)
+
+Meanwhile, the processor has been working through the 6 sitemap URLs:
+
+[Goroutine 1: Processor] Continues processing...
+├─ Processes sitemap URL 1: "agentberlin.ai" (already visited, skipped)
+│
+├─ Processes sitemap URL 2: "agentberlin.ai/blog"
+│   └─ [crawler.go:389] workerPool.Submit(func() { scrape("/blog") })
+│       └─ workQueue <- work  // Queued in worker pool
+│
+├─ Processes sitemap URL 3: "agentberlin.ai/pricing"
+│   └─ workerPool.Submit(...)
+│
+├─ Processes sitemap URL 4: "agentberlin.ai/newsletter"
+│   └─ workerPool.Submit(...)
+│
+├─ ... (continues for all 6 URLs)
+│
+└─ [Logs] "[PROCESSOR] Successfully submitted to worker pool: ..."
+
+CRITICAL TIMING:
+
+[Main Thread] Wait() has been blocking on:
+[crawler.go:487] cr.Collector.Wait()
+    └─ Waiting for Collector.wg to reach 0
+
+[Goroutine 3] fetch() completes
+└─ wg.Done() called
+    └─ Collector.wg = 0
+
+[Main Thread] Collector.Wait() RETURNS!
+↓
+[crawler.go:488] close(cr.discoveryChannel)  // ❌ CHANNEL CLOSED!
+└─ [Logs] "[WAIT] ========== CLOSING DISCOVERY CHANNEL =========="
+
+State at this CRITICAL moment:
+- discoveryChannel: CLOSED ❌
+- Processor: Draining remaining URLs from closed channel
+- Worker pool queue: HAS 6 PENDING WORK ITEMS ⚠️
+- Collector.wg: 0
+- Workers: About to pick up queued work...
+
+---
+Phase 5: The Panic
+
+[Main Thread] Wait() continues...
+├─ [crawler.go:492] <-cr.processorDone
+│   └─ Processor finishes draining channel
+│   └─ [Logs] "[WAIT] Processor finished"
+│
+└─ [crawler.go:505] cr.workerPool.Close()
+    └─ [Logs] "[WAIT] Closing worker pool"
+    └─ Closes workQueue channel
+    └─ Workers can still process already-queued items
+
+[Goroutine 4: Worker] Picks up queued work for "/newsletter"
+↓
+[Logs] "[WORKER] Starting to process: https://agentberlin.ai/newsletter"
+↓
+Executes: work()
+    └─ [crawler.go:394] cr.Collector.scrape("/newsletter", ...)
+        ↓
+        [bluesnake.go:929] c.wg.Add(1)  // Collector.wg = 1 again!
+        └─ [Logs] "[SCRAPE] WaitGroup Add(1) for: .../newsletter"
+        ↓
+        [bluesnake.go:938] go c.fetch(...)  // Goroutine 5: New fetch
+        └─ [Logs] "[WORKER] Finished scraping: .../newsletter"
+
+[Goroutine 5: Fetch] fetch("/newsletter", ...)
+├─ HTTP GET, parse HTML
+│
+├─ [bluesnake.go:1048] handleOnHTML()
+│   └─ [Logs] "[FETCH-CALLBACKS] Starting OnHTML for: .../newsletter"
+│
+└─ [crawler.go:614] OnHTML callback: queueURL({URL: "/", Source: "spider"})
+    ↓
+    [crawler.go:300] queueURL(req)
+        └─ [Logs] "[QUEUE-ATTEMPT] URL: https://agentberlin.ai/, Source: spider"
+        ↓
+        select {
+        case cr.discoveryChannel <- req:  // ❌ SEND ON CLOSED CHANNEL!
+        }
+
+💥 PANIC: send on closed channel
+
+---
+Summary of the Problem
+
+The race condition:
+
+1. Worker pool decouples work submission from execution
+- Processor submits func() { scrape() } to worker queue
+- Worker picks it up later and calls scrape()
+- scrape() adds to Collector.wg
+2. Timing issue:
+- First URL finishes → wg.Done() → Collector.wg = 0
+- Wait() sees wg=0 and closes discovery channel
+- Worker pool still has 6 queued work items
+- Workers execute queued work → call scrape() → wg.Add(1) AFTER Wait() returned
+- OnHTML callbacks try to queue URLs → channel already closed → PANIC
+
+The architectural flaw:
+- Collector.Wait() only tracks work that has called scrape()
+- It doesn't know about work queued in the worker pool that hasn't called scrape() yet
+- This creates a window where Wait() returns too early

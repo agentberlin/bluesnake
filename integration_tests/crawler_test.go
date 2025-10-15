@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package app
+package integration_tests
 
 import (
 	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/agentberlin/bluesnake/internal/app"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
@@ -101,7 +101,7 @@ func TestCrawlerIntegration(t *testing.T) {
 
 	// Create a temporary database for testing
 	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
+	dbPath := tmpDir + "/test.db"
 
 	// Initialize the store (database) with test database path
 	// We call the internal function directly since we're in the same module
@@ -118,7 +118,7 @@ func TestCrawlerIntegration(t *testing.T) {
 	}
 
 	// Create the app instance (mimicking what happens in cmd/desktop/main.go)
-	coreApp := NewApp(st, emitter)
+	coreApp := app.NewApp(st, emitter)
 	ctx := context.Background()
 	coreApp.Startup(ctx)
 
@@ -303,7 +303,7 @@ type testEmitter struct {
 	mu     sync.Mutex
 }
 
-func (e *testEmitter) Emit(eventType EventType, data interface{}) {
+func (e *testEmitter) Emit(eventType app.EventType, data interface{}) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.events[string(eventType)]++

@@ -1045,17 +1045,21 @@ func (c *Collector) fetch(u, method string, depth int, requestData io.Reader, ct
 
 	c.handleOnResponse(response)
 
+	log.Printf("[FETCH-CALLBACKS] Starting OnHTML for: %s", u)
 	err = c.handleOnHTML(response)
 	if err != nil {
 		c.handleOnError(response, err, request, ctx)
 	}
+	log.Printf("[FETCH-CALLBACKS] Finished OnHTML for: %s", u)
 
 	err = c.handleOnXML(response)
 	if err != nil {
 		c.handleOnError(response, err, request, ctx)
 	}
 
+	log.Printf("[FETCH-CALLBACKS] Starting OnScraped for: %s", u)
 	c.handleOnScraped(response)
+	log.Printf("[FETCH-CALLBACKS] Finished OnScraped for: %s", u)
 
 	return err
 }
