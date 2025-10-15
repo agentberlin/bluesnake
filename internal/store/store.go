@@ -57,6 +57,11 @@ func NewStore() (*Store, error) {
 	return newStoreWithPath(dbPath)
 }
 
+// NewStoreForTesting creates a store with a custom database path (used for testing)
+func NewStoreForTesting(dbPath string) (*Store, error) {
+	return newStoreWithPath(dbPath)
+}
+
 // newStoreWithPath creates a store with a custom database path (used for testing)
 func newStoreWithPath(dbPath string) (*Store, error) {
 	fmt.Printf("DEBUG: Initializing database at path: %s\n", dbPath)

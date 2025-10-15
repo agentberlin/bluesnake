@@ -79,17 +79,21 @@ func TestBuildDomainFilter(t *testing.T) {
 			},
 		},
 		{
-			name:              "Domain with port - include subdomains",
+			name:              "Domain with port - include subdomains (port must match)",
 			domain:            "example.com:8080",
 			includeSubdomains: true,
 			shouldMatch: []string{
-				"https://example.com/",
-				"https://blog.example.com/",
-				"https://api.example.com/page",
+				"https://example.com:8080/",
+				"https://blog.example.com:8080/",
+				"https://api.example.com:8080/page",
+				"http://example.com:8080/",
 			},
 			shouldNotMatch: []string{
-				"https://example.org/",
-				"https://notexample.com/",
+				"https://example.com/",          // different port (default 443)
+				"https://blog.example.com/",     // different port (default 443)
+				"https://example.com:9000/",     // different port number
+				"https://example.org:8080/",     // different domain
+				"https://notexample.com:8080/",  // different domain
 			},
 		},
 	}
