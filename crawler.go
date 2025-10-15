@@ -149,11 +149,11 @@ type PageMetadata struct {
 
 // URLDiscoveryRequest represents a URL discovered during crawling
 type URLDiscoveryRequest struct {
-	URL       string      // The discovered URL
-	Source    string      // Discovery source: "initial", "sitemap", "spider", "network", "resource"
-	ParentURL string      // URL where this was discovered (for spider/network)
-	Depth     int         // Crawl depth
-	Context   *Context    // Request context for passing metadata
+	URL       string   // The discovered URL
+	Source    string   // Discovery source: "initial", "sitemap", "spider", "network", "resource"
+	ParentURL string   // URL where this was discovered (for spider/network)
+	Depth     int      // Crawl depth
+	Context   *Context // Request context for passing metadata
 }
 
 // Crawler provides a high-level interface for web crawling with callbacks for page results
@@ -297,16 +297,21 @@ func (cr *Crawler) SetOnURLDiscovered(f OnURLDiscoveredFunc) {
 // This is called by all discovery mechanisms (initial, sitemap, spider, network, resources).
 // Uses non-blocking sends to prevent deadlocks.
 func (cr *Crawler) queueURL(req URLDiscoveryRequest) {
+	log.Printf("[QUEUE-ATTEMPT] URL: %s, Source: %s", req.URL, req.Source)
+
 	select {
 	case cr.discoveryChannel <- req:
 		// Successfully queued (non-blocking if channel has buffer space)
+		log.Printf("[QUEUE-SUCCESS] URL: %s", req.URL)
 
 	case <-cr.Collector.Context.Done():
-		// Crawl cancelled - drop URL
+		// Crawl cancelled - drop URL (likely because user cancelled)
+		log.Printf("[QUEUE-DROPPED] URL: %s (context done)", req.URL)
 
 	default:
-		// Channel full - drop URL to prevent deadlock
-		// This is acceptable for best-effort crawling
+		// Channel full - drop URL to prevent deadlock - this is the only situation where we drop
+		// urls without user's cancellation which is very very unlikely situation of getting the queue to be at 50k
+		log.Printf("[QUEUE-DROPPED] URL: %s (channel full)", req.URL)
 		if req.Source == "initial" {
 			// Never drop the initial URL - log error
 			log.Printf("ERROR: Dropped initial URL due to full channel: %s", req.URL)
@@ -333,8 +338,14 @@ func (cr *Crawler) runURLProcessor() {
 
 		case <-cr.Collector.Context.Done():
 			// Context cancelled - drain remaining URLs
-			cr.drainDiscoveryChannel()
-			return
+			for {
+				select {
+				case req := <-cr.discoveryChannel:
+					cr.processDiscoveredURL(req)
+				default:
+					return // Channel empty
+				}
+			}
 		}
 	}
 }
@@ -402,18 +413,6 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
 	// Worker will fetch it when available
 }
 
-// drainDiscoveryChannel processes remaining URLs before shutdown
-func (cr *Crawler) drainDiscoveryChannel() {
-	for {
-		select {
-		case req := <-cr.discoveryChannel:
-			cr.processDiscoveredURL(req)
-		default:
-			return // Channel empty
-		}
-	}
-}
-
 // getOrDetermineURLAction determines the action for a URL by calling the OnURLDiscovered callback.
 // The callback is invoked only once per unique URL (results are memoized in queuedURLs).
 // On subsequent calls for the same URL, the cached action is returned.
@@ -475,17 +474,20 @@ func (cr *Crawler) Start(url string) error {
 // Wait blocks until all crawling operations complete.
 // The crawl naturally completes when all work is done (no more pending URLs, all workers idle).
 func (cr *Crawler) Wait() {
+	log.Printf("[WAIT] ========== STARTING WAIT ==========")
 	log.Printf("[WAIT] Starting Wait() - waiting for Collector.Wait()")
 	// Step 1: Wait for the Collector's WaitGroup to reach zero
 	// This happens when all HTTP requests finish (including discovered URLs becoming "already visited")
 	cr.Collector.Wait()
-	log.Printf("[WAIT] Collector.Wait() returned - all HTTP requests complete")
+	log.Printf("[WAIT] ========== COLLECTOR.WAIT() RETURNED ==========")
+	log.Printf("[WAIT] All HTTP requests complete (WaitGroup reached zero)")
 
 	// Step 2: At this point, all workers have finished their HTTP requests
 	// The processor may still have URLs in the discovery channel to process
 	// Close the discovery channel to signal "no more URLs will be added"
-	log.Printf("[WAIT] Closing discovery channel")
+	log.Printf("[WAIT] ========== CLOSING DISCOVERY CHANNEL ==========")
 	close(cr.discoveryChannel)
+	log.Printf("[WAIT] Discovery channel closed")
 
 	// Step 3: Wait for the processor to finish draining the discovery channel
 	log.Printf("[WAIT] Waiting for processor to finish")
@@ -1447,4 +1449,3 @@ func inferResourceType(urlStr string) string {
 		return "other"
 	}
 }
-

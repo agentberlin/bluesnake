@@ -347,7 +347,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		})
 	}
 
-	// Set up URL discovery handler for categorization (analytics filtering only)
+	// Set up URL discovery handler for categorization
 	a.setupURLDiscoveryHandler(crawler)
 
 	// Add the starting URL to discovered URLs so it shows up in the UI immediately
@@ -572,4 +572,3 @@ func (a *App) setupURLDiscoveryHandler(crawler *bluesnake.Crawler) {
 		return bluesnake.URLActionCrawl
 	})
 }
-
