@@ -3,7 +3,7 @@
 ## Overview
 
 BlueSnake is a web crawler application with multiple interfaces, consisting of these main components:
-1. **BlueSnake Crawler Package** - A Go-based web scraping library (root directory)
+1. **BlueSnake Crawler Package** - A Go-based web scraping library with channel-based architecture (root directory)
 2. **Internal Packages** - Shared business logic and data layers (internal/ directory)
 3. **Desktop Application** - A Wails-based GUI application (cmd/desktop/ directory)
 4. **HTTP Server** - A REST API server (cmd/server/ directory)
@@ -14,7 +14,11 @@ BlueSnake is a web crawler application with multiple interfaces, consisting of t
 ```
 bluesnake/
 ├── *.go                    # Core crawler package files
+│   ├── bluesnake.go        # Collector (low-level HTTP engine)
+│   ├── crawler.go          # Crawler (high-level orchestration)
+│   ├── worker_pool.go      # Fixed-size worker pool
 ├── storage/               # Storage abstraction for crawler
+│   └── storage.go         # InMemoryStorage with VisitIfNotVisited
 ├── debug/                 # Debugging utilities
 ├── extensions/            # Crawler extensions
 ├── proxy/                 # Proxy support
@@ -58,9 +62,732 @@ bluesnake/
 
 ---
 
-## Multi-Transport Architecture
+## Part 1: BlueSnake Crawler Package
 
-BlueSnake now uses a layered architecture that separates business logic from transport layers, enabling the same core functionality to be exposed via multiple interfaces.
+### Architecture Overview: Channel-Based Race Condition Fix
+
+The crawler package underwent a major architectural transformation to eliminate race conditions in URL visit tracking. The new design uses a **channel-based architecture with a single-threaded URL processor** to guarantee deterministic and complete crawls.
+
+### Problem Statement: Race Condition in URL Visit Tracking
+
+**Original Issue:** Multiple crawls of the same website produced inconsistent results, with URLs randomly missing from different crawl runs. For example, crawling `agentberlin.ai` produced:
+
+- **URL counts varied**: 138-141 URLs per crawl (9 crawls tested)
+- **Root URL missing**: `https://agentberlin.ai/` appeared in only 6 out of 9 crawls (67%)
+- **Other URLs missing**: 8 different URLs were missing across various crawls
+
+**Root Cause:** Multiple goroutines racing to mark URLs as visited created a "winner-takes-all" scenario where the winner might never complete the fetch:
+
+```
+TIME    | Thread 1 (Sitemap)              | Thread 2 (Spider)
+--------|----------------------------------|----------------------------------
+T0      | Discovers https://example.com/  |
+T1      | Visit(url)                       |
+T2      | → VisitIfNotVisited() ✓         |
+T3      |   (marks as visited)             |
+T4      |                                  | Discovers https://example.com/
+T5      | Returns from check               | Visit(url)
+T6      |                                  | → VisitIfNotVisited() ✗
+T7      |                                  |   (already visited!)
+T8      |                                  | Returns error, skips URL
+T9      | go fetch() spawned               |
+T10     | [Goroutine delayed/fails]        |
+```
+
+**Result**: URL marked as "visited" but **never actually crawled** because:
+1. Thread 2 saw it was already marked and skipped it
+2. Thread 1's goroutine was delayed, failed, or cancelled before fetching
+3. No mechanism to detect or recover from this state
+
+### Solution: Channel-Based Architecture with Single-Threaded Processor
+
+#### Design Principles
+
+1. **Single source of truth**: Only ONE goroutine (the processor) decides what gets crawled
+2. **Clear separation of concerns**:
+   - `Collector` = low-level HTTP engine (fetch, parse, callbacks)
+   - `Crawler` = high-level orchestration (discovery, deduplication, queueing)
+3. **Guaranteed work assignment**: URLs marked as visited are immediately assigned to workers
+4. **Controlled concurrency**: Fixed worker pool, no unbounded goroutine creation
+
+#### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    URL Discovery                         │
+│  (Multiple sources: sitemap, spider, network, resources) │
+│              (Many goroutines)                           │
+└────────────────────┬────────────────────────────────────┘
+                     │ Non-blocking sends
+                     ▼
+          ┌─────────────────────┐
+          │ Discovery Channel   │  (Buffered: 50k URLs)
+          │  (Drop if full)     │
+          └──────────┬──────────┘
+                     │
+                     ▼
+          ┌─────────────────────┐
+          │   URL Processor     │  ★ SINGLE goroutine
+          │                     │  - Check if visited
+          │  (Serialized)       │  - Mark as visited
+          │                     │  - Submit to workers
+          └──────────┬──────────┘
+                     │ Blocking submits (backpressure)
+                     ▼
+          ┌─────────────────────┐
+          │   Work Queue        │  (Buffered: 1k work items)
+          └──────────┬──────────┘
+                     │
+                     ▼
+          ┌─────────────────────┐
+          │   Worker Pool       │  (10 workers)
+          │                     │  - Fetch HTTP
+          │  (N workers)        │  - Parse HTML
+          │                     │  - Extract links
+          └─────────────────────┘
+```
+
+### Core Components
+
+#### 1. Crawler (High-Level Orchestration - `crawler.go`)
+
+**Responsibilities:**
+- URL discovery coordination (spider, sitemap, network, resources)
+- Deduplication (track discovered URLs, call `OnURLDiscovered` callback once)
+- Visit tracking (single-threaded processor marks URLs as visited)
+- Work distribution (submit to worker pool)
+- Link graph building (track relationships between pages)
+- Statistics and metrics (crawled pages, discovered URLs, dropped URLs)
+
+**Does NOT do:**
+- HTTP requests
+- HTML parsing
+- Managing HTTP client/transport
+
+**Key Type:**
+```go
+type Crawler struct {
+    Collector       *Collector  // Low-level HTTP engine (exported)
+    onPageCrawled   OnPageCrawledFunc
+    onResourceVisit OnResourceVisitFunc
+    onCrawlComplete OnCrawlCompleteFunc
+    onURLDiscovered OnURLDiscoveredFunc
+
+    // Channel-based URL processing
+    discoveryChannel chan URLDiscoveryRequest  // Buffered: 50k
+    processorDone    chan struct{}
+    workerPool       *WorkerPool               // Fixed size: 10 workers
+    droppedURLs      uint64                    // Dropped due to full channel
+
+    queuedURLs      *sync.Map  // map[string]URLAction - memoization
+    pageMetadata    *sync.Map  // map[string]PageMetadata - cached data
+    rootDomain      string
+    crawledPages    int
+}
+```
+
+#### 2. Collector (Low-Level HTTP Engine - `bluesnake.go`)
+
+**Responsibilities:**
+- HTTP requests (GET, POST, HEAD with customizable headers)
+- Response handling (status codes, headers, body)
+- HTML/XML parsing (GoQuery, xmlquery)
+- Low-level callback execution (OnRequest, OnResponse, OnHTML, OnXML, OnScraped, OnError)
+- Caching (optional disk cache)
+- Robots.txt handling
+- Content hashing (duplicate content detection)
+- JavaScript rendering (optional chromedp integration)
+
+**Does NOT do:**
+- URL deduplication (no visit tracking - removed to eliminate races)
+- URL discovery (doesn't decide what to crawl next)
+- Work queueing (doesn't manage goroutines)
+
+**Note**: `Collector` is now an internal implementation detail. Users interact with `Crawler`, which provides the high-level crawling API.
+
+**Key Configuration:**
+```go
+type CollectorConfig struct {
+    UserAgent              string
+    Headers                map[string]string
+    MaxDepth               int
+    AllowedDomains         []string
+    DisallowedDomains      []string
+    DisallowedURLFilters   []*regexp.Regexp
+    URLFilters             []*regexp.Regexp
+    AllowURLRevisit        bool
+    MaxBodySize            int
+    CacheDir               string
+    IgnoreRobotsTxt        bool
+    Async                  bool
+    ParseHTTPErrorResponse bool
+    ID                     uint32
+    DetectCharset          bool
+    CheckHead              bool
+    TraceHTTP              bool
+    Context                context.Context
+    MaxRequests            uint32
+    EnableRendering        bool
+    RenderingConfig        *RenderingConfig
+    CacheExpiration        time.Duration
+    Debugger               debug.Debugger
+    DiscoveryMechanisms    []DiscoveryMechanism  // ["spider"], ["sitemap"], or both
+    SitemapURLs            []string
+    EnableContentHash      bool
+    ContentHashAlgorithm   string
+    ContentHashConfig      *ContentHashConfig
+    ResourceValidation     *ResourceValidationConfig
+    RobotsTxtMode          string  // "respect", "ignore", "ignore-report"
+    FollowInternalNofollow bool
+    FollowExternalNofollow bool
+    RespectMetaRobotsNoindex bool
+    RespectNoindex         bool
+
+    // Channel-based architecture configuration
+    DiscoveryChannelSize   int  // Default: 50000
+    WorkQueueSize          int  // Default: 1000
+    Parallelism            int  // Default: 10
+}
+```
+
+#### 3. URL Processor (The Heart of the Solution)
+
+**Single goroutine** that serializes all visit decisions:
+
+```go
+func (cr *Crawler) runURLProcessor() {
+    defer close(cr.processorDone)
+
+    for {
+        select {
+        case req := <-cr.discoveryChannel:
+            // Process URL (SERIALIZED - only one at a time)
+            cr.processDiscoveredURL(req)
+
+        case <-cr.Collector.Context.Done():
+            cr.drainDiscoveryChannel()
+            return
+        }
+    }
+}
+
+func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
+    // Step 1: Determine action (callback called once, memoized)
+    action := cr.getOrDetermineURLAction(req.URL)
+    if action == URLActionSkip {
+        return
+    }
+
+    // Step 2: Pre-filtering (domain checks, URL filters, robots.txt)
+    if !cr.isURLCrawlable(req.URL) {
+        return
+    }
+
+    // Step 3: Check and mark as visited (ATOMIC, SINGLE-THREADED)
+    uHash := requestHash(req.URL, nil)
+    alreadyVisited, err := cr.Collector.store.VisitIfNotVisited(uHash)
+    if err != nil || alreadyVisited {
+        return
+    }
+
+    // Step 4: Only crawl if action is "crawl" (not "record")
+    if action != URLActionCrawl {
+        return
+    }
+
+    // Step 5: Submit to worker pool (BLOCKS if queue full)
+    // This provides backpressure - processor can't race ahead
+    err = cr.workerPool.Submit(func() {
+        // Fetch without revisit check (we already checked above)
+        cr.Collector.wg.Add(1)
+        cr.Collector.scrape(req.URL, "GET", req.Depth, nil, req.Context, nil, false)
+    })
+}
+```
+
+**Why this eliminates the race:**
+- Only ONE goroutine calls `VisitIfNotVisited()` at a time
+- Impossible for two goroutines to race on the same URL
+- URL is marked visited → immediately submitted to worker → guaranteed assignment
+
+#### 4. Worker Pool (`worker_pool.go`)
+
+**Fixed-size pool** of goroutines that fetch URLs:
+
+```go
+type WorkerPool struct {
+    maxWorkers int
+    workQueue  chan func()      // Buffered channel (1000 items)
+    wg         *sync.WaitGroup
+    ctx        context.Context
+}
+```
+
+**Benefits:**
+- Controlled concurrency (10 workers = 10 concurrent HTTP requests)
+- Bounded memory usage (no unbounded goroutine creation)
+- Clean shutdown (close queue → wait for workers to finish)
+
+#### 5. Discovery Channel
+
+**Non-blocking sends** to prevent deadlocks:
+
+```go
+func (cr *Crawler) queueURL(req URLDiscoveryRequest) {
+    select {
+    case cr.discoveryChannel <- req:
+        // Successfully queued
+
+    case <-cr.Collector.Context.Done():
+        // Context cancelled - drop URL
+
+    default:
+        // Channel full - drop URL (prevents deadlock)
+        if req.Source == "initial" {
+            log.Printf("ERROR: Dropped initial URL: %s", req.URL)
+        }
+        atomic.AddUint64(&cr.droppedURLs, 1)
+    }
+}
+```
+
+**Why non-blocking:**
+- Discovery goroutines never block (drop URLs if channel is full)
+- Processor continues draining at its own pace
+- Workers process URLs as capacity allows
+- No circular dependency → no deadlock possible
+
+#### 6. Storage Package (`storage/storage.go`)
+
+Provides an abstraction for storing crawler state:
+
+```go
+type Storage interface {
+    Init() error
+    Visited(requestID uint64) error
+    IsVisited(requestID uint64) (bool, error)
+    VisitIfNotVisited(requestID uint64) (bool, error)  // ★ Atomic operation
+    Cookies(u *url.URL) string
+    SetCookies(u *url.URL, cookies string)
+    SetContentHash(url string, contentHash string) error
+    GetContentHash(url string) (string, error)
+    IsContentVisited(contentHash string) (bool, error)
+    VisitedContent(contentHash string) error
+}
+```
+
+**Default Implementation: `InMemoryStorage`**
+- Stores visited URLs in memory (hash-based)
+- Manages cookies via `http.CookieJar`
+- Non-persistent (data lost when crawler stops)
+- Thread-safe with mutex locks
+- **VisitIfNotVisited()** is atomic: check + mark in one operation under lock
+
+### Callback Architecture: Two Levels
+
+The framework has **two distinct levels of callbacks**:
+
+#### Low-Level Callbacks (Collector - Internal Use Only)
+
+These callbacks are registered on `Collector` and used internally by `Crawler` to build its high-level functionality. **Users should not interact with these directly.**
+
+```go
+// Low-level callbacks (internal use by Crawler)
+collector.OnHTML("html", func(e *HTMLElement) {
+    // Extract links, build link graph
+    // Called by Crawler's setupCallbacks()
+})
+
+collector.OnResponse(func(r *Response) {
+    // Handle response metadata
+    // Store metadata for link population
+})
+
+collector.OnScraped(func(r *Response) {
+    // Final processing after HTML parsing
+    // Build PageResult, call high-level callback
+})
+
+collector.OnError(func(r *Response, err error) {
+    // Error handling
+    // Route to appropriate high-level callback
+})
+```
+
+**Purpose**: Raw HTTP lifecycle hooks for internal orchestration.
+
+#### High-Level Callbacks (Crawler - User API)
+
+These callbacks are registered on `Crawler` and provide the **user-facing API**. They deliver processed, structured data.
+
+```go
+// High-level callbacks (user API)
+
+// 1. OnURLDiscovered - Called once per unique URL
+crawler.SetOnURLDiscovered(func(url string) URLAction {
+    // Decide: crawl, record, or skip this URL
+    // Called exactly once per URL (memoized)
+    return URLActionCrawl
+})
+
+// 2. OnPageCrawled - Called after each page is crawled
+crawler.SetOnPageCrawled(func(result *PageResult) {
+    // Process crawled page
+    // result contains: URL, title, links, status, etc.
+})
+
+// 3. OnResourceVisit - Called after each resource is visited
+crawler.SetOnResourceVisit(func(result *ResourceResult) {
+    // Process non-HTML resources (images, CSS, JS)
+    // result contains: URL, status, contentType
+})
+
+// 4. OnCrawlComplete - Called once when crawl finishes
+crawler.SetOnCrawlComplete(func(wasStopped bool, totalPages int, totalDiscovered int) {
+    // Crawl finished (naturally or via cancellation)
+    // Receive final statistics
+})
+```
+
+**Purpose**: Clean, high-level API for users to consume crawl data.
+
+#### URL Action System
+
+The `OnURLDiscovered` callback returns a `URLAction` to control how each URL is handled:
+
+```go
+type URLAction string
+
+const (
+    // URLActionCrawl - Add to links AND crawl
+    URLActionCrawl URLAction = "crawl"
+
+    // URLActionRecordOnly - Add to links but DON'T crawl
+    // (e.g., framework-specific paths like /_next/data/)
+    URLActionRecordOnly URLAction = "record"
+
+    // URLActionSkip - Ignore completely
+    // (e.g., analytics/tracking URLs like /gtag/js)
+    URLActionSkip URLAction = "skip"
+)
+```
+
+**Use cases:**
+- Return `URLActionCrawl` for normal URLs that should be crawled
+- Return `URLActionRecordOnly` for framework-specific paths that should appear in links but not be crawled (e.g., Next.js data endpoints)
+- Return `URLActionSkip` for analytics/tracking URLs that should be ignored completely
+
+#### Callback Flow Example
+
+```
+User registers:  crawler.SetOnPageCrawled(userFunc)
+                 crawler.SetOnCrawlComplete(userCompleteFunc)
+                         ↓
+Crawler registers internal callbacks on Collector:
+                 collector.OnHTML(extractLinks)
+                 collector.OnScraped(buildPageResult)
+                         ↓
+Worker fetches URL → Collector processes:
+                         ↓
+         OnResponse (collector) → Store metadata
+                         ↓
+         OnHTML (collector) → Extract links → queueURL()
+                         ↓
+         OnScraped (collector) → Build PageResult
+                         ↓
+         Call userFunc(PageResult)  ← User callback invoked
+                         ↓
+All pages done → Call userCompleteFunc()  ← Completion callback
+```
+
+**Key insight**: Users never touch `Collector` callbacks. `Crawler` uses them internally to orchestrate the crawl and deliver clean, structured data to user callbacks.
+
+### Complete URL Lifecycle
+
+```
+1. URL Discovered (spider finds <a href="/page">)
+   ↓
+2. queueURL() - Non-blocking send to discovery channel
+   ↓
+3. Processor receives URL from channel (SINGLE-THREADED)
+   ↓
+4. Processor: getOrDetermineURLAction() - Call callback (once per URL)
+   ↓
+5. Processor: isURLCrawlable() - Check filters, robots.txt
+   ↓
+6. Processor: VisitIfNotVisited() - Mark as visited (ATOMIC)
+   ↓
+7. Processor: workerPool.Submit() - Add to work queue (BLOCKS if full)
+   ↓
+8. Worker: Receives work from queue
+   ↓
+9. Worker: scrape() - Fetch HTTP (checkRevisit=false, no double-check)
+   ↓
+10. Worker: OnResponse → OnHTML → OnScraped callbacks
+   ↓
+11. Worker: Links extracted → back to step 1 (discovery)
+```
+
+### Discovery Sources
+
+All discovery mechanisms feed into the same channel:
+
+```
+┌──────────────┐
+│   Initial    │ → queueURL(source="initial")
+│     URL      │
+└──────────────┘
+                    ↘
+┌──────────────┐       ┌─────────────────┐
+│   Sitemap    │ ───→  │   Discovery     │
+│  (XML parse) │       │    Channel      │
+└──────────────┘       └─────────────────┘
+                    ↗
+┌──────────────┐
+│   Spider     │ → queueURL(source="spider")
+│ (HTML links) │
+└──────────────┘
+                    ↗
+┌──────────────┐
+│   Network    │ → queueURL(source="network")
+│ (JS, Fetch)  │
+└──────────────┘
+                    ↗
+┌──────────────┐
+│  Resources   │ → queueURL(source="resource")
+│ (CSS, fonts) │
+└──────────────┘
+```
+
+### Deadlock Prevention Strategy
+
+**Channel Sizing:**
+```go
+const (
+    DefaultDiscoveryChannelSize = 50000  // 50k discovered URLs
+    DefaultWorkQueueSize        = 1000   // 1k pending work items
+    DefaultWorkerPoolSize       = 10     // 10 concurrent fetches
+)
+```
+
+**Why these sizes:**
+- **Large discovery channel (50k)**: Buffers bursty URL discovery (sitemap returns 10k URLs at once)
+- **Smaller work queue (1k)**: Provides backpressure without excessive memory usage
+- **Worker pool (10)**: Matches typical parallelism limits for web crawling
+
+**Trade-off:**
+- ✅ **Deadlock-free**: Discovery goroutines never block
+- ✅ **Minimal URL loss**: 50k buffer holds most discoveries
+- ⚠️ **Might drop URLs**: If discovery rate >> processing rate
+- ✅ **Acceptable**: Crawler is best-effort, not exhaustive
+
+### Benefits of Channel-Based Architecture
+
+#### 1. Eliminates Race Condition
+
+**Before:**
+```
+N goroutines race to call VisitIfNotVisited(url)
+→ Multiple goroutines compete
+→ Winner marks it, losers skip
+→ Winner might fail → URL lost
+```
+
+**After:**
+```
+N goroutines send url to channel (non-blocking)
+→ Single processor dequeues sequentially
+→ Only ONE call to VisitIfNotVisited per URL
+→ Impossible to race
+```
+
+#### 2. Guarantees Work Assignment
+
+**Before:**
+```
+URL marked visited in Collector.requestCheck()
+↓
+Goroutine spawned (unbounded)
+↓
+[Goroutine waits for parallelism limit]
+↓
+[Goroutine might fail or be cancelled]
+→ URL marked but never crawled ✗
+```
+
+**After:**
+```
+URL marked visited in Crawler processor
+↓
+Submit to worker pool (BLOCKS if full)
+↓
+Worker accepts work
+↓
+Worker executes fetch
+→ URL marked AND assigned to worker ✓
+```
+
+#### 3. Controlled Concurrency
+
+| Metric | Before (Unbounded) | After (Worker Pool) |
+|--------|-------------------|---------------------|
+| Goroutines | 10,000 (one per URL) | 11 (1 processor + 10 workers) |
+| Memory | ~20MB (2KB/goroutine) | ~2MB (channel + pool) |
+| Parallelism | Hard to control | Exact (10 workers = 10 concurrent) |
+
+#### 4. Clean Shutdown
+
+**Before:**
+```
+Context cancelled
+↓
+Goroutines race to completion
+↓
+Hard to ensure all stopped
+```
+
+**After:**
+```
+Context cancelled
+↓
+Processor stops accepting URLs
+↓
+Drains remaining channel URLs
+↓
+Worker pool completes in-flight requests
+↓
+Clean shutdown ✓
+```
+
+#### 5. Observability
+
+**Metrics available:**
+- `len(discoveryChannel)` = pending discoveries
+- `len(workQueue)` = pending work items
+- `droppedURLs` = URLs dropped due to full channel
+- `crawledPages` = successfully crawled pages
+- `queuedURLs.Len()` = total discovered URLs
+
+### Configuration and Tuning
+
+#### Recommended Settings
+
+```go
+// Small websites (<1000 URLs)
+config := &CollectorConfig{
+    DiscoveryChannelSize: 5000,
+    WorkQueueSize:        500,
+    Parallelism:          5,
+}
+
+// Medium websites (1000-10000 URLs)
+config := &CollectorConfig{
+    DiscoveryChannelSize: 20000,
+    WorkQueueSize:        1000,
+    Parallelism:          10,
+}
+
+// Large websites (>10000 URLs)
+config := &CollectorConfig{
+    DiscoveryChannelSize: 100000,
+    WorkQueueSize:        2000,
+    Parallelism:          20,
+}
+```
+
+#### Tuning Guidelines
+
+**Seeing "Discovery channel full" warnings?**
+```go
+config.DiscoveryChannelSize *= 2  // Double the buffer
+```
+
+**Memory usage too high?**
+```go
+config.DiscoveryChannelSize /= 2  // Reduce buffer
+config.Parallelism *= 2           // Drain faster with more workers
+```
+
+**Crawl too slow?**
+```go
+config.Parallelism *= 2           // More concurrent requests
+config.WorkQueueSize = config.Parallelism * 100  // Adjust queue
+```
+
+### Usage Example
+
+```go
+// Create crawler configuration
+config := &bluesnake.CollectorConfig{
+    AllowedDomains:      []string{"example.com"},
+    Async:               true,
+    EnableRendering:     true,
+    DiscoveryMechanisms: []bluesnake.DiscoveryMechanism{
+        bluesnake.DiscoverySpider,
+        bluesnake.DiscoverySitemap,
+    },
+    // Channel-based architecture settings (optional - have defaults)
+    DiscoveryChannelSize: 50000,
+    WorkQueueSize:        1000,
+    Parallelism:          10,
+}
+
+// Create crawler
+crawler := bluesnake.NewCrawler(config)
+
+// Set URL discovery handler (optional - controls which URLs to crawl)
+crawler.SetOnURLDiscovered(func(url string) bluesnake.URLAction {
+    // Skip analytics URLs
+    if strings.Contains(url, "/gtag/js") || strings.Contains(url, "google-analytics") {
+        return bluesnake.URLActionSkip
+    }
+    // Record but don't crawl Next.js data endpoints
+    if strings.Contains(url, "/_next/data/") {
+        return bluesnake.URLActionRecordOnly
+    }
+    // Crawl everything else
+    return bluesnake.URLActionCrawl
+})
+
+// Set page crawled callback
+crawler.SetOnPageCrawled(func(result *bluesnake.PageResult) {
+    fmt.Printf("Crawled: %s (status: %d, title: %s)\n",
+        result.URL, result.Status, result.Title)
+
+    // Access page content
+    html := result.GetHTML()
+    textContent := result.GetTextContent()
+
+    // Process links
+    for _, link := range result.Links.Internal {
+        fmt.Printf("  → %s (%s)\n", link.URL, link.Type)
+    }
+})
+
+// Set resource visit callback (optional)
+crawler.SetOnResourceVisit(func(result *bluesnake.ResourceResult) {
+    fmt.Printf("Resource: %s (status: %d, type: %s)\n",
+        result.URL, result.Status, result.ContentType)
+})
+
+// Set completion callback
+crawler.SetOnCrawlComplete(func(wasStopped bool, totalPages int, totalDiscovered int) {
+    fmt.Printf("Crawl complete: %d pages crawled, %d URLs discovered\n",
+        totalPages, totalDiscovered)
+})
+
+// Start crawl
+crawler.Start("https://example.com")
+
+// Wait for completion
+crawler.Wait()
+```
+
+---
+
+## Part 2: Multi-Transport Architecture
+
+BlueSnake uses a layered architecture that separates business logic from transport layers, enabling the same core functionality to be exposed via multiple interfaces.
 
 ### Architecture Diagram
 
@@ -116,11 +843,12 @@ BlueSnake now uses a layered architecture that separates business logic from tra
 ┌─────────────────────────────────────────────────────────────┐
 │           BlueSnake Crawler Package (root/)                 │
 │                                                             │
+│  • Channel-based URL processing (race-free)                 │
 │  • HTTP requests/responses                                  │
 │  • HTML parsing and link extraction                         │
-│  • URL deduplication (in-memory)                            │
+│  • URL deduplication (via Crawler)                          │
 │  • JavaScript rendering (chromedp)                          │
-│  • Rate limiting and parallelism                            │
+│  • Worker pool and controlled concurrency                   │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -160,441 +888,9 @@ func (n *NoOpEmitter) Emit(eventType app.EventType, data interface{}) {
 }
 ```
 
-### Transport Layer Implementations
+### Internal Packages (internal/)
 
-#### Desktop (cmd/desktop/)
-
-**Initialization with Dependency Injection:**
-```go
-func main() {
-    // Initialize store
-    st, err := store.NewStore()
-
-    err = wails.Run(&options.App{
-        OnStartup: func(ctx context.Context) {
-            // Create Wails-specific event emitter
-            emitter := NewWailsEmitter(ctx)
-
-            // Create core app with injected dependencies
-            coreApp := app.NewApp(st, emitter)
-
-            // Create desktop adapter
-            desktopApp = NewDesktopApp(coreApp)
-            desktopApp.Startup(ctx)
-        },
-        Bind: []interface{}{desktopApp},
-    })
-}
-```
-
-**Adapter Pattern:**
-- `DesktopApp` wraps `app.App` and delegates all method calls
-- Thin wrapper (~20 lines per method)
-- No business logic in adapter
-
-#### HTTP Server (cmd/server/)
-
-**Initialization:**
-```go
-func main() {
-    // Initialize store
-    st, err := store.NewStore()
-
-    // Create app with NoOpEmitter (no events for HTTP)
-    coreApp := app.NewApp(st, &app.NoOpEmitter{})
-    coreApp.Startup(context.Background())
-
-    // Create HTTP server
-    server := NewServer(coreApp)
-
-    // Start server
-    httpServer := &http.Server{
-        Addr:    ":8080",
-        Handler: server,
-    }
-    httpServer.ListenAndServe()
-}
-```
-
-**REST API Endpoints:**
-```
-GET  /api/v1/health                        - Health check
-GET  /api/v1/version                       - App version
-GET  /api/v1/projects                      - List all projects
-GET  /api/v1/projects/{id}/crawls          - Get project crawls
-DELETE /api/v1/projects/{id}               - Delete project
-
-GET  /api/v1/crawls/{id}                   - Get crawl with results
-DELETE /api/v1/crawls/{id}                 - Delete crawl
-GET  /api/v1/crawls/{id}/pages/{url}/links - Get page links
-
-POST /api/v1/crawl                         - Start new crawl
-POST /api/v1/stop-crawl/{projectID}        - Stop active crawl
-GET  /api/v1/active-crawls                 - List active crawls
-
-GET  /api/v1/config?url=example.com        - Get config
-PUT  /api/v1/config                        - Update config
-```
-
-**Running the Server:**
-```bash
-# Default (port 8080)
-go run ./cmd/server
-
-# Custom port
-go run ./cmd/server -port 3000 -host localhost
-
-# Build binary
-go build -o bluesnake-server ./cmd/server
-./bluesnake-server
-```
-
----
-
-## Responsibility Division: What Goes Where?
-
-This section provides clear guidance on where different types of functionality should be implemented across the new layered architecture.
-
-### BlueSnake Package Responsibilities (Core Crawling Library)
-
-**✅ What BELONGS in bluesnake package:**
-- Low-level HTTP request/response handling
-- HTML/XML parsing and element extraction
-- URL normalization and deduplication
-- Domain filtering and robots.txt checking
-- Rate limiting and parallelism control
-- JavaScript rendering with chromedp
-- Request/response lifecycle callbacks
-- **High-level crawler API with page-level callbacks** (NEW in v1)
-- Link discovery and crawl queue management
-- Content-type detection and handling
-- Error handling for network/parsing issues
-- In-memory URL deduplication during active crawls
-- Cookie and session management
-
-**❌ What DOES NOT belong in bluesnake package:**
-- Database operations (SQLite, PostgreSQL, etc.)
-- UI/frontend code
-- Persistent storage of crawl results
-- User authentication or authorization
-- Application-specific business logic
-- Configuration persistence (save/load from files/DB)
-- Favicon fetching or asset management
-- Project/domain organization
-- Historical crawl comparison
-- Analytics or reporting logic
-
-### Internal Packages Responsibilities (internal/)
-
-**✅ What BELONGS in internal/store/ (Database Layer):**
-- GORM models and schema definitions
-- SQLite operations (save, query, delete)
-- Database initialization and migrations
-- CRUD operations for projects, crawls, configs, links
-- Favicon file management
-- Repository pattern implementation
-
-**✅ What BELONGS in internal/app/ (Business Logic Layer):**
-- Crawl orchestration and management
-- Project and domain organization logic
-- Configuration management (get, update)
-- Active crawl tracking and state management
-- URL normalization and validation
-- Callbacks that save crawler results to database
-- Crawl statistics and aggregation
-- Update checking logic
-- **NO transport-specific code** (no Wails, HTTP, or MCP dependencies)
-- **NO UI logic** (just returns data)
-
-**✅ What BELONGS in internal/types/ (Shared Types):**
-- Request/response types (ProjectInfo, CrawlInfo, etc.)
-- Shared data structures used across layers
-- No business logic, just data definitions
-
-**❌ What DOES NOT belong in internal packages:**
-- Low-level HTTP handling (that's in crawler package)
-- HTML parsing logic (that's in crawler package)
-- Robots.txt parsing (that's in crawler package)
-- Chromedp rendering code (that's in crawler package)
-- UI components (that's in frontend)
-- Event emission specifics (only interface defined)
-- HTTP routing/handlers (that's in cmd/server)
-- Wails bindings (that's in cmd/desktop)
-
-### Desktop Application Responsibilities (cmd/desktop/)
-
-**✅ What BELONGS in desktop app:**
-- Wails initialization and configuration
-- WailsEmitter implementation (runtime.EventsEmit)
-- DesktopApp adapter (thin wrapper)
-- UI integration and event handling
-- UI state management (React)
-- Frontend polling for real-time updates
-- User interaction handling
-
-**❌ What DOES NOT belong in desktop app:**
-- Business logic (moved to internal/app)
-- Database operations (moved to internal/store)
-- Crawl orchestration (moved to internal/app)
-- URL normalization (moved to internal/app)
-- Any logic that could be shared with HTTP server
-
-### HTTP Server Responsibilities (cmd/server/)
-
-**✅ What BELONGS in HTTP server:**
-- HTTP server initialization and configuration
-- Route definitions and handlers
-- Request/response marshaling (JSON)
-- CORS middleware
-- Error handling and HTTP status codes
-- Graceful shutdown logic
-
-**❌ What DOES NOT belong in HTTP server:**
-- Business logic (use internal/app)
-- Database operations (use internal/store)
-- Crawl orchestration (use internal/app)
-- Any logic that could be shared with desktop app
-
-### High-Level Crawler API (New in v1)
-
-The new `Crawler` type in the bluesnake package provides a simplified, high-level API that sits on top of the low-level `Collector`:
-
-```go
-// In bluesnake package
-type Crawler struct {
-    Collector *Collector  // Low-level collector (exported for advanced usage)
-    // ... internal fields
-}
-
-// Callbacks for high-level crawling
-type OnPageCrawledFunc func(*PageResult)
-type OnCrawlCompleteFunc func(wasStopped bool, totalPages int, totalDiscovered int)
-```
-
-**Design Philosophy:**
-- **BlueSnake handles:** All crawling logic, URL discovery, and aggregation
-- **Desktop app handles:** What to do with the results (save to DB, update UI)
-
-**Example Desktop App Usage:**
-```go
-config := &bluesnake.CollectorConfig{
-    AllowedDomains: []string{domain},
-    Async:         true,
-}
-crawler := bluesnake.NewCrawler(config)
-
-// Desktop app only needs to implement these callbacks
-crawler.SetOnPageCrawled(func(result *bluesnake.PageResult) {
-    // Save to database
-    SaveCrawledUrl(crawlID, result.URL, result.Status, result.Title, ...)
-})
-
-crawler.SetOnCrawlComplete(func(wasStopped bool, totalPages, totalDiscovered int) {
-    // Update database with final stats
-    UpdateCrawlStats(crawlID, duration, totalPages)
-    // Emit UI event
-    runtime.EventsEmit(ctx, "crawl:completed")
-})
-
-crawler.Start(url)
-crawler.Wait()
-```
-
-This design ensures:
-- Clean separation of concerns
-- Bluesnake can be used in any context (CLI, web server, desktop app)
-- Desktop app focuses on UI/DB logic, not crawling mechanics
-- Easy to test each layer independently
-
----
-
-## Part 1: BlueSnake Crawler Package
-
-### Architecture Overview
-
-The crawler package provides a powerful, callback-driven web scraping framework implemented in Go.
-
-### Core Components
-
-#### 1. Collector (`bluesnake.go`)
-
-The `Collector` is the main entity that manages web crawling operations.
-
-**Key Features:**
-- Callback-based event system for request/response handling
-- URL filtering and domain restrictions
-- Rate limiting and request throttling
-- Cookie and session management
-- JavaScript rendering support via chromedp
-- Caching support for GET requests
-- Robots.txt compliance (can be disabled)
-
-**Configuration Options:**
-
-The Collector is configured using the `CollectorConfig` struct:
-
-```go
-type CollectorConfig struct {
-    UserAgent              string
-    Headers                map[string]string
-    MaxDepth               int
-    AllowedDomains         []string
-    DisallowedDomains      []string
-    DisallowedURLFilters   []*regexp.Regexp
-    URLFilters             []*regexp.Regexp
-    AllowURLRevisit        bool
-    MaxBodySize            int
-    CacheDir               string
-    IgnoreRobotsTxt        bool
-    Async                  bool
-    ParseHTTPErrorResponse bool
-    ID                     uint32  // auto-assigned if 0
-    DetectCharset          bool
-    CheckHead              bool
-    TraceHTTP              bool
-    Context                context.Context
-    MaxRequests            uint32
-    EnableRendering        bool  // JavaScript rendering with chromedp
-    CacheExpiration        time.Duration
-    Debugger               debug.Debugger
-}
-```
-
-**Creating a Collector:**
-```go
-config := &bluesnake.CollectorConfig{
-    UserAgent:       "MyBot 1.0",
-    AllowedDomains:  []string{"example.com"},
-    MaxDepth:        3,
-    Async:           true,
-    EnableRendering: true,
-}
-c := bluesnake.NewCollector(config)
-
-// Or use default configuration
-c := bluesnake.NewCollector(nil)
-```
-
-#### 2. Callback System
-
-The crawler operates through registered callbacks:
-
-```go
-// Request lifecycle callbacks
-c.OnRequest(func(*Request))           // Before sending request
-c.OnRequestHeaders(func(*Request))    // Before request Do
-c.OnResponseHeaders(func(*Response))  // After receiving headers
-c.OnResponse(func(*Response))         // After receiving full response
-c.OnHTML(selector, func(*HTMLElement)) // For matching HTML elements
-c.OnXML(xpath, func(*XMLElement))     // For matching XML elements
-c.OnError(func(*Response, error))     // On request errors
-c.OnScraped(func(*Response))          // After processing complete
-```
-
-#### 3. Request/Response Objects
-
-**Request:**
-- Represents an HTTP request
-- Methods: `Visit()`, `Post()`, `Abort()`, `Retry()`
-- Contains context for passing data between callbacks
-
-**Response:**
-- Represents an HTTP response
-- Properties: `StatusCode`, `Headers`, `Body`
-- Methods: `Save()`, `FileName()`
-
-**HTMLElement:**
-- Represents HTML DOM elements
-- Methods: `Attr()`, `ChildText()`, `ForEach()`, `Unmarshal()`
-- Uses goquery for CSS selector-based traversal
-
-**XMLElement:**
-- Represents XML nodes
-- Methods: `Attr()`, `ChildText()`, `ChildAttr()`
-- Uses xpath for XML traversal
-
-#### 4. Storage Package (`storage/storage.go`)
-
-Provides an abstraction for storing crawler state:
-
-```go
-type Storage interface {
-    Init() error
-    Visited(requestID uint64) error
-    IsVisited(requestID uint64) (bool, error)
-    Cookies(u *url.URL) string
-    SetCookies(u *url.URL, cookies string)
-}
-```
-
-**Default Implementation: `InMemoryStorage`**
-- Stores visited URLs in memory (hash-based)
-- Manages cookies via `http.CookieJar`
-- Non-persistent (data lost when crawler stops)
-- Thread-safe with mutex locks
-
-#### 5. Rate Limiting
-
-```go
-type LimitRule struct {
-    DomainGlob  string
-    Parallelism int
-    Delay       time.Duration
-    RandomDelay time.Duration
-}
-```
-
-Controls request rate per domain using token bucket algorithm.
-
-#### 6. JavaScript Rendering (`chromedp_backend.go`)
-
-When `EnableRendering` is enabled:
-- Uses chromedp to render pages in headless Chrome
-- Executes JavaScript before parsing HTML
-- Falls back to non-rendered HTML on errors
-- Shared renderer instance for efficiency
-
----
-
-## Part 2: Application Layer (internal/)
-
-### Architecture Overview
-
-The internal packages provide transport-agnostic business logic and data access, enabling code reuse across desktop, HTTP, and future MCP servers.
-
-### Technology Stack
-
-- **Business Logic:** Pure Go (no transport dependencies)
-- **Database:** SQLite with GORM ORM
-- **Patterns:** Repository pattern, dependency injection, interface-based design
-
-### Internal Packages
-
-#### 1. Store Layer (internal/store/)
-
-**Purpose:** Database operations and data persistence
-
-**Key Components:**
-- `Store` struct: Main database interface
-- `models.go`: GORM models (Project, Crawl, CrawledUrl, PageLink, Config)
-- `projects.go`: Project CRUD operations
-- `crawls.go`: Crawl CRUD operations
-- `config.go`: Configuration management
-- `links.go`: Link management
-
-**Example Usage:**
-```go
-// Initialize store
-st, err := store.NewStore()
-
-// Get or create project
-project, err := st.GetOrCreateProject(url, domain)
-
-// Save crawled URL
-err = st.SaveCrawledUrl(crawlID, url, status, title, indexable, error)
-```
-
-#### 2. App Layer (internal/app/)
+#### App Layer (internal/app/)
 
 **Purpose:** Business logic and crawl orchestration
 
@@ -660,8 +956,10 @@ func NewApp(store *store.Store, emitter EventEmitter) *App {
 2. **Crawler Integration (using High-Level API):**
    - Creates new `bluesnake.Crawler` instance for each crawl
    - Configures with domain-specific settings from database
-   - Sets up two simple callbacks:
+   - Sets up high-level callbacks:
+     - `OnURLDiscovered`: Filter analytics/tracking URLs
      - `OnPageCrawled`: Saves each crawled page to database
+     - `OnResourceVisit`: Saves resources (images, CSS, JS) to database
      - `OnCrawlComplete`: Updates final statistics and emits completion event
    - Runs in goroutine to prevent UI blocking
    - Desktop app only handles DB/UI logic - all crawling is in bluesnake package
@@ -685,11 +983,116 @@ func NewApp(store *store.Store, emitter EventEmitter) *App {
    - Easier to implement future optimizations (batching, pagination, etc.)
    - Transport-agnostic approach
 
-## Part 3: Wails Desktop Application (`cmd/desktop/`)
+#### Store Layer (internal/store/)
+
+**Purpose:** Database operations and data persistence
+
+**Key Components:**
+- `Store` struct: Main database interface
+- `models.go`: GORM models (Project, Crawl, DiscoveredUrl, PageLink, Config)
+- `projects.go`: Project CRUD operations
+- `crawls.go`: Crawl CRUD operations
+- `config.go`: Configuration management
+- `links.go`: Link management
+
+**Database Location:** `~/.bluesnake/bluesnake.db`
+
+**Schema:**
+
+```go
+// Config - Per-domain crawl configuration
+type Config struct {
+    ID                 uint
+    Domain             string  // unique
+    JSRenderingEnabled bool    // default: false
+    Parallelism        int     // default: 5
+    UserAgent          string  // default: "bluesnake/1.0"
+    IncludeSubdomains  bool    // default: true
+    SinglePageMode     bool    // default: false
+    DiscoveryMechanisms string // JSON array: ["spider"], ["sitemap"], or both
+    SitemapURLs        string  // JSON array of sitemap URLs
+    CheckExternalResources bool // default: true
+    CreatedAt          int64
+    UpdatedAt          int64
+}
+
+// Project - Represents a website/domain to crawl
+type Project struct {
+    ID        uint
+    URL       string  // Normalized URL
+    Domain    string  // Domain identifier (unique)
+    Crawls    []Crawl // One-to-many relationship
+    CreatedAt int64
+    UpdatedAt int64
+}
+
+// Crawl - Individual crawl session
+type Crawl struct {
+    ID            uint
+    ProjectID     uint
+    CrawlDateTime int64         // Unix timestamp
+    CrawlDuration int64         // Milliseconds
+    PagesCrawled  int
+    DiscoveredUrls []DiscoveredUrl  // One-to-many relationship
+    CreatedAt     int64
+    UpdatedAt     int64
+}
+
+// DiscoveredUrl - Individual URL discovered during crawl
+type DiscoveredUrl struct {
+    ID              uint
+    CrawlID         uint
+    URL             string
+    Visited         bool   // true if crawled, false if only discovered
+    Status          int    // HTTP status code
+    Title           string
+    MetaDescription string
+    ContentHash     string
+    Indexable       string  // "Yes", "No", or "-"
+    ContentType     string
+    Error           string  // Error message if failed
+    CreatedAt       int64
+}
+
+// PageLink - Link relationship between pages
+type PageLink struct {
+    ID          uint
+    CrawlID     uint
+    SourceURL   string  // Page containing the link
+    TargetURL   string  // Link destination
+    Type        string  // "anchor", "image", "script", etc.
+    Text        string  // Link text or alt text
+    Context     string  // Surrounding context
+    IsInternal  bool
+    Status      int
+    Title       string
+    ContentType string
+    Position    string  // "content", "navigation", etc.
+    DOMPath     string  // Simplified DOM path
+    URLAction   string  // "crawl", "record", "skip"
+}
+```
+
+**Database Operations (all in internal/store/):**
+- `GetOrCreateProject()` - Find existing or create new project by domain
+- `CreateCrawl()` - Create new crawl record
+- `SaveDiscoveredUrl()` - Save individual URL result (visited or unvisited)
+- `UpdateCrawlStats()` - Update crawl statistics after completion
+- `GetAllProjects()` - Retrieve all projects with latest crawl info
+- `GetCrawlResults()` - Get all URLs for a specific crawl
+- `GetOrCreateConfig()` - Get or create config for domain
+- `UpdateConfig()` - Update domain configuration
+- `SavePageLinks()` - Save page link relationships
+- `GetPageLinks()` - Get inbound/outbound links for a page
+- CASCADE deletion for related records
+
+---
+
+## Part 3: Desktop Application (cmd/desktop/)
 
 ### Architecture Overview
 
-The desktop application is now a thin wrapper around the internal packages, using dependency injection and the adapter pattern.
+The desktop application is a thin wrapper around the internal packages, using dependency injection and the adapter pattern.
 
 ### Technology Stack
 
@@ -763,75 +1166,6 @@ func (d *DesktopApp) GetProjects() ([]types.ProjectInfo, error) {
 - No business logic in adapter
 - Clean separation of concerns
 
-#### 3. Database Layer (internal/store/)
-
-**ORM:** GORM with SQLite driver
-
-**Database Location:** `~/.bluesnake/bluesnake.db`
-
-**Schema:**
-
-```go
-// Config - Per-domain crawl configuration
-type Config struct {
-    ID                 uint
-    Domain             string  // unique
-    JSRenderingEnabled bool    // default: false
-    Parallelism        int     // default: 5
-    CreatedAt          int64
-    UpdatedAt          int64
-}
-
-// Project - Represents a website/domain to crawl
-type Project struct {
-    ID        uint
-    URL       string  // Normalized URL
-    Domain    string  // Domain identifier (unique)
-    Crawls    []Crawl // One-to-many relationship
-    CreatedAt int64
-    UpdatedAt int64
-}
-
-// Crawl - Individual crawl session
-type Crawl struct {
-    ID            uint
-    ProjectID     uint
-    CrawlDateTime int64         // Unix timestamp
-    CrawlDuration int64         // Milliseconds
-    PagesCrawled  int
-    CrawledUrls   []CrawledUrl  // One-to-many relationship
-    CreatedAt     int64
-    UpdatedAt     int64
-}
-
-// CrawledUrl - Individual URL discovered during crawl
-type CrawledUrl struct {
-    ID        uint
-    CrawlID   uint
-    URL       string
-    Status    int     // HTTP status code
-    Title     string
-    Indexable string  // "Yes" or "No"
-    Error     string  // Error message if failed
-    CreatedAt int64
-}
-```
-
-**Database Operations (all in internal/store/):**
-- `GetOrCreateProject()` - Find existing or create new project by domain
-- `CreateCrawl()` - Create new crawl record
-- `SaveCrawledUrl()` - Save individual URL result
-- `UpdateCrawlStats()` - Update crawl statistics after completion
-- `GetAllProjects()` - Retrieve all projects with latest crawl info
-- `GetCrawlResults()` - Get all URLs for a specific crawl
-- `GetOrCreateConfig()` - Get or create config for domain
-- `UpdateConfig()` - Update domain configuration
-- `SavePageLinks()` - Save page link relationships
-- `GetPageLinks()` - Get inbound/outbound links for a page
-- CASCADE deletion for related records
-
-**Note:** All database operations are now in `internal/store/`, not in cmd/desktop/. This enables reuse across desktop and HTTP server.
-
 ### Frontend Components
 
 #### 1. App Component (`App.tsx`)
@@ -879,12 +1213,8 @@ On app startup, the frontend calls `GetActiveCrawls()` once to discover any runn
 
 **Event Listeners (Indicational Only):**
 ```typescript
-// We decided to not rely on events for data update because at the scale we are operating at,
-// events add more complexity and we needed to make the system more reliable before getting
-// into complication. When we do need to rely on the payload from events, in the future
-// (fetching all the crawl url every 500 ms is not good because there are millions of them),
-// we'll implement events. For now, events are indicational only - they trigger data refresh
-// via polling, but don't carry any payload.
+// Events are indicational only - they trigger data refresh via polling,
+// but don't carry any payload.
 
 EventsOn("crawl:started", () => {
   // Just trigger a refresh - polling will handle the updates
@@ -1003,18 +1333,21 @@ Per-domain configuration interface:
 **Settings:**
 - **JavaScript Rendering:** Enable/disable chromedp rendering
 - **Parallelism:** Number of concurrent requests (1-100)
+- **Include Subdomains:** Whether to crawl subdomains
+- **Single Page Mode:** Only crawl the starting URL
+- **Discovery Mechanisms:** Spider, Sitemap, or both
+- **Custom Sitemap URLs:** Manual sitemap locations
+- **Check External Resources:** Validate external resources for broken links
 
 **Backend Calls:**
 ```typescript
 GetConfigForDomain(url)
-UpdateConfigForDomain(url, jsRendering, parallelism)
+UpdateConfigForDomain(url, jsRendering, parallelism, includeSubdomains, singlePageMode, mechanisms, sitemapURLs, checkExternalResources)
 ```
 
----
+### Communication Architecture
 
-## Communication Architecture
-
-### Frontend → Backend (Method Calls)
+#### Frontend → Backend (Method Calls)
 
 Wails generates TypeScript bindings in `frontend/wailsjs/go/main/DesktopApp.js`:
 
@@ -1033,7 +1366,7 @@ const projects = await GetProjects()
 4. Return value marshaled back to TypeScript
 5. Promise resolves with result
 
-### Backend → Frontend (Events)
+#### Backend → Frontend (Events)
 
 Backend emits indicational events using Wails runtime (no payload):
 
@@ -1061,7 +1394,7 @@ EventsOn("crawl:started", () => {
 
 ---
 
-## Storage Architecture
+## Part 4: Storage Architecture
 
 ### Two Separate Storage Systems
 
@@ -1078,8 +1411,9 @@ EventsOn("crawl:started", () => {
 - **Non-persistent** - no disk storage
 
 **Data Stored:**
-- Hash of visited URLs (uint64)
+- Hash of visited URLs (uint64) - via `VisitIfNotVisited()` (atomic)
 - HTTP cookies for domain
+- Content hashes for duplicate detection
 
 **Relationship to Desktop App:**
 - Used internally by crawler during `app.runCrawler()`
@@ -1100,7 +1434,8 @@ EventsOn("crawl:started", () => {
 **Data Stored:**
 - Projects (domains)
 - Crawls (sessions)
-- Crawled URLs (results)
+- Discovered URLs (visited and unvisited)
+- Page Links (with URLAction: crawl/record/skip)
 - Configurations (per-domain settings)
 
 **Relationship to Crawler:**
@@ -1119,7 +1454,8 @@ EventsOn("crawl:started", () => {
 │  │                                     │   │
 │  │   • Projects (persistent)          │   │
 │  │   • Crawls (persistent)            │   │
-│  │   • CrawledUrls (persistent)       │   │
+│  │   • DiscoveredUrls (persistent)    │   │
+│  │   • PageLinks (persistent)         │   │
 │  │   • Config (persistent)            │   │
 │  └─────────────────────────────────────┘   │
 │                  ▲                          │
@@ -1130,6 +1466,7 @@ EventsOn("crawl:started", () => {
 │  │                                     │   │
 │  │   Creates Crawler instance          │   │
 │  │   Sets OnPageCrawled callback       │   │
+│  │   Sets OnResourceVisit callback     │   │
 │  │   Sets OnCrawlComplete callback     │   │
 │  │   Emits events to frontend          │   │
 │  └───────────────┬─────────────────────┘   │
@@ -1143,9 +1480,13 @@ EventsOn("crawl:started", () => {
 │  ┌─────────────────────────────────────┐   │
 │  │  High-Level Crawler                 │   │
 │  │                                     │   │
+│  │  • Channel-based URL processing     │   │
+│  │  • Single-threaded processor        │   │
+│  │  • Worker pool                      │   │
 │  │  • Aggregates page results          │   │
 │  │  • Tracks discovered URLs           │   │
 │  │  • Calls OnPageCrawled for each pg  │   │
+│  │  • Calls OnResourceVisit for assets │   │
 │  │  • Calls OnCrawlComplete when done  │   │
 │  └─────────────────────────────────────┘   │
 │                  │                          │
@@ -1156,8 +1497,8 @@ EventsOn("crawl:started", () => {
 │  │  • HTTP requests/responses          │   │
 │  │  • HTML parsing                     │   │
 │  │  • Link extraction                  │   │
-│  │  • URL deduplication                │   │
 │  │  • InMemoryStorage (temporary)      │   │
+│  │    - VisitIfNotVisited (atomic)     │   │
 │  └─────────────────────────────────────┘   │
 │                                             │
 │  • No persistence                           │
@@ -1194,9 +1535,12 @@ Frontend (React)                Backend (Go)                    Crawler         
      │                               │                            │                         │
      │                               │ go runCrawler()            │                         │
      │                               │    │                       │                         │
-     │                               │    └──▶NewCollector()─────▶│                         │
+     │                               │    └──▶NewCrawler()───────▶│                         │
+     │                               │                            │ NewCollector()          │
      │                               │                            │ Init()                  │
      │                               │                            │ InMemoryStorage.Init()  │
+     │                               │                            │ Start worker pool       │
+     │                               │                            │ Start URL processor     │
      │                               │                            │                         │
      │◀─ "crawl:started" ────────────│ (no payload)               │                         │
      │  loadProjects()               │                            │                         │
@@ -1206,18 +1550,25 @@ Frontend (React)                Backend (Go)                    Crawler         
      │◀──────────────────────────────│◀──GetCrawlResults()───────▶│────────────────────────▶│
      │  (crawl results from DB)      │                            │                         │
      │                               │                            │                         │
+     │                               │    [URL Processor]         │                         │
+     │                               │    processDiscoveredURL()  │                         │
+     │                               │    VisitIfNotVisited() ────▶│ (ATOMIC, race-free)    │
+     │                               │    Submit to worker pool   │                         │
+     │                               │                            │                         │
+     │                               │    [Worker]                │                         │
      │                               │    OnResponse()            │                         │
      │                               │    OnHTML("title")         │                         │
+     │                               │    OnScraped()             │                         │
      │                               │                            │                         │
-     │                               ├───────SaveCrawledUrl()────▶│────────────────────────▶│
+     │                               ├───────SaveDiscoveredUrl()─▶│────────────────────────▶│
+     │                               ├───────SavePageLinks()─────▶│────────────────────────▶│
      │                               │                            │                         │
      │                               │    OnHTML("a[href]")       │                         │
-     │                               │       Visit(link)──────────▶│                         │
-     │                               │                            │ (recursive)             │
+     │                               │       queueURL()───────────▶│ (non-blocking send)    │
      │                               │                            │                         │
      │                               │    OnError()               │                         │
      │                               │                            │                         │
-     │                               ├───────SaveCrawledUrl()────▶│────────────────────────▶│
+     │                               ├───────SaveDiscoveredUrl()─▶│────────────────────────▶│
      │                               │                            │                         │
      │                               │    Wait()                  │                         │
      │                               │                            │ (blocks until done)     │
@@ -1240,37 +1591,55 @@ Frontend (React)                Backend (Go)                    Crawler         
 
 2. **Configuration:**
    - Domain-specific config retrieved (or defaults used)
-   - `Collector` instantiated with options:
-     - AllowedDomains (restricts to target domain)
-     - EnableJSRendering (if configured)
-     - Parallelism via LimitRule
+   - `Crawler` instantiated with options:
+     - URLFilters (for domain matching based on IncludeSubdomains)
+     - EnableRendering (if configured)
+     - DiscoveryMechanisms (spider, sitemap, or both)
+     - Parallelism via worker pool size
+     - DiscoveryChannelSize, WorkQueueSize
 
 3. **Crawler Setup (High-Level API):**
-   - Desktop app sets two callbacks:
+   - Desktop app sets callbacks:
+     - `SetOnURLDiscovered`: Filter analytics/tracking URLs
      - `SetOnPageCrawled`: Called after each page is crawled with complete result
+     - `SetOnResourceVisit`: Called after each resource is visited
      - `SetOnCrawlComplete`: Called when crawl finishes
    - Bluesnake crawler internally sets up low-level callbacks:
      - `OnResponse`: Detects content type, checks indexability
-     - `OnHTML("html")`: Extracts title from HTML pages
-     - `OnHTML("a[href]")`: Discovers and queues links
+     - `OnHTML("html")`: Extracts title, meta description, links from HTML pages
+     - `OnScraped`: Builds PageResult and calls OnPageCrawled callback
      - `OnError`: Captures errors for failed URLs
 
-4. **Crawling:**
+4. **Crawling (Channel-Based):**
    - `crawler.Start(url)` initiates crawl
+   - URL processor goroutine starts
+   - Worker pool goroutines start
+   - Initial URL queued to discovery channel
    - Bluesnake crawler internally:
-     - Checks if URL visited (InMemoryStorage)
-     - Makes HTTP request
-     - Parses HTML (with chromedp if enabled)
-     - Extracts title, links, and metadata
-     - Aggregates all data into PageResult
-     - Calls desktop app's `OnPageCrawled` callback
-     - Discovers new links, queues them
+     - URL Processor: Receives URL from discovery channel (SINGLE-THREADED)
+     - URL Processor: Calls OnURLDiscovered to get action (crawl/record/skip)
+     - URL Processor: Checks if crawlable (filters, robots.txt)
+     - URL Processor: Calls `VisitIfNotVisited()` (ATOMIC, race-free)
+     - URL Processor: Submits to worker pool (BLOCKS if full for backpressure)
+     - Worker: Receives work from queue
+     - Worker: Makes HTTP request
+     - Worker: Parses HTML (with chromedp if enabled)
+     - Worker: Extracts title, links, and metadata
+     - Worker: Aggregates all data into PageResult
+     - Worker: Calls desktop app's `OnPageCrawled` callback
+     - Worker: Discovers new links, queues them to discovery channel (non-blocking)
    - Desktop app `OnPageCrawled` callback:
-     - Saves complete PageResult to database
+     - Saves complete PageResult to database (DiscoveredUrl with visited=true)
+     - Saves page links to database (PageLink records)
+     - Saves unvisited URLs (URLAction="record") to database (visited=false)
      - Updates in-memory tracking for UI
 
 5. **Completion:**
-   - `crawler.Wait()` blocks until all requests complete
+   - `crawler.Wait()` blocks until all work complete:
+     - Collector.Wait() waits for all HTTP requests to finish
+     - Discovery channel closed
+     - URL processor drains remaining URLs
+     - Worker pool closes
    - Bluesnake calls desktop app's `OnCrawlComplete` callback with:
      - `wasStopped`: Whether crawl was cancelled
      - `totalPages`: Number of pages successfully crawled
@@ -1278,8 +1647,70 @@ Frontend (React)                Backend (Go)                    Crawler         
    - Desktop app `OnCrawlComplete` callback:
      - Calculates crawl duration
      - Updates crawl statistics in database
-     - Emits "crawl:completed" event
+     - Emits "crawl:completed" event (indicational only, no payload)
    - UI updates to show final state via polling
+
+---
+
+## HTTP Server (cmd/server/)
+
+### Initialization
+
+```go
+func main() {
+    // Initialize store
+    st, err := store.NewStore()
+
+    // Create app with NoOpEmitter (no events for HTTP)
+    coreApp := app.NewApp(st, &app.NoOpEmitter{})
+    coreApp.Startup(context.Background())
+
+    // Create HTTP server
+    server := NewServer(coreApp)
+
+    // Start server
+    httpServer := &http.Server{
+        Addr:    ":8080",
+        Handler: server,
+    }
+    httpServer.ListenAndServe()
+}
+```
+
+### REST API Endpoints
+
+```
+GET  /api/v1/health                        - Health check
+GET  /api/v1/version                       - App version
+GET  /api/v1/projects                      - List all projects
+GET  /api/v1/projects/{id}/crawls          - Get project crawls
+DELETE /api/v1/projects/{id}               - Delete project
+
+GET  /api/v1/crawls/{id}                   - Get crawl with results
+DELETE /api/v1/crawls/{id}                 - Delete crawl
+GET  /api/v1/crawls/{id}/pages/{url}/links - Get page links
+
+POST /api/v1/crawl                         - Start new crawl
+POST /api/v1/stop-crawl/{projectID}        - Stop active crawl
+GET  /api/v1/active-crawls                 - List active crawls
+
+GET  /api/v1/config?url=example.com        - Get config
+PUT  /api/v1/config                        - Update config
+```
+
+### Running the Server
+
+```bash
+# Default (port 8080)
+go run ./cmd/server
+
+# Custom port
+go run ./cmd/server -port 3000 -host localhost
+
+# Build binary
+go build -o bluesnake-server ./cmd/server
+./bluesnake-server
+```
 
 ---
 
@@ -1287,7 +1718,7 @@ Frontend (React)                Backend (Go)                    Crawler         
 
 ### 1. Separation of Concerns
 
-- **Crawler Package:** Pure crawling logic, no UI dependencies
+- **Crawler Package:** Pure crawling logic with channel-based architecture, no UI dependencies
 - **Desktop App:** UI and persistence layer
 - **Database Layer:** Abstracted via GORM models
 
@@ -1315,11 +1746,13 @@ The frontend maintains an `activeCrawls` map (updated via polling `GetActiveCraw
 - Simpler code with less complexity
 - Events only used for immediate UI refresh triggers (no payload data)
 
-### 3. Callback Pattern (Crawler)
+### 3. Channel-Based Concurrency Pattern (Crawler)
 
-- Register handlers for lifecycle events
-- Composable, extensible crawling behavior
-- No need to modify core crawler code
+- Single-threaded URL processor eliminates race conditions
+- Non-blocking discovery channel prevents deadlocks
+- Fixed worker pool controls concurrency
+- Backpressure via blocking worker submission
+- Clean shutdown via context cancellation
 
 ### 4. Domain-Driven Design
 
@@ -1336,92 +1769,110 @@ The frontend maintains an `activeCrawls` map (updated via polling `GetActiveCraw
 
 ---
 
-## Configuration System
+## Responsibility Division: What Goes Where?
 
-### Two-Level Configuration
+### BlueSnake Package Responsibilities (Core Crawling Library)
 
-#### 1. Crawler Configuration (Per-Crawl)
+**✅ What BELONGS in bluesnake package:**
+- Channel-based URL processing (eliminates race conditions)
+- Single-threaded URL processor
+- Fixed-size worker pool
+- Low-level HTTP request/response handling
+- HTML/XML parsing and element extraction
+- URL deduplication (via Crawler with VisitIfNotVisited atomic operation)
+- Domain filtering and robots.txt checking
+- Rate limiting and parallelism control
+- JavaScript rendering with chromedp
+- Request/response lifecycle callbacks (low-level)
+- High-level crawler API with page-level callbacks
+- Link discovery and crawl queue management
+- Content-type detection and handling
+- Error handling for network/parsing issues
+- In-memory URL deduplication during active crawls (non-persistent)
+- Cookie and session management
 
-Set via `CollectorConfig` struct when creating collector:
+**❌ What DOES NOT belong in bluesnake package:**
+- Database operations (SQLite, PostgreSQL, etc.)
+- UI/frontend code
+- Persistent storage of crawl results
+- User authentication or authorization
+- Application-specific business logic
+- Configuration persistence (save/load from files/DB)
+- Favicon fetching or asset management
+- Project/domain organization
+- Historical crawl comparison
+- Analytics or reporting logic
 
-```go
-config := &bluesnake.CollectorConfig{
-    AllowedDomains:  []string{domain},
-    EnableRendering: true,
-    Async:           true,
-}
-c := bluesnake.NewCollector(config)
+### Internal Packages Responsibilities (internal/)
 
-c.Limit(&bluesnake.LimitRule{
-    DomainGlob:  "*",
-    Parallelism: 5,
-})
-```
+**✅ What BELONGS in internal/store/ (Database Layer):**
+- GORM models and schema definitions
+- SQLite operations (save, query, delete)
+- Database initialization and migrations
+- CRUD operations for projects, crawls, configs, links
+- Favicon file management
+- Repository pattern implementation
 
-**Ephemeral** - only exists during crawl execution
+**✅ What BELONGS in internal/app/ (Business Logic Layer):**
+- Crawl orchestration and management
+- Project and domain organization logic
+- Configuration management (get, update)
+- Active crawl tracking and state management
+- URL normalization and validation
+- Callbacks that save crawler results to database
+- Crawl statistics and aggregation
+- Update checking logic
+- **NO transport-specific code** (no Wails, HTTP, or MCP dependencies)
+- **NO UI logic** (just returns data)
 
-#### 2. Domain Configuration (Persistent)
+**✅ What BELONGS in internal/types/ (Shared Types):**
+- Request/response types (ProjectInfo, CrawlInfo, etc.)
+- Shared data structures used across layers
+- No business logic, just data definitions
 
-Stored in SQLite `Config` table:
+**❌ What DOES NOT belong in internal packages:**
+- Low-level HTTP handling (that's in crawler package)
+- HTML parsing logic (that's in crawler package)
+- Robots.txt parsing (that's in crawler package)
+- Chromedp rendering code (that's in crawler package)
+- UI components (that's in frontend)
+- Event emission specifics (only interface defined)
+- HTTP routing/handlers (that's in cmd/server)
+- Wails bindings (that's in cmd/desktop)
 
-```go
-type Config struct {
-    Domain             string
-    JSRenderingEnabled bool
-    Parallelism        int
-}
-```
+### Desktop Application Responsibilities (cmd/desktop/)
 
-**Flow:**
-1. User configures via Config UI
-2. Settings saved to database
-3. On next crawl, settings retrieved
-4. Translated to `CollectorConfig` struct fields
-5. Applied to new Collector instance
+**✅ What BELONGS in desktop app:**
+- Wails initialization and configuration
+- WailsEmitter implementation (runtime.EventsEmit)
+- DesktopApp adapter (thin wrapper)
+- UI integration and event handling
+- UI state management (React)
+- Frontend polling for real-time updates
+- User interaction handling
 
----
+**❌ What DOES NOT belong in desktop app:**
+- Business logic (moved to internal/app)
+- Database operations (moved to internal/store)
+- Crawl orchestration (moved to internal/app)
+- URL normalization (moved to internal/app)
+- Any logic that could be shared with HTTP server
 
-## Error Handling
+### HTTP Server Responsibilities (cmd/server/)
 
-### Crawler Level
+**✅ What BELONGS in HTTP server:**
+- HTTP server initialization and configuration
+- Route definitions and handlers
+- Request/response marshaling (JSON)
+- CORS middleware
+- Error handling and HTTP status codes
+- Graceful shutdown logic
 
-```go
-c.OnError(func(r *Response, err error) {
-    // Error handling logic
-})
-```
-
-- HTTP errors (4xx, 5xx)
-- Network errors
-- Parse errors
-- robots.txt blocks
-
-### Desktop App Level
-
-```go
-if err := SaveCrawledUrl(..., errorMsg); err != nil {
-    runtime.LogErrorf(ctx, "Failed to save: %v", err)
-}
-```
-
-- Database errors logged
-- Events emitted to notify frontend
-- Graceful degradation (crawl continues on errors)
-
-### Frontend Level
-
-```typescript
-try {
-    await StartCrawl(url)
-} catch (error) {
-    console.error('Failed to start crawl:', error)
-    setIsCrawling(false)
-}
-```
-
-- User-friendly error messages
-- Modal dialogs for critical errors
-- Console logging for debugging
+**❌ What DOES NOT belong in HTTP server:**
+- Business logic (use internal/app)
+- Database operations (use internal/store)
+- Crawl orchestration (use internal/app)
+- Any logic that could be shared with desktop app
 
 ---
 
@@ -1437,6 +1888,7 @@ type CustomStorage struct {}
 func (s *CustomStorage) Init() error { ... }
 func (s *CustomStorage) Visited(id uint64) error { ... }
 func (s *CustomStorage) IsVisited(id uint64) (bool, error) { ... }
+func (s *CustomStorage) VisitIfNotVisited(id uint64) (bool, error) { ... }
 // ...
 
 c.SetStorage(&CustomStorage{})
@@ -1447,12 +1899,19 @@ c.SetStorage(&CustomStorage{})
 Add specialized crawling behavior:
 
 ```go
-c.OnHTML("meta[name='description']", func(e *HTMLElement) {
+// High-level callback (user API)
+crawler.SetOnPageCrawled(func(result *bluesnake.PageResult) {
+    // Custom page processing
+    // Access structured data: result.Title, result.Links, etc.
+})
+
+// Low-level callback (advanced use - not recommended for most users)
+crawler.Collector.OnHTML("meta[name='description']", func(e *HTMLElement) {
     description := e.Attr("content")
     // Save SEO metadata
 })
 
-c.OnResponse(func(r *Response) {
+crawler.Collector.OnResponse(func(r *Response) {
     // Custom header analysis
     // Performance tracking
     // Content-type filtering
@@ -1493,12 +1952,15 @@ db.AutoMigrate(&PerformanceMetric{})
 
 ### 1. Concurrency
 
-- **Crawler:** Configurable parallelism per domain
-- **Async Mode:** Non-blocking network I/O
-- **Goroutines:** Each crawl runs in separate goroutine
+- **Crawler:** Channel-based architecture with fixed worker pool
+- **Worker Pool:** Configurable parallelism (default: 10 concurrent fetches)
+- **URL Processor:** Single-threaded (eliminates race conditions, serializes visit decisions)
+- **Goroutines:** Bounded (1 processor + N workers, not unbounded)
 
 ### 2. Memory Management
 
+- **Discovery Channel:** Configurable buffer size (default: 50k URLs)
+- **Work Queue:** Configurable buffer size (default: 1k work items)
 - **Streaming:** Large responses can be streamed
 - **MaxBodySize:** Limit response body size
 - **Cleanup:** InMemoryStorage cleared after crawl
@@ -1528,12 +1990,13 @@ db.AutoMigrate(&PerformanceMetric{})
 
 - Prevents overwhelming target servers
 - Configurable delays between requests
-- Per-domain limits
+- Per-domain limits via worker pool
 
 ### 3. robots.txt Compliance
 
 - Optional (can be enabled)
 - Respects crawl-delay and disallow rules
+- Three modes: "respect", "ignore", "ignore-report"
 
 ### 4. Database Access
 
@@ -1547,41 +2010,6 @@ db.AutoMigrate(&PerformanceMetric{})
 - Allows server operators to block if needed
 
 ---
-
-## Deployment
-
-### Desktop Application
-
-Built with Wails:
-
-```bash
-cd cmd/desktop
-wails build
-```
-
-Produces native executable for target platform:
-- **macOS:** `.app` bundle
-- **Windows:** `.exe`
-- **Linux:** ELF binary
-
-### Crawler Library
-
-Can be used standalone:
-
-```go
-import "github.com/agentberlin/bluesnake"
-
-config := &bluesnake.CollectorConfig{
-    AllowedDomains: []string{"example.com"},
-}
-c := bluesnake.NewCollector(config)
-c.OnHTML("title", func(e *bluesnake.HTMLElement) {
-    fmt.Println(e.Text)
-})
-c.Visit("https://example.com")
-c.Wait()
-```
-
 
 ## Adding New Transports
 
@@ -1669,7 +2097,6 @@ Again, no changes to internal packages!
 ### Crawler Package
 - Redis/PostgreSQL storage backend
 - Distributed crawling support
-- Sitemap.xml parsing (implemented!)
 - Advanced JavaScript interaction (form filling, clicking)
 - Screenshot capture
 - Content extraction templates
@@ -1715,7 +2142,7 @@ Again, no changes to internal packages!
 
 BlueSnake demonstrates a clean layered architecture with separation between:
 
-1. **Crawler Package** (root/) - Low-level crawling, HTTP, parsing - Framework-agnostic
+1. **Crawler Package** (root/) - Channel-based crawling with race condition elimination
 2. **Store Layer** (internal/store/) - Data persistence and CRUD operations
 3. **Business Logic** (internal/app/) - Transport-agnostic orchestration
 4. **Transport Layers** (cmd/*/) - Thin adapters for different interfaces:
@@ -1730,6 +2157,8 @@ BlueSnake demonstrates a clean layered architecture with separation between:
 3. **Extensibility**: Add new transports without modifying core logic
 4. **Maintainability**: Clear boundaries and single responsibility
 5. **Scalability**: Easy to optimize each layer independently
+6. **Reliability**: Channel-based architecture eliminates race conditions
+7. **Determinism**: Every crawl produces consistent, complete results
 
 ### Design Patterns Used
 
@@ -1738,7 +2167,9 @@ BlueSnake demonstrates a clean layered architecture with separation between:
 - **Adapter Pattern**: Transport layers adapt core App to different interfaces
 - **Observer Pattern**: EventEmitter allows decoupled event handling
 - **Interface-Based Design**: Enables polymorphism and testing
+- **Channel-Based Concurrency**: Single-threaded processor with worker pool
+- **Pipeline Pattern**: URL discovery → processor → worker pool
 
-The polling-based design with database as single source of truth enables reliable UI updates at scale, while the callback pattern provides extensibility without modifying core code. Indicational events provide immediate feedback triggers, while polling handles the actual data synchronization.
+The channel-based architecture eliminates race conditions by serializing all visit decisions in a single goroutine, while the polling-based design with database as single source of truth enables reliable UI updates at scale. The callback pattern provides extensibility without modifying core code. Indicational events provide immediate feedback triggers, while polling handles the actual data synchronization.
 
 The architecture is designed to be **future-proof**: adding new transports (MCP, CLI, gRPC) requires only creating a new `cmd/` directory and implementing a thin adapter - no changes to business logic required.

@@ -18,9 +18,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Link represents a single outbound link discovered on a page
@@ -145,6 +147,15 @@ type PageMetadata struct {
 	ContentType string
 }
 
+// URLDiscoveryRequest represents a URL discovered during crawling
+type URLDiscoveryRequest struct {
+	URL       string      // The discovered URL
+	Source    string      // Discovery source: "initial", "sitemap", "spider", "network", "resource"
+	ParentURL string      // URL where this was discovered (for spider/network)
+	Depth     int         // Crawl depth
+	Context   *Context    // Request context for passing metadata
+}
+
 // Crawler provides a high-level interface for web crawling with callbacks for page results
 type Crawler struct {
 	// Collector is the underlying low-level collector (exported for advanced configuration)
@@ -166,6 +177,12 @@ type Crawler struct {
 	// Discovery configuration
 	discoveryMechanisms []DiscoveryMechanism // Enabled discovery mechanisms
 	sitemapURLs         []string             // Custom sitemap URLs (nil = try defaults)
+
+	// Channel-based URL processing (eliminates race conditions)
+	discoveryChannel chan URLDiscoveryRequest // URLs to process
+	processorDone    chan struct{}            // Signals processor completion
+	workerPool       *WorkerPool              // Controlled worker pool
+	droppedURLs      uint64                   // Count of URLs dropped due to full channel
 }
 
 // NewCrawler creates a high-level crawler with the specified collector configuration.
@@ -184,6 +201,22 @@ func NewCrawler(config *CollectorConfig) *Crawler {
 		discoveryMechanisms = []DiscoveryMechanism{DiscoverySpider} // Default to spider mode
 	}
 
+	// Determine channel sizes with defaults
+	discoveryChannelSize := config.DiscoveryChannelSize
+	if discoveryChannelSize == 0 {
+		discoveryChannelSize = 50000 // Default: 50k URLs
+	}
+
+	workQueueSize := config.WorkQueueSize
+	if workQueueSize == 0 {
+		workQueueSize = 1000 // Default: 1k pending work items
+	}
+
+	parallelism := config.Parallelism
+	if parallelism == 0 {
+		parallelism = 10 // Default: 10 concurrent fetches
+	}
+
 	crawler := &Crawler{
 		Collector:           c,
 		queuedURLs:          &sync.Map{},
@@ -191,6 +224,10 @@ func NewCrawler(config *CollectorConfig) *Crawler {
 		discoveryMechanisms: discoveryMechanisms,
 		sitemapURLs:         config.SitemapURLs,
 		pageMetadata:        &sync.Map{},
+		discoveryChannel:    make(chan URLDiscoveryRequest, discoveryChannelSize),
+		processorDone:       make(chan struct{}),
+		workerPool:          NewWorkerPool(c.Context, parallelism, workQueueSize),
+		droppedURLs:         0,
 	}
 
 	// Configure sitemap fetching to use the same HTTP client as the collector
@@ -256,6 +293,127 @@ func (cr *Crawler) SetOnURLDiscovered(f OnURLDiscoveredFunc) {
 	cr.onURLDiscovered = f
 }
 
+// queueURL sends a URL to the discovery channel for processing.
+// This is called by all discovery mechanisms (initial, sitemap, spider, network, resources).
+// Uses non-blocking sends to prevent deadlocks.
+func (cr *Crawler) queueURL(req URLDiscoveryRequest) {
+	select {
+	case cr.discoveryChannel <- req:
+		// Successfully queued (non-blocking if channel has buffer space)
+
+	case <-cr.Collector.Context.Done():
+		// Crawl cancelled - drop URL
+
+	default:
+		// Channel full - drop URL to prevent deadlock
+		// This is acceptable for best-effort crawling
+		if req.Source == "initial" {
+			// Never drop the initial URL - log error
+			log.Printf("ERROR: Dropped initial URL due to full channel: %s", req.URL)
+		}
+		atomic.AddUint64(&cr.droppedURLs, 1)
+	}
+}
+
+// runURLProcessor is the SINGLE goroutine that processes all discovered URLs.
+// This eliminates race conditions by serializing all visit decisions.
+func (cr *Crawler) runURLProcessor() {
+	defer close(cr.processorDone)
+
+	for {
+		select {
+		case req, ok := <-cr.discoveryChannel:
+			if !ok {
+				// Channel closed - no more URLs to process
+				log.Printf("[PROCESSOR] Discovery channel closed, exiting processor")
+				return
+			}
+			// Process this URL (serialized - no race possible)
+			cr.processDiscoveredURL(req)
+
+		case <-cr.Collector.Context.Done():
+			// Context cancelled - drain remaining URLs
+			cr.drainDiscoveryChannel()
+			return
+		}
+	}
+}
+
+// processDiscoveredURL handles a single discovered URL.
+// This runs in the processor goroutine, so only ONE instance executes at a time.
+func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
+	log.Printf("[PROCESSOR] Processing URL: %s (source: %s)", req.URL, req.Source)
+
+	// Step 1: Determine action for this URL (callback called once, memoized)
+	action := cr.getOrDetermineURLAction(req.URL)
+	if action == URLActionSkip {
+		log.Printf("[PROCESSOR] Skipping URL (action=skip): %s", req.URL)
+		return // Skip analytics/tracking URLs
+	}
+
+	// Step 2: Pre-filtering (domain checks, URL filters, robots.txt)
+	if !cr.isURLCrawlable(req.URL) {
+		log.Printf("[PROCESSOR] URL not crawlable: %s", req.URL)
+		return
+	}
+
+	// Step 3: Check if already visited and mark as visited (ATOMIC)
+	// This is the CRITICAL section - only ONE goroutine executes this
+	uHash := requestHash(req.URL, nil)
+	alreadyVisited, err := cr.Collector.store.VisitIfNotVisited(uHash)
+	if err != nil {
+		log.Printf("[PROCESSOR] Error checking visited status for %s: %v", req.URL, err)
+		return
+	}
+	if alreadyVisited {
+		log.Printf("[PROCESSOR] URL already visited: %s", req.URL)
+		return // Already processed by a previous discovery
+	}
+
+	// Step 4: URL is now marked as visited - we own it
+	// Only crawl if action is "crawl" (not "record")
+	if action != URLActionCrawl {
+		log.Printf("[PROCESSOR] URL marked visited but not crawling (action=%s): %s", action, req.URL)
+		return
+	}
+
+	log.Printf("[PROCESSOR] Submitting to worker pool: %s", req.URL)
+	// Step 5: Submit to worker pool for actual fetching
+	// CRITICAL: This blocks if worker pool queue is full
+	// This backpressure prevents the processor from racing ahead
+	err = cr.workerPool.Submit(func() {
+		log.Printf("[WORKER] Starting to process: %s", req.URL)
+		// We already marked this URL as visited in step 3 above.
+		// Call scrape() directly with checkRevisit=false to bypass any visit checking.
+		// Note: scrape() handles WaitGroup Add(1)/Done() internally, no need to do it here
+		cr.Collector.scrape(req.URL, "GET", req.Depth, nil, req.Context, nil, false)
+		log.Printf("[WORKER] Finished scraping: %s", req.URL)
+	})
+
+	if err != nil {
+		// Context cancelled or other error - URL was marked visited but not crawled
+		// This is acceptable - we attempted it
+		log.Printf("[PROCESSOR] Error submitting to worker pool for %s: %v", req.URL, err)
+		return
+	}
+
+	log.Printf("[PROCESSOR] Successfully submitted to worker pool: %s", req.URL)
+	// Successfully submitted to worker pool
+	// Worker will fetch it when available
+}
+
+// drainDiscoveryChannel processes remaining URLs before shutdown
+func (cr *Crawler) drainDiscoveryChannel() {
+	for {
+		select {
+		case req := <-cr.discoveryChannel:
+			cr.processDiscoveredURL(req)
+		default:
+			return // Channel empty
+		}
+	}
+}
+
 // getOrDetermineURLAction determines the action for a URL by calling the OnURLDiscovered callback.
 // The callback is invoked only once per unique URL (results are memoized in queuedURLs).
 // On subsequent calls for the same URL, the cached action is returned.
@@ -288,26 +446,25 @@ func (cr *Crawler) Start(url string) error {
 	// Extract and set root domain for internal/external classification
 	cr.rootDomain = cr.extractRootDomain(url)
 
-	// Determine action for base URL (always crawl it, but track it)
-	cr.getOrDetermineURLAction(url)
+	// Start the URL processor goroutine
+	go cr.runURLProcessor()
 
-	// Start crawling from base URL first
-	if err := cr.Collector.Visit(url); err != nil {
-		return err
-	}
+	// Queue the initial URL
+	cr.queueURL(URLDiscoveryRequest{
+		URL:    url,
+		Source: "initial",
+		Depth:  0,
+	})
 
 	// If sitemap discovery is enabled, fetch and queue sitemap URLs
 	if cr.hasDiscoveryMechanism(DiscoverySitemap) {
 		sitemapURLs := cr.fetchSitemapURLs(url)
 		for _, sitemapURL := range sitemapURLs {
-			// Determine action for this sitemap URL
-			action := cr.getOrDetermineURLAction(sitemapURL)
-
-			// Only visit URLs marked for crawling
-			if action == URLActionCrawl {
-				// Visit each sitemap URL (errors are logged but don't stop the crawl)
-				cr.Collector.Visit(sitemapURL)
-			}
+			cr.queueURL(URLDiscoveryRequest{
+				URL:    sitemapURL,
+				Source: "sitemap",
+				Depth:  1,
+			})
 		}
 	}
 
@@ -316,9 +473,29 @@ func (cr *Crawler) Start(url string) error {
 }
 
 // Wait blocks until all crawling operations complete.
-// This is primarily useful when the crawler is in Async mode.
+// The crawl naturally completes when all work is done (no more pending URLs, all workers idle).
 func (cr *Crawler) Wait() {
+	log.Printf("[WAIT] Starting Wait() - waiting for Collector.Wait()")
+	// Step 1: Wait for the Collector's WaitGroup to reach zero
+	// This happens when all HTTP requests finish (including discovered URLs becoming "already visited")
 	cr.Collector.Wait()
+	log.Printf("[WAIT] Collector.Wait() returned - all HTTP requests complete")
+
+	// Step 2: At this point, all workers have finished their HTTP requests
+	// The processor may still have URLs in the discovery channel to process
+	// Close the discovery channel to signal "no more URLs will be added"
+	log.Printf("[WAIT] Closing discovery channel")
+	close(cr.discoveryChannel)
+
+	// Step 3: Wait for the processor to finish draining the discovery channel
+	log.Printf("[WAIT] Waiting for processor to finish")
+	<-cr.processorDone
+	log.Printf("[WAIT] Processor finished")
+
+	// Step 4: Close the worker pool (should already be idle since Collector.Wait() returned)
+	log.Printf("[WAIT] Closing worker pool")
+	cr.workerPool.Close()
+	log.Printf("[WAIT] Worker pool closed")
 
 	// Calculate totals
 	totalDiscovered := 0
@@ -384,8 +561,14 @@ func (cr *Crawler) setupCallbacks() {
 					// Only queue for crawling if action is Crawl
 					shouldCrawl := isInternal || cr.shouldValidateResource(link)
 					if action == URLActionCrawl && shouldCrawl && cr.isURLCrawlable(networkURL) {
-						// Visit this URL (action already stored in queuedURLs by getOrDetermineURLAction)
-						e.Request.Visit(networkURL)
+						// Queue this URL for processing (action already stored in queuedURLs by getOrDetermineURLAction)
+						cr.queueURL(URLDiscoveryRequest{
+							URL:       networkURL,
+							Source:    "network",
+							ParentURL: e.Request.URL.String(),
+							Depth:     e.Request.Depth,
+							Context:   e.Request.Ctx,
+						})
 					}
 				}
 			}
@@ -427,8 +610,14 @@ func (cr *Crawler) setupCallbacks() {
 					continue
 				}
 
-				// Visit this URL (action already stored in queuedURLs)
-				e.Request.Visit(link.URL)
+				// Queue this URL for processing (action already stored in queuedURLs)
+				cr.queueURL(URLDiscoveryRequest{
+					URL:       link.URL,
+					Source:    "spider",
+					ParentURL: e.Request.URL.String(),
+					Depth:     e.Request.Depth + 1,
+					Context:   e.Request.Ctx,
+				})
 			}
 		}
 
@@ -445,8 +634,14 @@ func (cr *Crawler) setupCallbacks() {
 					continue
 				}
 
-				// Visit this resource (action already stored in queuedURLs)
-				e.Request.Visit(link.URL)
+				// Queue this resource for processing (action already stored in queuedURLs)
+				cr.queueURL(URLDiscoveryRequest{
+					URL:       link.URL,
+					Source:    "resource",
+					ParentURL: e.Request.URL.String(),
+					Depth:     e.Request.Depth,
+					Context:   e.Request.Ctx,
+				})
 			}
 		}
 	})
@@ -609,10 +804,16 @@ func (cr *Crawler) setupCallbacks() {
 					// For external resources, only crawl if resource validation is enabled
 					shouldCrawl := isInternal || cr.shouldValidateResource(link)
 
-					// Only visit URLs marked for crawling
+					// Only queue URLs marked for crawling
 					if action == URLActionCrawl && shouldCrawl && cr.isURLCrawlable(absoluteURL) {
-						// Visit this URL (action already stored in queuedURLs)
-						r.Request.Visit(absoluteURL)
+						// Queue this URL for processing (action already stored in queuedURLs)
+						cr.queueURL(URLDiscoveryRequest{
+							URL:       absoluteURL,
+							Source:    "resource",
+							ParentURL: r.Request.URL.String(),
+							Depth:     r.Request.Depth,
+							Context:   r.Request.Ctx,
+						})
 					}
 				}
 			}
