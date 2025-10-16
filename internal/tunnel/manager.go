@@ -90,7 +90,6 @@ func (tm *TunnelManager) Start(localPort int) (string, error) {
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			line := scanner.Text()
-			fmt.Printf("[cloudflared stdout] %s\n", line) // Log output
 			if matches := urlRegex.FindString(line); matches != "" {
 				select {
 				case urlChan <- matches:
@@ -102,7 +101,7 @@ func (tm *TunnelManager) Start(localPort int) (string, error) {
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			fmt.Printf("[cloudflared] stdout scan error: %v\n", err)
+			fmt.Printf("Cloudflared error reading output: %v\n", err)
 		}
 	}()
 
@@ -111,7 +110,6 @@ func (tm *TunnelManager) Start(localPort int) (string, error) {
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			line := scanner.Text()
-			fmt.Printf("[cloudflared stderr] %s\n", line) // Log output
 			if matches := urlRegex.FindString(line); matches != "" {
 				select {
 				case urlChan <- matches:
@@ -123,7 +121,7 @@ func (tm *TunnelManager) Start(localPort int) (string, error) {
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			fmt.Printf("[cloudflared] stderr scan error: %v\n", err)
+			fmt.Printf("Cloudflared error reading error stream: %v\n", err)
 		}
 	}()
 
@@ -144,11 +142,11 @@ func (tm *TunnelManager) Start(localPort int) (string, error) {
 
 	case <-time.After(60 * time.Second):
 		// Timeout waiting for URL
-		fmt.Printf("[cloudflared] Timeout waiting for tunnel URL after 60 seconds\n")
+		fmt.Printf("Timeout waiting for tunnel URL after 60 seconds\n")
 		if tm.cmd.Process != nil {
 			tm.cmd.Process.Kill()
 		}
-		return "", fmt.Errorf("timeout waiting for tunnel URL (60s). Check logs above for cloudflared output")
+		return "", fmt.Errorf("timeout waiting for tunnel URL (60s)")
 	}
 }
 
