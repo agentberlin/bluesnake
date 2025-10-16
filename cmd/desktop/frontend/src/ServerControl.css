@@ -219,62 +219,6 @@
   white-space: nowrap;
 }
 
-/* Cloudflared Modal */
-.cloudflared-modal {
-  max-width: 540px;
-}
-
-.cloudflared-description {
-  font-size: 14px !important;
-  font-weight: 300 !important;
-  color: #555 !important;
-  line-height: 1.6 !important;
-  margin-bottom: 24px !important;
-}
-
-.cloudflared-description strong {
-  font-weight: 400;
-  color: #333;
-}
-
-.cloudflared-copyright {
-  background: #f8f9fa;
-  border: 1px solid #e0e0e0;
-  border-radius: 2px;
-  padding: 16px;
-  margin-bottom: 24px;
-}
-
-.copyright-title {
-  font-size: 11px !important;
-  font-weight: 600 !important;
-  color: #666 !important;
-  margin: 0 0 8px 0 !important;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-}
-
-.cloudflared-copyright p {
-  font-size: 12px !important;
-  font-weight: 300 !important;
-  color: #666 !important;
-  line-height: 1.6 !important;
-  margin: 4px 0 !important;
-}
-
-.copyright-text {
-  margin-top: 8px !important;
-}
-
-.cloudflared-copyright a {
-  color: #2196f3;
-  text-decoration: none;
-}
-
-.cloudflared-copyright a:hover {
-  text-decoration: underline;
-}
-
 /* Modal overlay and base styles */
 .modal-overlay {
   position: fixed;
