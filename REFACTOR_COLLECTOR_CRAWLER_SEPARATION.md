@@ -1029,3 +1029,308 @@ After refactoring:
 **Document Updated:** 2025-10-16
 **Status:** Ready for implementation
 **Recommendation:** Proceed with Option A (Clean Breaking Change)
+
+---
+
+# CODE REVIEW UPDATE (2025-10-16 - Post Implementation Check)
+
+## Executive Summary
+
+**After reviewing the current codebase against this refactoring document, the following has been found:**
+
+### Issues Status:
+- ✅ **Issue #1 (Direct Field Access):** STILL PRESENT - No changes made yet
+- ✅ **Issue #2 (Configuration Duplication):** STILL PRESENT - No changes made yet
+- ✅ **Issue #3 (Exposed Internal Method):** STILL PRESENT - No changes made yet
+
+### MAJOR CHANGES IMPLEMENTED (Not Documented):
+- ✅ **URL Revisiting Logic REFACTORED** - Visit checking moved from Collector to Crawler
+- ✅ **Collector is Now SYNCHRONOUS** - Async removed, concurrency handled by Crawler's worker pool
+- ✅ **scrape() Signature Changed** - Added `checkRevisit bool` parameter
+
+---
+
+## Changes Implemented Since Document Creation
+
+### 1. URL Revisiting Logic - COMPLETED ✅
+
+**What Changed:**
+- Visit checking has been **completely removed** from `Collector.requestCheck()` (bluesnake.go:1065-1072)
+- Crawler is now solely responsible for visit tracking via single-threaded processor (crawler.go:381)
+
+**Current Implementation:**
+```go
+// bluesnake.go:1065-1072
+func (c *Collector) requestCheck(..., checkRevisit bool) error {
+    // Visit checking has been removed from Collector.
+    // The Crawler is now responsible for all visit tracking (single-threaded processor).
+    // This eliminates race conditions where multiple goroutines could mark the same URL
+    // as visited but never actually crawl it.
+    //
+    // If checkRevisit is true and you need visit checking, you must handle it externally
+    // before calling this method (see Crawler.processDiscoveredURL for the proper pattern).
+    return nil
+}
+```
+
+```go
+// crawler.go:378-389
+func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
+    // ...
+    // Step 3: Check if already visited and mark as visited (ATOMIC)
+    // This is the CRITICAL section - only ONE goroutine executes this
+    uHash := requestHash(req.URL, nil)
+    alreadyVisited, err := cr.Collector.store.VisitIfNotVisited(uHash)
+    if err != nil {
+        cr.wg.Done()
+        return
+    }
+    if alreadyVisited {
+        cr.wg.Done()
+        return
+    }
+    // Step 4: URL is now marked as visited - we own it
+    // ...
+}
+```
+
+**Impact:**
+- ✅ Eliminates race conditions in visit tracking
+- ✅ Single source of truth for visit decisions (Crawler's processor)
+- ✅ Aligns with proposed refactoring goals
+
+### 2. Collector Sync Behavior - COMPLETED ✅
+
+**What Changed:**
+- Collector's `scrape()` and `fetch()` methods now run **synchronously**
+- Removed all internal async goroutine spawning from Collector
+- Crawler's worker pool manages all concurrency
+
+**Current Implementation:**
+```go
+// bluesnake.go:924-926
+func (c *Collector) scrape(...) error {
+    // Always run synchronously - concurrency is managed by Crawler's worker pool
+    return c.fetch(u, method, depth, requestData, ctx, hdr, req)
+}
+
+// bluesnake.go:928-1040
+func (c *Collector) fetch(...) error {
+    // Runs directly without spawning goroutines
+    // Crawler's worker pool already handles concurrency
+    ...
+}
+```
+
+```go
+// crawler.go:401-410
+err = cr.workerPool.Submit(func() {
+    defer cr.wg.Done()
+    // We already marked this URL as visited.
+    // Call scrape() directly with checkRevisit=false.
+    cr.Collector.scrape(req.URL, "GET", req.Depth, nil, req.Context, nil, false)
+})
+```
+
+**Impact:**
+- ✅ Clear separation: Collector = HTTP engine, Crawler = concurrency manager
+- ✅ Easier to reason about control flow
+- ✅ Eliminates nested concurrency complexity
+
+### 3. New `checkRevisit` Parameter - COMPLETED ✅
+
+**What Changed:**
+- Added `checkRevisit bool` parameter to `scrape()` and `requestCheck()`
+- Allows Crawler to bypass visit checking (since it already handled it)
+
+**Signature Changes:**
+```go
+// OLD (not in current code, inferred from document):
+func (c *Collector) scrape(u, method string, depth int, requestData io.Reader, ctx *Context, hdr http.Header) error
+
+// NEW (bluesnake.go:869):
+func (c *Collector) scrape(u, method string, depth int, requestData io.Reader, ctx *Context, hdr http.Header, checkRevisit bool) error
+
+// OLD:
+func (c *Collector) requestCheck(parsedURL *url.URL, method string, getBody func() (io.ReadCloser, error), depth int) error
+
+// NEW (bluesnake.go:1042):
+func (c *Collector) requestCheck(parsedURL *url.URL, method string, getBody func() (io.ReadCloser, error), depth int, checkRevisit bool) error
+```
+
+**Usage:**
+```go
+// crawler.go:408 - Crawler calls with checkRevisit=false
+cr.Collector.scrape(req.URL, "GET", req.Depth, nil, req.Context, nil, false)
+
+// bluesnake.go:773,777,793,799,805,815,830 - Public API calls with checkRevisit=true
+return c.scrape(URL, "GET", 1, nil, nil, nil, true)
+return c.scrape(URL, "HEAD", 1, nil, nil, nil, false)
+return c.scrape(URL, "POST", 1, createFormReader(requestData), nil, nil, true)
+// ... etc
+```
+
+**Impact:**
+- ✅ Eliminates duplicate visit checking
+- ✅ Crawler controls visit tracking completely
+- ✅ Collector respects Crawler's authority
+
+---
+
+## Updated Issue Status
+
+### Issue #1: Direct Field Access - UNCHANGED ❌
+
+**Status:** Still present in code, no changes made
+
+**Current violations (as of 2025-10-16):**
+
+| Field Access | Current Location | Status |
+|--------------|------------------|--------|
+| `cr.Collector.Context` | crawler.go:315 | ❌ Still present |
+| `cr.Collector.Context` | crawler.go:345 | ❌ Still present |
+| `cr.Collector.store` | crawler.go:381 | ❌ Still present |
+| `cr.Collector.backend.Client` | crawler.go:252 | ❌ Still present |
+
+**Recommendation:** Phase 1 (Add accessor methods) still needs to be implemented.
+
+### Issue #2: Configuration Duplication - UNCHANGED ❌
+
+**Status:** Still present in code, no changes made
+
+**Current duplication (as of 2025-10-16):**
+
+| Configuration | Crawler Usage | Collector Implementation | Status |
+|---------------|---------------|--------------------------|--------|
+| `AllowedDomains` | crawler.go:910 | bluesnake.go:226, 1092-1100 | ❌ Duplicated |
+| `DisallowedDomains` | crawler.go:902 | bluesnake.go:228, 1092-1100 | ❌ Duplicated |
+| `URLFilters` | crawler.go:934 | bluesnake.go:241, 1075-1090 | ❌ Duplicated |
+| `DisallowedURLFilters` | crawler.go:926 | bluesnake.go:234, 1075-1090 | ❌ Duplicated |
+
+**Example of duplication:**
+```go
+// crawler.go:890-952 - Crawler checks filters
+func (cr *Crawler) isURLCrawlable(urlStr string) bool {
+    // Check domain blocklist
+    if len(cr.Collector.DisallowedDomains) > 0 {
+        for _, d := range cr.Collector.DisallowedDomains {
+            if d == hostname { return false }
+        }
+    }
+    // Check URL pattern blocklist
+    if len(cr.Collector.DisallowedURLFilters) > 0 {
+        for _, filter := range cr.Collector.DisallowedURLFilters {
+            if filter.Match(urlBytes) { return false }
+        }
+    }
+    // ... more checks
+}
+
+// bluesnake.go:1075-1100 - Collector ALSO checks filters
+func (c *Collector) checkFilters(URL, domain string) error {
+    if len(c.DisallowedURLFilters) > 0 {
+        if isMatchingFilter(c.DisallowedURLFilters, []byte(URL)) {
+            return ErrForbiddenURL
+        }
+    }
+    if len(c.URLFilters) > 0 {
+        if !isMatchingFilter(c.URLFilters, []byte(URL)) {
+            return ErrNoURLFiltersMatch
+        }
+    }
+    if !c.isDomainAllowed(domain) {
+        return ErrForbiddenDomain
+    }
+    return nil
+}
+```
+
+**Impact:** Every URL is filtered TWICE - once in Crawler, once in Collector.
+
+**Recommendation:** Phase 2-3 (Move configuration to Crawler) still needs to be implemented.
+
+### Issue #3: Exposed Internal Method - UNCHANGED ❌
+
+**Status:** Still present in code, no changes made
+
+**Current usage (as of 2025-10-16):**
+```go
+// crawler.go:408
+cr.Collector.scrape(req.URL, "GET", req.Depth, nil, req.Context, nil, false)
+```
+
+**Note:** While the `checkRevisit` parameter was added, `scrape()` is still exported and called by Crawler.
+
+**Recommendation:** Phase 3 (Rename scrape → fetchURL, make private) still needs to be implemented.
+
+---
+
+## What This Means
+
+### Good News ✅
+1. **Major architectural improvements already implemented:**
+   - Visit tracking centralized in Crawler (eliminates races)
+   - Collector is now synchronous (cleaner control flow)
+   - Clear concurrency model (worker pool in Crawler)
+
+2. **Progress toward goals:**
+   - Single source of truth for visit decisions ✅
+   - Crawler owns orchestration logic ✅
+   - Collector is lower-level HTTP engine ✅
+
+### Remaining Work ❌
+1. **Encapsulation issues still present:**
+   - Direct field access still happening (Context, store, backend.Client)
+   - Need accessor methods (Phase 1)
+
+2. **Duplication still present:**
+   - URL filtering happens in BOTH Collector and Crawler
+   - Domain checks duplicated
+   - Need to move config to Crawler (Phase 2-3)
+
+3. **API cleanup needed:**
+   - scrape() still exposed to Crawler
+   - Should be renamed to fetchURL() and made internal (Phase 3)
+
+---
+
+## Updated Implementation Plan
+
+### ✅ COMPLETED (Already in codebase):
+- Move visit checking to Crawler (single-threaded processor)
+- Remove async from Collector (synchronous fetch)
+- Add checkRevisit parameter to scrape()
+
+### ❌ REMAINING (Still needs to be done):
+
+**Phase 1: Add Accessor Methods (3.5 hrs)**
+- [ ] Add `GetContext()` to Collector
+- [ ] Add `GetHTTPClient()` to Collector
+- [ ] Add `MarkVisited()` to Collector
+- [ ] Update Crawler to use accessors
+- [ ] Add unit tests
+
+**Phase 2: Move Configuration (3 hrs)**
+- [ ] Add filter fields to Crawler struct
+- [ ] Update NewCrawler() initialization
+- [ ] Update isURLCrawlable() references
+- [ ] Test with both locations
+
+**Phase 3: Remove Redundancy (5 hrs)**
+- [ ] Remove checkFilters() from Collector.requestCheck()
+- [ ] Remove filter fields from Collector
+- [ ] Update all tests
+- [ ] Write migration guide
+
+**Phase 4: Rename Internal Methods (1 hr)**
+- [ ] Rename scrape() → fetchURL()
+- [ ] Update Crawler calls
+- [ ] Update documentation
+
+**Total Remaining Effort:** ~12.5 hours
+
+---
+
+**Document Updated:** 2025-10-16 (Code Review)
+**Status:** Partially implemented - visit tracking and sync refactoring complete, encapsulation and duplication work remains
+**Recommendation:** Continue with Phase 1 (Accessor Methods)
