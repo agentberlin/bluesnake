@@ -23,18 +23,24 @@ import (
 	"time"
 
 	"github.com/agentberlin/bluesnake/internal/app"
-	"github.com/agentberlin/bluesnake/internal/tunnel"
 	"github.com/agentberlin/bluesnake/internal/types"
 )
 
-// ServerManager manages the HTTP server and cloudflared tunnel lifecycle
+const (
+	// DEFAULT_START_PORT is the starting port for port retry logic
+	DEFAULT_START_PORT = 38888
+
+	// MAX_PORT_ATTEMPTS is the number of ports to try before giving up
+	MAX_PORT_ATTEMPTS = 10
+)
+
+// ServerManager manages the HTTP server lifecycle
 type ServerManager struct {
 	httpServer     *http.Server
-	tunnelManager  *tunnel.TunnelManager
 	app            *app.App
 	ctx            context.Context
 	isRunning      bool
-	publicURL      string
+	localURL       string
 	port           int
 	lastError      string
 	mu             sync.RWMutex
@@ -46,28 +52,27 @@ func NewServerManager(ctx context.Context, app *app.App) *ServerManager {
 	return &ServerManager{
 		app:            app,
 		ctx:            ctx,
-		tunnelManager:  tunnel.NewTunnelManager(),
 		serverShutdown: make(chan struct{}),
 	}
 }
 
-// StartWithTunnel starts the HTTP server and cloudflared tunnel
-// It tries ports starting from 38888 and returns the public URL
+// StartWithTunnel starts the HTTP server on localhost
+// It tries ports starting from 38888 and returns the local URL
 func (sm *ServerManager) StartWithTunnel() (*types.ServerInfo, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	if sm.isRunning {
 		return &types.ServerInfo{
-			PublicURL: sm.publicURL,
+			PublicURL: sm.localURL,
 			Port:      sm.port,
 		}, nil
 	}
 
 	// Try to start server on available port
 	var lastErr error
-	for i := 0; i < tunnel.MAX_PORT_ATTEMPTS; i++ {
-		port := tunnel.DEFAULT_START_PORT + i
+	for i := 0; i < MAX_PORT_ATTEMPTS; i++ {
+		port := DEFAULT_START_PORT + i
 
 		// Try to start HTTP server on this port
 		if err := sm.startHTTPServer(port); err != nil {
@@ -75,45 +80,31 @@ func (sm *ServerManager) StartWithTunnel() (*types.ServerInfo, error) {
 			continue // Try next port
 		}
 
-		// Server started successfully, now start tunnel
-		publicURL, err := sm.tunnelManager.Start(port)
-		if err != nil {
-			// Tunnel failed, stop the server and return error
-			sm.stopHTTPServer()
-			sm.lastError = fmt.Sprintf("Tunnel failed: %v", err)
-			return nil, fmt.Errorf("failed to start tunnel: %w", err)
-		}
-
-		// Success!
+		// Server started successfully
+		localURL := fmt.Sprintf("http://localhost:%d", port)
 		sm.isRunning = true
-		sm.publicURL = publicURL
+		sm.localURL = localURL
 		sm.port = port
 		sm.lastError = ""
 
 		return &types.ServerInfo{
-			PublicURL: publicURL,
+			PublicURL: localURL,
 			Port:      port,
 		}, nil
 	}
 
 	// All ports failed
 	sm.lastError = fmt.Sprintf("No available ports found: %v", lastErr)
-	return nil, fmt.Errorf("failed to start server after %d attempts: %w", tunnel.MAX_PORT_ATTEMPTS, lastErr)
+	return nil, fmt.Errorf("failed to start server after %d attempts: %w", MAX_PORT_ATTEMPTS, lastErr)
 }
 
-// Stop stops both the tunnel and HTTP server
+// Stop stops the HTTP server
 func (sm *ServerManager) Stop() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	if !sm.isRunning {
 		return fmt.Errorf("server is not running")
-	}
-
-	// Stop tunnel first
-	if err := sm.tunnelManager.Stop(); err != nil {
-		sm.lastError = fmt.Sprintf("Failed to stop Cloudflare: %v", err)
-		// Continue to stop server anyway
 	}
 
 	// Stop HTTP server
@@ -123,7 +114,7 @@ func (sm *ServerManager) Stop() error {
 	}
 
 	sm.isRunning = false
-	sm.publicURL = ""
+	sm.localURL = ""
 	sm.port = 0
 	sm.lastError = ""
 
@@ -137,7 +128,7 @@ func (sm *ServerManager) GetStatus() *types.ServerStatus {
 
 	return &types.ServerStatus{
 		IsRunning: sm.isRunning,
-		PublicURL: sm.publicURL,
+		PublicURL: sm.localURL,
 		Port:      sm.port,
 		Error:     sm.lastError,
 	}

@@ -162,12 +162,12 @@ func (d *DesktopApp) GetVersion() string {
 	return d.app.GetVersion()
 }
 
-// StartServerWithTunnel starts the HTTP server with cloudflared tunnel
+// StartServerWithTunnel starts the HTTP server on localhost
 func (d *DesktopApp) StartServerWithTunnel() (*types.ServerInfo, error) {
 	return d.serverManager.StartWithTunnel()
 }
 
-// StopServerWithTunnel stops the HTTP server and tunnel
+// StopServerWithTunnel stops the HTTP server
 func (d *DesktopApp) StopServerWithTunnel() error {
 	return d.serverManager.Stop()
 }
