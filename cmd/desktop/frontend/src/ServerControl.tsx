@@ -36,7 +36,6 @@ function ServerControl() {
   });
   const [isLoading, setIsLoading] = useState(false);
   const [showCopied, setShowCopied] = useState(false);
-  const [showModal, setShowModal] = useState(false);
 
   // Poll server status
   useEffect(() => {
@@ -58,15 +57,6 @@ function ServerControl() {
       return () => clearInterval(interval);
     }
   }, [status.isRunning]);
-
-  const handleStartClick = () => {
-    setShowModal(true);
-  };
-
-  const handleAcceptAndStart = () => {
-    setShowModal(false);
-    handleStart();
-  };
 
   const handleStart = async () => {
     setIsLoading(true);
@@ -128,9 +118,9 @@ function ServerControl() {
           <>
             <button
               className="server-control-button"
-              onClick={handleStartClick}
+              onClick={handleStart}
               disabled={isLoading}
-              title="Start local server with public URL"
+              title="Start local server"
             >
               {isLoading ? 'Starting...' : 'Start Server'}
             </button>
@@ -179,53 +169,14 @@ function ServerControl() {
                   <circle className="server-spinner-circle" cx="8" cy="8" r="6" strokeWidth="2" fill="none" />
                 </svg>
               ) : (
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18"></line>
-                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="6" y="6" width="12" height="12" rx="1"></rect>
                 </svg>
               )}
             </button>
           </div>
         )}
       </div>
-
-      {/* Cloudflared Notice Modal */}
-      {showModal && (
-        <div className="modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="modal cloudflared-modal" onClick={(e) => e.stopPropagation()}>
-            <h3>Secure URL via Cloudflare</h3>
-            <p className="cloudflared-description">
-              BlueSnake uses <strong>Cloudflare</strong> to provide you with a secure URL.
-            </p>
-            <div className="cloudflared-copyright">
-              <p className="copyright-title">COPYRIGHT:</p>
-              <p>(c) 2025 Cloudflare Inc.</p>
-              <p className="copyright-text">
-                Your installation of cloudflared software constitutes a symbol of your signature indicating that you accept
-                the terms of the{' '}
-                <a href="https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/license" target="_blank" rel="noopener noreferrer">
-                  Apache License Version 2.0
-                </a>,{' '}
-                <a href="https://www.cloudflare.com/terms/" target="_blank" rel="noopener noreferrer">
-                  Terms
-                </a>{' '}
-                and{' '}
-                <a href="https://www.cloudflare.com/privacypolicy/" target="_blank" rel="noopener noreferrer">
-                  Privacy Policy
-                </a>.
-              </p>
-            </div>
-            <div className="modal-actions">
-              <button className="modal-button cancel" onClick={() => setShowModal(false)}>
-                Cancel
-              </button>
-              <button className="modal-button primary" onClick={handleAcceptAndStart}>
-                Accept & Start Server
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }
