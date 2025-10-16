@@ -43,7 +43,7 @@ func TestLinkExtraction_MultipleTypes(t *testing.T) {
 	var mu sync.Mutex
 	var homePageResult *PageResult
 
-	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}, Async: true})
+	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
 	crawler.Collector.WithTransport(mock)
 
 	crawler.SetOnPageCrawled(func(result *PageResult) {
@@ -139,7 +139,7 @@ func TestInternalExternalClassification(t *testing.T) {
 	var mu sync.Mutex
 	var homePageResult *PageResult
 
-	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}, Async: true})
+	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
 	crawler.Collector.WithTransport(mock)
 
 	crawler.SetOnPageCrawled(func(result *PageResult) {
@@ -237,7 +237,7 @@ func TestLinkMetadata(t *testing.T) {
 	var mu sync.Mutex
 	var page1Result *PageResult
 
-	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}, Async: true})
+	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
 	crawler.Collector.WithTransport(mock)
 
 	crawler.SetOnPageCrawled(func(result *PageResult) {
@@ -321,7 +321,6 @@ func TestSpiderOnlyFollowsAnchors(t *testing.T) {
 
 	crawler := NewCrawler(&CollectorConfig{
 		AllowedDomains:      []string{"example.com"},
-		Async:               true,
 		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySpider},
 		ResourceValidation:  &ResourceValidationConfig{Enabled: false}, // Disable for this test
 	})
@@ -387,7 +386,7 @@ func TestRootDomainExtraction(t *testing.T) {
 			var startPageResult *PageResult
 
 			// Don't restrict AllowedDomains to test classification logic
-			crawler := NewCrawler(&CollectorConfig{Async: true})
+			crawler := NewCrawler(&CollectorConfig{})
 			crawler.Collector.WithTransport(mock)
 
 			crawler.SetOnPageCrawled(func(result *PageResult) {
@@ -515,7 +514,6 @@ func TestCSSResourceExtraction(t *testing.T) {
 
 	crawler := NewCrawler(&CollectorConfig{
 		AllowedDomains: []string{"example.com"},
-		Async:          true,
 		// Enable resource validation to crawl CSS resources
 		ResourceValidation: &ResourceValidationConfig{
 			Enabled:       true,
@@ -625,7 +623,6 @@ func TestCSSResourceExtractionInternalOnly(t *testing.T) {
 
 	crawler := NewCrawler(&CollectorConfig{
 		AllowedDomains: []string{"example.com"},
-		Async:          true,
 		// Enable stylesheet validation but NOT font validation
 		// Internal fonts should still be crawled, external fonts should not
 		ResourceValidation: &ResourceValidationConfig{

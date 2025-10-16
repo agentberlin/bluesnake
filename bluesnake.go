@@ -137,8 +137,6 @@ type CollectorConfig struct {
 	// IgnoreRobotsTxt allows the Collector to ignore any restrictions set by
 	// the target host's robots.txt file.
 	IgnoreRobotsTxt bool
-	// Async turns on asynchronous network communication.
-	Async bool
 	// ParseHTTPErrorResponse allows parsing HTTP responses with non 2xx status codes.
 	ParseHTTPErrorResponse bool
 	// ID is the unique identifier of a collector (auto-assigned if 0)
@@ -255,9 +253,6 @@ type Collector struct {
 	// the target host's robots.txt file.  See http://www.robotstxt.org/ for more
 	// information.
 	IgnoreRobotsTxt bool
-	// Async turns on asynchronous network communication. Use Collector.Wait() to
-	// be sure all requests have been finished.
-	Async bool
 	// ParseHTTPErrorResponse allows parsing HTTP responses with non 2xx status codes.
 	// By default, BlueSnake parses only successful HTTP responses. Set ParseHTTPErrorResponse
 	// to true to enable it.
@@ -320,7 +315,6 @@ type Collector struct {
 	requestCount             uint32
 	responseCount            uint32
 	backend                  *httpBackend
-	wg                       *sync.WaitGroup
 	lock                     *sync.RWMutex
 	// CacheExpiration sets the maximum age for cache files.
 	// If a cached file is older than this duration, it will be ignored and refreshed.
@@ -512,7 +506,6 @@ func NewDefaultConfig() *CollectorConfig {
 		MaxDepth:               0,
 		MaxRequests:            0,
 		AllowURLRevisit:        false,
-		Async:                  false,
 		DetectCharset:          false,
 		CheckHead:              false,
 		TraceHTTP:              false,
@@ -592,9 +585,6 @@ func NewCollector(config *CollectorConfig) *Collector {
 		// But we can't distinguish between "explicitly false" and "unset" with a bool
 		// So we keep the default (true) unless the whole config suggests otherwise
 		// For now, keep the default behavior
-		if config.Async {
-			defaults.Async = true
-		}
 		if config.ParseHTTPErrorResponse {
 			defaults.ParseHTTPErrorResponse = true
 		}
@@ -685,7 +675,6 @@ func NewCollector(config *CollectorConfig) *Collector {
 	c.MaxBodySize = config.MaxBodySize
 	c.CacheDir = config.CacheDir
 	c.IgnoreRobotsTxt = config.IgnoreRobotsTxt
-	c.Async = config.Async
 	c.ParseHTTPErrorResponse = config.ParseHTTPErrorResponse
 	if config.ID != 0 {
 		c.ID = config.ID
@@ -747,7 +736,6 @@ func (c *Collector) Init() {
 	jar, _ := cookiejar.New(nil)
 	c.backend.Init(jar)
 	c.backend.Client.CheckRedirect = c.checkRedirectFunc()
-	c.wg = &sync.WaitGroup{}
 	c.lock = &sync.RWMutex{}
 	c.robotsMap = make(map[string]*robotstxt.RobotsData)
 	c.IgnoreRobotsTxt = true
@@ -925,28 +913,19 @@ func (c *Collector) scrape(u, method string, depth int, requestData io.Reader, c
 		return err
 	}
 	u = parsedURL.String()
-	log.Printf("[SCRAPE] WaitGroup Add(1) for: %s", u)
-	c.wg.Add(1)
-	// Check before adding to queue
+
+	// Check context before processing
 	select {
 	case <-c.Context.Done():
-		c.wg.Done()
 		return c.Context.Err()
 	default:
 	}
-	if c.Async {
-		go c.fetch(u, method, depth, requestData, ctx, hdr, req)
-		return nil
-	}
+
+	// Always run synchronously - concurrency is managed by Crawler's worker pool
 	return c.fetch(u, method, depth, requestData, ctx, hdr, req)
 }
 
 func (c *Collector) fetch(u, method string, depth int, requestData io.Reader, ctx *Context, hdr http.Header, req *http.Request) error {
-	defer func() {
-		log.Printf("[FETCH] WaitGroup Done() for: %s", u)
-		c.wg.Done()
-	}()
-
 	// Check cancellation before processing
 	select {
 	case <-c.Context.Done():
@@ -1045,21 +1024,17 @@ func (c *Collector) fetch(u, method string, depth int, requestData io.Reader, ct
 
 	c.handleOnResponse(response)
 
-	log.Printf("[FETCH-CALLBACKS] Starting OnHTML for: %s", u)
 	err = c.handleOnHTML(response)
 	if err != nil {
 		c.handleOnError(response, err, request, ctx)
 	}
-	log.Printf("[FETCH-CALLBACKS] Finished OnHTML for: %s", u)
 
 	err = c.handleOnXML(response)
 	if err != nil {
 		c.handleOnError(response, err, request, ctx)
 	}
 
-	log.Printf("[FETCH-CALLBACKS] Starting OnScraped for: %s", u)
 	c.handleOnScraped(response)
-	log.Printf("[FETCH-CALLBACKS] Finished OnScraped for: %s", u)
 
 	return err
 }
@@ -1204,11 +1179,6 @@ func (c *Collector) String() string {
 		len(c.responseCallbacks),
 		len(c.errorCallbacks),
 	)
-}
-
-// Wait returns when the collector jobs are finished
-func (c *Collector) Wait() {
-	c.wg.Wait()
 }
 
 // IsCancelled returns true if the collector's context is cancelled
@@ -1757,7 +1727,6 @@ func (c *Collector) Clone() *Collector {
 		store:                  c.store,
 		backend:                c.backend,
 		debugger:               c.debugger,
-		Async:                  c.Async,
 		redirectHandler:        c.redirectHandler,
 		errorCallbacks:         make([]ErrorCallback, 0, 8),
 		htmlCallbacks:          make([]*htmlCallbackContainer, 0, 8),
@@ -1767,7 +1736,6 @@ func (c *Collector) Clone() *Collector {
 		requestCallbacks:       make([]RequestCallback, 0, 8),
 		responseCallbacks:      make([]ResponseCallback, 0, 8),
 		robotsMap:              c.robotsMap,
-		wg:                     &sync.WaitGroup{},
 	}
 }
 

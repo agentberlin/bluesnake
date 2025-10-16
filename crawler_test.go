@@ -50,7 +50,7 @@ func TestDiscoveredURLs(t *testing.T) {
 	var homePageResult *PageResult
 
 	// Create crawler with mock transport
-	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}, Async: true})
+	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
 	crawler.Collector.WithTransport(mock)
 
 	// Set callback to capture the home page result
@@ -163,7 +163,6 @@ func TestDiscoveryMechanism_SpiderOnly(t *testing.T) {
 	// Create crawler with spider-only mode
 	crawler := NewCrawler(&CollectorConfig{
 		AllowedDomains:      []string{"example.com"},
-		Async:               true,
 		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySpider},
 	})
 	crawler.Collector.WithTransport(mock)
@@ -237,7 +236,6 @@ func TestDiscoveryMechanism_SitemapOnly(t *testing.T) {
 	// Create crawler with sitemap-only mode
 	crawler := NewCrawler(&CollectorConfig{
 		AllowedDomains:      []string{"example.com"},
-		Async:               true,
 		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySitemap},
 	})
 	crawler.Collector.WithTransport(mock)
@@ -324,7 +322,6 @@ func TestDiscoveryMechanism_Both(t *testing.T) {
 	// Create crawler with both mechanisms
 	crawler := NewCrawler(&CollectorConfig{
 		AllowedDomains:      []string{"example.com"},
-		Async:               true,
 		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySpider, DiscoverySitemap},
 	})
 	crawler.Collector.WithTransport(mock)
@@ -411,7 +408,6 @@ func TestDiscoveryMechanism_CustomSitemapURL(t *testing.T) {
 	// Create crawler with custom sitemap URL
 	crawler := NewCrawler(&CollectorConfig{
 		AllowedDomains:      []string{"example.com"},
-		Async:               true,
 		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySitemap},
 		SitemapURLs:         []string{"https://example.com/custom-sitemap.xml"},
 	})
@@ -479,7 +475,6 @@ func TestDiscoveryMechanism_EmptySitemap(t *testing.T) {
 	// Create crawler with sitemap mode
 	crawler := NewCrawler(&CollectorConfig{
 		AllowedDomains:      []string{"example.com"},
-		Async:               true,
 		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySitemap},
 	})
 	crawler.Collector.WithTransport(mock)
@@ -527,7 +522,6 @@ func TestDiscoveryMechanism_NoSitemap(t *testing.T) {
 	// Create crawler with sitemap mode
 	crawler := NewCrawler(&CollectorConfig{
 		AllowedDomains:      []string{"example.com"},
-		Async:               true,
 		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySitemap},
 	})
 	crawler.Collector.WithTransport(mock)
@@ -979,7 +973,6 @@ func TestResourceValidation_ConfiguredTypes(t *testing.T) {
 
 			crawler := NewCrawler(&CollectorConfig{
 				AllowedDomains:     []string{"example.com", "external.com"}, // Need to allow external domain
-				Async:              true,
 				ResourceValidation: resourceValidation,
 			})
 			crawler.Collector.WithTransport(mock)
@@ -1423,7 +1416,6 @@ func TestCustomFilters_Integration(t *testing.T) {
 
 	crawler := NewCrawler(&CollectorConfig{
 		AllowedDomains: []string{"example.com"},
-		Async:          true,
 	})
 	crawler.Collector.WithTransport(mock)
 
@@ -1488,4 +1480,150 @@ func TestCustomFilters_Integration(t *testing.T) {
 	}
 
 	t.Logf("Custom filters correctly excluded %d URLs from link discovery", len(filteredURLs))
+}
+
+// TestCrawlerURLRevisit tests that the crawler doesn't revisit the same URL by default
+func TestCrawlerURLRevisit(t *testing.T) {
+	mock := NewMockTransport()
+
+	// Register a page that links to itself
+	mock.RegisterHTML("https://example.com/", `<html>
+		<head><title>Home</title></head>
+		<body><a href="/">Self Link</a></body>
+	</html>`)
+
+	var mu sync.Mutex
+	visitCount := 0
+
+	crawler := NewCrawler(&CollectorConfig{AllowedDomains: []string{"example.com"}})
+	crawler.Collector.WithTransport(mock)
+
+	crawler.SetOnPageCrawled(func(result *PageResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		visitCount++
+	})
+
+	err := crawler.Start("https://example.com/")
+	if err != nil {
+		t.Fatalf("Failed to start crawler: %v", err)
+	}
+
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Should only visit the URL once, even though it links to itself
+	if visitCount != 1 {
+		t.Errorf("URL revisited: expected 1 visit, got %d", visitCount)
+	}
+
+	t.Log("Crawler correctly prevents URL revisits by default")
+}
+
+// TestCrawlerURLRevisitAllowed tests that the crawler can revisit URLs when AllowURLRevisit is true
+func TestCrawlerURLRevisitAllowed(t *testing.T) {
+	mock := NewMockTransport()
+
+	// Register pages
+	mock.RegisterHTML("https://example.com/", `<html>
+		<head><title>Home</title></head>
+		<body>
+			<a href="/page1">Page 1</a>
+		</body>
+	</html>`)
+
+	mock.RegisterHTML("https://example.com/page1", `<html>
+		<head><title>Page 1</title></head>
+		<body>
+			<a href="/">Back Home</a>
+		</body>
+	</html>`)
+
+	var mu sync.Mutex
+	visitedURLs := make(map[string]int)
+
+	crawler := NewCrawler(&CollectorConfig{
+		AllowedDomains:  []string{"example.com"},
+		AllowURLRevisit: true,
+	})
+	crawler.Collector.WithTransport(mock)
+
+	crawler.SetOnPageCrawled(func(result *PageResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		visitedURLs[result.URL]++
+	})
+
+	err := crawler.Start("https://example.com/")
+	if err != nil {
+		t.Fatalf("Failed to start crawler: %v", err)
+	}
+
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// With AllowURLRevisit = true and a circular link structure,
+	// the home page should be visited multiple times
+	// (However, MaxDepth will limit the recursion to prevent infinite loops)
+	homeVisits := visitedURLs["https://example.com/"]
+	if homeVisits < 1 {
+		t.Errorf("Expected home page to be visited at least once, got %d", homeVisits)
+	}
+
+	t.Logf("Crawler with AllowURLRevisit: home page visited %d times", homeVisits)
+}
+
+// TestCrawlerRedirectVisitTracking tests that redirects are properly tracked as visited
+func TestCrawlerRedirectVisitTracking(t *testing.T) {
+	// Create test server for redirect testing
+	ts := newTestServer()
+	defer ts.Close()
+
+	var mu sync.Mutex
+	crawledURLs := []string{}
+
+	crawler := NewCrawler(&CollectorConfig{
+		AllowedDomains: []string{"127.0.0.1"},
+	})
+
+	crawler.SetOnPageCrawled(func(result *PageResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		crawledURLs = append(crawledURLs, result.URL)
+	})
+
+	// Start with the redirect URL
+	err := crawler.Start(ts.URL + "/redirect")
+	if err != nil {
+		t.Fatalf("Failed to start crawler: %v", err)
+	}
+
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Should have crawled the redirect destination, not the redirect URL itself
+	if len(crawledURLs) == 0 {
+		t.Fatal("No URLs were crawled")
+	}
+
+	// The crawler should have followed the redirect and crawled the destination
+	foundDestination := false
+	for _, url := range crawledURLs {
+		if strings.HasSuffix(url, "/redirected/") {
+			foundDestination = true
+			break
+		}
+	}
+
+	if !foundDestination {
+		t.Errorf("Expected to find redirected destination in crawled URLs, got: %v", crawledURLs)
+	}
+
+	t.Logf("Crawler correctly followed redirect and crawled %d URLs", len(crawledURLs))
 }

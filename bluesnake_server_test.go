@@ -309,68 +309,6 @@ func requireSessionCookieAuthPage(handler http.Handler) http.Handler {
 	})
 }
 
-// TestCollectorURLRevisitCheck tests URL revisit tracking with redirects
-func TestCollectorURLRevisitCheck(t *testing.T) {
-	ts := newTestServer()
-	defer ts.Close()
-
-	c := NewCollector(nil)
-
-	visited, err := c.HasVisited(ts.URL)
-
-	if err != nil {
-		t.Error(err.Error())
-	}
-
-	if visited != false {
-		t.Error("Expected URL to NOT have been visited")
-	}
-
-	c.Visit(ts.URL)
-
-	visited, err = c.HasVisited(ts.URL)
-
-	if err != nil {
-		t.Error(err.Error())
-	}
-
-	if visited != true {
-		t.Error("Expected URL to have been visited")
-	}
-
-	errorTestCases := []struct {
-		Path             string
-		DestinationError string
-	}{
-		{"/", "/"},
-		{"/redirect?d=/", "/"},
-		// now that /redirect?d=/ itself is recorded as visited,
-		// it's now returned in error
-		{"/redirect?d=/", "/redirect?d=/"},
-		{"/redirect?d=/redirect%3Fd%3D/", "/redirect?d=/"},
-		{"/redirect?d=/redirect%3Fd%3D/", "/redirect?d=/redirect%3Fd%3D/"},
-		{"/redirect?d=/redirect%3Fd%3D/&foo=bar", "/redirect?d=/"},
-	}
-
-	for i, testCase := range errorTestCases {
-		err := c.Visit(ts.URL + testCase.Path)
-		if testCase.DestinationError == "" {
-			if err != nil {
-				t.Errorf("got unexpected error in test %d: %q", i, err)
-			}
-		} else {
-			var ave *AlreadyVisitedError
-			if !errors.As(err, &ave) {
-				t.Errorf("err=%q returned when trying to revisit, expected AlreadyVisitedError", err)
-			} else {
-				if got, want := ave.Destination.String(), ts.URL+testCase.DestinationError; got != want {
-					t.Errorf("wrong destination in AlreadyVisitedError in test %d, got=%q want=%q", i, got, want)
-				}
-			}
-		}
-	}
-}
-
 // TestSetCookieRedirect tests cookie handling with redirects
 func TestSetCookieRedirect(t *testing.T) {
 	type middleware = func(http.Handler) http.Handler

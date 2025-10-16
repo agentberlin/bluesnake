@@ -183,6 +183,9 @@ type Crawler struct {
 	processorDone    chan struct{}            // Signals processor completion
 	workerPool       *WorkerPool              // Controlled worker pool
 	droppedURLs      uint64                   // Count of URLs dropped due to full channel
+
+	// Work coordination
+	wg sync.WaitGroup // Tracks pending work items (queued + processing)
 }
 
 // NewCrawler creates a high-level crawler with the specified collector configuration.
@@ -296,22 +299,26 @@ func (cr *Crawler) SetOnURLDiscovered(f OnURLDiscoveredFunc) {
 // queueURL sends a URL to the discovery channel for processing.
 // This is called by all discovery mechanisms (initial, sitemap, spider, network, resources).
 // Uses non-blocking sends to prevent deadlocks.
+//
+// CRITICAL: This increments the Crawler's WaitGroup to track pending work.
+// The WaitGroup is decremented when processing completes (in the worker function).
+// This ensures Wait() doesn't return while work is still queued or being processed.
 func (cr *Crawler) queueURL(req URLDiscoveryRequest) {
-	log.Printf("[QUEUE-ATTEMPT] URL: %s, Source: %s", req.URL, req.Source)
+	// Add to WaitGroup BEFORE queuing to track pending work
+	// This ensures wg counts both "queued" and "processing" work
+	cr.wg.Add(1)
 
 	select {
 	case cr.discoveryChannel <- req:
 		// Successfully queued (non-blocking if channel has buffer space)
-		log.Printf("[QUEUE-SUCCESS] URL: %s", req.URL)
 
 	case <-cr.Collector.Context.Done():
-		// Crawl cancelled - drop URL (likely because user cancelled)
-		log.Printf("[QUEUE-DROPPED] URL: %s (context done)", req.URL)
+		// Failed to queue due to cancellation - undo the Add
+		cr.wg.Done()
 
 	default:
-		// Channel full - drop URL to prevent deadlock - this is the only situation where we drop
-		// urls without user's cancellation which is very very unlikely situation of getting the queue to be at 50k
-		log.Printf("[QUEUE-DROPPED] URL: %s (channel full)", req.URL)
+		// Failed to queue due to full channel - undo the Add
+		cr.wg.Done()
 		if req.Source == "initial" {
 			// Never drop the initial URL - log error
 			log.Printf("ERROR: Dropped initial URL due to full channel: %s", req.URL)
@@ -330,7 +337,6 @@ func (cr *Crawler) runURLProcessor() {
 		case req, ok := <-cr.discoveryChannel:
 			if !ok {
 				// Channel closed - no more URLs to process
-				log.Printf("[PROCESSOR] Discovery channel closed, exiting processor")
 				return
 			}
 			// Process this URL (serialized - no race possible)
@@ -352,19 +358,20 @@ func (cr *Crawler) runURLProcessor() {
 
 // processDiscoveredURL handles a single discovered URL.
 // This runs in the processor goroutine, so only ONE instance executes at a time.
+//
+// CRITICAL: This function is responsible for ensuring wg.Done() is called.
+// wg.Done() must be called for every URL that was queued (wg.Add in queueURL).
 func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
-	log.Printf("[PROCESSOR] Processing URL: %s (source: %s)", req.URL, req.Source)
-
 	// Step 1: Determine action for this URL (callback called once, memoized)
 	action := cr.getOrDetermineURLAction(req.URL)
 	if action == URLActionSkip {
-		log.Printf("[PROCESSOR] Skipping URL (action=skip): %s", req.URL)
-		return // Skip analytics/tracking URLs
+		cr.wg.Done() // Work item complete (skipped)
+		return
 	}
 
 	// Step 2: Pre-filtering (domain checks, URL filters, robots.txt)
 	if !cr.isURLCrawlable(req.URL) {
-		log.Printf("[PROCESSOR] URL not crawlable: %s", req.URL)
+		cr.wg.Done() // Work item complete (filtered)
 		return
 	}
 
@@ -373,44 +380,43 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
 	uHash := requestHash(req.URL, nil)
 	alreadyVisited, err := cr.Collector.store.VisitIfNotVisited(uHash)
 	if err != nil {
-		log.Printf("[PROCESSOR] Error checking visited status for %s: %v", req.URL, err)
+		cr.wg.Done() // Work item complete (error)
 		return
 	}
 	if alreadyVisited {
-		log.Printf("[PROCESSOR] URL already visited: %s", req.URL)
-		return // Already processed by a previous discovery
+		cr.wg.Done() // Work item complete (already visited)
+		return
 	}
 
 	// Step 4: URL is now marked as visited - we own it
 	// Only crawl if action is "crawl" (not "record")
 	if action != URLActionCrawl {
-		log.Printf("[PROCESSOR] URL marked visited but not crawling (action=%s): %s", action, req.URL)
+		cr.wg.Done() // Work item complete (record-only)
 		return
 	}
 
-	log.Printf("[PROCESSOR] Submitting to worker pool: %s", req.URL)
 	// Step 5: Submit to worker pool for actual fetching
 	// CRITICAL: This blocks if worker pool queue is full
 	// This backpressure prevents the processor from racing ahead
 	err = cr.workerPool.Submit(func() {
-		log.Printf("[WORKER] Starting to process: %s", req.URL)
+		// Ensure wg.Done() is called when this worker finishes
+		// This happens AFTER scrape() and ALL callbacks complete
+		defer cr.wg.Done()
+
 		// We already marked this URL as visited in step 3 above.
 		// Call scrape() directly with checkRevisit=false to bypass any visit checking.
-		// Note: scrape() handles WaitGroup Add(1)/Done() internally, no need to do it here
 		cr.Collector.scrape(req.URL, "GET", req.Depth, nil, req.Context, nil, false)
-		log.Printf("[WORKER] Finished scraping: %s", req.URL)
+		// wg.Done() via defer happens here
 	})
 
 	if err != nil {
-		// Context cancelled or other error - URL was marked visited but not crawled
-		// This is acceptable - we attempted it
-		log.Printf("[PROCESSOR] Error submitting to worker pool for %s: %v", req.URL, err)
+		// Submit failed - worker will never run, so we must call Done() here
+		cr.wg.Done()
 		return
 	}
 
-	log.Printf("[PROCESSOR] Successfully submitted to worker pool: %s", req.URL)
 	// Successfully submitted to worker pool
-	// Worker will fetch it when available
+	// Worker will fetch it and call wg.Done() when complete
 }
 
 // getOrDetermineURLAction determines the action for a URL by calling the OnURLDiscovered callback.
@@ -474,30 +480,22 @@ func (cr *Crawler) Start(url string) error {
 // Wait blocks until all crawling operations complete.
 // The crawl naturally completes when all work is done (no more pending URLs, all workers idle).
 func (cr *Crawler) Wait() {
-	log.Printf("[WAIT] ========== STARTING WAIT ==========")
-	log.Printf("[WAIT] Starting Wait() - waiting for Collector.Wait()")
-	// Step 1: Wait for the Collector's WaitGroup to reach zero
-	// This happens when all HTTP requests finish (including discovered URLs becoming "already visited")
-	cr.Collector.Wait()
-	log.Printf("[WAIT] ========== COLLECTOR.WAIT() RETURNED ==========")
-	log.Printf("[WAIT] All HTTP requests complete (WaitGroup reached zero)")
+	// Step 1: Wait for ALL pending work items to complete
+	// This includes: queued URLs + URLs being processed by workers
+	// When wg reaches zero, it means:
+	// - No URLs in discovery channel
+	// - No worker functions running
+	// - No future URLs will be queued (all callbacks finished)
+	cr.wg.Wait()
 
-	// Step 2: At this point, all workers have finished their HTTP requests
-	// The processor may still have URLs in the discovery channel to process
-	// Close the discovery channel to signal "no more URLs will be added"
-	log.Printf("[WAIT] ========== CLOSING DISCOVERY CHANNEL ==========")
+	// Step 2: Close discovery channel (safe now - no more URLs will be queued)
 	close(cr.discoveryChannel)
-	log.Printf("[WAIT] Discovery channel closed")
 
 	// Step 3: Wait for the processor to finish draining the discovery channel
-	log.Printf("[WAIT] Waiting for processor to finish")
 	<-cr.processorDone
-	log.Printf("[WAIT] Processor finished")
 
-	// Step 4: Close the worker pool (should already be idle since Collector.Wait() returned)
-	log.Printf("[WAIT] Closing worker pool")
+	// Step 4: Close the worker pool (should already be idle)
 	cr.workerPool.Close()
-	log.Printf("[WAIT] Worker pool closed")
 
 	// Calculate totals
 	totalDiscovered := 0

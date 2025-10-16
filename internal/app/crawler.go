@@ -325,7 +325,6 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		UserAgent:           config.UserAgent,
 		MaxDepth:            maxDepth,                       // Set depth based on SinglePageMode
 		URLFilters:          []*regexp.Regexp{domainFilter}, // Use URLFilters instead of AllowedDomains
-		Async:               true,
 		EnableRendering:     config.JSRenderingEnabled,
 		DiscoveryMechanisms: mechanisms,
 		SitemapURLs:         config.GetSitemapURLsArray(),
