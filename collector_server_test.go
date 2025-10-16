@@ -31,7 +31,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -364,22 +363,71 @@ func TestRedirect(t *testing.T) {
 	c.Visit(ts.URL + "/redirect")
 }
 
-// TestRedirectWithDisallowedURLs tests redirect handling with URL filtering
-func TestRedirectWithDisallowedURLs(t *testing.T) {
+// TestOnRedirect tests the OnRedirect callback functionality
+func TestOnRedirect(t *testing.T) {
 	ts := newTestServer()
 	defer ts.Close()
 
-	c := NewCollector(nil)
-	c.DisallowedURLFilters = []*regexp.Regexp{regexp.MustCompile(ts.URL + "/redirected/test")}
-	c.OnHTML("a[href]", func(e *HTMLElement) {
-		u := e.Request.AbsoluteURL(e.Attr("href"))
-		err := c.Visit(u)
-		if !errors.Is(err, ErrForbiddenURL) {
-			t.Error("URL should have been forbidden: " + u)
+	t.Run("callback is called with correct parameters", func(t *testing.T) {
+		c := NewCollector(nil)
+
+		callbackCalled := false
+		var capturedURL string
+		var viaChainLength int
+
+		c.OnRedirect(func(req *http.Request, via []*http.Request) error {
+			callbackCalled = true
+			capturedURL = req.URL.String()
+			viaChainLength = len(via)
+			return nil // allow redirect
+		})
+
+		c.OnResponse(func(r *Response) {
+			if !strings.HasSuffix(r.Request.URL.String(), "/redirected/") {
+				t.Error("Redirect should have been followed")
+			}
+		})
+
+		if err := c.Visit(ts.URL + "/redirect"); err != nil {
+			t.Fatal(err)
+		}
+
+		if !callbackCalled {
+			t.Error("OnRedirect callback was not called")
+		}
+		if !strings.HasSuffix(capturedURL, "/redirected/") {
+			t.Errorf("OnRedirect received wrong URL: %s", capturedURL)
+		}
+		if viaChainLength != 1 {
+			t.Errorf("Expected via chain length 1, got %d", viaChainLength)
 		}
 	})
 
-	c.Visit(ts.URL + "/redirect")
+	t.Run("returning error blocks redirect", func(t *testing.T) {
+		c := NewCollector(nil)
+
+		c.OnRedirect(func(req *http.Request, via []*http.Request) error {
+			// Block redirect to /redirected/
+			if strings.HasSuffix(req.URL.String(), "/redirected/") {
+				return fmt.Errorf("redirect blocked by callback")
+			}
+			return nil
+		})
+
+		errorReceived := false
+		c.OnError(func(r *Response, err error) {
+			errorReceived = true
+			if !strings.Contains(err.Error(), "redirect blocked by callback") {
+				t.Errorf("Expected redirect blocked error, got: %v", err)
+			}
+		})
+
+		c.Visit(ts.URL + "/redirect")
+
+		if !errorReceived {
+			t.Error("Expected OnError to be called when redirect is blocked")
+		}
+	})
 }
 
 // TestCollectorCookies tests cookie persistence across requests
@@ -417,7 +465,7 @@ func TestCollectorVisitWithTrace(t *testing.T) {
 	ts := newTestServer()
 	defer ts.Close()
 
-	c := NewCollector(&CollectorConfig{AllowedDomains: []string{"localhost", "127.0.0.1", "::1"}, TraceHTTP: true})
+	c := NewCollector(&CollectorConfig{TraceHTTP: true})
 	c.OnResponse(func(resp *Response) {
 		if resp.Trace == nil {
 			t.Error("Failed to initialize trace")

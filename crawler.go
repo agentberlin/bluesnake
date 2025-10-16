@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
@@ -178,6 +179,12 @@ type Crawler struct {
 	discoveryMechanisms []DiscoveryMechanism // Enabled discovery mechanisms
 	sitemapURLs         []string             // Custom sitemap URLs (nil = try defaults)
 
+	// URL filtering configuration (owned by Crawler, not Collector)
+	allowedDomains         []string          // Domain whitelist
+	disallowedDomains      []string          // Domain blacklist
+	urlFilters             []*regexp.Regexp  // URL pattern whitelist
+	disallowedURLFilters   []*regexp.Regexp  // URL pattern blacklist
+
 	// Channel-based URL processing (eliminates race conditions)
 	discoveryChannel chan URLDiscoveryRequest // URLs to process
 	processorDone    chan struct{}            // Signals processor completion
@@ -221,21 +228,28 @@ func NewCrawler(config *CollectorConfig) *Crawler {
 	}
 
 	crawler := &Crawler{
-		Collector:           c,
-		queuedURLs:          &sync.Map{},
-		crawledPages:        0,
-		discoveryMechanisms: discoveryMechanisms,
-		sitemapURLs:         config.SitemapURLs,
-		pageMetadata:        &sync.Map{},
-		discoveryChannel:    make(chan URLDiscoveryRequest, discoveryChannelSize),
-		processorDone:       make(chan struct{}),
-		workerPool:          NewWorkerPool(c.Context, parallelism, workQueueSize),
-		droppedURLs:         0,
+		Collector:            c,
+		queuedURLs:           &sync.Map{},
+		crawledPages:         0,
+		discoveryMechanisms:  discoveryMechanisms,
+		sitemapURLs:          config.SitemapURLs,
+		pageMetadata:         &sync.Map{},
+		discoveryChannel:     make(chan URLDiscoveryRequest, discoveryChannelSize),
+		processorDone:        make(chan struct{}),
+		workerPool:           NewWorkerPool(c.Context, parallelism, workQueueSize),
+		droppedURLs:          0,
+		allowedDomains:       config.AllowedDomains,
+		disallowedDomains:    config.DisallowedDomains,
+		urlFilters:           config.URLFilters,
+		disallowedURLFilters: config.DisallowedURLFilters,
 	}
 
 	// Configure sitemap fetching to use the same HTTP client as the collector
 	// This ensures mocks and custom transports work for sitemap fetching too
 	crawler.configureSitemapFetch()
+
+	// Set up redirect validation callback to inject Crawler's URL filtering logic
+	crawler.setupRedirectValidation()
 
 	crawler.setupCallbacks()
 	return crawler
@@ -255,6 +269,19 @@ func (cr *Crawler) configureSitemapFetch() {
 		}
 		defer resp.Body.Close()
 		return io.ReadAll(resp.Body)
+	})
+}
+
+// setupRedirectValidation injects the Crawler's URL filtering logic into the Collector.
+// This ensures that redirect destinations are validated using the same domain and URL filters
+// as regular crawled URLs, maintaining architectural separation between Collector and Crawler.
+func (cr *Crawler) setupRedirectValidation() {
+	cr.Collector.OnRedirect(func(req *http.Request, via []*http.Request) error {
+		// Apply Crawler's URL filtering logic (domain filters, URL patterns, robots.txt)
+		if !cr.isURLCrawlable(req.URL.String()) {
+			return fmt.Errorf("redirect destination blocked by URL filters")
+		}
+		return nil
 	})
 }
 
@@ -898,18 +925,18 @@ func (cr *Crawler) isURLCrawlable(urlStr string) bool {
 
 	hostname := parsedURL.Hostname()
 
-	// Check domain allowlist/blocklist
-	if len(cr.Collector.DisallowedDomains) > 0 {
-		for _, d := range cr.Collector.DisallowedDomains {
+	// Check domain allowlist/blocklist using Crawler's own fields
+	if len(cr.disallowedDomains) > 0 {
+		for _, d := range cr.disallowedDomains {
 			if d == hostname {
 				return false
 			}
 		}
 	}
 
-	if len(cr.Collector.AllowedDomains) > 0 {
+	if len(cr.allowedDomains) > 0 {
 		allowed := false
-		for _, d := range cr.Collector.AllowedDomains {
+		for _, d := range cr.allowedDomains {
 			if d == hostname {
 				allowed = true
 				break
@@ -920,20 +947,20 @@ func (cr *Crawler) isURLCrawlable(urlStr string) bool {
 		}
 	}
 
-	// Check URL filters (DisallowedURLFilters and URLFilters)
+	// Check URL filters using Crawler's own fields
 	urlBytes := []byte(urlStr)
 
-	if len(cr.Collector.DisallowedURLFilters) > 0 {
-		for _, filter := range cr.Collector.DisallowedURLFilters {
+	if len(cr.disallowedURLFilters) > 0 {
+		for _, filter := range cr.disallowedURLFilters {
 			if filter.Match(urlBytes) {
 				return false
 			}
 		}
 	}
 
-	if len(cr.Collector.URLFilters) > 0 {
+	if len(cr.urlFilters) > 0 {
 		matched := false
-		for _, filter := range cr.Collector.URLFilters {
+		for _, filter := range cr.urlFilters {
 			if filter.Match(urlBytes) {
 				matched = true
 				break

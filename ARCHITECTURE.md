@@ -14,7 +14,7 @@ BlueSnake is a web crawler application with multiple interfaces, consisting of t
 ```
 bluesnake/
 ├── *.go                    # Core crawler package files
-│   ├── bluesnake.go        # Collector (low-level HTTP engine)
+│   ├── collector.go        # Collector (low-level HTTP engine)
 │   ├── crawler.go          # Crawler (high-level orchestration)
 │   ├── worker_pool.go      # Fixed-size worker pool
 ├── storage/               # Storage abstraction for crawler
@@ -147,12 +147,45 @@ T10     | [Goroutine delayed/fails]        |
           └─────────────────────┘
 ```
 
+### Separation of Responsibilities
+
+**CRITICAL DESIGN PRINCIPLE:**
+
+The architecture strictly separates concerns between two components:
+
+| Aspect | Collector (Low-Level) | Crawler (High-Level) |
+|--------|----------------------|----------------------|
+| **Purpose** | HTTP engine | Crawl orchestration |
+| **Scope** | Single HTTP request | Entire crawl session |
+| **URL Filtering** | ❌ None | ✅ All filtering logic |
+| **Visit Tracking** | ❌ None | ✅ Single-threaded processor |
+| **Concurrency** | ❌ None (synchronous) | ✅ Worker pool + processor |
+| **Callbacks** | Low-level (OnHTML, OnResponse) | High-level (OnPageCrawled) |
+| **Configuration** | HTTP settings only | Discovery + filtering + orchestration |
+
+**Architectural Boundary:**
+- Collector knows nothing about: crawl strategy, URL filtering, visit tracking, concurrency
+- Crawler knows nothing about: HTTP transport, HTML parsing, response handling
+- Communication: Crawler calls `Collector.scrape()` to fetch URLs; Collector calls callbacks to report results
+
+**Recent Refactoring (2025-10-16):**
+- **URL filtering moved from Collector → Crawler** - Eliminates duplicate filtering
+- **Filter configuration moved to Crawler** - `AllowedDomains`, `DisallowedDomains`, `URLFilters`, `DisallowedURLFilters` now owned by Crawler
+- **OnRedirect callback added** - Allows Crawler to inject redirect validation logic into Collector (maintains separation)
+- **Tests moved** - All filtering tests moved from `collector_test.go` → `crawler_test.go`
+
+**Upcoming Improvements:**
+- Add accessor methods (`GetContext()`, `GetHTTPClient()`, `MarkVisited()`) to eliminate direct field access
+- Rename `scrape()` → `FetchURL()` for clearer API intent
+
 ### Core Components
 
 #### 1. Crawler (High-Level Orchestration - `crawler.go`)
 
 **Responsibilities:**
 - URL discovery coordination (spider, sitemap, network, resources)
+- **URL filtering** (domain allowlists/blocklists, URL pattern matching)
+- **Redirect validation** (via OnRedirect callback injection)
 - Deduplication (track discovered URLs, call `OnURLDiscovered` callback once)
 - Visit tracking (single-threaded processor marks URLs as visited)
 - Work distribution (submit to worker pool)
@@ -163,6 +196,7 @@ T10     | [Goroutine delayed/fails]        |
 - HTTP requests
 - HTML parsing
 - Managing HTTP client/transport
+- Response handling
 
 **Key Type:**
 ```go
@@ -172,6 +206,12 @@ type Crawler struct {
     onResourceVisit OnResourceVisitFunc
     onCrawlComplete OnCrawlCompleteFunc
     onURLDiscovered OnURLDiscoveredFunc
+
+    // URL filtering configuration (owned by Crawler, NOT Collector)
+    allowedDomains       []string          // Domain whitelist
+    disallowedDomains    []string          // Domain blacklist
+    urlFilters           []*regexp.Regexp  // URL pattern whitelist
+    disallowedURLFilters []*regexp.Regexp  // URL pattern blacklist
 
     // Channel-based URL processing
     discoveryChannel chan URLDiscoveryRequest  // Buffered: 50k
@@ -186,22 +226,25 @@ type Crawler struct {
 }
 ```
 
-#### 2. Collector (Low-Level HTTP Engine - `bluesnake.go`)
+#### 2. Collector (Low-Level HTTP Engine - `collector.go`)
 
 **Responsibilities:**
 - HTTP requests (GET, POST, HEAD with customizable headers)
 - Response handling (status codes, headers, body)
 - HTML/XML parsing (GoQuery, xmlquery)
-- Low-level callback execution (OnRequest, OnResponse, OnHTML, OnXML, OnScraped, OnError)
+- Low-level callback execution (OnRequest, OnResponse, OnHTML, OnXML, OnScraped, OnError, **OnRedirect**)
 - Caching (optional disk cache)
-- Robots.txt handling
+- Robots.txt parsing (checks robots.txt rules only, no URL filtering)
 - Content hashing (duplicate content detection)
 - JavaScript rendering (optional chromedp integration)
 
 **Does NOT do:**
-- URL deduplication (no visit tracking - removed to eliminate races)
+- **URL filtering** (no domain checks, no URL pattern matching - moved to Crawler)
+- **Visit tracking** (no deduplication - managed by Crawler's single-threaded processor)
+- **Redirect validation** (delegates to Crawler via OnRedirect callback)
 - URL discovery (doesn't decide what to crawl next)
 - Work queueing (doesn't manage goroutines)
+- Crawl orchestration (no knowledge of crawl strategy)
 
 **Note**: `Collector` is now an internal implementation detail. Users interact with `Crawler`, which provides the high-level crawling API.
 
@@ -278,7 +321,10 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
         return
     }
 
-    // Step 2: Pre-filtering (domain checks, URL filters, robots.txt)
+    // Step 2: Pre-filtering (ALL FILTERING IN CRAWLER, NOT COLLECTOR)
+    // - Domain allowlist/blocklist (cr.allowedDomains, cr.disallowedDomains)
+    // - URL pattern filters (cr.urlFilters, cr.disallowedURLFilters)
+    // - Robots.txt (Collector only parses, Crawler decides)
     if !cr.isURLCrawlable(req.URL) {
         return
     }
@@ -299,6 +345,7 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
     // This provides backpressure - processor can't race ahead
     err = cr.workerPool.Submit(func() {
         // Fetch without revisit check (we already checked above)
+        // Collector.scrape() performs HTTP fetch only - NO filtering
         cr.Collector.wg.Add(1)
         cr.Collector.scrape(req.URL, "GET", req.Depth, nil, req.Context, nil, false)
     })
@@ -309,6 +356,12 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
 - Only ONE goroutine calls `VisitIfNotVisited()` at a time
 - Impossible for two goroutines to race on the same URL
 - URL is marked visited → immediately submitted to worker → guaranteed assignment
+
+**Why filtering happens here (in Crawler, not Collector):**
+- **Single source of truth** - All URLs filtered in one place (processor)
+- **No duplicate filtering** - Collector removed its filtering logic entirely
+- **Architectural separation** - Collector = HTTP engine, Crawler = orchestration + filtering
+- **Redirect validation** - Crawler injects filtering via OnRedirect callback
 
 #### 4. Worker Pool (`worker_pool.go`)
 
@@ -2240,11 +2293,11 @@ Executes: work()
     │
     └─ [crawler.go:394] cr.Collector.scrape(url, ...)
         ↓
-        [bluesnake.go:881] scrape(url, ...)
-        ├─ [bluesnake.go:929] c.wg.Add(1)  // Collector.wg = 1
+        [collector.go:881] scrape(url, ...)
+        ├─ [collector.go:929] c.wg.Add(1)  // Collector.wg = 1
         │   └─ [Logs] "[SCRAPE] WaitGroup Add(1) for: https://agentberlin.ai"
         │
-        └─ [bluesnake.go:938] go c.fetch(...)  // Goroutine 3: Async fetch
+        └─ [collector.go:938] go c.fetch(...)  // Goroutine 3: Async fetch
             └─ [App logs] "[WORKER] Finished scraping: https://agentberlin.ai"
                 (scrape() returns immediately in Async mode)
 
@@ -2259,16 +2312,16 @@ State after first URL submitted:
 Phase 3: Fetch & Callbacks
 
 [Goroutine 3: Fetch] fetch(url, ...)
-├─ [bluesnake.go:945] defer wg.Done()  // Will execute at END
+├─ [collector.go:945] defer wg.Done()  // Will execute at END
 │
-├─ [bluesnake.go:1004] response = HTTP GET
+├─ [collector.go:1004] response = HTTP GET
 │
-├─ [bluesnake.go:1046] handleOnResponse(response)
+├─ [collector.go:1046] handleOnResponse(response)
 │
-├─ [bluesnake.go:1048] handleOnHTML(response)
+├─ [collector.go:1048] handleOnHTML(response)
 │   └─ [Logs] "[FETCH-CALLBACKS] Starting OnHTML for: https://agentberlin.ai"
 │
-└─ [bluesnake.go:1543] handleOnHTML()
+└─ [collector.go:1543] handleOnHTML()
     ├─ Parses HTML with goquery
     │
     └─ For each registered OnHTML callback:
@@ -2289,13 +2342,13 @@ Phase 3: Fetch & Callbacks
 
 ├─ [Logs] "[FETCH-CALLBACKS] Finished OnHTML"
 │
-├─ [bluesnake.go:1060] handleOnScraped(response)
+├─ [collector.go:1060] handleOnScraped(response)
 │   └─ [Logs] "[FETCH-CALLBACKS] Starting OnScraped"
 │   └─ [crawler.go:296-358] OnScraped callback
 │       └─ Builds PageResult, calls onPageCrawled
 │   └─ [Logs] "[FETCH-CALLBACKS] Finished OnScraped"
 │
-└─ [bluesnake.go:1064] return
+└─ [collector.go:1064] return
     ↓
     Defer executes: wg.Done()  // Collector.wg = 0
     └─ [Logs] "[FETCH] WaitGroup Done() for: https://agentberlin.ai"
@@ -2370,16 +2423,16 @@ Phase 5: The Panic
 Executes: work()
     └─ [crawler.go:394] cr.Collector.scrape("/newsletter", ...)
         ↓
-        [bluesnake.go:929] c.wg.Add(1)  // Collector.wg = 1 again!
+        [collector.go:929] c.wg.Add(1)  // Collector.wg = 1 again!
         └─ [Logs] "[SCRAPE] WaitGroup Add(1) for: .../newsletter"
         ↓
-        [bluesnake.go:938] go c.fetch(...)  // Goroutine 5: New fetch
+        [collector.go:938] go c.fetch(...)  // Goroutine 5: New fetch
         └─ [Logs] "[WORKER] Finished scraping: .../newsletter"
 
 [Goroutine 5: Fetch] fetch("/newsletter", ...)
 ├─ HTTP GET, parse HTML
 │
-├─ [bluesnake.go:1048] handleOnHTML()
+├─ [collector.go:1048] handleOnHTML()
 │   └─ [Logs] "[FETCH-CALLBACKS] Starting OnHTML for: .../newsletter"
 │
 └─ [crawler.go:614] OnHTML callback: queueURL({URL: "/", Source: "spider"})
