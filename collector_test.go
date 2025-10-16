@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"testing"
 	"time"
 
@@ -80,47 +79,6 @@ func TestCollectorVisit(t *testing.T) {
 
 	if !onScrapedCalled {
 		t.Error("Failed to call OnScraped callback")
-	}
-}
-
-func TestCollectorVisitWithAllowedDomains(t *testing.T) {
-	mock := setupMockTransport()
-
-	c := NewCollector(&CollectorConfig{AllowedDomains: []string{"test.local"}})
-	c.SetClient(&http.Client{Transport: mock})
-
-	err := c.Visit(testBaseURL + "/")
-	if err != nil {
-		t.Errorf("Failed to visit url %s", testBaseURL)
-	}
-
-	err = c.Visit("http://example.com")
-	if err != ErrForbiddenDomain {
-		t.Errorf("c.Visit should return ErrForbiddenDomain, but got %v", err)
-	}
-}
-
-func TestCollectorVisitWithDisallowedDomains(t *testing.T) {
-	mock := setupMockTransport()
-
-	c := NewCollector(&CollectorConfig{DisallowedDomains: []string{"test.local"}})
-	c.SetClient(&http.Client{Transport: mock})
-
-	err := c.Visit(testBaseURL + "/")
-	if err != ErrForbiddenDomain {
-		t.Errorf("c.Visit should return ErrForbiddenDomain, but got %v", err)
-	}
-
-	c2 := NewCollector(&CollectorConfig{DisallowedDomains: []string{"example.com"}})
-	c2.SetClient(&http.Client{Transport: mock})
-
-	err = c2.Visit("http://example.com:8080")
-	if err != ErrForbiddenDomain {
-		t.Errorf("c.Visit should return ErrForbiddenDomain, but got %v", err)
-	}
-	err = c2.Visit(testBaseURL + "/")
-	if err != nil {
-		t.Errorf("Failed to visit url %s", testBaseURL)
 	}
 }
 
@@ -217,28 +175,6 @@ func TestCollectorContentSniffing(t *testing.T) {
 	if !htmlCallbackCalled {
 		t.Error("OnHTML was not called")
 	}
-}
-
-// TestCollectorURLRevisitDomainDisallowed ensures that disallowed URL is not considered visited.
-func TestCollectorURLRevisitDomainDisallowed(t *testing.T) {
-	mock := setupMockTransport()
-
-	parsedURL, err := url.Parse(testBaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	c := NewCollector(&CollectorConfig{DisallowedDomains: []string{parsedURL.Hostname()}})
-	c.SetClient(&http.Client{Transport: mock})
-	err = c.Visit(testBaseURL)
-	if got, want := err, ErrForbiddenDomain; got != want {
-		t.Fatalf("wrong error on first visit: got=%v want=%v", got, want)
-	}
-	err = c.Visit(testBaseURL)
-	if got, want := err, ErrForbiddenDomain; got != want {
-		t.Fatalf("wrong error on second visit: got=%v want=%v", got, want)
-	}
-
 }
 
 func TestCollectorPost(t *testing.T) {

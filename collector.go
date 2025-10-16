@@ -265,6 +265,9 @@ type Collector struct {
 	// RedirectHandler allows control on how a redirect will be managed
 	// use c.SetRedirectHandler to set this value
 	redirectHandler func(req *http.Request, via []*http.Request) error
+	// redirectCallback is called when a redirect is encountered
+	// Set via OnRedirect to handle or filter redirects
+	redirectCallback RedirectCallback
 	// CheckHead performs a HEAD request before every GET to pre-validate the response
 	CheckHead bool
 	// TraceHTTP enables capturing and reporting request performance for crawler tuning.
@@ -341,6 +344,11 @@ type ErrorCallback func(*Response, error)
 
 // ScrapedCallback is a type alias for OnScraped callback functions
 type ScrapedCallback func(*Response)
+
+// RedirectCallback is a type alias for OnRedirect callback functions.
+// It receives the redirect request and the chain of previous requests.
+// Return nil to allow the redirect, or an error to block it.
+type RedirectCallback func(req *http.Request, via []*http.Request) error
 
 // ProxyFunc is a type alias for proxy setter functions.
 type ProxyFunc func(*http.Request) (*url.URL, error)
@@ -1047,16 +1055,17 @@ func (c *Collector) requestCheck(parsedURL *url.URL, method string, getBody func
 	default:
 	}
 
-	u := parsedURL.String()
 	if c.MaxDepth > 0 && c.MaxDepth < depth {
 		return ErrMaxDepth
 	}
 	if c.MaxRequests > 0 && c.requestCount >= c.MaxRequests {
 		return ErrMaxRequests
 	}
-	if err := c.checkFilters(u, parsedURL.Hostname()); err != nil {
-		return err
-	}
+
+	// URL and domain filtering has been removed from Collector.
+	// The Crawler is now responsible for all filtering (via isURLCrawlable).
+	// This eliminates duplicate filtering and centralizes filtering logic in Crawler.
+
 	if method != "HEAD" && !c.IgnoreRobotsTxt {
 		if err := c.checkRobots(parsedURL); err != nil {
 			return err
@@ -1314,6 +1323,16 @@ func (c *Collector) OnScraped(f ScrapedCallback) {
 		c.scrapedCallbacks = make([]ScrapedCallback, 0, 4)
 	}
 	c.scrapedCallbacks = append(c.scrapedCallbacks, f)
+	c.lock.Unlock()
+}
+
+// OnRedirect registers a function that will be called when a redirect is encountered.
+// The callback receives the redirect request and the chain of previous requests.
+// Return nil to allow the redirect, or an error to block it.
+// This allows external components (like Crawler) to inject redirect handling logic into the Collector.
+func (c *Collector) OnRedirect(f RedirectCallback) {
+	c.lock.Lock()
+	c.redirectCallback = f
 	c.lock.Unlock()
 }
 
@@ -1741,8 +1760,15 @@ func (c *Collector) Clone() *Collector {
 
 func (c *Collector) checkRedirectFunc() func(req *http.Request, via []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
-		if err := c.checkFilters(req.URL.String(), req.URL.Hostname()); err != nil {
-			return fmt.Errorf("not following redirect to %q: %w", req.URL, err)
+		// Call redirect callback if set (allows Crawler to inject redirect handling)
+		c.lock.RLock()
+		callback := c.redirectCallback
+		c.lock.RUnlock()
+
+		if callback != nil {
+			if err := callback(req, via); err != nil {
+				return err
+			}
 		}
 
 		// allow redirects to the original destination

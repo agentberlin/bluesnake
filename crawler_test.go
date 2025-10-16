@@ -16,6 +16,7 @@ package bluesnake
 
 import (
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -1626,4 +1627,351 @@ func TestCrawlerRedirectVisitTracking(t *testing.T) {
 	}
 
 	t.Logf("Crawler correctly followed redirect and crawled %d URLs", len(crawledURLs))
+}
+
+// TestCrawler_AllowedDomains tests that AllowedDomains blocks external domains
+func TestCrawler_AllowedDomains(t *testing.T) {
+	mock := NewMockTransport()
+
+	// Register home page with links to both allowed and external domains
+	mock.RegisterHTML("https://example.com/", `<html>
+		<head><title>Home</title></head>
+		<body>
+			<a href="/page1">Internal Page</a>
+			<a href="https://external.com/page">External Page</a>
+		</body>
+	</html>`)
+
+	// Register allowed domain page
+	mock.RegisterHTML("https://example.com/page1", `<html><head><title>Page 1</title></head><body>Content</body></html>`)
+
+	// Register external domain page (should NOT be crawled)
+	mock.RegisterHTML("https://external.com/page", `<html><head><title>External</title></head><body>Content</body></html>`)
+
+	var mu sync.Mutex
+	crawledURLs := []string{}
+
+	// Create crawler with AllowedDomains
+	crawler := NewCrawler(&CollectorConfig{
+		AllowedDomains: []string{"example.com"},
+	})
+	crawler.Collector.WithTransport(mock)
+
+	crawler.SetOnPageCrawled(func(result *PageResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		crawledURLs = append(crawledURLs, result.URL)
+	})
+
+	err := crawler.Start("https://example.com/")
+	if err != nil {
+		t.Fatalf("Failed to start crawler: %v", err)
+	}
+
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Should have crawled 2 pages from example.com (home + page1)
+	if len(crawledURLs) != 2 {
+		t.Errorf("Expected 2 pages crawled, got %d: %v", len(crawledURLs), crawledURLs)
+	}
+
+	// Verify external domain was NOT crawled
+	for _, url := range crawledURLs {
+		if strings.Contains(url, "external.com") {
+			t.Errorf("External domain should be blocked by AllowedDomains: %s", url)
+		}
+	}
+
+	t.Logf("AllowedDomains correctly blocked external domains: crawled %d pages", len(crawledURLs))
+}
+
+// TestCrawler_DisallowedDomains tests that DisallowedDomains blocks specific domains
+func TestCrawler_DisallowedDomains(t *testing.T) {
+	mock := NewMockTransport()
+
+	// Register home page with links to both allowed and blocked domains
+	mock.RegisterHTML("https://example.com/", `<html>
+		<head><title>Home</title></head>
+		<body>
+			<a href="/page1">Internal Page</a>
+			<a href="https://blocked.com/page">Blocked Page</a>
+		</body>
+	</html>`)
+
+	// Register allowed domain page
+	mock.RegisterHTML("https://example.com/page1", `<html><head><title>Page 1</title></head><body>Content</body></html>`)
+
+	// Register blocked domain page (should NOT be crawled)
+	mock.RegisterHTML("https://blocked.com/page", `<html><head><title>Blocked</title></head><body>Content</body></html>`)
+
+	var mu sync.Mutex
+	crawledURLs := []string{}
+
+	// Create crawler with DisallowedDomains
+	crawler := NewCrawler(&CollectorConfig{
+		AllowedDomains:    []string{"example.com", "blocked.com"},
+		DisallowedDomains: []string{"blocked.com"},
+	})
+	crawler.Collector.WithTransport(mock)
+
+	crawler.SetOnPageCrawled(func(result *PageResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		crawledURLs = append(crawledURLs, result.URL)
+	})
+
+	err := crawler.Start("https://example.com/")
+	if err != nil {
+		t.Fatalf("Failed to start crawler: %v", err)
+	}
+
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Should have crawled 2 pages from example.com (home + page1)
+	if len(crawledURLs) != 2 {
+		t.Errorf("Expected 2 pages crawled, got %d: %v", len(crawledURLs), crawledURLs)
+	}
+
+	// Verify blocked domain was NOT crawled
+	for _, url := range crawledURLs {
+		if strings.Contains(url, "blocked.com") {
+			t.Errorf("Blocked domain should be filtered by DisallowedDomains: %s", url)
+		}
+	}
+
+	t.Logf("DisallowedDomains correctly blocked specific domains: crawled %d pages", len(crawledURLs))
+}
+
+// TestCrawler_DisallowedURLFilters tests URL pattern filtering including redirects
+func TestCrawler_DisallowedURLFilters(t *testing.T) {
+	// Create test server for redirect testing
+	ts := newTestServer()
+	defer ts.Close()
+
+	var mu sync.Mutex
+	crawledURLs := []string{}
+	attemptedURLs := []string{}
+
+	// Create crawler with DisallowedURLFilters that blocks the redirect destination
+	crawler := NewCrawler(&CollectorConfig{
+		AllowedDomains:       []string{"127.0.0.1"},
+		DisallowedURLFilters: []*regexp.Regexp{regexp.MustCompile("/redirected/")},
+	})
+
+	crawler.SetOnPageCrawled(func(result *PageResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		crawledURLs = append(crawledURLs, result.URL)
+	})
+
+	// Track all URLs attempted (including filtered ones)
+	crawler.Collector.OnHTML("a[href]", func(e *HTMLElement) {
+		mu.Lock()
+		defer mu.Unlock()
+		href := e.Request.AbsoluteURL(e.Attr("href"))
+		attemptedURLs = append(attemptedURLs, href)
+	})
+
+	// Start with the home page
+	err := crawler.Start(ts.URL + "/")
+	if err != nil {
+		t.Fatalf("Failed to start crawler: %v", err)
+	}
+
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// The redirect destination should NOT be in crawled URLs due to filter
+	for _, url := range crawledURLs {
+		if strings.Contains(url, "/redirected/") {
+			t.Errorf("Filtered URL should not be crawled: %s", url)
+		}
+	}
+
+	t.Logf("DisallowedURLFilters correctly blocked URLs matching pattern: crawled %d pages", len(crawledURLs))
+}
+
+// TestCrawler_BlockedDomainsNotVisited tests that blocked URLs aren't marked as visited
+func TestCrawler_BlockedDomainsNotVisited(t *testing.T) {
+	mock := NewMockTransport()
+
+	// Register home page with link to blocked domain
+	mock.RegisterHTML("https://example.com/", `<html>
+		<head><title>Home</title></head>
+		<body>
+			<a href="https://blocked.com/page1">Blocked Link 1</a>
+			<a href="https://blocked.com/page2">Blocked Link 2</a>
+			<a href="https://blocked.com/page1">Duplicate Blocked Link 1</a>
+		</body>
+	</html>`)
+
+	// Register blocked domain pages (should NOT be crawled)
+	mock.RegisterHTML("https://blocked.com/page1", `<html><head><title>Blocked 1</title></head><body>Content</body></html>`)
+	mock.RegisterHTML("https://blocked.com/page2", `<html><head><title>Blocked 2</title></head><body>Content</body></html>`)
+
+	// Create crawler with DisallowedDomains
+	crawler := NewCrawler(&CollectorConfig{
+		AllowedDomains:    []string{"example.com", "blocked.com"},
+		DisallowedDomains: []string{"blocked.com"},
+	})
+	crawler.Collector.WithTransport(mock)
+
+	var mu sync.Mutex
+	crawledURLs := []string{}
+	discoveredLinks := []string{}
+
+	crawler.SetOnPageCrawled(func(result *PageResult) {
+		mu.Lock()
+		defer mu.Unlock()
+		crawledURLs = append(crawledURLs, result.URL)
+
+		// Track all discovered links
+		if result.Links != nil {
+			for _, link := range result.Links.Internal {
+				discoveredLinks = append(discoveredLinks, link.URL)
+			}
+			for _, link := range result.Links.External {
+				discoveredLinks = append(discoveredLinks, link.URL)
+			}
+		}
+	})
+
+	err := crawler.Start("https://example.com/")
+	if err != nil {
+		t.Fatalf("Failed to start crawler: %v", err)
+	}
+
+	crawler.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Should have crawled only example.com (blocked domain should not be crawled)
+	if len(crawledURLs) != 1 {
+		t.Errorf("Expected 1 page crawled, got %d: %v", len(crawledURLs), crawledURLs)
+	}
+
+	// Verify blocked URLs were NOT crawled (even though discovered twice)
+	for _, url := range crawledURLs {
+		if strings.Contains(url, "blocked.com") {
+			t.Errorf("Blocked domain should not be crawled: %s", url)
+		}
+	}
+
+	// Blocked URLs should appear in discovered links (as they were found in HTML)
+	hasBlockedLink := false
+	for _, url := range discoveredLinks {
+		if strings.Contains(url, "blocked.com") {
+			hasBlockedLink = true
+			break
+		}
+	}
+
+	if !hasBlockedLink {
+		t.Error("Blocked URLs should still appear in discovered links")
+	}
+
+	t.Logf("Blocked domains correctly filtered: discovered %d links, crawled %d pages", len(discoveredLinks), len(crawledURLs))
+}
+
+// TestCrawler_RedirectURLFiltering tests that URL filters are applied to redirect destinations via OnRedirect callback
+func TestCrawler_RedirectURLFiltering(t *testing.T) {
+	// Create test server for redirect testing
+	ts := newTestServer()
+	defer ts.Close()
+
+	t.Run("disallowed URL filter blocks redirect destination", func(t *testing.T) {
+		var mu sync.Mutex
+		crawledURLs := []string{}
+		errorOccurred := false
+
+		// Create crawler with DisallowedURLFilters that blocks /redirected/
+		crawler := NewCrawler(&CollectorConfig{
+			AllowedDomains:       []string{"127.0.0.1"},
+			DisallowedURLFilters: []*regexp.Regexp{regexp.MustCompile("/redirected/")},
+		})
+
+		crawler.SetOnPageCrawled(func(result *PageResult) {
+			mu.Lock()
+			defer mu.Unlock()
+			crawledURLs = append(crawledURLs, result.URL)
+			if result.Error != "" {
+				errorOccurred = true
+			}
+		})
+
+		// Start with redirect URL - redirect destination should be blocked by filter
+		err := crawler.Start(ts.URL + "/redirect")
+		if err != nil {
+			t.Fatalf("Failed to start crawler: %v", err)
+		}
+
+		crawler.Wait()
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		// The redirect destination should be blocked, causing an error
+		if !errorOccurred {
+			t.Error("Expected error when redirect destination is blocked by URL filter")
+		}
+
+		// Should not have crawled the redirected destination
+		for _, url := range crawledURLs {
+			if strings.Contains(url, "/redirected/") && !strings.Contains(url, "Error") {
+				t.Errorf("Filtered redirect destination should not be successfully crawled: %s", url)
+			}
+		}
+
+		t.Logf("OnRedirect correctly blocked redirect destination: crawled %d URLs", len(crawledURLs))
+	})
+
+	t.Run("allowed redirect is followed", func(t *testing.T) {
+		var mu sync.Mutex
+		crawledURLs := []string{}
+
+		// Create crawler with no filters - all redirects should be allowed
+		crawler := NewCrawler(&CollectorConfig{
+			AllowedDomains: []string{"127.0.0.1"},
+		})
+
+		crawler.SetOnPageCrawled(func(result *PageResult) {
+			mu.Lock()
+			defer mu.Unlock()
+			crawledURLs = append(crawledURLs, result.URL)
+		})
+
+		err := crawler.Start(ts.URL + "/redirect")
+		if err != nil {
+			t.Fatalf("Failed to start crawler: %v", err)
+		}
+
+		crawler.Wait()
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		// Should have successfully followed redirect and crawled destination
+		foundDestination := false
+		for _, url := range crawledURLs {
+			if strings.HasSuffix(url, "/redirected/") {
+				foundDestination = true
+				break
+			}
+		}
+
+		if !foundDestination {
+			t.Error("Allowed redirect destination should be crawled")
+		}
+
+		t.Logf("OnRedirect correctly allowed redirect: crawled %d URLs", len(crawledURLs))
+	})
 }
