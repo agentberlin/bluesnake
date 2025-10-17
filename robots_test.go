@@ -18,6 +18,7 @@
 package bluesnake
 
 import (
+	"context"
 	"net/http"
 	"testing"
 )
@@ -25,7 +26,7 @@ import (
 func TestRobotsWhenAllowed(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.IgnoreRobotsTxt = false
 
@@ -45,7 +46,7 @@ func TestRobotsWhenAllowed(t *testing.T) {
 func TestRobotsWhenDisallowed(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.IgnoreRobotsTxt = false
 
@@ -62,7 +63,7 @@ func TestRobotsWhenDisallowed(t *testing.T) {
 func TestRobotsWhenDisallowedWithQueryParameter(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.IgnoreRobotsTxt = false
 
@@ -79,7 +80,7 @@ func TestRobotsWhenDisallowedWithQueryParameter(t *testing.T) {
 func TestIgnoreRobotsWhenDisallowed(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.IgnoreRobotsTxt = true
 

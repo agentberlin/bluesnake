@@ -18,6 +18,7 @@
 package bluesnake
 
 import (
+	"context"
 	"net/http"
 	"testing"
 )
@@ -28,7 +29,7 @@ func TestNoAcceptHeader(t *testing.T) {
 	var receivedHeader string
 	// checks if Accept is enabled by default
 	func() {
-		c := NewCollector(nil)
+		c := NewCollector(context.Background(), nil)
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedHeader = string(resp.Body)
@@ -41,7 +42,7 @@ func TestNoAcceptHeader(t *testing.T) {
 
 	// checks if Accept can be disabled
 	func() {
-		c := NewCollector(nil)
+		c := NewCollector(context.Background(), nil)
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnRequest(func(r *Request) {
 			r.Headers.Del("Accept")
@@ -93,7 +94,7 @@ func TestRenderingConfigCustomValues(t *testing.T) {
 		},
 	}
 
-	collector := NewCollector(customConfig)
+	collector := NewCollector(context.Background(), customConfig)
 
 	if collector.RenderingConfig == nil {
 		t.Fatal("Collector RenderingConfig should not be nil")
@@ -122,7 +123,7 @@ func TestRenderingConfigMerging(t *testing.T) {
 		},
 	}
 
-	collector := NewCollector(customConfig)
+	collector := NewCollector(context.Background(), customConfig)
 
 	// Verify custom values are preserved
 	if collector.RenderingConfig.InitialWaitMs != 5000 {
@@ -144,7 +145,7 @@ func TestRenderingConfigNilHandling(t *testing.T) {
 		RenderingConfig: nil,
 	}
 
-	collector := NewCollector(customConfig)
+	collector := NewCollector(context.Background(), customConfig)
 
 	if collector.RenderingConfig == nil {
 		t.Fatal("Collector RenderingConfig should use defaults when nil is provided")
@@ -174,7 +175,7 @@ func TestRenderingConfigPartialOverride(t *testing.T) {
 		},
 	}
 
-	collector := NewCollector(customConfig)
+	collector := NewCollector(context.Background(), customConfig)
 
 	if collector.RenderingConfig.InitialWaitMs != 2500 {
 		t.Errorf("Custom InitialWaitMs should be 2500, got %d", collector.RenderingConfig.InitialWaitMs)
@@ -199,7 +200,7 @@ func TestRenderingConfigZeroValues(t *testing.T) {
 		},
 	}
 
-	collector := NewCollector(customConfig)
+	collector := NewCollector(context.Background(), customConfig)
 
 	if collector.RenderingConfig.InitialWaitMs != 0 {
 		t.Errorf("Zero InitialWaitMs should be preserved, got %d", collector.RenderingConfig.InitialWaitMs)
@@ -224,7 +225,7 @@ func TestRenderingConfigBoundaryValues(t *testing.T) {
 		},
 	}
 
-	collector := NewCollector(customConfig)
+	collector := NewCollector(context.Background(), customConfig)
 
 	if collector.RenderingConfig.InitialWaitMs != 30000 {
 		t.Errorf("Max InitialWaitMs should be preserved, got %d", collector.RenderingConfig.InitialWaitMs)
@@ -242,7 +243,7 @@ func TestRenderingConfigBoundaryValues(t *testing.T) {
 func TestCollectorConfigWithRenderingDisabled(t *testing.T) {
 	// Test that RenderingConfig exists even when JS rendering might not be used
 	// This ensures the configuration is always available
-	collector := NewCollector(&CollectorConfig{})
+	collector := NewCollector(context.Background(), &CollectorConfig{})
 
 	if collector.RenderingConfig == nil {
 		t.Fatal("RenderingConfig should always be initialized")

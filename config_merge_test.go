@@ -15,6 +15,7 @@
 package bluesnake
 
 import (
+	"context"
 	"reflect"
 	"testing"
 )
@@ -27,7 +28,7 @@ func TestConfigMerging(t *testing.T) {
 	t.Run("AllowURLRevisit preserves IgnoreRobotsTxt default", func(t *testing.T) {
 		// This was the bug that caused TestQueue to fail:
 		// Setting AllowURLRevisit was inadvertently changing IgnoreRobotsTxt from its default
-		c := NewCollector(&CollectorConfig{AllowURLRevisit: true})
+		c := NewCollector(context.Background(), &CollectorConfig{AllowURLRevisit: true})
 
 		if !c.AllowURLRevisit {
 			t.Error("AllowURLRevisit should be true")
@@ -42,7 +43,7 @@ func TestConfigMerging(t *testing.T) {
 	t.Run("Single field config with zero values uses defaults where zero makes sense", func(t *testing.T) {
 		// When setting just UserAgent, other defaults should be preserved
 		// Note: MaxBodySize of 0 means "unlimited", so it won't preserve the default
-		c := NewCollector(&CollectorConfig{UserAgent: "test-agent"})
+		c := NewCollector(context.Background(), &CollectorConfig{UserAgent: "test-agent"})
 
 		if c.UserAgent != "test-agent" {
 			t.Error("UserAgent should be 'test-agent'")
@@ -56,7 +57,7 @@ func TestConfigMerging(t *testing.T) {
 
 	t.Run("AllowedDomains config preserves important defaults", func(t *testing.T) {
 		domains := []string{"example.com"}
-		c := NewCollector(&CollectorConfig{AllowedDomains: domains})
+		c := NewCollector(context.Background(), &CollectorConfig{AllowedDomains: domains})
 
 		// User-specified value should be set
 		if !reflect.DeepEqual(c.AllowedDomains, domains) {
@@ -76,7 +77,7 @@ func TestConfigMerging(t *testing.T) {
 	})
 
 	t.Run("Multiple fields can override defaults", func(t *testing.T) {
-		c := NewCollector(&CollectorConfig{
+		c := NewCollector(context.Background(), &CollectorConfig{
 			UserAgent:   "custom-agent",
 			MaxDepth:    5,
 			MaxBodySize: 1024, // 1KB
@@ -100,8 +101,8 @@ func TestConfigMerging(t *testing.T) {
 	})
 
 	t.Run("Empty config behaves differently from nil config", func(t *testing.T) {
-		c1 := NewCollector(&CollectorConfig{})
-		c2 := NewCollector(nil)
+		c1 := NewCollector(context.Background(), &CollectorConfig{})
+		c2 := NewCollector(context.Background(), nil)
 
 		// MaxBodySize: empty config has 0 (unlimited), nil config has default 10MB
 		// This is a limitation of non-pointer struct fields
@@ -119,7 +120,7 @@ func TestConfigMerging(t *testing.T) {
 	})
 
 	t.Run("Nil config uses all defaults", func(t *testing.T) {
-		c := NewCollector(nil)
+		c := NewCollector(context.Background(), nil)
 
 		// Check key defaults
 		if c.IgnoreRobotsTxt {

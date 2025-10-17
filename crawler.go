@@ -15,6 +15,7 @@
 package bluesnake
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -161,6 +162,7 @@ type URLDiscoveryRequest struct {
 type Crawler struct {
 	// Collector is the underlying low-level collector (exported for advanced configuration)
 	Collector       *Collector
+	ctx             context.Context // Lifecycle context for crawl management
 	onPageCrawled   OnPageCrawledFunc
 	onResourceVisit OnResourceVisitFunc
 	onCrawlComplete OnCrawlCompleteFunc
@@ -195,15 +197,16 @@ type Crawler struct {
 	wg sync.WaitGroup // Tracks pending work items (queued + processing)
 }
 
-// NewCrawler creates a high-level crawler with the specified collector configuration.
+// NewCrawler creates a high-level crawler with the specified context and collector configuration.
+// The context is used for crawl lifecycle management and cancellation.
 // The returned crawler must have its callbacks set via SetOnPageCrawled and SetOnCrawlComplete
 // before calling Start. If config is nil, default configuration is used.
-func NewCrawler(config *CollectorConfig) *Crawler {
+func NewCrawler(ctx context.Context, config *CollectorConfig) *Crawler {
 	if config == nil {
 		config = NewDefaultConfig()
 	}
 
-	c := NewCollector(config)
+	c := NewCollector(ctx, config)
 
 	// Apply defaults for discovery mechanisms if not specified
 	discoveryMechanisms := config.DiscoveryMechanisms
@@ -229,6 +232,7 @@ func NewCrawler(config *CollectorConfig) *Crawler {
 
 	crawler := &Crawler{
 		Collector:            c,
+		ctx:                  ctx,
 		queuedURLs:           &sync.Map{},
 		crawledPages:         0,
 		discoveryMechanisms:  discoveryMechanisms,
@@ -236,7 +240,7 @@ func NewCrawler(config *CollectorConfig) *Crawler {
 		pageMetadata:         &sync.Map{},
 		discoveryChannel:     make(chan URLDiscoveryRequest, discoveryChannelSize),
 		processorDone:        make(chan struct{}),
-		workerPool:           NewWorkerPool(c.Context, parallelism, workQueueSize),
+		workerPool:           NewWorkerPool(ctx, parallelism, workQueueSize),
 		droppedURLs:          0,
 		allowedDomains:       config.AllowedDomains,
 		disallowedDomains:    config.DisallowedDomains,
@@ -339,7 +343,7 @@ func (cr *Crawler) queueURL(req URLDiscoveryRequest) {
 	case cr.discoveryChannel <- req:
 		// Successfully queued (non-blocking if channel has buffer space)
 
-	case <-cr.Collector.Context.Done():
+	case <-cr.ctx.Done():
 		// Failed to queue due to cancellation - undo the Add
 		cr.wg.Done()
 
@@ -369,7 +373,7 @@ func (cr *Crawler) runURLProcessor() {
 			// Process this URL (serialized - no race possible)
 			cr.processDiscoveredURL(req)
 
-		case <-cr.Collector.Context.Done():
+		case <-cr.ctx.Done():
 			// Context cancelled - drain remaining URLs
 			for {
 				select {
@@ -531,7 +535,13 @@ func (cr *Crawler) Wait() {
 		return true
 	})
 
-	wasStopped := cr.Collector.IsCancelled()
+	// Check if context was cancelled
+	wasStopped := false
+	select {
+	case <-cr.ctx.Done():
+		wasStopped = true
+	default:
+	}
 
 	cr.mutex.RLock()
 	totalPages := cr.crawledPages

@@ -15,6 +15,7 @@
 package bluesnake
 
 import (
+	"context"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -31,7 +32,7 @@ func TestRobotsTxtMode(t *testing.T) {
 			Body:       "User-agent: *\nDisallow: /disallowed\n",
 		})
 
-		c := NewCollector(&CollectorConfig{
+		c := NewCollector(context.Background(), &CollectorConfig{
 			RobotsTxtMode: "respect",
 		})
 		c.WithTransport(mock)
@@ -72,7 +73,7 @@ func TestRobotsTxtMode(t *testing.T) {
 		// Register HTML response for /disallowed
 		mock.RegisterHTML(testBaseURL+"/disallowed", "<html><body>Disallowed Content</body></html>")
 
-		c := NewCollector(&CollectorConfig{
+		c := NewCollector(context.Background(), &CollectorConfig{
 			RobotsTxtMode: "ignore",
 		})
 		c.WithTransport(mock)
@@ -110,7 +111,7 @@ func TestRobotsTxtMode(t *testing.T) {
 		// Register HTML response for /disallowed
 		mock.RegisterHTML(testBaseURL+"/disallowed", "<html><body>Disallowed Content</body></html>")
 
-		c := NewCollector(&CollectorConfig{
+		c := NewCollector(context.Background(), &CollectorConfig{
 			RobotsTxtMode: "ignore-report",
 		})
 		c.WithTransport(mock)
@@ -138,7 +139,7 @@ func TestRobotsTxtMode(t *testing.T) {
 	})
 
 	t.Run("Default RobotsTxtMode is respect", func(t *testing.T) {
-		c := NewCollector(nil)
+		c := NewCollector(context.Background(), nil)
 
 		if c.RobotsTxtMode != "respect" {
 			t.Errorf("Default RobotsTxtMode should be 'respect', got %s", c.RobotsTxtMode)
@@ -164,7 +165,7 @@ func TestNofollowFiltering(t *testing.T) {
 			</html>
 		`)
 
-		c := NewCollector(&CollectorConfig{
+		c := NewCollector(context.Background(), &CollectorConfig{
 			RobotsTxtMode:          "ignore",
 			FollowInternalNofollow: false, // Default
 		})
@@ -200,7 +201,7 @@ func TestNofollowFiltering(t *testing.T) {
 		`)
 		mock.RegisterHTML(testBaseURL+"/target", `<html><body>Target</body></html>`)
 
-		c := NewCollector(&CollectorConfig{
+		c := NewCollector(context.Background(), &CollectorConfig{
 			RobotsTxtMode:          "ignore",
 			FollowInternalNofollow: true,
 		})
@@ -235,7 +236,7 @@ func TestNofollowFiltering(t *testing.T) {
 			</html>
 		`)
 
-		c := NewCollector(&CollectorConfig{
+		c := NewCollector(context.Background(), &CollectorConfig{
 			RobotsTxtMode:          "ignore",
 			FollowInternalNofollow: false,
 		})
@@ -273,7 +274,7 @@ func TestMetaRobotsNoindex(t *testing.T) {
 			</html>
 		`)
 
-		c := NewCollector(&CollectorConfig{
+		c := NewCollector(context.Background(), &CollectorConfig{
 			RobotsTxtMode:            "ignore",
 			RespectMetaRobotsNoindex: true, // Default
 		})
@@ -300,7 +301,7 @@ func TestMetaRobotsNoindex(t *testing.T) {
 	})
 
 	t.Run("Disabling RespectMetaRobotsNoindex allows indexing noindex pages", func(t *testing.T) {
-		c := NewCollector(&CollectorConfig{
+		c := NewCollector(context.Background(), &CollectorConfig{
 			RespectMetaRobotsNoindex: false,
 		})
 
@@ -310,7 +311,7 @@ func TestMetaRobotsNoindex(t *testing.T) {
 	})
 
 	t.Run("Default RespectMetaRobotsNoindex is true", func(t *testing.T) {
-		c := NewCollector(nil)
+		c := NewCollector(context.Background(), nil)
 
 		if !c.RespectMetaRobotsNoindex {
 			t.Error("Default RespectMetaRobotsNoindex should be true")
@@ -333,7 +334,7 @@ func TestXRobotsTagNoindex(t *testing.T) {
 			Headers:    headers,
 		})
 
-		c := NewCollector(&CollectorConfig{
+		c := NewCollector(context.Background(), &CollectorConfig{
 			RobotsTxtMode:  "ignore",
 			RespectNoindex: true, // Default
 		})
@@ -358,7 +359,7 @@ func TestXRobotsTagNoindex(t *testing.T) {
 	})
 
 	t.Run("Disabling RespectNoindex allows indexing pages with X-Robots-Tag", func(t *testing.T) {
-		c := NewCollector(&CollectorConfig{
+		c := NewCollector(context.Background(), &CollectorConfig{
 			RespectNoindex: false,
 		})
 
@@ -368,7 +369,7 @@ func TestXRobotsTagNoindex(t *testing.T) {
 	})
 
 	t.Run("Default RespectNoindex is true", func(t *testing.T) {
-		c := NewCollector(nil)
+		c := NewCollector(context.Background(), nil)
 
 		if !c.RespectNoindex {
 			t.Error("Default RespectNoindex should be true")
@@ -378,7 +379,7 @@ func TestXRobotsTagNoindex(t *testing.T) {
 
 // TestCrawlerDirectiveDefaults tests that all crawler directive defaults match ScreamingFrog
 func TestCrawlerDirectiveDefaults(t *testing.T) {
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 
 	tests := []struct {
 		name     string
@@ -410,7 +411,7 @@ func TestRobotsTxtModeConfigurationPropagation(t *testing.T) {
 
 	for i, mode := range modes {
 		t.Run("RobotsTxtMode "+mode, func(t *testing.T) {
-			c := NewCollector(&CollectorConfig{
+			c := NewCollector(context.Background(), &CollectorConfig{
 				RobotsTxtMode: mode,
 			})
 

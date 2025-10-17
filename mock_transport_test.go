@@ -15,6 +15,7 @@
 package bluesnake
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -372,7 +373,7 @@ func TestMockTransport_WithCollector(t *testing.T) {
 	</html>`)
 
 	// Create low-level collector with mock transport
-	c := NewCollector(&CollectorConfig{AllowedDomains: []string{"example.com"}})
+	c := NewCollector(context.Background(), &CollectorConfig{AllowedDomains: []string{"example.com"}})
 	c.WithTransport(mock)
 
 	// Track visited pages
