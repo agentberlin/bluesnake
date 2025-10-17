@@ -186,6 +186,7 @@ type Crawler struct {
 	disallowedDomains      []string          // Domain blacklist
 	urlFilters             []*regexp.Regexp  // URL pattern whitelist
 	disallowedURLFilters   []*regexp.Regexp  // URL pattern blacklist
+	maxDepth               int               // Maximum crawl depth (0 = infinite)
 
 	// Channel-based URL processing (eliminates race conditions)
 	discoveryChannel chan URLDiscoveryRequest // URLs to process
@@ -197,16 +198,17 @@ type Crawler struct {
 	wg sync.WaitGroup // Tracks pending work items (queued + processing)
 }
 
-// NewCrawler creates a high-level crawler with the specified context and collector configuration.
+// NewCrawler creates a high-level crawler with the specified context and crawler configuration.
 // The context is used for crawl lifecycle management and cancellation.
 // The returned crawler must have its callbacks set via SetOnPageCrawled and SetOnCrawlComplete
 // before calling Start. If config is nil, default configuration is used.
-func NewCrawler(ctx context.Context, config *CollectorConfig) *Crawler {
+func NewCrawler(ctx context.Context, config *CrawlerConfig) *Crawler {
 	if config == nil {
 		config = NewDefaultConfig()
 	}
 
-	c := NewCollector(ctx, config)
+	// Create the underlying Collector with HTTP configuration
+	c := NewCollector(ctx, config.HTTP)
 
 	// Apply defaults for discovery mechanisms if not specified
 	discoveryMechanisms := config.DiscoveryMechanisms
@@ -246,6 +248,26 @@ func NewCrawler(ctx context.Context, config *CollectorConfig) *Crawler {
 		disallowedDomains:    config.DisallowedDomains,
 		urlFilters:           config.URLFilters,
 		disallowedURLFilters: config.DisallowedURLFilters,
+		maxDepth:             config.MaxDepth,
+	}
+
+	// Set crawler directive fields on Collector (these should stay on Collector for now)
+	c.ResourceValidation = config.ResourceValidation
+	c.RobotsTxtMode = config.RobotsTxtMode
+	c.FollowInternalNofollow = config.FollowInternalNofollow
+	c.FollowExternalNofollow = config.FollowExternalNofollow
+	c.RespectMetaRobotsNoindex = config.RespectMetaRobotsNoindex
+	c.RespectNoindex = config.RespectNoindex
+
+	// Set IgnoreRobotsTxt based on RobotsTxtMode
+	switch config.RobotsTxtMode {
+	case "ignore":
+		c.IgnoreRobotsTxt = true
+	case "respect", "ignore-report":
+		c.IgnoreRobotsTxt = false
+	default:
+		// Default to "respect" mode
+		c.IgnoreRobotsTxt = false
 	}
 
 	// Configure sitemap fetching to use the same HTTP client as the collector
@@ -400,13 +422,19 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
 		return
 	}
 
-	// Step 2: Pre-filtering (domain checks, URL filters, robots.txt)
+	// Step 2: Check max depth
+	if cr.maxDepth > 0 && req.Depth > cr.maxDepth {
+		cr.wg.Done() // Work item complete (max depth exceeded)
+		return
+	}
+
+	// Step 3: Pre-filtering (domain checks, URL filters, robots.txt)
 	if !cr.isURLCrawlable(req.URL) {
 		cr.wg.Done() // Work item complete (filtered)
 		return
 	}
 
-	// Step 3: Check if already visited and mark as visited (ATOMIC)
+	// Step 4: Check if already visited and mark as visited (ATOMIC)
 	// This is the CRITICAL section - only ONE goroutine executes this
 	uHash := requestHash(req.URL, nil)
 	alreadyVisited, err := cr.Collector.store.VisitIfNotVisited(uHash)
@@ -419,14 +447,14 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
 		return
 	}
 
-	// Step 4: URL is now marked as visited - we own it
+	// Step 5: URL is now marked as visited - we own it
 	// Only crawl if action is "crawl" (not "record")
 	if action != URLActionCrawl {
 		cr.wg.Done() // Work item complete (record-only)
 		return
 	}
 
-	// Step 5: Submit to worker pool for actual fetching
+	// Step 6: Submit to worker pool for actual fetching
 	// CRITICAL: This blocks if worker pool queue is full
 	// This backpressure prevents the processor from racing ahead
 	err = cr.workerPool.Submit(func() {

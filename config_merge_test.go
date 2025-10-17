@@ -16,7 +16,6 @@ package bluesnake
 
 import (
 	"context"
-	"reflect"
 	"testing"
 )
 
@@ -28,7 +27,7 @@ func TestConfigMerging(t *testing.T) {
 	t.Run("AllowURLRevisit preserves IgnoreRobotsTxt default", func(t *testing.T) {
 		// This was the bug that caused TestQueue to fail:
 		// Setting AllowURLRevisit was inadvertently changing IgnoreRobotsTxt from its default
-		c := NewCollector(context.Background(), &CollectorConfig{AllowURLRevisit: true})
+		c := NewCollector(context.Background(), &HTTPConfig{AllowURLRevisit: true})
 
 		if !c.AllowURLRevisit {
 			t.Error("AllowURLRevisit should be true")
@@ -43,7 +42,7 @@ func TestConfigMerging(t *testing.T) {
 	t.Run("Single field config with zero values uses defaults where zero makes sense", func(t *testing.T) {
 		// When setting just UserAgent, other defaults should be preserved
 		// Note: MaxBodySize of 0 means "unlimited", so it won't preserve the default
-		c := NewCollector(context.Background(), &CollectorConfig{UserAgent: "test-agent"})
+		c := NewCollector(context.Background(), &HTTPConfig{UserAgent: "test-agent"})
 
 		if c.UserAgent != "test-agent" {
 			t.Error("UserAgent should be 'test-agent'")
@@ -55,40 +54,17 @@ func TestConfigMerging(t *testing.T) {
 		}
 	})
 
-	t.Run("AllowedDomains config preserves important defaults", func(t *testing.T) {
-		domains := []string{"example.com"}
-		c := NewCollector(context.Background(), &CollectorConfig{AllowedDomains: domains})
-
-		// User-specified value should be set
-		if !reflect.DeepEqual(c.AllowedDomains, domains) {
-			t.Error("AllowedDomains should match user config")
-		}
-
-		// Important bool defaults should be preserved
-		if c.IgnoreRobotsTxt {
-			t.Error("IgnoreRobotsTxt should remain false (default)")
-		}
-
-		// UserAgent should get the default since we didn't override it
-		defaultUserAgent := "bluesnake/1.0 (+https://snake.blue)"
-		if c.UserAgent != defaultUserAgent {
-			t.Errorf("UserAgent should be default, got %s", c.UserAgent)
-		}
-	})
+	// Test removed - AllowedDomains is now a Crawler concern, not Collector
 
 	t.Run("Multiple fields can override defaults", func(t *testing.T) {
-		c := NewCollector(context.Background(), &CollectorConfig{
+		c := NewCollector(context.Background(), &HTTPConfig{
 			UserAgent:   "custom-agent",
-			MaxDepth:    5,
 			MaxBodySize: 1024, // 1KB
 		})
 
 		// User-specified values
 		if c.UserAgent != "custom-agent" {
 			t.Error("UserAgent should be 'custom-agent'")
-		}
-		if c.MaxDepth != 5 {
-			t.Error("MaxDepth should be 5")
 		}
 		if c.MaxBodySize != 1024 {
 			t.Error("MaxBodySize should be 1024")
@@ -101,7 +77,7 @@ func TestConfigMerging(t *testing.T) {
 	})
 
 	t.Run("Empty config behaves differently from nil config", func(t *testing.T) {
-		c1 := NewCollector(context.Background(), &CollectorConfig{})
+		c1 := NewCollector(context.Background(), &HTTPConfig{})
 		c2 := NewCollector(context.Background(), nil)
 
 		// MaxBodySize: empty config has 0 (unlimited), nil config has default 10MB

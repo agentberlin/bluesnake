@@ -32,9 +32,9 @@ func TestRobotsTxtMode(t *testing.T) {
 			Body:       "User-agent: *\nDisallow: /disallowed\n",
 		})
 
-		c := NewCollector(context.Background(), &CollectorConfig{
-			RobotsTxtMode: "respect",
-		})
+		c := NewCollector(context.Background(), nil)
+		c.RobotsTxtMode = "respect"
+		c.IgnoreRobotsTxt = false // respect mode should not ignore robots.txt
 		c.WithTransport(mock)
 
 		var visited uint32
@@ -73,9 +73,9 @@ func TestRobotsTxtMode(t *testing.T) {
 		// Register HTML response for /disallowed
 		mock.RegisterHTML(testBaseURL+"/disallowed", "<html><body>Disallowed Content</body></html>")
 
-		c := NewCollector(context.Background(), &CollectorConfig{
-			RobotsTxtMode: "ignore",
-		})
+		c := NewCollector(context.Background(), nil)
+		c.RobotsTxtMode = "ignore"
+		c.IgnoreRobotsTxt = true // ignore mode should ignore robots.txt
 		c.WithTransport(mock)
 
 		var visited uint32
@@ -111,9 +111,9 @@ func TestRobotsTxtMode(t *testing.T) {
 		// Register HTML response for /disallowed
 		mock.RegisterHTML(testBaseURL+"/disallowed", "<html><body>Disallowed Content</body></html>")
 
-		c := NewCollector(context.Background(), &CollectorConfig{
-			RobotsTxtMode: "ignore-report",
-		})
+		c := NewCollector(context.Background(), nil)
+		c.RobotsTxtMode = "ignore-report"
+		c.IgnoreRobotsTxt = false // ignore-report mode checks robots.txt but doesn't block
 		c.WithTransport(mock)
 
 		var visited uint32
@@ -165,10 +165,10 @@ func TestNofollowFiltering(t *testing.T) {
 			</html>
 		`)
 
-		c := NewCollector(context.Background(), &CollectorConfig{
-			RobotsTxtMode:          "ignore",
-			FollowInternalNofollow: false, // Default
-		})
+		c := NewCollector(context.Background(), nil)
+		c.RobotsTxtMode = "ignore"
+		c.IgnoreRobotsTxt = true // ignore mode
+		c.FollowInternalNofollow = false // Default
 		c.WithTransport(mock)
 
 		var visited []string
@@ -201,10 +201,10 @@ func TestNofollowFiltering(t *testing.T) {
 		`)
 		mock.RegisterHTML(testBaseURL+"/target", `<html><body>Target</body></html>`)
 
-		c := NewCollector(context.Background(), &CollectorConfig{
-			RobotsTxtMode:          "ignore",
-			FollowInternalNofollow: true,
-		})
+		c := NewCollector(context.Background(), nil)
+		c.RobotsTxtMode = "ignore"
+		c.IgnoreRobotsTxt = true // ignore mode
+		c.FollowInternalNofollow = true
 		c.WithTransport(mock)
 
 		var visitedPages uint32
@@ -236,10 +236,10 @@ func TestNofollowFiltering(t *testing.T) {
 			</html>
 		`)
 
-		c := NewCollector(context.Background(), &CollectorConfig{
-			RobotsTxtMode:          "ignore",
-			FollowInternalNofollow: false,
-		})
+		c := NewCollector(context.Background(), nil)
+		c.RobotsTxtMode = "ignore"
+		c.IgnoreRobotsTxt = true // ignore mode
+		c.FollowInternalNofollow = false
 		c.WithTransport(mock)
 
 		var links []string
@@ -274,10 +274,10 @@ func TestMetaRobotsNoindex(t *testing.T) {
 			</html>
 		`)
 
-		c := NewCollector(context.Background(), &CollectorConfig{
-			RobotsTxtMode:            "ignore",
-			RespectMetaRobotsNoindex: true, // Default
-		})
+		c := NewCollector(context.Background(), nil)
+		c.RobotsTxtMode = "ignore"
+		c.IgnoreRobotsTxt = true // ignore mode
+		c.RespectMetaRobotsNoindex = true // Default
 		c.WithTransport(mock)
 
 		var visited uint32
@@ -301,9 +301,8 @@ func TestMetaRobotsNoindex(t *testing.T) {
 	})
 
 	t.Run("Disabling RespectMetaRobotsNoindex allows indexing noindex pages", func(t *testing.T) {
-		c := NewCollector(context.Background(), &CollectorConfig{
-			RespectMetaRobotsNoindex: false,
-		})
+		c := NewCollector(context.Background(), nil)
+		c.RespectMetaRobotsNoindex = false
 
 		if c.RespectMetaRobotsNoindex {
 			t.Error("RespectMetaRobotsNoindex should be false when disabled")
@@ -334,10 +333,10 @@ func TestXRobotsTagNoindex(t *testing.T) {
 			Headers:    headers,
 		})
 
-		c := NewCollector(context.Background(), &CollectorConfig{
-			RobotsTxtMode:  "ignore",
-			RespectNoindex: true, // Default
-		})
+		c := NewCollector(context.Background(), nil)
+		c.RobotsTxtMode = "ignore"
+		c.IgnoreRobotsTxt = true // ignore mode
+		c.RespectNoindex = true // Default
 		c.WithTransport(mock)
 
 		var visited uint32
@@ -359,9 +358,8 @@ func TestXRobotsTagNoindex(t *testing.T) {
 	})
 
 	t.Run("Disabling RespectNoindex allows indexing pages with X-Robots-Tag", func(t *testing.T) {
-		c := NewCollector(context.Background(), &CollectorConfig{
-			RespectNoindex: false,
-		})
+		c := NewCollector(context.Background(), nil)
+		c.RespectNoindex = false
 
 		if c.RespectNoindex {
 			t.Error("RespectNoindex should be false when disabled")
@@ -411,9 +409,16 @@ func TestRobotsTxtModeConfigurationPropagation(t *testing.T) {
 
 	for i, mode := range modes {
 		t.Run("RobotsTxtMode "+mode, func(t *testing.T) {
-			c := NewCollector(context.Background(), &CollectorConfig{
-				RobotsTxtMode: mode,
-			})
+			c := NewCollector(context.Background(), nil)
+			c.RobotsTxtMode = mode
+			// When creating a Collector directly (not through Crawler),
+			// we must manually set IgnoreRobotsTxt based on RobotsTxtMode
+			switch mode {
+			case "ignore":
+				c.IgnoreRobotsTxt = true
+			case "respect", "ignore-report":
+				c.IgnoreRobotsTxt = false
+			}
 
 			if c.RobotsTxtMode != mode {
 				t.Errorf("RobotsTxtMode not set correctly: got %s, want %s", c.RobotsTxtMode, mode)

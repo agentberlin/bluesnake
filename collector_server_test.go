@@ -465,7 +465,7 @@ func TestCollectorVisitWithTrace(t *testing.T) {
 	ts := newTestServer()
 	defer ts.Close()
 
-	c := NewCollector(context.Background(), &CollectorConfig{TraceHTTP: true})
+	c := NewCollector(context.Background(), &HTTPConfig{TraceHTTP: true})
 	c.OnResponse(func(resp *Response) {
 		if resp.Trace == nil {
 			t.Error("Failed to initialize trace")
@@ -483,7 +483,7 @@ func TestCollectorVisitWithCheckHead(t *testing.T) {
 	ts := newTestServer()
 	defer ts.Close()
 
-	c := NewCollector(context.Background(), &CollectorConfig{CheckHead: true})
+	c := NewCollector(context.Background(), &HTTPConfig{CheckHead: true})
 	var requestMethodChain []string
 	c.OnResponse(func(resp *Response) {
 		requestMethodChain = append(requestMethodChain, resp.Request.Method)
