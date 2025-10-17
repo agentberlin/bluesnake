@@ -320,17 +320,19 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 	}
 
 	// Build crawler configuration based on database config
-	crawlerConfig := &bluesnake.CollectorConfig{
-		UserAgent:           config.UserAgent,
+	crawlerConfig := &bluesnake.CrawlerConfig{
 		MaxDepth:            maxDepth,                       // Set depth based on SinglePageMode
 		URLFilters:          []*regexp.Regexp{domainFilter}, // Use URLFilters instead of AllowedDomains
-		EnableRendering:     config.JSRenderingEnabled,
 		DiscoveryMechanisms: mechanisms,
 		SitemapURLs:         config.GetSitemapURLsArray(),
 		ResourceValidation: &bluesnake.ResourceValidationConfig{
 			Enabled:       true,
 			ResourceTypes: []string{"image", "script", "stylesheet", "font"},
 			CheckExternal: config.CheckExternalResources,
+		},
+		HTTP: &bluesnake.HTTPConfig{
+			UserAgent:       config.UserAgent,
+			EnableRendering: config.JSRenderingEnabled,
 		},
 	}
 

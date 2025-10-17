@@ -373,7 +373,7 @@ func TestMockTransport_WithCollector(t *testing.T) {
 	</html>`)
 
 	// Create low-level collector with mock transport
-	c := NewCollector(context.Background(), &CollectorConfig{AllowedDomains: []string{"example.com"}})
+	c := NewCollector(context.Background(), nil)
 	c.WithTransport(mock)
 
 	// Track visited pages

@@ -69,7 +69,7 @@ func TestUserAgent(t *testing.T) {
 		}
 	}()
 	func() {
-		c := NewCollector(context.Background(), &CollectorConfig{UserAgent: exampleUserAgent1})
+		c := NewCollector(context.Background(), &HTTPConfig{UserAgent: exampleUserAgent1})
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
@@ -80,7 +80,7 @@ func TestUserAgent(t *testing.T) {
 		}
 	}()
 	func() {
-		c := NewCollector(context.Background(), &CollectorConfig{UserAgent: exampleUserAgent1})
+		c := NewCollector(context.Background(), &HTTPConfig{UserAgent: exampleUserAgent1})
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
@@ -92,7 +92,7 @@ func TestUserAgent(t *testing.T) {
 		}
 	}()
 	func() {
-		c := NewCollector(context.Background(), &CollectorConfig{UserAgent: exampleUserAgent1})
+		c := NewCollector(context.Background(), &HTTPConfig{UserAgent: exampleUserAgent1})
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
@@ -104,7 +104,7 @@ func TestUserAgent(t *testing.T) {
 		}
 	}()
 	func() {
-		c := NewCollector(context.Background(), &CollectorConfig{UserAgent: exampleUserAgent1})
+		c := NewCollector(context.Background(), &HTTPConfig{UserAgent: exampleUserAgent1})
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
@@ -118,7 +118,7 @@ func TestUserAgent(t *testing.T) {
 		}
 	}()
 	func() {
-		c := NewCollector(context.Background(), &CollectorConfig{UserAgent: exampleUserAgent1})
+		c := NewCollector(context.Background(), &HTTPConfig{UserAgent: exampleUserAgent1})
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedUserAgent = string(resp.Body)
@@ -142,7 +142,7 @@ func TestHeaders(t *testing.T) {
 	var receivedHeader string
 
 	func() {
-		c := NewCollector(context.Background(), &CollectorConfig{Headers: map[string]string{"Host": exampleHostHeader}})
+		c := NewCollector(context.Background(), &HTTPConfig{Headers: map[string]string{"Host": exampleHostHeader}})
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedHeader = string(resp.Body)
@@ -153,7 +153,7 @@ func TestHeaders(t *testing.T) {
 		}
 	}()
 	func() {
-		c := NewCollector(context.Background(), &CollectorConfig{Headers: map[string]string{"Test": exampleTestHeader}})
+		c := NewCollector(context.Background(), &HTTPConfig{Headers: map[string]string{"Test": exampleTestHeader}})
 		c.SetClient(&http.Client{Transport: mock})
 		c.OnResponse(func(resp *Response) {
 			receivedHeader = string(resp.Body)

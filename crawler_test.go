@@ -52,7 +52,7 @@ func TestDiscoveredURLs(t *testing.T) {
 	var homePageResult *PageResult
 
 	// Create crawler with mock transport
-	crawler := NewCrawler(context.Background(), &CollectorConfig{AllowedDomains: []string{"example.com"}})
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{AllowedDomains: []string{"example.com"}})
 	crawler.Collector.WithTransport(mock)
 
 	// Set callback to capture the home page result
@@ -163,7 +163,7 @@ func TestDiscoveryMechanism_SpiderOnly(t *testing.T) {
 	crawledPages := []string{}
 
 	// Create crawler with spider-only mode
-	crawler := NewCrawler(context.Background(), &CollectorConfig{
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{
 		AllowedDomains:      []string{"example.com"},
 		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySpider},
 	})
@@ -236,7 +236,7 @@ func TestDiscoveryMechanism_SitemapOnly(t *testing.T) {
 	crawledPages := []string{}
 
 	// Create crawler with sitemap-only mode
-	crawler := NewCrawler(context.Background(), &CollectorConfig{
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{
 		AllowedDomains:      []string{"example.com"},
 		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySitemap},
 	})
@@ -322,7 +322,7 @@ func TestDiscoveryMechanism_Both(t *testing.T) {
 	crawledPages := []string{}
 
 	// Create crawler with both mechanisms
-	crawler := NewCrawler(context.Background(), &CollectorConfig{
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{
 		AllowedDomains:      []string{"example.com"},
 		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySpider, DiscoverySitemap},
 	})
@@ -408,7 +408,7 @@ func TestDiscoveryMechanism_CustomSitemapURL(t *testing.T) {
 	crawledPages := []string{}
 
 	// Create crawler with custom sitemap URL
-	crawler := NewCrawler(context.Background(), &CollectorConfig{
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{
 		AllowedDomains:      []string{"example.com"},
 		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySitemap},
 		SitemapURLs:         []string{"https://example.com/custom-sitemap.xml"},
@@ -475,7 +475,7 @@ func TestDiscoveryMechanism_EmptySitemap(t *testing.T) {
 	crawledPages := []string{}
 
 	// Create crawler with sitemap mode
-	crawler := NewCrawler(context.Background(), &CollectorConfig{
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{
 		AllowedDomains:      []string{"example.com"},
 		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySitemap},
 	})
@@ -522,7 +522,7 @@ func TestDiscoveryMechanism_NoSitemap(t *testing.T) {
 	crawledPages := []string{}
 
 	// Create crawler with sitemap mode
-	crawler := NewCrawler(context.Background(), &CollectorConfig{
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{
 		AllowedDomains:      []string{"example.com"},
 		DiscoveryMechanisms: []DiscoveryMechanism{DiscoverySitemap},
 	})
@@ -602,15 +602,17 @@ func TestCrawlerUserAgent(t *testing.T) {
 			// Create crawler with optional custom user agent
 			var crawler *Crawler
 			if tt.shouldSetUA {
-				crawler = NewCrawler(context.Background(), &CollectorConfig{
+				crawler = NewCrawler(context.Background(), &CrawlerConfig{
 					AllowedDomains: []string{"example.com"},
-					UserAgent:      tt.configuredUA,
+					HTTP: &HTTPConfig{
+						UserAgent: tt.configuredUA,
+					},
 				})
 			} else {
-				// Pass nil to use default config with default UserAgent
-				crawler = NewCrawler(context.Background(), nil)
-				// Set allowed domains manually since we're using nil config
-				crawler.Collector.AllowedDomains = []string{"example.com"}
+				// Pass config to use default UserAgent with AllowedDomains set
+				crawler = NewCrawler(context.Background(), &CrawlerConfig{
+					AllowedDomains: []string{"example.com"},
+				})
 			}
 
 			crawler.Collector.WithTransport(mock)
@@ -652,7 +654,7 @@ func TestPageResult_GetHTML(t *testing.T) {
 	var mu sync.Mutex
 	var pageResult *PageResult
 
-	crawler := NewCrawler(context.Background(), &CollectorConfig{AllowedDomains: []string{"example.com"}})
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{AllowedDomains: []string{"example.com"}})
 	crawler.Collector.WithTransport(mock)
 
 	crawler.SetOnPageCrawled(func(result *PageResult) {
@@ -703,7 +705,7 @@ func TestPageResult_GetTextFull(t *testing.T) {
 	var mu sync.Mutex
 	var pageResult *PageResult
 
-	crawler := NewCrawler(context.Background(), &CollectorConfig{AllowedDomains: []string{"example.com"}})
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{AllowedDomains: []string{"example.com"}})
 	crawler.Collector.WithTransport(mock)
 
 	crawler.SetOnPageCrawled(func(result *PageResult) {
@@ -786,7 +788,7 @@ func TestPageResult_GetTextContent(t *testing.T) {
 			var mu sync.Mutex
 			var pageResult *PageResult
 
-			crawler := NewCrawler(context.Background(), &CollectorConfig{AllowedDomains: []string{"example.com"}})
+			crawler := NewCrawler(context.Background(), &CrawlerConfig{AllowedDomains: []string{"example.com"}})
 			crawler.Collector.WithTransport(mock)
 
 			crawler.SetOnPageCrawled(func(result *PageResult) {
@@ -844,7 +846,7 @@ func TestResourceResult_NonHTMLRouting(t *testing.T) {
 	var mu sync.Mutex
 	var resourceResult *ResourceResult
 
-	crawler := NewCrawler(context.Background(), &CollectorConfig{AllowedDomains: []string{"example.com"}})
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{AllowedDomains: []string{"example.com"}})
 	crawler.Collector.WithTransport(mock)
 
 	// Non-HTML content should go to OnResourceVisit, not OnPageCrawled
@@ -973,7 +975,7 @@ func TestResourceValidation_ConfiguredTypes(t *testing.T) {
 				CheckExternal: tt.checkExternal,
 			}
 
-			crawler := NewCrawler(context.Background(), &CollectorConfig{
+			crawler := NewCrawler(context.Background(), &CrawlerConfig{
 				AllowedDomains:     []string{"example.com", "external.com"}, // Need to allow external domain
 				ResourceValidation: resourceValidation,
 			})
@@ -1051,7 +1053,7 @@ func TestPageResult_MetaDescription(t *testing.T) {
 	var mu sync.Mutex
 	var pageResult *PageResult
 
-	crawler := NewCrawler(context.Background(), &CollectorConfig{AllowedDomains: []string{"example.com"}})
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{AllowedDomains: []string{"example.com"}})
 	crawler.Collector.WithTransport(mock)
 
 	crawler.SetOnPageCrawled(func(result *PageResult) {
@@ -1119,7 +1121,7 @@ func TestResourceHintExtraction(t *testing.T) {
 	var mu sync.Mutex
 	var discoveredLinks []Link
 
-	crawler := NewCrawler(context.Background(), &CollectorConfig{AllowedDomains: []string{"example.com"}})
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{AllowedDomains: []string{"example.com"}})
 	crawler.Collector.WithTransport(mock)
 
 	crawler.SetOnPageCrawled(func(result *PageResult) {
@@ -1210,7 +1212,7 @@ func TestCustomFilters_SetURLFilterCallback(t *testing.T) {
 	mock := NewMockTransport()
 	mock.RegisterHTML("https://example.com/", `<html><head><title>Test</title></head><body>Content</body></html>`)
 
-	crawler := NewCrawler(context.Background(), &CollectorConfig{AllowedDomains: []string{"example.com"}})
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{AllowedDomains: []string{"example.com"}})
 	crawler.Collector.WithTransport(mock)
 
 	// Track callback invocations
@@ -1416,7 +1418,7 @@ func TestCustomFilters_Integration(t *testing.T) {
 	var mu sync.Mutex
 	var discoveredLinks []Link
 
-	crawler := NewCrawler(context.Background(), &CollectorConfig{
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{
 		AllowedDomains: []string{"example.com"},
 	})
 	crawler.Collector.WithTransport(mock)
@@ -1497,7 +1499,7 @@ func TestCrawlerURLRevisit(t *testing.T) {
 	var mu sync.Mutex
 	visitCount := 0
 
-	crawler := NewCrawler(context.Background(), &CollectorConfig{AllowedDomains: []string{"example.com"}})
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{AllowedDomains: []string{"example.com"}})
 	crawler.Collector.WithTransport(mock)
 
 	crawler.SetOnPageCrawled(func(result *PageResult) {
@@ -1546,9 +1548,11 @@ func TestCrawlerURLRevisitAllowed(t *testing.T) {
 	var mu sync.Mutex
 	visitedURLs := make(map[string]int)
 
-	crawler := NewCrawler(context.Background(), &CollectorConfig{
-		AllowedDomains:  []string{"example.com"},
-		AllowURLRevisit: true,
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{
+		AllowedDomains: []string{"example.com"},
+		HTTP: &HTTPConfig{
+			AllowURLRevisit: true,
+		},
 	})
 	crawler.Collector.WithTransport(mock)
 
@@ -1588,7 +1592,7 @@ func TestCrawlerRedirectVisitTracking(t *testing.T) {
 	var mu sync.Mutex
 	crawledURLs := []string{}
 
-	crawler := NewCrawler(context.Background(), &CollectorConfig{
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{
 		AllowedDomains: []string{"127.0.0.1"},
 	})
 
@@ -1653,7 +1657,7 @@ func TestCrawler_AllowedDomains(t *testing.T) {
 	crawledURLs := []string{}
 
 	// Create crawler with AllowedDomains
-	crawler := NewCrawler(context.Background(), &CollectorConfig{
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{
 		AllowedDomains: []string{"example.com"},
 	})
 	crawler.Collector.WithTransport(mock)
@@ -1712,7 +1716,7 @@ func TestCrawler_DisallowedDomains(t *testing.T) {
 	crawledURLs := []string{}
 
 	// Create crawler with DisallowedDomains
-	crawler := NewCrawler(context.Background(), &CollectorConfig{
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{
 		AllowedDomains:    []string{"example.com", "blocked.com"},
 		DisallowedDomains: []string{"blocked.com"},
 	})
@@ -1760,7 +1764,7 @@ func TestCrawler_DisallowedURLFilters(t *testing.T) {
 	attemptedURLs := []string{}
 
 	// Create crawler with DisallowedURLFilters that blocks the redirect destination
-	crawler := NewCrawler(context.Background(), &CollectorConfig{
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{
 		AllowedDomains:       []string{"127.0.0.1"},
 		DisallowedURLFilters: []*regexp.Regexp{regexp.MustCompile("/redirected/")},
 	})
@@ -1819,7 +1823,7 @@ func TestCrawler_BlockedDomainsNotVisited(t *testing.T) {
 	mock.RegisterHTML("https://blocked.com/page2", `<html><head><title>Blocked 2</title></head><body>Content</body></html>`)
 
 	// Create crawler with DisallowedDomains
-	crawler := NewCrawler(context.Background(), &CollectorConfig{
+	crawler := NewCrawler(context.Background(), &CrawlerConfig{
 		AllowedDomains:    []string{"example.com", "blocked.com"},
 		DisallowedDomains: []string{"blocked.com"},
 	})
@@ -1895,7 +1899,7 @@ func TestCrawler_RedirectURLFiltering(t *testing.T) {
 		errorOccurred := false
 
 		// Create crawler with DisallowedURLFilters that blocks /redirected/
-		crawler := NewCrawler(context.Background(), &CollectorConfig{
+		crawler := NewCrawler(context.Background(), &CrawlerConfig{
 			AllowedDomains:       []string{"127.0.0.1"},
 			DisallowedURLFilters: []*regexp.Regexp{regexp.MustCompile("/redirected/")},
 		})
@@ -1940,7 +1944,7 @@ func TestCrawler_RedirectURLFiltering(t *testing.T) {
 		crawledURLs := []string{}
 
 		// Create crawler with no filters - all redirects should be allowed
-		crawler := NewCrawler(context.Background(), &CollectorConfig{
+		crawler := NewCrawler(context.Background(), &CrawlerConfig{
 			AllowedDomains: []string{"127.0.0.1"},
 		})
 

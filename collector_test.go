@@ -229,7 +229,7 @@ func TestParseHTTPErrorResponse(t *testing.T) {
 	contentCount := 0
 	mock := setupMockTransport()
 
-	c := NewCollector(context.Background(), &CollectorConfig{AllowURLRevisit: true})
+	c := NewCollector(context.Background(), &HTTPConfig{AllowURLRevisit: true})
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnHTML("p", func(e *HTMLElement) {
@@ -381,51 +381,12 @@ func TestCollectorOnXMLWithXML(t *testing.T) {
 	}
 }
 
-func TestCollectorDepth(t *testing.T) {
-	mock := setupMockTransport()
-	maxDepth := 2
-	c1 := NewCollector(context.Background(), &CollectorConfig{MaxDepth: maxDepth, AllowURLRevisit: true})
-	c1.SetClient(&http.Client{Transport: mock})
-	requestCount := 0
-	c1.OnResponse(func(resp *Response) {
-		requestCount++
-		if requestCount >= 10 {
-			return
-		}
-		c1.Visit(testBaseURL)
-	})
-	c1.Visit(testBaseURL)
-	if requestCount < 10 {
-		t.Errorf("Invalid number of requests: %d (expected 10) without using MaxDepth", requestCount)
-	}
-
-	c2 := c1.Clone()
-	requestCount = 0
-	c2.OnResponse(func(resp *Response) {
-		requestCount++
-		resp.Request.Visit(testBaseURL)
-	})
-	c2.Visit(testBaseURL)
-	if requestCount != 2 {
-		t.Errorf("Invalid number of requests: %d (expected 2) with using MaxDepth 2", requestCount)
-	}
-
-	c1.Visit(testBaseURL)
-	if requestCount < 10 {
-		t.Errorf("Invalid number of requests: %d (expected 10) without using MaxDepth again", requestCount)
-	}
-
-	requestCount = 0
-	c2.Visit(testBaseURL)
-	if requestCount != 2 {
-		t.Errorf("Invalid number of requests: %d (expected 2) with using MaxDepth 2 again", requestCount)
-	}
-}
+// TestCollectorDepth removed - MaxDepth is now handled by Crawler, not Collector
 
 func TestCollectorRequests(t *testing.T) {
 	mock := setupMockTransport()
 	maxRequests := uint32(5)
-	c1 := NewCollector(context.Background(), &CollectorConfig{MaxRequests: maxRequests, AllowURLRevisit: true})
+	c1 := NewCollector(context.Background(), &HTTPConfig{MaxRequests: maxRequests, AllowURLRevisit: true})
 	c1.SetClient(&http.Client{Transport: mock})
 	requestCount := 0
 	c1.OnResponse(func(resp *Response) {

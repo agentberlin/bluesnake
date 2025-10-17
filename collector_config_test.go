@@ -68,25 +68,25 @@ func TestNewCollector(t *testing.T) {
 func TestRenderingConfigDefaults(t *testing.T) {
 	config := NewDefaultConfig()
 
-	if config.RenderingConfig == nil {
+	if config.HTTP == nil || config.HTTP.RenderingConfig == nil {
 		t.Fatal("RenderingConfig should not be nil in default config")
 	}
 
-	if config.RenderingConfig.InitialWaitMs != 1500 {
-		t.Errorf("Expected InitialWaitMs to be 1500, got %d", config.RenderingConfig.InitialWaitMs)
+	if config.HTTP.RenderingConfig.InitialWaitMs != 1500 {
+		t.Errorf("Expected InitialWaitMs to be 1500, got %d", config.HTTP.RenderingConfig.InitialWaitMs)
 	}
 
-	if config.RenderingConfig.ScrollWaitMs != 2000 {
-		t.Errorf("Expected ScrollWaitMs to be 2000, got %d", config.RenderingConfig.ScrollWaitMs)
+	if config.HTTP.RenderingConfig.ScrollWaitMs != 2000 {
+		t.Errorf("Expected ScrollWaitMs to be 2000, got %d", config.HTTP.RenderingConfig.ScrollWaitMs)
 	}
 
-	if config.RenderingConfig.FinalWaitMs != 1000 {
-		t.Errorf("Expected FinalWaitMs to be 1000, got %d", config.RenderingConfig.FinalWaitMs)
+	if config.HTTP.RenderingConfig.FinalWaitMs != 1000 {
+		t.Errorf("Expected FinalWaitMs to be 1000, got %d", config.HTTP.RenderingConfig.FinalWaitMs)
 	}
 }
 
 func TestRenderingConfigCustomValues(t *testing.T) {
-	customConfig := &CollectorConfig{
+	customConfig := &HTTPConfig{
 		RenderingConfig: &RenderingConfig{
 			InitialWaitMs: 3000,
 			ScrollWaitMs:  4000,
@@ -115,7 +115,7 @@ func TestRenderingConfigCustomValues(t *testing.T) {
 
 func TestRenderingConfigMerging(t *testing.T) {
 	// Test that custom RenderingConfig overrides defaults
-	customConfig := &CollectorConfig{
+	customConfig := &HTTPConfig{
 		RenderingConfig: &RenderingConfig{
 			InitialWaitMs: 5000,
 			ScrollWaitMs:  6000,
@@ -141,7 +141,7 @@ func TestRenderingConfigMerging(t *testing.T) {
 
 func TestRenderingConfigNilHandling(t *testing.T) {
 	// Test that nil RenderingConfig in custom config uses defaults
-	customConfig := &CollectorConfig{
+	customConfig := &HTTPConfig{
 		RenderingConfig: nil,
 	}
 
@@ -167,7 +167,7 @@ func TestRenderingConfigNilHandling(t *testing.T) {
 
 func TestRenderingConfigPartialOverride(t *testing.T) {
 	// Test partial override scenario - only override one value
-	customConfig := &CollectorConfig{
+	customConfig := &HTTPConfig{
 		RenderingConfig: &RenderingConfig{
 			InitialWaitMs: 2500,
 			ScrollWaitMs:  2000, // Keep default
@@ -192,7 +192,7 @@ func TestRenderingConfigPartialOverride(t *testing.T) {
 
 func TestRenderingConfigZeroValues(t *testing.T) {
 	// Test that zero values are preserved (user explicitly set to 0)
-	customConfig := &CollectorConfig{
+	customConfig := &HTTPConfig{
 		RenderingConfig: &RenderingConfig{
 			InitialWaitMs: 0,
 			ScrollWaitMs:  0,
@@ -217,7 +217,7 @@ func TestRenderingConfigZeroValues(t *testing.T) {
 
 func TestRenderingConfigBoundaryValues(t *testing.T) {
 	// Test extreme values
-	customConfig := &CollectorConfig{
+	customConfig := &HTTPConfig{
 		RenderingConfig: &RenderingConfig{
 			InitialWaitMs: 30000, // 30 seconds (max in UI)
 			ScrollWaitMs:  30000,
@@ -243,7 +243,7 @@ func TestRenderingConfigBoundaryValues(t *testing.T) {
 func TestCollectorConfigWithRenderingDisabled(t *testing.T) {
 	// Test that RenderingConfig exists even when JS rendering might not be used
 	// This ensures the configuration is always available
-	collector := NewCollector(context.Background(), &CollectorConfig{})
+	collector := NewCollector(context.Background(), &HTTPConfig{})
 
 	if collector.RenderingConfig == nil {
 		t.Fatal("RenderingConfig should always be initialized")

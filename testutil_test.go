@@ -21,8 +21,6 @@ import (
 	"context"
 	"bytes"
 	"net/http"
-	"reflect"
-	"regexp"
 	"testing"
 	"time"
 
@@ -270,81 +268,15 @@ var newCollectorTests = map[string]func(*testing.T){
 			"foo",
 			"bar",
 		} {
-			c := NewCollector(context.Background(), &CollectorConfig{UserAgent: ua})
+			c := NewCollector(context.Background(), &HTTPConfig{UserAgent: ua})
 
 			if got, want := c.UserAgent, ua; got != want {
 				t.Fatalf("c.UserAgent = %q, want %q", got, want)
 			}
 		}
 	},
-	"MaxDepth": func(t *testing.T) {
-		for _, depth := range []int{
-			12,
-			34,
-			0,
-		} {
-			c := NewCollector(context.Background(), &CollectorConfig{MaxDepth: depth})
-
-			if got, want := c.MaxDepth, depth; got != want {
-				t.Fatalf("c.MaxDepth = %d, want %d", got, want)
-			}
-		}
-	},
-	"AllowedDomains": func(t *testing.T) {
-		for _, domains := range [][]string{
-			{"example.com", "example.net"},
-			{"example.net"},
-			{},
-			nil,
-		} {
-			c := NewCollector(context.Background(), &CollectorConfig{AllowedDomains: domains})
-
-			if got, want := c.AllowedDomains, domains; !reflect.DeepEqual(got, want) {
-				t.Fatalf("c.AllowedDomains = %q, want %q", got, want)
-			}
-		}
-	},
-	"DisallowedDomains": func(t *testing.T) {
-		for _, domains := range [][]string{
-			{"example.com", "example.net"},
-			{"example.net"},
-			{},
-			nil,
-		} {
-			c := NewCollector(context.Background(), &CollectorConfig{DisallowedDomains: domains})
-
-			if got, want := c.DisallowedDomains, domains; !reflect.DeepEqual(got, want) {
-				t.Fatalf("c.DisallowedDomains = %q, want %q", got, want)
-			}
-		}
-	},
-	"DisallowedURLFilters": func(t *testing.T) {
-		for _, filters := range [][]*regexp.Regexp{
-			{regexp.MustCompile(`.*not_allowed.*`)},
-		} {
-			c := NewCollector(context.Background(), &CollectorConfig{DisallowedURLFilters: filters})
-
-			if got, want := c.DisallowedURLFilters, filters; !reflect.DeepEqual(got, want) {
-				t.Fatalf("c.DisallowedURLFilters = %v, want %v", got, want)
-			}
-		}
-	},
-	"URLFilters": func(t *testing.T) {
-		for _, filters := range [][]*regexp.Regexp{
-			{regexp.MustCompile(`\w+`)},
-			{regexp.MustCompile(`\d+`)},
-			{},
-			nil,
-		} {
-			c := NewCollector(context.Background(), &CollectorConfig{URLFilters: filters})
-
-			if got, want := c.URLFilters, filters; !reflect.DeepEqual(got, want) {
-				t.Fatalf("c.URLFilters = %v, want %v", got, want)
-			}
-		}
-	},
 	"AllowURLRevisit": func(t *testing.T) {
-		c := NewCollector(context.Background(), &CollectorConfig{AllowURLRevisit: true})
+		c := NewCollector(context.Background(), &HTTPConfig{AllowURLRevisit: true})
 
 		if !c.AllowURLRevisit {
 			t.Fatal("c.AllowURLRevisit = false, want true")
@@ -356,7 +288,7 @@ var newCollectorTests = map[string]func(*testing.T){
 			1024,
 			0,
 		} {
-			c := NewCollector(context.Background(), &CollectorConfig{MaxBodySize: sizeInBytes})
+			c := NewCollector(context.Background(), &HTTPConfig{MaxBodySize: sizeInBytes})
 
 			if got, want := c.MaxBodySize, sizeInBytes; got != want {
 				t.Fatalf("c.MaxBodySize = %d, want %d", got, want)
@@ -368,7 +300,7 @@ var newCollectorTests = map[string]func(*testing.T){
 			"/tmp/",
 			"/var/cache/",
 		} {
-			c := NewCollector(context.Background(), &CollectorConfig{CacheDir: path})
+			c := NewCollector(context.Background(), &HTTPConfig{CacheDir: path})
 
 			if got, want := c.CacheDir, path; got != want {
 				t.Fatalf("c.CacheDir = %q, want %q", got, want)
@@ -381,25 +313,16 @@ var newCollectorTests = map[string]func(*testing.T){
 			10 * time.Minute,
 			0,
 		} {
-			c := NewCollector(context.Background(), &CollectorConfig{CacheExpiration: d})
+			c := NewCollector(context.Background(), &HTTPConfig{CacheExpiration: d})
 
 			if got, want := c.CacheExpiration, d; got != want {
 				t.Fatalf("c.CacheExpiration = %v, want %v", got, want)
 			}
 		}
 	},
-	"IgnoreRobotsTxt": func(t *testing.T) {
-		// IgnoreRobotsTxt is now controlled by RobotsTxtMode
-		// "ignore" mode sets IgnoreRobotsTxt to true
-		c := NewCollector(context.Background(), &CollectorConfig{RobotsTxtMode: "ignore"})
-
-		if !c.IgnoreRobotsTxt {
-			t.Fatal("c.IgnoreRobotsTxt = false, want true")
-		}
-	},
 	"ID": func(t *testing.T) {
 		// Test ID=0 triggers auto-assignment
-		c0 := NewCollector(context.Background(), &CollectorConfig{ID: 0})
+		c0 := NewCollector(context.Background(), &HTTPConfig{ID: 0})
 		if c0.ID == 0 {
 			t.Fatal("c.ID = 0, expected auto-assignment to non-zero value")
 		}
@@ -409,7 +332,7 @@ var newCollectorTests = map[string]func(*testing.T){
 			1,
 			2,
 		} {
-			c := NewCollector(context.Background(), &CollectorConfig{ID: id})
+			c := NewCollector(context.Background(), &HTTPConfig{ID: id})
 
 			if got, want := c.ID, id; got != want {
 				t.Fatalf("c.ID = %d, want %d", got, want)
@@ -417,7 +340,7 @@ var newCollectorTests = map[string]func(*testing.T){
 		}
 	},
 	"DetectCharset": func(t *testing.T) {
-		c := NewCollector(context.Background(), &CollectorConfig{DetectCharset: true})
+		c := NewCollector(context.Background(), &HTTPConfig{DetectCharset: true})
 
 		if !c.DetectCharset {
 			t.Fatal("c.DetectCharset = false, want true")
@@ -425,14 +348,14 @@ var newCollectorTests = map[string]func(*testing.T){
 	},
 	"Debugger": func(t *testing.T) {
 		d := &debug.LogDebugger{}
-		c := NewCollector(context.Background(), &CollectorConfig{Debugger: d})
+		c := NewCollector(context.Background(), &HTTPConfig{Debugger: d})
 
 		if got, want := c.debugger, d; got != want {
 			t.Fatalf("c.debugger = %v, want %v", got, want)
 		}
 	},
 	"CheckHead": func(t *testing.T) {
-		c := NewCollector(context.Background(), &CollectorConfig{CheckHead: true})
+		c := NewCollector(context.Background(), &HTTPConfig{CheckHead: true})
 
 		if !c.CheckHead {
 			t.Fatal("c.CheckHead = false, want true")

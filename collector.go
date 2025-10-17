@@ -101,30 +101,12 @@ type RenderingConfig struct {
 	FinalWaitMs int
 }
 
-// CollectorConfig contains all configuration options for a Collector
-type CollectorConfig struct {
+// HTTPConfig contains HTTP client configuration options for the Collector
+type HTTPConfig struct {
 	// UserAgent is the User-Agent string used by HTTP requests
 	UserAgent string
 	// Headers contains custom headers for HTTP requests
 	Headers map[string]string
-	// MaxDepth limits the recursion depth of visited URLs.
-	// Set it to 0 for infinite recursion (default).
-	MaxDepth int
-	// AllowedDomains is a domain whitelist.
-	// Leave it blank to allow any domains to be visited
-	AllowedDomains []string
-	// DisallowedDomains is a domain blacklist.
-	DisallowedDomains []string
-	// DisallowedURLFilters is a list of regular expressions which restricts
-	// visiting URLs. If any of the rules matches to a URL the
-	// request will be stopped. DisallowedURLFilters will
-	// be evaluated before URLFilters
-	DisallowedURLFilters []*regexp.Regexp
-	// URLFilters is a list of regular expressions which restricts
-	// visiting URLs. If any of the rules matches to a URL the
-	// request won't be stopped. DisallowedURLFilters will
-	// be evaluated before URLFilters
-	URLFilters []*regexp.Regexp
 	// AllowURLRevisit allows multiple downloads of the same URL
 	AllowURLRevisit bool
 	// MaxBodySize is the limit of the retrieved response body in bytes.
@@ -134,6 +116,8 @@ type CollectorConfig struct {
 	// CacheDir specifies a location where GET requests are cached as files.
 	// When it's not defined, caching is disabled.
 	CacheDir string
+	// CacheExpiration sets the maximum age for cache files.
+	CacheExpiration time.Duration
 	// IgnoreRobotsTxt allows the Collector to ignore any restrictions set by
 	// the target host's robots.txt file.
 	IgnoreRobotsTxt bool
@@ -155,18 +139,6 @@ type CollectorConfig struct {
 	// RenderingConfig contains configuration for JavaScript rendering wait times
 	// Only applies when EnableRendering is true
 	RenderingConfig *RenderingConfig
-	// CacheExpiration sets the maximum age for cache files.
-	CacheExpiration time.Duration
-	// Debugger is the debugger instance to use
-	Debugger debug.Debugger
-	// DiscoveryMechanisms specifies which mechanisms to use for URL discovery.
-	// Can be any combination: ["spider"], ["sitemap"], or ["spider", "sitemap"].
-	// Default is ["spider"].
-	DiscoveryMechanisms []DiscoveryMechanism
-	// SitemapURLs specifies custom sitemap URLs to fetch (optional).
-	// If nil/empty when sitemap discovery is enabled, tries default locations
-	// (/sitemap.xml, /sitemap_index.xml).
-	SitemapURLs []string
 	// EnableContentHash enables content-based duplicate detection
 	// When true, pages with identical content will be detected even if URLs differ
 	EnableContentHash bool
@@ -175,6 +147,38 @@ type CollectorConfig struct {
 	ContentHashAlgorithm string
 	// ContentHashConfig contains detailed configuration for content hashing
 	ContentHashConfig *ContentHashConfig
+	// Debugger is the debugger instance to use
+	Debugger debug.Debugger
+}
+
+// CrawlerConfig contains all configuration options for a Crawler
+type CrawlerConfig struct {
+	// MaxDepth limits the recursion depth of visited URLs.
+	// Set it to 0 for infinite recursion (default).
+	MaxDepth int
+	// AllowedDomains is a domain whitelist.
+	// Leave it blank to allow any domains to be visited
+	AllowedDomains []string
+	// DisallowedDomains is a domain blacklist.
+	DisallowedDomains []string
+	// DisallowedURLFilters is a list of regular expressions which restricts
+	// visiting URLs. If any of the rules matches to a URL the
+	// request will be stopped. DisallowedURLFilters will
+	// be evaluated before URLFilters
+	DisallowedURLFilters []*regexp.Regexp
+	// URLFilters is a list of regular expressions which restricts
+	// visiting URLs. If any of the rules matches to a URL the
+	// request won't be stopped. DisallowedURLFilters will
+	// be evaluated before URLFilters
+	URLFilters []*regexp.Regexp
+	// DiscoveryMechanisms specifies which mechanisms to use for URL discovery.
+	// Can be any combination: ["spider"], ["sitemap"], or ["spider", "sitemap"].
+	// Default is ["spider"].
+	DiscoveryMechanisms []DiscoveryMechanism
+	// SitemapURLs specifies custom sitemap URLs to fetch (optional).
+	// If nil/empty when sitemap discovery is enabled, tries default locations
+	// (/sitemap.xml, /sitemap_index.xml).
+	SitemapURLs []string
 	// ResourceValidation configures checking of non-HTML resources for broken links
 	ResourceValidation *ResourceValidationConfig
 	// RobotsTxtMode controls how robots.txt is handled
@@ -208,6 +212,9 @@ type CollectorConfig struct {
 	// This replaces/complements the existing async goroutine model
 	// Default: 10
 	Parallelism int
+
+	// HTTP contains HTTP client configuration for the underlying Collector
+	HTTP *HTTPConfig
 }
 
 // Collector provides the scraper instance for a scraping job
@@ -216,28 +223,6 @@ type Collector struct {
 	UserAgent string
 	// Custom headers for the request
 	Headers *http.Header
-	// MaxDepth limits the recursion depth of visited URLs.
-	// Set it to 0 for infinite recursion (default).
-	MaxDepth int
-	// AllowedDomains is a domain whitelist.
-	// Leave it blank to allow any domains to be visited
-	AllowedDomains []string
-	// DisallowedDomains is a domain blacklist.
-	DisallowedDomains []string
-	// DisallowedURLFilters is a list of regular expressions which restricts
-	// visiting URLs. If any of the rules matches to a URL the
-	// request will be stopped. DisallowedURLFilters will
-	// be evaluated before URLFilters
-	// Leave it blank to allow any URLs to be visited
-	DisallowedURLFilters []*regexp.Regexp
-	// URLFilters is a list of regular expressions which restricts
-	// visiting URLs. If any of the rules matches to a URL the
-	// request won't be stopped. DisallowedURLFilters will
-	// be evaluated before URLFilters
-
-	// Leave it blank to allow any URLs to be visited
-	URLFilters []*regexp.Regexp
-
 	// AllowURLRevisit allows multiple downloads of the same URL
 	AllowURLRevisit bool
 	// MaxBodySize is the limit of the retrieved response body in bytes.
@@ -434,9 +419,6 @@ var (
 )
 
 var envMap = map[string]func(*Collector, string){
-	"ALLOWED_DOMAINS": func(c *Collector, val string) {
-		c.AllowedDomains = strings.Split(val, ",")
-	},
 	"CACHE_DIR": func(c *Collector, val string) {
 		c.CacheDir = val
 	},
@@ -445,9 +427,6 @@ var envMap = map[string]func(*Collector, string){
 	},
 	"DISABLE_COOKIES": func(c *Collector, _ string) {
 		c.backend.Client.Jar = nil
-	},
-	"DISALLOWED_DOMAINS": func(c *Collector, val string) {
-		c.DisallowedDomains = strings.Split(val, ",")
 	},
 	"IGNORE_ROBOTSTXT": func(c *Collector, val string) {
 		c.IgnoreRobotsTxt = isYesString(val)
@@ -463,12 +442,6 @@ var envMap = map[string]func(*Collector, string){
 		size, err := strconv.Atoi(val)
 		if err == nil {
 			c.MaxBodySize = size
-		}
-	},
-	"MAX_DEPTH": func(c *Collector, val string) {
-		maxDepth, err := strconv.Atoi(val)
-		if err == nil {
-			c.MaxDepth = maxDepth
 		}
 	},
 	"MAX_REQUESTS": func(c *Collector, val string) {
@@ -500,37 +473,16 @@ const (
 	DiscoverySitemap DiscoveryMechanism = "sitemap"
 )
 
-// NewDefaultConfig returns a CollectorConfig with sensible defaults
-func NewDefaultConfig() *CollectorConfig {
-	return &CollectorConfig{
-		UserAgent:              "bluesnake/1.0 (+https://snake.blue)",
-		MaxBodySize:            10 * 1024 * 1024, // 10MB
-		IgnoreRobotsTxt:        true,
-		MaxDepth:               0,
-		MaxRequests:            0,
-		AllowURLRevisit:        false,
-		DetectCharset:          false,
-		CheckHead:              false,
-		TraceHTTP:              false,
-		ParseHTTPErrorResponse: false,
-		EnableRendering:        false,
-		RenderingConfig: &RenderingConfig{
-			InitialWaitMs: 1500, // 1.5s for React/Next.js hydration
-			ScrollWaitMs:  2000, // 2s for lazy-loaded content
-			FinalWaitMs:   1000, // 1s for remaining DOM updates
-		},
-		DiscoveryMechanisms:  []DiscoveryMechanism{DiscoverySpider}, // Default to spider mode
-		SitemapURLs:          nil,
-		EnableContentHash:    false,
-		ContentHashAlgorithm: "xxhash",
-		ContentHashConfig: &ContentHashConfig{
-			ExcludeTags:        []string{"script", "style", "nav", "footer"},
-			IncludeOnlyTags:    nil,
-			StripTimestamps:    true,
-			StripAnalytics:     true,
-			StripComments:      true,
-			CollapseWhitespace: true,
-		},
+// NewDefaultConfig returns a CrawlerConfig with sensible defaults
+func NewDefaultConfig() *CrawlerConfig {
+	return &CrawlerConfig{
+		MaxDepth:                 0,
+		AllowedDomains:           nil,
+		DisallowedDomains:        nil,
+		DisallowedURLFilters:     nil,
+		URLFilters:               nil,
+		DiscoveryMechanisms:      []DiscoveryMechanism{DiscoverySpider}, // Default to spider mode
+		SitemapURLs:              nil,
 		ResourceValidation: &ResourceValidationConfig{
 			Enabled:       true,
 			ResourceTypes: []string{"image", "script", "stylesheet", "font"},
@@ -542,124 +494,111 @@ func NewDefaultConfig() *CollectorConfig {
 		FollowExternalNofollow:   false,     // Default to NOT following external nofollow links
 		RespectMetaRobotsNoindex: true,      // Default to respecting meta robots noindex
 		RespectNoindex:           true,      // Default to respecting X-Robots-Tag noindex
+		DiscoveryChannelSize:     50000,     // Default: 50k URLs
+		WorkQueueSize:            1000,      // Default: 1k pending work items
+		Parallelism:              10,        // Default: 10 concurrent fetches
+		HTTP: &HTTPConfig{
+			UserAgent:              "bluesnake/1.0 (+https://snake.blue)",
+			MaxBodySize:            10 * 1024 * 1024, // 10MB
+			IgnoreRobotsTxt:        false,           // Default to respecting robots.txt (controlled by RobotsTxtMode)
+			MaxRequests:            0,
+			AllowURLRevisit:        false,
+			DetectCharset:          false,
+			CheckHead:              false,
+			TraceHTTP:              false,
+			ParseHTTPErrorResponse: false,
+			EnableRendering:        false,
+			RenderingConfig: &RenderingConfig{
+				InitialWaitMs: 1500, // 1.5s for React/Next.js hydration
+				ScrollWaitMs:  2000, // 2s for lazy-loaded content
+				FinalWaitMs:   1000, // 1s for remaining DOM updates
+			},
+			EnableContentHash:    false,
+			ContentHashAlgorithm: "xxhash",
+			ContentHashConfig: &ContentHashConfig{
+				ExcludeTags:        []string{"script", "style", "nav", "footer"},
+				IncludeOnlyTags:    nil,
+				StripTimestamps:    true,
+				StripAnalytics:     true,
+				StripComments:      true,
+				CollapseWhitespace: true,
+			},
+		},
 	}
 }
 
-// NewCollector creates a new Collector instance with the provided context and configuration.
+// NewCollector creates a new Collector instance with the provided context and HTTP configuration.
 // The context is used for request cancellation and lifecycle management.
-// If config is nil, default configuration is used.
-func NewCollector(ctx context.Context, config *CollectorConfig) *Collector {
+// If config is nil, default HTTPConfig from NewDefaultConfig() is used.
+func NewCollector(ctx context.Context, config *HTTPConfig) *Collector {
 	// Start with defaults
-	defaults := NewDefaultConfig()
+	defaultHTTP := NewDefaultConfig().HTTP
 
 	// Merge user config with defaults (user config takes precedence for non-zero values)
 	if config != nil {
 		if config.UserAgent != "" {
-			defaults.UserAgent = config.UserAgent
+			defaultHTTP.UserAgent = config.UserAgent
 		}
 		if config.Headers != nil {
-			defaults.Headers = config.Headers
+			defaultHTTP.Headers = config.Headers
 		}
-		if config.MaxDepth != 0 {
-			defaults.MaxDepth = config.MaxDepth
-		}
-		if config.AllowedDomains != nil {
-			defaults.AllowedDomains = config.AllowedDomains
-		}
-		if config.DisallowedDomains != nil {
-			defaults.DisallowedDomains = config.DisallowedDomains
-		}
-		if config.DisallowedURLFilters != nil {
-			defaults.DisallowedURLFilters = config.DisallowedURLFilters
-		}
-		if config.URLFilters != nil {
-			defaults.URLFilters = config.URLFilters
-		}
-		// For bools, we need to check if they differ from their zero value when it matters
-		// AllowURLRevisit default is false, so any true value should override
 		if config.AllowURLRevisit {
-			defaults.AllowURLRevisit = true
+			defaultHTTP.AllowURLRevisit = true
 		}
 		// MaxBodySize: Always use the user's value, even if it's 0 (which means unlimited)
-		defaults.MaxBodySize = config.MaxBodySize
+		defaultHTTP.MaxBodySize = config.MaxBodySize
 		if config.CacheDir != "" {
-			defaults.CacheDir = config.CacheDir
-		}
-		// IgnoreRobotsTxt: default is true, so we keep that unless explicitly set to false
-		// But we can't distinguish between "explicitly false" and "unset" with a bool
-		// So we keep the default (true) unless the whole config suggests otherwise
-		// For now, keep the default behavior
-		if config.ParseHTTPErrorResponse {
-			defaults.ParseHTTPErrorResponse = true
-		}
-		if config.ID != 0 {
-			defaults.ID = config.ID
-		}
-		if config.DetectCharset {
-			defaults.DetectCharset = true
-		}
-		if config.CheckHead {
-			defaults.CheckHead = true
-		}
-		if config.TraceHTTP {
-			defaults.TraceHTTP = true
-		}
-		// Context is now passed as a parameter, not part of config
-		if config.MaxRequests != 0 {
-			defaults.MaxRequests = config.MaxRequests
-		}
-		if config.EnableRendering {
-			defaults.EnableRendering = true
-		}
-		if config.RenderingConfig != nil {
-			defaults.RenderingConfig = config.RenderingConfig
+			defaultHTTP.CacheDir = config.CacheDir
 		}
 		if config.CacheExpiration != 0 {
-			defaults.CacheExpiration = config.CacheExpiration
+			defaultHTTP.CacheExpiration = config.CacheExpiration
 		}
-		if config.Debugger != nil {
-			defaults.Debugger = config.Debugger
+		if config.IgnoreRobotsTxt {
+			defaultHTTP.IgnoreRobotsTxt = true
 		}
-		if config.DiscoveryMechanisms != nil {
-			defaults.DiscoveryMechanisms = config.DiscoveryMechanisms
+		if config.ParseHTTPErrorResponse {
+			defaultHTTP.ParseHTTPErrorResponse = true
 		}
-		if config.SitemapURLs != nil {
-			defaults.SitemapURLs = config.SitemapURLs
+		if config.ID != 0 {
+			defaultHTTP.ID = config.ID
+		}
+		if config.DetectCharset {
+			defaultHTTP.DetectCharset = true
+		}
+		if config.CheckHead {
+			defaultHTTP.CheckHead = true
+		}
+		if config.TraceHTTP {
+			defaultHTTP.TraceHTTP = true
+		}
+		if config.MaxRequests != 0 {
+			defaultHTTP.MaxRequests = config.MaxRequests
+		}
+		if config.EnableRendering {
+			defaultHTTP.EnableRendering = true
+		}
+		if config.RenderingConfig != nil {
+			defaultHTTP.RenderingConfig = config.RenderingConfig
 		}
 		if config.EnableContentHash {
-			defaults.EnableContentHash = true
+			defaultHTTP.EnableContentHash = true
 		}
 		if config.ContentHashAlgorithm != "" {
-			defaults.ContentHashAlgorithm = config.ContentHashAlgorithm
+			defaultHTTP.ContentHashAlgorithm = config.ContentHashAlgorithm
 		}
 		if config.ContentHashConfig != nil {
-			defaults.ContentHashConfig = config.ContentHashConfig
+			defaultHTTP.ContentHashConfig = config.ContentHashConfig
 		}
-		if config.ResourceValidation != nil {
-			defaults.ResourceValidation = config.ResourceValidation
-		}
-		if config.RobotsTxtMode != "" {
-			defaults.RobotsTxtMode = config.RobotsTxtMode
-		}
-		if config.FollowInternalNofollow {
-			defaults.FollowInternalNofollow = true
-		}
-		if config.FollowExternalNofollow {
-			defaults.FollowExternalNofollow = true
-		}
-		if !config.RespectMetaRobotsNoindex {
-			defaults.RespectMetaRobotsNoindex = false
-		}
-		if !config.RespectNoindex {
-			defaults.RespectNoindex = false
+		if config.Debugger != nil {
+			defaultHTTP.Debugger = config.Debugger
 		}
 	}
-	config = defaults
+	config = defaultHTTP
 
 	c := &Collector{}
 	c.Init()
 
-	// Apply configuration
+	// Apply HTTP configuration
 	c.UserAgent = config.UserAgent
 	if len(config.Headers) > 0 {
 		customHeaders := make(http.Header)
@@ -668,14 +607,10 @@ func NewCollector(ctx context.Context, config *CollectorConfig) *Collector {
 		}
 		c.Headers = &customHeaders
 	}
-	c.MaxDepth = config.MaxDepth
-	c.AllowedDomains = config.AllowedDomains
-	c.DisallowedDomains = config.DisallowedDomains
-	c.DisallowedURLFilters = config.DisallowedURLFilters
-	c.URLFilters = config.URLFilters
 	c.AllowURLRevisit = config.AllowURLRevisit
 	c.MaxBodySize = config.MaxBodySize
 	c.CacheDir = config.CacheDir
+	c.CacheExpiration = config.CacheExpiration
 	c.IgnoreRobotsTxt = config.IgnoreRobotsTxt
 	c.ParseHTTPErrorResponse = config.ParseHTTPErrorResponse
 	if config.ID != 0 {
@@ -689,7 +624,6 @@ func NewCollector(ctx context.Context, config *CollectorConfig) *Collector {
 	c.MaxRequests = config.MaxRequests
 	c.EnableRendering = config.EnableRendering
 	c.RenderingConfig = config.RenderingConfig
-	c.CacheExpiration = config.CacheExpiration
 	if config.Debugger != nil {
 		config.Debugger.Init()
 		c.debugger = config.Debugger
@@ -697,26 +631,13 @@ func NewCollector(ctx context.Context, config *CollectorConfig) *Collector {
 	c.EnableContentHash = config.EnableContentHash
 	c.ContentHashAlgorithm = config.ContentHashAlgorithm
 	c.ContentHashConfig = config.ContentHashConfig
-	c.ResourceValidation = config.ResourceValidation
-	c.RobotsTxtMode = config.RobotsTxtMode
-	c.FollowInternalNofollow = config.FollowInternalNofollow
-	c.FollowExternalNofollow = config.FollowExternalNofollow
-	c.RespectMetaRobotsNoindex = config.RespectMetaRobotsNoindex
-	c.RespectNoindex = config.RespectNoindex
 
-	// Set IgnoreRobotsTxt based on RobotsTxtMode
-	// "ignore" = completely ignore robots.txt (IgnoreRobotsTxt = true)
-	// "respect" = respect robots.txt and block URLs (IgnoreRobotsTxt = false)
-	// "ignore-report" = check robots.txt but don't block (IgnoreRobotsTxt = false, special handling in checkRobots)
-	switch config.RobotsTxtMode {
-	case "ignore":
-		c.IgnoreRobotsTxt = true
-	case "respect", "ignore-report":
-		c.IgnoreRobotsTxt = false
-	default:
-		// Default to "respect" mode
-		c.IgnoreRobotsTxt = false
-	}
+	// Initialize crawler directive defaults (following ScreamingFrog's defaults)
+	c.RobotsTxtMode = "respect"
+	c.FollowInternalNofollow = false
+	c.FollowExternalNofollow = false
+	c.RespectMetaRobotsNoindex = true
+	c.RespectNoindex = true
 
 	c.parseSettingsFromEnv()
 
@@ -728,7 +649,6 @@ func NewCollector(ctx context.Context, config *CollectorConfig) *Collector {
 func (c *Collector) Init() {
 	c.UserAgent = "bluesnake/1.0 (+https://snake.blue)"
 	c.Headers = nil
-	c.MaxDepth = 0
 	c.MaxRequests = 0
 	c.store = &storage.InMemoryStorage{}
 	c.store.Init()
@@ -739,7 +659,7 @@ func (c *Collector) Init() {
 	c.backend.Client.CheckRedirect = c.checkRedirectFunc()
 	c.lock = &sync.RWMutex{}
 	c.robotsMap = make(map[string]*robotstxt.RobotsData)
-	c.IgnoreRobotsTxt = true
+	c.IgnoreRobotsTxt = false // Default to respecting robots.txt
 	c.ID = atomic.AddUint32(&collectorCounter, 1)
 	c.TraceHTTP = false
 	c.ctx = context.Background()
@@ -1048,9 +968,6 @@ func (c *Collector) requestCheck(parsedURL *url.URL, method string, getBody func
 	default:
 	}
 
-	if c.MaxDepth > 0 && c.MaxDepth < depth {
-		return ErrMaxDepth
-	}
 	if c.MaxRequests > 0 && c.requestCount >= c.MaxRequests {
 		return ErrMaxRequests
 	}
@@ -1072,33 +989,6 @@ func (c *Collector) requestCheck(parsedURL *url.URL, method string, getBody func
 	// If checkRevisit is true and you need visit checking, you must handle it externally
 	// before calling this method (see Crawler.processDiscoveredURL for the proper pattern).
 	return nil
-}
-
-func (c *Collector) checkFilters(URL, domain string) error {
-	if len(c.DisallowedURLFilters) > 0 {
-		if isMatchingFilter(c.DisallowedURLFilters, []byte(URL)) {
-			return ErrForbiddenURL
-		}
-	}
-	if len(c.URLFilters) > 0 {
-		if !isMatchingFilter(c.URLFilters, []byte(URL)) {
-			return ErrNoURLFiltersMatch
-		}
-	}
-	if !c.isDomainAllowed(domain) {
-		return ErrForbiddenDomain
-	}
-	return nil
-}
-
-func (c *Collector) isDomainAllowed(domain string) bool {
-	if slices.Contains(c.DisallowedDomains, domain) {
-		return false
-	}
-	if len(c.AllowedDomains) == 0 {
-		return true
-	}
-	return slices.Contains(c.AllowedDomains, domain)
 }
 
 func (c *Collector) checkRobots(u *url.URL) error {
@@ -1717,19 +1607,14 @@ func (c *Collector) Cookies(URL string) []*http.Cookie {
 // between collectors.
 func (c *Collector) Clone() *Collector {
 	return &Collector{
-		AllowedDomains:         c.AllowedDomains,
 		AllowURLRevisit:        c.AllowURLRevisit,
 		CacheDir:               c.CacheDir,
 		CacheExpiration:        c.CacheExpiration,
 		DetectCharset:          c.DetectCharset,
-		DisallowedDomains:      c.DisallowedDomains,
 		ID:                     atomic.AddUint32(&collectorCounter, 1),
 		IgnoreRobotsTxt:        c.IgnoreRobotsTxt,
 		MaxBodySize:            c.MaxBodySize,
-		MaxDepth:               c.MaxDepth,
 		MaxRequests:            c.MaxRequests,
-		DisallowedURLFilters:   c.DisallowedURLFilters,
-		URLFilters:             c.URLFilters,
 		CheckHead:              c.CheckHead,
 		ParseHTTPErrorResponse: c.ParseHTTPErrorResponse,
 		UserAgent:              c.UserAgent,

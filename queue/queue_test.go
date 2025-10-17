@@ -57,9 +57,9 @@ func TestQueue(t *testing.T) {
 		put()
 		storage.AddRequest([]byte("error request"))
 	}
-	c := bluesnake.NewCollector(context.Background(), &bluesnake.CollectorConfig{
-		AllowURLRevisit: true,
-		RobotsTxtMode:   "ignore", // Ignore robots.txt for testing
+	c := bluesnake.NewCollector(context.Background(), &bluesnake.HTTPConfig{
+		AllowURLRevisit:  true,
+		IgnoreRobotsTxt:  true, // Ignore robots.txt for testing
 	})
 	c.OnRequest(func(req *bluesnake.Request) {
 		atomic.AddUint32(&requests, 1)
