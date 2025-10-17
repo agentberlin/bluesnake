@@ -1980,3 +1980,164 @@ func TestCrawler_RedirectURLFiltering(t *testing.T) {
 		t.Logf("OnRedirect correctly allowed redirect: crawled %d URLs", len(crawledURLs))
 	})
 }
+
+// TestCrawlerConfigOptions tests that CrawlerConfig options are correctly applied
+func TestCrawlerConfigOptions(t *testing.T) {
+	t.Run("MaxDepth", func(t *testing.T) {
+		mock := NewMockTransport()
+
+		// Create a chain of pages for depth testing
+		mock.RegisterHTML("https://example.com/", `<html><head><title>Depth 0</title></head><body><a href="/depth1">D1</a></body></html>`)
+		mock.RegisterHTML("https://example.com/depth1", `<html><head><title>Depth 1</title></head><body><a href="/depth2">D2</a></body></html>`)
+		mock.RegisterHTML("https://example.com/depth2", `<html><head><title>Depth 2</title></head><body><a href="/depth3">D3</a></body></html>`)
+		mock.RegisterHTML("https://example.com/depth3", `<html><head><title>Depth 3</title></head><body>End</body></html>`)
+
+		var mu sync.Mutex
+		crawledPages := []string{}
+
+		// Create crawler with MaxDepth = 2
+		crawler := NewCrawler(context.Background(), &CrawlerConfig{
+			AllowedDomains: []string{"example.com"},
+			MaxDepth:       2,
+		})
+		crawler.Collector.WithTransport(mock)
+
+		crawler.SetOnPageCrawled(func(result *PageResult) {
+			mu.Lock()
+			defer mu.Unlock()
+			crawledPages = append(crawledPages, result.URL)
+		})
+
+		err := crawler.Start("https://example.com/")
+		if err != nil {
+			t.Fatalf("Failed to start crawler: %v", err)
+		}
+		crawler.Wait()
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		// Should have crawled up to depth 2 (home=0, depth1=1, depth2=2)
+		// depth3 should NOT be crawled
+		hasDepth3 := false
+		for _, url := range crawledPages {
+			if strings.Contains(url, "depth3") {
+				hasDepth3 = true
+			}
+		}
+
+		if hasDepth3 {
+			t.Error("MaxDepth should prevent crawling depth3")
+		}
+
+		if len(crawledPages) > 3 {
+			t.Errorf("Expected at most 3 pages crawled with MaxDepth=2, got %d", len(crawledPages))
+		}
+
+		t.Logf("MaxDepth correctly limited crawling to %d pages", len(crawledPages))
+	})
+
+	t.Run("URLFilters", func(t *testing.T) {
+		mock := NewMockTransport()
+
+		mock.RegisterHTML("https://example.com/start", `<html><head><title>Start</title></head><body>
+			<a href="/allowed">Allowed</a>
+			<a href="/blocked">Blocked</a>
+		</body></html>`)
+		mock.RegisterHTML("https://example.com/allowed", `<html><head><title>Allowed</title></head><body>OK</body></html>`)
+		mock.RegisterHTML("https://example.com/blocked", `<html><head><title>Blocked</title></head><body>Blocked</body></html>`)
+
+		var mu sync.Mutex
+		crawledPages := []string{}
+
+		// URLFilters works as a whitelist - only URLs matching the pattern are allowed
+		// We need to allow both /start and /allowed
+		crawler := NewCrawler(context.Background(), &CrawlerConfig{
+			AllowedDomains: []string{"example.com"},
+			URLFilters:     []*regexp.Regexp{regexp.MustCompile("/(start|allowed)")},
+		})
+		crawler.Collector.WithTransport(mock)
+
+		crawler.SetOnPageCrawled(func(result *PageResult) {
+			mu.Lock()
+			defer mu.Unlock()
+			crawledPages = append(crawledPages, result.URL)
+		})
+
+		err := crawler.Start("https://example.com/start")
+		if err != nil {
+			t.Fatalf("Failed to start crawler: %v", err)
+		}
+		crawler.Wait()
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		// Should only crawl /start and /allowed, not /blocked
+		hasBlocked := false
+		hasAllowed := false
+		for _, url := range crawledPages {
+			if strings.Contains(url, "/blocked") {
+				hasBlocked = true
+			}
+			if strings.Contains(url, "/allowed") {
+				hasAllowed = true
+			}
+		}
+
+		if hasBlocked {
+			t.Error("URLFilters should block /blocked URL")
+		}
+
+		if !hasAllowed {
+			t.Error("URLFilters should allow /allowed URL")
+		}
+
+		t.Logf("URLFilters correctly filtered crawling: %d pages", len(crawledPages))
+	})
+
+	t.Run("DiscoveryChannelSize", func(t *testing.T) {
+		// DiscoveryChannelSize is used for internal buffering
+		// We just verify the crawler can be created with custom value
+		crawler := NewCrawler(context.Background(), &CrawlerConfig{
+			AllowedDomains:       []string{"example.com"},
+			DiscoveryChannelSize: 10000,
+		})
+
+		if crawler == nil {
+			t.Fatal("Failed to create crawler with custom DiscoveryChannelSize")
+		}
+
+		t.Log("DiscoveryChannelSize configuration accepted")
+	})
+
+	t.Run("WorkQueueSize", func(t *testing.T) {
+		// WorkQueueSize is used for internal buffering
+		// We just verify the crawler can be created with custom value
+		crawler := NewCrawler(context.Background(), &CrawlerConfig{
+			AllowedDomains: []string{"example.com"},
+			WorkQueueSize:  500,
+		})
+
+		if crawler == nil {
+			t.Fatal("Failed to create crawler with custom WorkQueueSize")
+		}
+
+		t.Log("WorkQueueSize configuration accepted")
+	})
+
+	t.Run("Parallelism", func(t *testing.T) {
+		// Parallelism controls the number of concurrent workers
+		// We just verify the crawler can be created with custom value
+		crawler := NewCrawler(context.Background(), &CrawlerConfig{
+			AllowedDomains: []string{"example.com"},
+			Parallelism:    20,
+		})
+
+		if crawler == nil {
+			t.Fatal("Failed to create crawler with custom Parallelism")
+		}
+
+		t.Log("Parallelism configuration accepted")
+	})
+}

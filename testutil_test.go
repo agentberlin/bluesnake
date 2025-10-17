@@ -361,4 +361,139 @@ var newCollectorTests = map[string]func(*testing.T){
 			t.Fatal("c.CheckHead = false, want true")
 		}
 	},
+	"Headers": func(t *testing.T) {
+		headers := map[string]string{
+			"X-Custom-Header": "test-value",
+			"Accept":          "application/json",
+		}
+		c := NewCollector(context.Background(), &HTTPConfig{Headers: headers})
+
+		if c.Headers == nil {
+			t.Fatal("c.Headers = nil, want headers map")
+		}
+
+		if got := c.Headers.Get("X-Custom-Header"); got != "test-value" {
+			t.Fatalf("c.Headers.Get(\"X-Custom-Header\") = %q, want %q", got, "test-value")
+		}
+
+		if got := c.Headers.Get("Accept"); got != "application/json" {
+			t.Fatalf("c.Headers.Get(\"Accept\") = %q, want %q", got, "application/json")
+		}
+	},
+	"IgnoreRobotsTxt": func(t *testing.T) {
+		c := NewCollector(context.Background(), &HTTPConfig{IgnoreRobotsTxt: true})
+
+		if !c.IgnoreRobotsTxt {
+			t.Fatal("c.IgnoreRobotsTxt = false, want true")
+		}
+	},
+	"ParseHTTPErrorResponse": func(t *testing.T) {
+		c := NewCollector(context.Background(), &HTTPConfig{ParseHTTPErrorResponse: true})
+
+		if !c.ParseHTTPErrorResponse {
+			t.Fatal("c.ParseHTTPErrorResponse = false, want true")
+		}
+	},
+	"TraceHTTP": func(t *testing.T) {
+		c := NewCollector(context.Background(), &HTTPConfig{TraceHTTP: true})
+
+		if !c.TraceHTTP {
+			t.Fatal("c.TraceHTTP = false, want true")
+		}
+	},
+	"MaxRequests": func(t *testing.T) {
+		for _, maxReq := range []uint32{
+			10,
+			100,
+			1000,
+		} {
+			c := NewCollector(context.Background(), &HTTPConfig{MaxRequests: maxReq})
+
+			if got, want := c.MaxRequests, maxReq; got != want {
+				t.Fatalf("c.MaxRequests = %d, want %d", got, want)
+			}
+		}
+	},
+	"EnableRendering": func(t *testing.T) {
+		c := NewCollector(context.Background(), &HTTPConfig{EnableRendering: true})
+
+		if !c.EnableRendering {
+			t.Fatal("c.EnableRendering = false, want true")
+		}
+	},
+	"RenderingConfig": func(t *testing.T) {
+		renderConfig := &RenderingConfig{
+			InitialWaitMs: 2000,
+			ScrollWaitMs:  3000,
+			FinalWaitMs:   1500,
+		}
+		c := NewCollector(context.Background(), &HTTPConfig{RenderingConfig: renderConfig})
+
+		if c.RenderingConfig == nil {
+			t.Fatal("c.RenderingConfig = nil, want config")
+		}
+
+		if got, want := c.RenderingConfig.InitialWaitMs, 2000; got != want {
+			t.Fatalf("c.RenderingConfig.InitialWaitMs = %d, want %d", got, want)
+		}
+
+		if got, want := c.RenderingConfig.ScrollWaitMs, 3000; got != want {
+			t.Fatalf("c.RenderingConfig.ScrollWaitMs = %d, want %d", got, want)
+		}
+
+		if got, want := c.RenderingConfig.FinalWaitMs, 1500; got != want {
+			t.Fatalf("c.RenderingConfig.FinalWaitMs = %d, want %d", got, want)
+		}
+	},
+	"EnableContentHash": func(t *testing.T) {
+		c := NewCollector(context.Background(), &HTTPConfig{EnableContentHash: true})
+
+		if !c.EnableContentHash {
+			t.Fatal("c.EnableContentHash = false, want true")
+		}
+	},
+	"ContentHashAlgorithm": func(t *testing.T) {
+		for _, algo := range []string{
+			"xxhash",
+			"md5",
+			"sha256",
+		} {
+			c := NewCollector(context.Background(), &HTTPConfig{ContentHashAlgorithm: algo})
+
+			if got, want := c.ContentHashAlgorithm, algo; got != want {
+				t.Fatalf("c.ContentHashAlgorithm = %q, want %q", got, want)
+			}
+		}
+	},
+	"ContentHashConfig": func(t *testing.T) {
+		hashConfig := &ContentHashConfig{
+			ExcludeTags:        []string{"script", "style"},
+			IncludeOnlyTags:    []string{"article", "main"},
+			StripTimestamps:    true,
+			StripAnalytics:     true,
+			StripComments:      true,
+			CollapseWhitespace: false,
+		}
+		c := NewCollector(context.Background(), &HTTPConfig{ContentHashConfig: hashConfig})
+
+		if c.ContentHashConfig == nil {
+			t.Fatal("c.ContentHashConfig = nil, want config")
+		}
+
+		if got, want := len(c.ContentHashConfig.ExcludeTags), 2; got != want {
+			t.Fatalf("len(c.ContentHashConfig.ExcludeTags) = %d, want %d", got, want)
+		}
+
+		if got, want := len(c.ContentHashConfig.IncludeOnlyTags), 2; got != want {
+			t.Fatalf("len(c.ContentHashConfig.IncludeOnlyTags) = %d, want %d", got, want)
+		}
+
+		if !c.ContentHashConfig.StripTimestamps {
+			t.Fatal("c.ContentHashConfig.StripTimestamps = false, want true")
+		}
+
+		if c.ContentHashConfig.CollapseWhitespace {
+			t.Fatal("c.ContentHashConfig.CollapseWhitespace = true, want false")
+		}
+	},
 }
