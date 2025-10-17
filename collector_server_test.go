@@ -320,7 +320,7 @@ func TestSetCookieRedirect(t *testing.T) {
 			ts.Config.Handler = m(ts.Config.Handler)
 			ts.Start()
 			defer ts.Close()
-			c := NewCollector(nil)
+			c := NewCollector(context.Background(), nil)
 			c.OnResponse(func(r *Response) {
 				if got, want := r.Body, serverIndexResponse; !bytes.Equal(got, want) {
 					t.Errorf("bad response body got=%q want=%q", got, want)
@@ -341,7 +341,7 @@ func TestRedirect(t *testing.T) {
 	ts := newTestServer()
 	defer ts.Close()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.OnHTML("a[href]", func(e *HTMLElement) {
 		u := e.Request.AbsoluteURL(e.Attr("href"))
 		if !strings.HasSuffix(u, "/redirected/test") {
@@ -369,7 +369,7 @@ func TestOnRedirect(t *testing.T) {
 	defer ts.Close()
 
 	t.Run("callback is called with correct parameters", func(t *testing.T) {
-		c := NewCollector(nil)
+		c := NewCollector(context.Background(), nil)
 
 		callbackCalled := false
 		var capturedURL string
@@ -404,7 +404,7 @@ func TestOnRedirect(t *testing.T) {
 	})
 
 	t.Run("returning error blocks redirect", func(t *testing.T) {
-		c := NewCollector(nil)
+		c := NewCollector(context.Background(), nil)
 
 		c.OnRedirect(func(req *http.Request, via []*http.Request) error {
 			// Block redirect to /redirected/
@@ -435,7 +435,7 @@ func TestCollectorCookies(t *testing.T) {
 	ts := newTestServer()
 	defer ts.Close()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 
 	if err := c.Visit(ts.URL + "/set_cookie"); err != nil {
 		t.Fatal(err)
@@ -451,7 +451,7 @@ func TestConnectionErrorOnRobotsTxtResultsInError(t *testing.T) {
 	ts := newTestServer()
 	ts.Close() // immediately close the server to force a connection error
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.IgnoreRobotsTxt = false
 	err := c.Visit(ts.URL)
 
@@ -465,7 +465,7 @@ func TestCollectorVisitWithTrace(t *testing.T) {
 	ts := newTestServer()
 	defer ts.Close()
 
-	c := NewCollector(&CollectorConfig{TraceHTTP: true})
+	c := NewCollector(context.Background(), &CollectorConfig{TraceHTTP: true})
 	c.OnResponse(func(resp *Response) {
 		if resp.Trace == nil {
 			t.Error("Failed to initialize trace")
@@ -483,7 +483,7 @@ func TestCollectorVisitWithCheckHead(t *testing.T) {
 	ts := newTestServer()
 	defer ts.Close()
 
-	c := NewCollector(&CollectorConfig{CheckHead: true})
+	c := NewCollector(context.Background(), &CollectorConfig{CheckHead: true})
 	var requestMethodChain []string
 	c.OnResponse(func(resp *Response) {
 		requestMethodChain = append(requestMethodChain, resp.Request.Method)
@@ -510,7 +510,7 @@ func TestCollectorContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	c := NewCollector(&CollectorConfig{Context: ctx})
+	c := NewCollector(ctx, nil)
 
 	onErrorCalled := false
 
@@ -540,7 +540,7 @@ func TestCollectorContext(t *testing.T) {
 func TestRedirectErrorRetry(t *testing.T) {
 	ts := newTestServer()
 	defer ts.Close()
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.OnError(func(r *Response, err error) {
 		if r.Ctx.Get("notFirst") == "" {
 			r.Ctx.Put("notFirst", "first")

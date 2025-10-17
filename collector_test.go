@@ -19,6 +19,7 @@ package bluesnake
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -31,7 +32,7 @@ import (
 func TestCollectorVisit(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	onRequestCalled := false
@@ -87,7 +88,7 @@ func TestCollectorVisitResponseHeaders(t *testing.T) {
 
 	var onResponseHeadersCalled bool
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponseHeaders(func(r *Response) {
@@ -108,7 +109,7 @@ func TestCollectorVisitResponseHeaders(t *testing.T) {
 func TestCollectorOnHTML(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	titleCallbackCalled := false
@@ -152,7 +153,7 @@ func TestCollectorOnHTML(t *testing.T) {
 func TestCollectorContentSniffing(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	htmlCallbackCalled := false
@@ -181,7 +182,7 @@ func TestCollectorPost(t *testing.T) {
 	mock := setupMockTransport()
 
 	postValue := "hello"
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponse(func(r *Response) {
@@ -199,7 +200,7 @@ func TestCollectorPostRaw(t *testing.T) {
 	mock := setupMockTransport()
 
 	postValue := "hello"
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponse(func(r *Response) {
@@ -216,7 +217,7 @@ func TestIssue594(t *testing.T) {
 	// assertions because it's meant to be used with race detector
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	// if timeout is set, this bug is not triggered
 	client := &http.Client{Timeout: 0 * time.Second, Transport: mock}
 	c.SetClient(client)
@@ -228,7 +229,7 @@ func TestParseHTTPErrorResponse(t *testing.T) {
 	contentCount := 0
 	mock := setupMockTransport()
 
-	c := NewCollector(&CollectorConfig{AllowURLRevisit: true})
+	c := NewCollector(context.Background(), &CollectorConfig{AllowURLRevisit: true})
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnHTML("p", func(e *HTMLElement) {
@@ -295,7 +296,7 @@ func TestHTMLElement(t *testing.T) {
 func TestCollectorOnXMLWithHtml(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	titleCallbackCalled := false
@@ -339,7 +340,7 @@ func TestCollectorOnXMLWithHtml(t *testing.T) {
 func TestCollectorOnXMLWithXML(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	titleCallbackCalled := false
@@ -383,7 +384,7 @@ func TestCollectorOnXMLWithXML(t *testing.T) {
 func TestCollectorDepth(t *testing.T) {
 	mock := setupMockTransport()
 	maxDepth := 2
-	c1 := NewCollector(&CollectorConfig{MaxDepth: maxDepth, AllowURLRevisit: true})
+	c1 := NewCollector(context.Background(), &CollectorConfig{MaxDepth: maxDepth, AllowURLRevisit: true})
 	c1.SetClient(&http.Client{Transport: mock})
 	requestCount := 0
 	c1.OnResponse(func(resp *Response) {
@@ -424,7 +425,7 @@ func TestCollectorDepth(t *testing.T) {
 func TestCollectorRequests(t *testing.T) {
 	mock := setupMockTransport()
 	maxRequests := uint32(5)
-	c1 := NewCollector(&CollectorConfig{MaxRequests: maxRequests, AllowURLRevisit: true})
+	c1 := NewCollector(context.Background(), &CollectorConfig{MaxRequests: maxRequests, AllowURLRevisit: true})
 	c1.SetClient(&http.Client{Transport: mock})
 	requestCount := 0
 	c1.OnResponse(func(resp *Response) {
@@ -440,7 +441,7 @@ func TestCollectorRequests(t *testing.T) {
 func BenchmarkOnHTML(b *testing.B) {
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.OnHTML("p", func(_ *HTMLElement) {})
 
@@ -452,7 +453,7 @@ func BenchmarkOnHTML(b *testing.B) {
 func BenchmarkOnXML(b *testing.B) {
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.OnXML("//p", func(_ *XMLElement) {})
 
@@ -464,7 +465,7 @@ func BenchmarkOnXML(b *testing.B) {
 func BenchmarkOnResponse(b *testing.B) {
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.AllowURLRevisit = true
 	c.OnResponse(func(_ *Response) {})
@@ -477,7 +478,7 @@ func BenchmarkOnResponse(b *testing.B) {
 func TestCallbackDetachment(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.AllowURLRevisit = true
 
@@ -516,7 +517,7 @@ func TestCollectorPostRetry(t *testing.T) {
 	mock := setupMockTransport()
 
 	postValue := "hello"
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 	try := false
 	c.OnResponse(func(r *Response) {
@@ -542,7 +543,7 @@ func TestCollectorGetRetry(t *testing.T) {
 	mock := setupMockTransport()
 	try := false
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponse(func(r *Response) {
@@ -567,7 +568,7 @@ func TestCollectorPostRetryUnseekable(t *testing.T) {
 	mock := setupMockTransport()
 	try := false
 	postValue := "hello"
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnResponse(func(r *Response) {
@@ -595,7 +596,7 @@ func TestCheckRequestHeadersFunc(t *testing.T) {
 	mock := setupMockTransport()
 	try := false
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 
 	c.OnRequestHeaders(func(r *Request) {

@@ -15,6 +15,7 @@
 package bluesnake
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -115,7 +116,7 @@ func TestLinkPositionClassification(t *testing.T) {
 			config := NewDefaultConfig()
 			config.AllowedDomains = []string{"example.com"}
 
-			crawler := NewCrawler(config)
+			crawler := NewCrawler(context.Background(), config)
 			crawler.Collector.WithTransport(mockTransport)
 
 			// Track collected links

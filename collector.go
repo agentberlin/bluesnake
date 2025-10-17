@@ -147,8 +147,6 @@ type CollectorConfig struct {
 	CheckHead bool
 	// TraceHTTP enables capturing and reporting request performance.
 	TraceHTTP bool
-	// Context is the context that will be used for HTTP requests.
-	Context context.Context
 	// MaxRequests limit the number of requests done by the instance.
 	// Set it to 0 for infinite requests (default).
 	MaxRequests uint32
@@ -273,9 +271,6 @@ type Collector struct {
 	// TraceHTTP enables capturing and reporting request performance for crawler tuning.
 	// When set to true, the Response.Trace will be filled in with an HTTPTrace object.
 	TraceHTTP bool
-	// Context is the context that will be used for HTTP requests. You can set this
-	// to support clean cancellation of scraping.
-	Context context.Context
 	// MaxRequests limit the number of requests done by the instance.
 	// Set it to 0 for infinite requests (default).
 	MaxRequests uint32
@@ -304,6 +299,7 @@ type Collector struct {
 	// RespectNoindex respects X-Robots-Tag: noindex headers
 	RespectNoindex bool
 
+	ctx                      context.Context // Lifecycle context for cancellation
 	store                    storage.Storage
 	debugger                 debug.Debugger
 	robotsMap                map[string]*robotstxt.RobotsData
@@ -510,7 +506,6 @@ func NewDefaultConfig() *CollectorConfig {
 		UserAgent:              "bluesnake/1.0 (+https://snake.blue)",
 		MaxBodySize:            10 * 1024 * 1024, // 10MB
 		IgnoreRobotsTxt:        true,
-		Context:                context.Background(),
 		MaxDepth:               0,
 		MaxRequests:            0,
 		AllowURLRevisit:        false,
@@ -550,9 +545,10 @@ func NewDefaultConfig() *CollectorConfig {
 	}
 }
 
-// NewCollector creates a new Collector instance with the provided configuration.
+// NewCollector creates a new Collector instance with the provided context and configuration.
+// The context is used for request cancellation and lifecycle management.
 // If config is nil, default configuration is used.
-func NewCollector(config *CollectorConfig) *Collector {
+func NewCollector(ctx context.Context, config *CollectorConfig) *Collector {
 	// Start with defaults
 	defaults := NewDefaultConfig()
 
@@ -608,9 +604,7 @@ func NewCollector(config *CollectorConfig) *Collector {
 		if config.TraceHTTP {
 			defaults.TraceHTTP = true
 		}
-		if config.Context != nil {
-			defaults.Context = config.Context
-		}
+		// Context is now passed as a parameter, not part of config
 		if config.MaxRequests != 0 {
 			defaults.MaxRequests = config.MaxRequests
 		}
@@ -690,9 +684,8 @@ func NewCollector(config *CollectorConfig) *Collector {
 	c.DetectCharset = config.DetectCharset
 	c.CheckHead = config.CheckHead
 	c.TraceHTTP = config.TraceHTTP
-	if config.Context != nil {
-		c.Context = config.Context
-	}
+	// Set context for lifecycle management
+	c.ctx = ctx
 	c.MaxRequests = config.MaxRequests
 	c.EnableRendering = config.EnableRendering
 	c.RenderingConfig = config.RenderingConfig
@@ -749,7 +742,7 @@ func (c *Collector) Init() {
 	c.IgnoreRobotsTxt = true
 	c.ID = atomic.AddUint32(&collectorCounter, 1)
 	c.TraceHTTP = false
-	c.Context = context.Background()
+	c.ctx = context.Background()
 }
 
 // Appengine will replace the Collector's backend http.Client
@@ -915,7 +908,7 @@ func (c *Collector) scrape(u, method string, depth int, requestData io.Reader, c
 	}
 	// note: once 1.13 is minimum supported Go version,
 	// replace this with http.NewRequestWithContext
-	req = req.WithContext(context.WithValue(c.Context, CheckRevisitKey, checkRevisit))
+	req = req.WithContext(context.WithValue(c.ctx, CheckRevisitKey, checkRevisit))
 
 	if err := c.requestCheck(parsedURL, method, req.GetBody, depth, checkRevisit); err != nil {
 		return err
@@ -924,8 +917,8 @@ func (c *Collector) scrape(u, method string, depth int, requestData io.Reader, c
 
 	// Check context before processing
 	select {
-	case <-c.Context.Done():
-		return c.Context.Err()
+	case <-c.ctx.Done():
+		return c.ctx.Err()
 	default:
 	}
 
@@ -936,8 +929,8 @@ func (c *Collector) scrape(u, method string, depth int, requestData io.Reader, c
 func (c *Collector) fetch(u, method string, depth int, requestData io.Reader, ctx *Context, hdr http.Header, req *http.Request) error {
 	// Check cancellation before processing
 	select {
-	case <-c.Context.Done():
-		return c.Context.Err()
+	case <-c.ctx.Done():
+		return c.ctx.Err()
 	default:
 	}
 
@@ -1050,8 +1043,8 @@ func (c *Collector) fetch(u, method string, depth int, requestData io.Reader, ct
 func (c *Collector) requestCheck(parsedURL *url.URL, method string, getBody func() (io.ReadCloser, error), depth int, checkRevisit bool) error {
 	// Check at start
 	select {
-	case <-c.Context.Done():
-		return c.Context.Err()
+	case <-c.ctx.Done():
+		return c.ctx.Err()
 	default:
 	}
 
@@ -1193,7 +1186,7 @@ func (c *Collector) String() string {
 // IsCancelled returns true if the collector's context is cancelled
 func (c *Collector) IsCancelled() bool {
 	select {
-	case <-c.Context.Done():
+	case <-c.ctx.Done():
 		return true
 	default:
 		return false
@@ -1742,7 +1735,7 @@ func (c *Collector) Clone() *Collector {
 		UserAgent:              c.UserAgent,
 		Headers:                c.Headers,
 		TraceHTTP:              c.TraceHTTP,
-		Context:                c.Context,
+		ctx:                    c.ctx,
 		store:                  c.store,
 		backend:                c.backend,
 		debugger:               c.debugger,

@@ -321,7 +321,6 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 
 	// Build crawler configuration based on database config
 	crawlerConfig := &bluesnake.CollectorConfig{
-		Context:             crawlCtx, // Pass context for proper cancellation support
 		UserAgent:           config.UserAgent,
 		MaxDepth:            maxDepth,                       // Set depth based on SinglePageMode
 		URLFilters:          []*regexp.Regexp{domainFilter}, // Use URLFilters instead of AllowedDomains
@@ -335,8 +334,8 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		},
 	}
 
-	// Create the high-level crawler
-	crawler := bluesnake.NewCrawler(crawlerConfig)
+	// Create the high-level crawler with context
+	crawler := bluesnake.NewCrawler(crawlCtx, crawlerConfig)
 
 	// Apply parallelism limit to the underlying collector
 	if config.Parallelism > 0 {

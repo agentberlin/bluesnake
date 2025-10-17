@@ -15,6 +15,7 @@
 package queue
 
 import (
+	"context"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -56,7 +57,7 @@ func TestQueue(t *testing.T) {
 		put()
 		storage.AddRequest([]byte("error request"))
 	}
-	c := bluesnake.NewCollector(&bluesnake.CollectorConfig{
+	c := bluesnake.NewCollector(context.Background(), &bluesnake.CollectorConfig{
 		AllowURLRevisit: true,
 		RobotsTxtMode:   "ignore", // Ignore robots.txt for testing
 	})

@@ -18,6 +18,7 @@
 package bluesnake
 
 import (
+	"context"
 	"net/http"
 	"reflect"
 	"testing"
@@ -26,7 +27,7 @@ import (
 func TestBaseTag(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.OnHTML("a[href]", func(e *HTMLElement) {
 		u := e.Request.AbsoluteURL(e.Attr("href"))
@@ -36,7 +37,7 @@ func TestBaseTag(t *testing.T) {
 	})
 	c.Visit(testBaseURL + "/base")
 
-	c2 := NewCollector(nil)
+	c2 := NewCollector(context.Background(), nil)
 	c2.SetClient(&http.Client{Transport: mock})
 	c2.OnXML("//a", func(e *XMLElement) {
 		u := e.Request.AbsoluteURL(e.Attr("href"))
@@ -50,7 +51,7 @@ func TestBaseTag(t *testing.T) {
 func TestBaseTagRelative(t *testing.T) {
 	mock := setupMockTransport()
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.OnHTML("a[href]", func(e *HTMLElement) {
 		u := e.Request.AbsoluteURL(e.Attr("href"))
@@ -61,7 +62,7 @@ func TestBaseTagRelative(t *testing.T) {
 	})
 	c.Visit(testBaseURL + "/base_relative")
 
-	c2 := NewCollector(nil)
+	c2 := NewCollector(context.Background(), nil)
 	c2.SetClient(&http.Client{Transport: mock})
 	c2.OnXML("//a", func(e *XMLElement) {
 		u := e.Request.AbsoluteURL(e.Attr("href"))
@@ -85,7 +86,7 @@ func TestTabsAndNewlines(t *testing.T) {
 		"/foobar/xy":         {},
 	}
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.OnResponse(func(res *Response) {
 		visited[res.Request.URL.EscapedPath()] = struct{}{}
@@ -110,7 +111,7 @@ func TestLonePercent(t *testing.T) {
 
 	var visitedPath string
 
-	c := NewCollector(nil)
+	c := NewCollector(context.Background(), nil)
 	c.SetClient(&http.Client{Transport: mock})
 	c.OnResponse(func(res *Response) {
 		visitedPath = res.Request.URL.RequestURI()
