@@ -308,3 +308,170 @@ func (e *testEmitter) Emit(eventType app.EventType, data interface{}) {
 	defer e.mu.Unlock()
 	e.events[string(eventType)]++
 }
+
+// TestRedirectDestinationCrawled is a regression test for the redirect bug.
+// This test ensures that when a URL redirects to another URL, the redirect
+// destination is properly crawled and its links are extracted.
+//
+// Bug: setupRedirectHandler was marking redirect destinations as visited before
+// processing their responses, causing OnHTML/OnScraped callbacks to be skipped.
+// This resulted in links from redirect destinations never being discovered.
+//
+// Example: agentberlin.ai links to handbook.agentberlin.ai/ which redirects to
+// handbook.agentberlin.ai/intro. The /intro page was marked as visited but never
+// crawled, so its links (like /topic_first_seo) were never discovered.
+func TestRedirectDestinationCrawled(t *testing.T) {
+	// Create a test HTTP server that simulates the redirect scenario
+	mux := http.NewServeMux()
+
+	// Main page links to /redirect-me
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		html := `<!DOCTYPE html>
+<html>
+<head><title>Main Page</title></head>
+<body>
+    <h1>Main Page</h1>
+    <a href="/redirect-me">Link to redirect page</a>
+</body>
+</html>`
+		fmt.Fprint(w, html)
+	})
+
+	// /redirect-me redirects to /final-destination
+	mux.HandleFunc("/redirect-me", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/final-destination", http.StatusMovedPermanently)
+	})
+
+	// /final-destination contains important links
+	mux.HandleFunc("/final-destination", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		html := `<!DOCTYPE html>
+<html>
+<head><title>Final Destination</title></head>
+<body>
+    <h1>Final Destination</h1>
+    <a href="/important-page">Important page linked from redirect destination</a>
+</body>
+</html>`
+		fmt.Fprint(w, html)
+	})
+
+	// /important-page should be discovered via /final-destination
+	mux.HandleFunc("/important-page", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		html := `<!DOCTYPE html>
+<html>
+<head><title>Important Page</title></head>
+<body><h1>Important Page</h1></body>
+</html>`
+		fmt.Fprint(w, html)
+	})
+
+	testServer := httptest.NewServer(mux)
+	defer testServer.Close()
+
+	// Create a temporary database for this test
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/redirect_test.db"
+
+	testStore, err := store.NewStoreForTesting(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create test store: %v", err)
+	}
+
+	// Create app with test emitter
+	emitter := &testEmitter{events: make(map[string]int)}
+	coreApp := app.NewApp(testStore, emitter)
+	ctx := context.Background()
+	coreApp.Startup(ctx)
+
+	// Start the crawl
+	err = coreApp.StartCrawl(testServer.URL)
+	if err != nil {
+		t.Fatalf("Failed to start crawl: %v", err)
+	}
+
+	// Wait for crawl to complete
+	maxWaitTime := 10 * time.Second
+	checkInterval := 100 * time.Millisecond
+	timeout := time.After(maxWaitTime)
+	ticker := time.NewTicker(checkInterval)
+	defer ticker.Stop()
+
+	crawlCompleted := false
+	for !crawlCompleted {
+		select {
+		case <-timeout:
+			t.Fatalf("Crawl did not complete within %v", maxWaitTime)
+		case <-ticker.C:
+			activeCrawls := coreApp.GetActiveCrawls()
+			if len(activeCrawls) == 0 {
+				// Check if we have a completed crawl
+				projects, err := coreApp.GetProjects()
+				if err == nil && len(projects) > 0 {
+					crawls, err := coreApp.GetCrawls(projects[0].ID)
+					if err == nil && len(crawls) > 0 {
+						crawlCompleted = true
+					}
+				}
+			}
+		}
+	}
+
+	// Get the project and crawl results
+	projects, err := coreApp.GetProjects()
+	if err != nil || len(projects) == 0 {
+		t.Fatalf("Failed to get projects: %v", err)
+	}
+
+	crawls, err := coreApp.GetCrawls(projects[0].ID)
+	if err != nil || len(crawls) == 0 {
+		t.Fatalf("Failed to get crawls: %v", err)
+	}
+
+	crawlID := crawls[0].ID
+
+	// Get all crawled URLs
+	results, err := coreApp.GetCrawlWithResultsPaginated(crawlID, 1000, 0, "all")
+	if err != nil {
+		t.Fatalf("Failed to get crawl results: %v", err)
+	}
+
+	// Verify that all expected pages were crawled
+	expectedURLs := map[string]bool{
+		testServer.URL + "/":                false, // Main page
+		testServer.URL + "/final-destination": false, // Redirect destination (CRITICAL)
+		testServer.URL + "/important-page":   false, // Linked from redirect destination (CRITICAL)
+	}
+
+	for _, result := range results.Results {
+		if _, exists := expectedURLs[result.URL]; exists {
+			expectedURLs[result.URL] = true
+			t.Logf("✓ Found: %s (Title: %s)", result.URL, result.Title)
+		}
+	}
+
+	// Check for missing URLs
+	missingCritical := false
+	for url, found := range expectedURLs {
+		if !found {
+			t.Errorf("❌ CRITICAL: URL not crawled: %s", url)
+			if url == testServer.URL+"/final-destination" {
+				t.Error("   ↳ This is the redirect destination - it MUST be crawled!")
+				missingCritical = true
+			}
+			if url == testServer.URL+"/important-page" {
+				t.Error("   ↳ This page is linked from the redirect destination")
+				t.Error("   ↳ If this is missing, it means the redirect destination wasn't crawled properly")
+				missingCritical = true
+			}
+		}
+	}
+
+	if missingCritical {
+		t.Fatal("REGRESSION: Redirect destination bug has returned! Check setupRedirectHandler in crawler.go")
+	}
+
+	t.Log("✓ Redirect destination regression test passed!")
+}

@@ -26,6 +26,10 @@ type CrawlerStore struct {
 	queuedURLs map[string]interface{} // map[string]URLAction - using interface{} to avoid circular import
 	// pageMetadata caches metadata for crawled pages (for link population)
 	pageMetadata map[string]interface{} // map[string]PageMetadata - using interface{} to avoid circular import
+	// redirectDestinations tracks ALL redirect destinations for a request
+	// map[finalURL][]intermediateURLs - stores all intermediate redirect URLs
+	// Cleaned up after OnResponse processes the final URL
+	redirectDestinations map[string][]string
 	// mu protects all maps
 	mu sync.RWMutex
 }
@@ -33,9 +37,10 @@ type CrawlerStore struct {
 // NewCrawlerStore creates a new CrawlerStore instance
 func NewCrawlerStore() *CrawlerStore {
 	return &CrawlerStore{
-		visited:      make(map[uint64]bool),
-		queuedURLs:   make(map[string]interface{}),
-		pageMetadata: make(map[string]interface{}),
+		visited:              make(map[uint64]bool),
+		queuedURLs:           make(map[string]interface{}),
+		pageMetadata:         make(map[string]interface{}),
+		redirectDestinations: make(map[string][]string),
 	}
 }
 
@@ -97,6 +102,28 @@ func (s *CrawlerStore) GetMetadata(url string) (interface{}, bool) {
 	return metadata, exists
 }
 
+// AddRedirectDestination adds a redirect destination to the list for a final URL
+// For redirect chains A→B→C, this is called twice:
+// - First with finalURL=B (since we don't know C yet)
+// - Then with finalURL=C, and we add B to C's list
+func (s *CrawlerStore) AddRedirectDestination(finalURL, intermediateURL string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.redirectDestinations[finalURL] = append(s.redirectDestinations[finalURL], intermediateURL)
+}
+
+// GetAndClearRedirectDestinations retrieves and removes all redirect destinations for a URL
+// Returns the list of intermediate URLs and true if found, empty list and false otherwise
+func (s *CrawlerStore) GetAndClearRedirectDestinations(finalURL string) ([]string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	urls, exists := s.redirectDestinations[finalURL]
+	if exists {
+		delete(s.redirectDestinations, finalURL)
+	}
+	return urls, exists
+}
+
 // Clear resets all stored data (useful for testing or restarting crawls)
 func (s *CrawlerStore) Clear() {
 	s.mu.Lock()
@@ -104,4 +131,5 @@ func (s *CrawlerStore) Clear() {
 	s.visited = make(map[uint64]bool)
 	s.queuedURLs = make(map[string]interface{})
 	s.pageMetadata = make(map[string]interface{})
+	s.redirectDestinations = make(map[string][]string)
 }
