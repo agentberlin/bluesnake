@@ -690,28 +690,28 @@ func (c *Collector) Appengine(ctx context.Context) {
 // Visit also calls the previously provided callbacks
 func (c *Collector) Visit(URL string) error {
 	if c.CheckHead {
-		if check := c.scrape(URL, "HEAD", 1, nil, nil, nil); check != nil {
+		if check := c.FetchURL(URL, "HEAD", 1, nil, nil, nil); check != nil {
 			return check
 		}
 	}
-	return c.scrape(URL, "GET", 1, nil, nil, nil)
+	return c.FetchURL(URL, "GET", 1, nil, nil, nil)
 }
 
 // Head starts a collector job by creating a HEAD request.
 func (c *Collector) Head(URL string) error {
-	return c.scrape(URL, "HEAD", 1, nil, nil, nil)
+	return c.FetchURL(URL, "HEAD", 1, nil, nil, nil)
 }
 
 // Post starts a collector job by creating a POST request.
 // Post also calls the previously provided callbacks
 func (c *Collector) Post(URL string, requestData map[string]string) error {
-	return c.scrape(URL, "POST", 1, createFormReader(requestData), nil, nil)
+	return c.FetchURL(URL, "POST", 1, createFormReader(requestData), nil, nil)
 }
 
 // PostRaw starts a collector job by creating a POST request with raw binary data.
 // Post also calls the previously provided callbacks
 func (c *Collector) PostRaw(URL string, requestData []byte) error {
-	return c.scrape(URL, "POST", 1, bytes.NewReader(requestData), nil, nil)
+	return c.FetchURL(URL, "POST", 1, bytes.NewReader(requestData), nil, nil)
 }
 
 // PostMultipart starts a collector job by creating a Multipart POST request
@@ -721,7 +721,7 @@ func (c *Collector) PostMultipart(URL string, requestData map[string][]byte) err
 	hdr := http.Header{}
 	hdr.Set("Content-Type", "multipart/form-data; boundary="+boundary)
 	hdr.Set("User-Agent", c.UserAgent)
-	return c.scrape(URL, "POST", 1, createMultipartReader(boundary, requestData), nil, hdr)
+	return c.FetchURL(URL, "POST", 1, createMultipartReader(boundary, requestData), nil, hdr)
 }
 
 // Request starts a collector job by creating a custom HTTP request
@@ -736,7 +736,7 @@ func (c *Collector) PostMultipart(URL string, requestData map[string][]byte) err
 //   - "PATCH"
 //   - "OPTIONS"
 func (c *Collector) Request(method, URL string, requestData io.Reader, ctx *Context, hdr http.Header) error {
-	return c.scrape(URL, method, 1, requestData, ctx, hdr)
+	return c.FetchURL(URL, method, 1, requestData, ctx, hdr)
 }
 
 // SetDebugger attaches a debugger to the collector
@@ -775,7 +775,10 @@ func (c *Collector) UnmarshalRequest(r []byte) (*Request, error) {
 	}, nil
 }
 
-func (c *Collector) scrape(u, method string, depth int, requestData io.Reader, ctx *Context, hdr http.Header) error {
+// FetchURL performs an HTTP request and processes the response synchronously.
+// This method is intentionally exported for use by Crawler.
+// It handles HTTP fetch, HTML parsing, and executes all registered callbacks.
+func (c *Collector) FetchURL(u, method string, depth int, requestData io.Reader, ctx *Context, hdr http.Header) error {
 	parsedWhatwgURL, err := urlParser.Parse(u)
 	if err != nil {
 		return err

@@ -457,12 +457,12 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
 	// This backpressure prevents the processor from racing ahead
 	err = cr.workerPool.Submit(func() {
 		// Ensure wg.Done() is called when this worker finishes
-		// This happens AFTER scrape() and ALL callbacks complete
+		// This happens AFTER FetchURL() and ALL callbacks complete
 		defer cr.wg.Done()
 
 		// We already marked this URL as visited in step 4 above.
-		// Call scrape() directly - no visit checking needed.
-		cr.Collector.scrape(req.URL, "GET", req.Depth, nil, req.Context, nil)
+		// Call FetchURL() directly - no visit checking needed.
+		cr.Collector.FetchURL(req.URL, "GET", req.Depth, nil, req.Context, nil)
 		// wg.Done() via defer happens here
 	})
 

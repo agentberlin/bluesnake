@@ -166,7 +166,7 @@ The architecture strictly separates concerns between two components:
 **Architectural Boundary:**
 - Collector knows nothing about: crawl strategy, URL filtering, visit tracking, concurrency
 - Crawler knows nothing about: HTTP transport, HTML parsing, response handling
-- Communication: Crawler calls `Collector.scrape()` to fetch URLs; Collector calls callbacks to report results
+- Communication: Crawler calls `Collector.FetchURL()` to fetch URLs; Collector calls callbacks to report results
 
 **Recent Refactoring (2025-10-16):**
 - **URL filtering moved from Collector → Crawler** - Eliminates duplicate filtering
@@ -361,9 +361,9 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
     // This provides backpressure - processor can't race ahead
     err = cr.workerPool.Submit(func() {
         // Fetch without revisit check (we already checked above)
-        // Collector.scrape() performs HTTP fetch only - NO filtering
+        // Collector.FetchURL() performs HTTP fetch only - NO filtering
         cr.Collector.wg.Add(1)
-        cr.Collector.scrape(req.URL, "GET", req.Depth, nil, req.Context, nil, false)
+        cr.Collector.FetchURL(req.URL, "GET", req.Depth, nil, req.Context, nil, false)
     })
 }
 ```
@@ -2307,9 +2307,9 @@ Picks up work from workQueue
 Executes: work()
     ├─ [App logs] "[WORKER] Starting to process: https://agentberlin.ai"
     │
-    └─ [crawler.go:394] cr.Collector.scrape(url, ...)
+    └─ [crawler.go:394] cr.Collector.FetchURL(url, ...)
         ↓
-        [collector.go:881] scrape(url, ...)
+        [collector.go:881] FetchURL(url, ...)
         ├─ [collector.go:929] c.wg.Add(1)  // Collector.wg = 1
         │   └─ [Logs] "[SCRAPE] WaitGroup Add(1) for: https://agentberlin.ai"
         │
@@ -2437,7 +2437,7 @@ Phase 5: The Panic
 [Logs] "[WORKER] Starting to process: https://agentberlin.ai/newsletter"
 ↓
 Executes: work()
-    └─ [crawler.go:394] cr.Collector.scrape("/newsletter", ...)
+    └─ [crawler.go:394] cr.Collector.FetchURL("/newsletter", ...)
         ↓
         [collector.go:929] c.wg.Add(1)  // Collector.wg = 1 again!
         └─ [Logs] "[SCRAPE] WaitGroup Add(1) for: .../newsletter"
