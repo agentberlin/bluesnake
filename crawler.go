@@ -294,8 +294,9 @@ func NewCrawler(ctx context.Context, config *CrawlerConfig) *Crawler {
 //
 // Responsibilities:
 // 1. URL Validation - Applies Crawler's domain filters and URL patterns to redirect destinations
-// 2. Visit Tracking - Marks redirect destinations as visited (Crawler owns ALL visit tracking)
 //
+// Note: Visit tracking for redirect destinations happens in the normal response flow (FetchURL),
+// not here. This ensures redirect destinations are properly crawled and their callbacks are called.
 // This maintains architectural separation: Crawler handles business logic (filtering, tracking),
 // while Collector handles HTTP mechanics (following redirects, managing connections).
 func (cr *Crawler) setupRedirectHandler() {
@@ -305,20 +306,49 @@ func (cr *Crawler) setupRedirectHandler() {
 			return fmt.Errorf("redirect destination blocked by URL filters")
 		}
 
-		// Mark redirect destination as visited (Crawler owns ALL visit tracking)
-		// This prevents race conditions where another goroutine discovers this URL
-		// directly while the redirect is being followed.
-		// Storage is thread-safe (mutex-protected), so this is safe to call from
-		// the HTTP client's redirect handler.
-		uHash := requestHash(req.URL.String(), nil)
-		// Use VisitIfNotVisited which returns (alreadyVisited, error)
-		// We can ignore the return value since we just want to mark it
-		_, err := cr.store.VisitIfNotVisited(uHash)
-		if err != nil {
-			return err
+		// Track redirect destinations for post-processing visit marking
+		// For redirect chains A→B→C, this is called twice:
+		// - First: req=B, via=[A] - store B under finalURL=B
+		// - Second: req=C, via=[A,B] - store B and C under finalURL=C
+		//
+		// We store using the current destination (req.URL) as key,
+		// because that's what OnResponse will have access to.
+		if len(via) > 0 {
+			destURL := req.URL.String()
+
+			// Add all intermediate URLs (everything except the original)
+			// For chains, via contains [original, intermediate1, intermediate2, ...]
+			for i := 1; i < len(via); i++ {
+				intermediateURL := via[i].URL.String()
+				cr.store.AddRedirectDestination(destURL, intermediateURL)
+			}
+
+			// Also add the current destination itself
+			cr.store.AddRedirectDestination(destURL, destURL)
 		}
 
 		return nil
+	})
+
+	// Mark redirect destinations as visited AFTER response processing completes
+	cr.Collector.OnResponse(func(r *Response) {
+		finalURL := r.Request.URL.String()
+
+		// Check if this URL is the final destination of a redirect chain
+		if urls, ok := cr.store.GetAndClearRedirectDestinations(finalURL); ok {
+			// Mark all intermediate and final redirect URLs as visited
+			for _, url := range urls {
+				urlHash := requestHash(url, nil)
+				cr.store.VisitIfNotVisited(urlHash)
+
+				// Also clean up any intermediate redirect entries
+				// For chain A→B→C, we store {"B": ["B"]} and {"C": ["B", "C"]}
+				// When we process C, we need to clean up the B entry too
+				if url != finalURL {
+					cr.store.GetAndClearRedirectDestinations(url)
+				}
+			}
+		}
 	})
 }
 

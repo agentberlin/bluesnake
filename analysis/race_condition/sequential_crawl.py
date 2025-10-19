@@ -8,7 +8,7 @@ import time
 import sys
 
 BASE_URL = "http://localhost:8080"
-TARGET_CRAWLS = 100
+TARGET_CRAWLS = 200
 TARGET_URL = "https://agentberlin.ai"
 
 def api_call(endpoint, method="GET", data=None):

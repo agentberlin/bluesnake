@@ -9,7 +9,7 @@ from collections import defaultdict
 import urllib.parse
 
 BASE_URL = "http://localhost:8080"
-PROJECT_ID = 6
+PROJECT_ID = 2
 
 def api_call(endpoint):
     """Make API call to the server"""
@@ -38,42 +38,30 @@ def get_page_links(crawl_id, page_url):
         # If the page doesn't exist in the crawl, we'll get an error
         return []
 
-print("=" * 80)
-print("ANALYZING CRAWL DISCREPANCIES WITH LINK ANALYSIS")
-print("=" * 80)
-
 # Get all crawls
-print("\nFetching all crawls...")
 all_crawls = get_crawls()
-print(f"Total crawls: {len(all_crawls)}")
-
-# Sort by ID to get the newest crawls
 crawls = sorted(all_crawls, key=lambda x: x['id'], reverse=True)
 
-print(f"\nAnalyzing crawls {crawls[-1]['id']} to {crawls[0]['id']}...")
-
 # Fetch URLs for all crawls
-print("\nFetching URLs from all crawls (this may take a while)...")
 crawl_data = {}
 url_count_distribution = defaultdict(int)
 
-for idx, crawl in enumerate(crawls):
+for crawl in crawls:
     crawl_id = crawl['id']
     urls = get_crawl_urls(crawl_id)
     crawl_data[crawl_id] = urls
     url_count_distribution[len(urls)] += 1
-
-    if (idx + 1) % 50 == 0:
-        print(f"  Processed {idx + 1}/{len(crawls)} crawls...")
-
-print(f"✓ Fetched URLs from {len(crawls)} crawls")
 
 # Find all unique URLs
 all_urls = set()
 for urls in crawl_data.values():
     all_urls.update(urls)
 
-print(f"\nTotal unique URLs across all crawls: {len(all_urls)}")
+print(f"=" * 80)
+print(f"SEQUENTIAL CRAWL ANALYSIS RESULTS")
+print(f"=" * 80)
+print(f"Total crawls: {len(crawls)} (IDs: {crawls[-1]['id']} to {crawls[0]['id']})")
+print(f"Total unique URLs across all crawls: {len(all_urls)}")
 
 # Track which URLs appear in which crawls
 url_appearances = defaultdict(list)
@@ -124,8 +112,7 @@ print("=" * 80)
 # Focus on URLs that appear in less than 80% of crawls
 highly_unstable = [(url, data) for url, data in sorted_unstable if data['appearance_rate'] < 80]
 
-print(f"\nAnalyzing {len(highly_unstable)} highly unstable URLs (< 80% appearance rate)")
-print("This will take a while as we fetch link data...\n")
+print(f"Analyzing {len(highly_unstable)} highly unstable URLs (< 80% appearance rate)\n")
 
 for url, data in highly_unstable[:10]:  # Limit to top 10 most unstable
     print(f"\n{'=' * 80}")
