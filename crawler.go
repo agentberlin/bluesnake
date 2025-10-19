@@ -20,12 +20,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/agentberlin/bluesnake/storage"
+	"github.com/temoto/robotstxt"
 )
 
 // Link represents a single outbound link discovered on a page
@@ -196,6 +198,15 @@ type Crawler struct {
 
 	// Work coordination
 	wg sync.WaitGroup // Tracks pending work items (queued + processing)
+
+	// Crawler directive fields (policy enforcement)
+	resourceValidation         *ResourceValidationConfig // Resource validation configuration
+	robotsTxtMode              string                    // robots.txt handling mode: "respect", "ignore", "ignore-report"
+	followInternalNofollow     bool                      // Allow following internal nofollow links
+	followExternalNofollow     bool                      // Allow following external nofollow links
+	respectMetaRobotsNoindex   bool                      // Respect meta robots noindex
+	respectNoindex             bool                      // Respect X-Robots-Tag noindex
+	robotsMap                  map[string]*robotstxt.RobotsData // robots.txt cache
 }
 
 // NewCrawler creates a high-level crawler with the specified context and crawler configuration.
@@ -248,17 +259,19 @@ func NewCrawler(ctx context.Context, config *CrawlerConfig) *Crawler {
 		urlFilters:           config.URLFilters,
 		disallowedURLFilters: config.DisallowedURLFilters,
 		maxDepth:             config.MaxDepth,
+		// Crawler directive fields (policy enforcement - moved from Collector)
+		resourceValidation:       config.ResourceValidation,
+		robotsTxtMode:            config.RobotsTxtMode,
+		followInternalNofollow:   config.FollowInternalNofollow,
+		followExternalNofollow:   config.FollowExternalNofollow,
+		respectMetaRobotsNoindex: config.RespectMetaRobotsNoindex,
+		respectNoindex:           config.RespectNoindex,
+		robotsMap:                make(map[string]*robotstxt.RobotsData),
 	}
 
-	// Set crawler directive fields on Collector (these should stay on Collector for now)
-	c.ResourceValidation = config.ResourceValidation
-	c.RobotsTxtMode = config.RobotsTxtMode
-	c.FollowInternalNofollow = config.FollowInternalNofollow
-	c.FollowExternalNofollow = config.FollowExternalNofollow
-	c.RespectMetaRobotsNoindex = config.RespectMetaRobotsNoindex
-	c.RespectNoindex = config.RespectNoindex
-
-	// Set IgnoreRobotsTxt based on RobotsTxtMode
+	// Set IgnoreRobotsTxt on Collector based on RobotsTxtMode
+	// This is a HTTP-level setting that tells Collector not to check robots.txt
+	// (Crawler will handle robots.txt checking before URL enqueueing)
 	switch config.RobotsTxtMode {
 	case "ignore":
 		c.IgnoreRobotsTxt = true
@@ -426,10 +439,23 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
 		return
 	}
 
-	// Step 3: Pre-filtering (domain checks, URL filters, robots.txt)
+	// Step 3: Pre-filtering (domain checks, URL filters)
 	if !cr.isURLCrawlable(req.URL) {
 		cr.wg.Done() // Work item complete (filtered)
 		return
+	}
+
+	// Step 3.5: Check robots.txt (in async context, safe to make HTTP requests)
+	if !cr.shouldIgnoreRobotsTxt() {
+		parsedURL, err := url.Parse(req.URL)
+		if err == nil {
+			if err := cr.checkRobots(parsedURL); err != nil {
+				// URL blocked by robots.txt
+				cr.wg.Done() // Work item complete (robots.txt blocked)
+				return
+			}
+		}
+		// If parse error, allow URL (don't block due to URL parsing issues)
 	}
 
 	// Step 4: Check if already visited and mark as visited (ATOMIC)
@@ -652,8 +678,8 @@ func (cr *Crawler) setupCallbacks() {
 				// Check nofollow status and respect configuration
 				if strings.HasPrefix(link.Context, "nofollow:") {
 					// Link has nofollow attribute - check if we should respect it
-					// For internal links, check FollowInternalNofollow setting
-					if !cr.Collector.FollowInternalNofollow {
+					// For internal links, check followInternalNofollow setting
+					if !cr.followInternalNofollow {
 						// We should respect nofollow for internal links - skip this link
 						continue
 					}
@@ -877,10 +903,9 @@ func (cr *Crawler) setupCallbacks() {
 				}
 			}
 
-			// Note: We don't return here to allow extensions and low-level code that
+			// Note: We don't return here to allow low-level code that
 			// registers OnResponse callbacks on crawler.Collector to process all responses.
-			// For example, the Referer extension (extensions/referer.go) tracks all responses
-			// to set referer headers. OnScraped will return early for non-HTML anyway,
+			// OnScraped will return early for non-HTML anyway,
 			// so no duplicate processing occurs
 		}
 	})
@@ -1003,11 +1028,87 @@ func (cr *Crawler) isURLCrawlable(urlStr string) bool {
 		}
 	}
 
-	// Note: We don't check robots.txt here because that requires a network request.
-	// The robots.txt check will happen when Visit() is called.
-	// If robots.txt blocks the URL, it will trigger OnError callback.
+	// Note: robots.txt checking is NOT done here because isURLCrawlable() is called
+	// from synchronous callbacks (OnHTML). Making HTTP requests here would block callbacks.
+	// robots.txt is checked later in processDiscoveredURL() in an async context.
 
 	return true
+}
+
+// shouldIgnoreRobotsTxt returns true if robots.txt should be completely ignored
+func (cr *Crawler) shouldIgnoreRobotsTxt() bool {
+	return cr.robotsTxtMode == "ignore"
+}
+
+// checkRobots checks if a URL is allowed by robots.txt
+// This method is called by Crawler BEFORE enqueueing URLs (policy layer)
+// It caches robots.txt data per host to avoid repeated fetches
+func (cr *Crawler) checkRobots(u *url.URL) error {
+	cr.mutex.RLock()
+	robot, ok := cr.robotsMap[u.Host]
+	cr.mutex.RUnlock()
+
+	if !ok {
+		// no robots file cached - fetch it using Collector's HTTP client
+
+		// Prepare request
+		req, err := http.NewRequest("GET", u.Scheme+"://"+u.Host+"/robots.txt", nil)
+		if err != nil {
+			return err
+		}
+		hdr := http.Header{}
+		if cr.Collector.Headers != nil {
+			for k, v := range *cr.Collector.Headers {
+				for _, value := range v {
+					hdr.Add(k, value)
+				}
+			}
+		}
+		if _, ok := hdr["User-Agent"]; !ok {
+			hdr.Set("User-Agent", cr.Collector.UserAgent)
+		}
+		req.Header = hdr
+		// The Go HTTP API ignores "Host" in the headers, preferring the client
+		// to use the Host field on Request.
+		if hostHeader := hdr.Get("Host"); hostHeader != "" {
+			req.Host = hostHeader
+		}
+
+		resp, err := cr.Collector.backend.Client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		robot, err = robotstxt.FromResponse(resp)
+		if err != nil {
+			return err
+		}
+		cr.mutex.Lock()
+		cr.robotsMap[u.Host] = robot
+		cr.mutex.Unlock()
+	}
+
+	uaGroup := robot.FindGroup(cr.Collector.UserAgent)
+	if uaGroup == nil {
+		return nil
+	}
+
+	eu := u.EscapedPath()
+	if u.RawQuery != "" {
+		eu += "?" + u.Query().Encode()
+	}
+	if !uaGroup.Test(eu) {
+		// URL is blocked by robots.txt
+		// In "ignore-report" mode, log the block but don't return error
+		if cr.robotsTxtMode == "ignore-report" {
+			log.Printf("[robots.txt] Would block %s (ignored due to ignore-report mode)", u.String())
+			return nil
+		}
+		// In "respect" mode, return error to block the URL
+		return ErrRobotsTxtBlocked
+	}
+	return nil
 }
 
 // incrementCrawledPages safely increments the crawled pages counter
@@ -1180,6 +1281,14 @@ func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 		href := elem.Attr("href")
 		text := strings.TrimSpace(elem.Text)
 		context := extractLinkContext(elem)
+
+		// Check for nofollow, sponsored, or ugc (all treated as nofollow)
+		rel := strings.ToLower(elem.Attr("rel"))
+		if strings.Contains(rel, "nofollow") || strings.Contains(rel, "sponsored") || strings.Contains(rel, "ugc") {
+			// Prepend "nofollow:" to context so the crawler can filter it
+			context = "nofollow:" + context
+		}
+
 		addLink(href, "anchor", text, context, elem)
 	})
 
@@ -1359,7 +1468,7 @@ func (cr *Crawler) isInternalURL(urlStr string) bool {
 // shouldValidateResource checks if a resource link should be validated for broken links.
 // Returns true if the resource should be crawled to check its status.
 func (cr *Crawler) shouldValidateResource(link Link) bool {
-	config := cr.Collector.ResourceValidation
+	config := cr.resourceValidation
 
 	if config == nil || !config.Enabled {
 		return false

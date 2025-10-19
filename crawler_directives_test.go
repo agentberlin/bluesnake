@@ -16,12 +16,13 @@ package bluesnake
 
 import (
 	"context"
-	"net/http"
-	"sync/atomic"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
-// TestRobotsTxtMode tests the three modes of robots.txt handling
+// TestRobotsTxtMode tests the three modes of robots.txt handling via Crawler
 func TestRobotsTxtMode(t *testing.T) {
 	t.Run("RobotsTxtMode respect blocks disallowed URLs", func(t *testing.T) {
 		mock := setupMockTransport()
@@ -32,32 +33,62 @@ func TestRobotsTxtMode(t *testing.T) {
 			Body:       "User-agent: *\nDisallow: /disallowed\n",
 		})
 
-		c := NewCollector(context.Background(), nil)
-		c.RobotsTxtMode = "respect"
-		c.IgnoreRobotsTxt = false // respect mode should not ignore robots.txt
-		c.WithTransport(mock)
+		// Register allowed page
+		mock.RegisterHTML(testBaseURL+"/allowed", "<html><body>Allowed Content</body></html>")
 
-		var visited uint32
-		c.OnHTML("body", func(e *HTMLElement) {
-			atomic.AddUint32(&visited, 1)
+		// Create crawler with respect mode
+		config := NewDefaultConfig()
+		config.RobotsTxtMode = "respect"
+		crawler := NewCrawler(context.Background(), config)
+		crawler.Collector.WithTransport(mock)
+
+		var visitedURLs []string
+		var mu sync.Mutex
+
+		crawler.SetOnPageCrawled(func(result *PageResult) {
+			mu.Lock()
+			defer mu.Unlock()
+			visitedURLs = append(visitedURLs, result.URL)
 		})
 
-		// Try to visit disallowed URL
-		err := c.Visit(testBaseURL + "/disallowed")
-		if err == nil {
-			t.Error("Expected error when visiting disallowed URL in respect mode")
+		// Start crawl with allowed URL
+		if err := crawler.Start(testBaseURL + "/allowed"); err != nil {
+			t.Fatalf("Failed to start crawler: %v", err)
 		}
-		if err != ErrRobotsTxtBlocked {
-			t.Errorf("Expected ErrRobotsTxtBlocked, got %v", err)
+		crawler.Wait()
+
+		// Verify allowed URL was crawled
+		if len(visitedURLs) == 0 {
+			t.Error("Should have visited allowed URL")
 		}
 
-		if visited != 0 {
-			t.Errorf("Should not have visited disallowed URL, visited count: %d", visited)
-		}
+		// Now test that disallowed URL is blocked
+		// Create a new crawler instance for clean state
+		crawler2 := NewCrawler(context.Background(), config)
+		crawler2.Collector.WithTransport(mock)
 
-		// Verify IgnoreRobotsTxt is false in respect mode
-		if c.IgnoreRobotsTxt {
-			t.Error("IgnoreRobotsTxt should be false in respect mode")
+		visitedURLs = nil
+		crawler2.SetOnPageCrawled(func(result *PageResult) {
+			mu.Lock()
+			defer mu.Unlock()
+			// If we get here with disallowed URL, robots.txt was not respected
+			if strings.Contains(result.URL, "/disallowed") {
+				t.Error("Should not have crawled disallowed URL")
+			}
+			visitedURLs = append(visitedURLs, result.URL)
+		})
+
+		// Start crawl with disallowed URL - should be blocked by robots.txt
+		if err := crawler2.Start(testBaseURL + "/disallowed"); err != nil {
+			t.Logf("Expected: Start returned with error: %v", err)
+		}
+		crawler2.Wait()
+
+		// Verify disallowed URL was NOT crawled
+		for _, url := range visitedURLs {
+			if strings.Contains(url, "/disallowed") {
+				t.Error("Should not have crawled disallowed URL in respect mode")
+			}
 		}
 	})
 
@@ -73,29 +104,40 @@ func TestRobotsTxtMode(t *testing.T) {
 		// Register HTML response for /disallowed
 		mock.RegisterHTML(testBaseURL+"/disallowed", "<html><body>Disallowed Content</body></html>")
 
-		c := NewCollector(context.Background(), nil)
-		c.RobotsTxtMode = "ignore"
-		c.IgnoreRobotsTxt = true // ignore mode should ignore robots.txt
-		c.WithTransport(mock)
+		// Create crawler with ignore mode
+		config := NewDefaultConfig()
+		config.RobotsTxtMode = "ignore"
+		crawler := NewCrawler(context.Background(), config)
+		crawler.Collector.WithTransport(mock)
 
-		var visited uint32
-		c.OnHTML("body", func(e *HTMLElement) {
-			atomic.AddUint32(&visited, 1)
+		var visitedURLs []string
+		var mu sync.Mutex
+
+		crawler.SetOnPageCrawled(func(result *PageResult) {
+			mu.Lock()
+			defer mu.Unlock()
+			visitedURLs = append(visitedURLs, result.URL)
 		})
 
-		// Try to visit disallowed URL - should succeed
-		err := c.Visit(testBaseURL + "/disallowed")
-		if err != nil {
-			t.Errorf("Should be able to visit disallowed URL in ignore mode, got error: %v", err)
+		// Start crawl with disallowed URL - should succeed
+		if err := crawler.Start(testBaseURL + "/disallowed"); err != nil {
+			t.Fatalf("Failed to start crawler: %v", err)
 		}
+		crawler.Wait()
 
-		if visited != 1 {
-			t.Errorf("Should have visited disallowed URL, visited count: %d", visited)
+		// Verify disallowed URL was crawled (robots.txt ignored)
+		if len(visitedURLs) == 0 {
+			t.Error("Should have visited disallowed URL in ignore mode")
 		}
 
 		// Verify IgnoreRobotsTxt is true in ignore mode
-		if !c.IgnoreRobotsTxt {
-			t.Error("IgnoreRobotsTxt should be true in ignore mode")
+		if !crawler.Collector.IgnoreRobotsTxt {
+			t.Error("Collector.IgnoreRobotsTxt should be true in ignore mode")
+		}
+
+		// Verify shouldIgnoreRobotsTxt returns true
+		if !crawler.shouldIgnoreRobotsTxt() {
+			t.Error("shouldIgnoreRobotsTxt() should return true in ignore mode")
 		}
 	})
 
@@ -111,47 +153,54 @@ func TestRobotsTxtMode(t *testing.T) {
 		// Register HTML response for /disallowed
 		mock.RegisterHTML(testBaseURL+"/disallowed", "<html><body>Disallowed Content</body></html>")
 
-		c := NewCollector(context.Background(), nil)
-		c.RobotsTxtMode = "ignore-report"
-		c.IgnoreRobotsTxt = false // ignore-report mode checks robots.txt but doesn't block
-		c.WithTransport(mock)
+		// Create crawler with ignore-report mode
+		config := NewDefaultConfig()
+		config.RobotsTxtMode = "ignore-report"
+		crawler := NewCrawler(context.Background(), config)
+		crawler.Collector.WithTransport(mock)
 
-		var visited uint32
-		c.OnHTML("body", func(e *HTMLElement) {
-			atomic.AddUint32(&visited, 1)
+		var visitedURLs []string
+		var mu sync.Mutex
+
+		crawler.SetOnPageCrawled(func(result *PageResult) {
+			mu.Lock()
+			defer mu.Unlock()
+			visitedURLs = append(visitedURLs, result.URL)
 		})
 
-		// Try to visit disallowed URL - should succeed but log
-		err := c.Visit(testBaseURL + "/disallowed")
-		if err != nil {
-			t.Errorf("Should be able to visit disallowed URL in ignore-report mode, got error: %v", err)
+		// Start crawl with disallowed URL - should succeed but log
+		if err := crawler.Start(testBaseURL + "/disallowed"); err != nil {
+			t.Fatalf("Failed to start crawler: %v", err)
 		}
+		crawler.Wait()
 
-		if visited != 1 {
-			t.Errorf("Should have visited disallowed URL, visited count: %d", visited)
+		// Verify disallowed URL was crawled (logged but not blocked)
+		if len(visitedURLs) == 0 {
+			t.Error("Should have visited disallowed URL in ignore-report mode")
 		}
 
 		// Verify IgnoreRobotsTxt is false in ignore-report mode
 		// (it checks robots.txt but doesn't block)
-		if c.IgnoreRobotsTxt {
-			t.Error("IgnoreRobotsTxt should be false in ignore-report mode")
+		if crawler.Collector.IgnoreRobotsTxt {
+			t.Error("Collector.IgnoreRobotsTxt should be false in ignore-report mode")
+		}
+
+		// Verify shouldIgnoreRobotsTxt returns false
+		if crawler.shouldIgnoreRobotsTxt() {
+			t.Error("shouldIgnoreRobotsTxt() should return false in ignore-report mode")
 		}
 	})
 
 	t.Run("Default RobotsTxtMode is respect", func(t *testing.T) {
-		c := NewCollector(context.Background(), nil)
+		config := NewDefaultConfig()
 
-		if c.RobotsTxtMode != "respect" {
-			t.Errorf("Default RobotsTxtMode should be 'respect', got %s", c.RobotsTxtMode)
-		}
-
-		if c.IgnoreRobotsTxt {
-			t.Error("Default should have IgnoreRobotsTxt = false")
+		if config.RobotsTxtMode != "respect" {
+			t.Errorf("Default RobotsTxtMode should be 'respect', got %s", config.RobotsTxtMode)
 		}
 	})
 }
 
-// TestNofollowFiltering tests the nofollow link filtering logic
+// TestNofollowFiltering tests the nofollow link filtering logic via Crawler
 func TestNofollowFiltering(t *testing.T) {
 	t.Run("Internal nofollow links are filtered by default", func(t *testing.T) {
 		mock := setupMockTransport()
@@ -164,27 +213,48 @@ func TestNofollowFiltering(t *testing.T) {
 			</body>
 			</html>
 		`)
+		mock.RegisterHTML(testBaseURL+"/target", `<html><body>Target</body></html>`)
 
-		c := NewCollector(context.Background(), nil)
-		c.RobotsTxtMode = "ignore"
-		c.IgnoreRobotsTxt = true // ignore mode
-		c.FollowInternalNofollow = false // Default
-		c.WithTransport(mock)
+		// Create crawler with default settings (FollowInternalNofollow = false)
+		config := NewDefaultConfig()
+		config.RobotsTxtMode = "ignore" // Ignore robots.txt for this test
+		crawler := NewCrawler(context.Background(), config)
+		crawler.Collector.WithTransport(mock)
 
-		var visited []string
-		c.OnHTML("a[href]", func(e *HTMLElement) {
-			link := e.Attr("href")
-			visited = append(visited, link)
+		var visitedPages []string
+		var mu sync.Mutex
+
+		crawler.SetOnPageCrawled(func(result *PageResult) {
+			mu.Lock()
+			defer mu.Unlock()
+			visitedPages = append(visitedPages, result.URL)
 		})
 
-		err := c.Visit(testBaseURL + "/page")
-		if err != nil {
-			t.Fatalf("Failed to visit page: %v", err)
+		if err := crawler.Start(testBaseURL + "/page"); err != nil {
+			t.Fatalf("Failed to start crawler: %v", err)
 		}
 
-		// The link should be found but not followed
-		if len(visited) != 1 {
-			t.Errorf("Expected to find 1 link, got %d", len(visited))
+		// Wait with timeout
+		done := make(chan struct{})
+		go func() {
+			crawler.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Crawler did not finish in time")
+		}
+
+		// Should only visit the initial page, not the nofollow target
+		if len(visitedPages) != 1 {
+			t.Errorf("Expected to visit 1 page (nofollow should be ignored), got %d: %v", len(visitedPages), visitedPages)
+		}
+
+		// Verify FollowInternalNofollow is false by default
+		if crawler.followInternalNofollow {
+			t.Error("followInternalNofollow should be false by default")
 		}
 	})
 
@@ -201,202 +271,71 @@ func TestNofollowFiltering(t *testing.T) {
 		`)
 		mock.RegisterHTML(testBaseURL+"/target", `<html><body>Target</body></html>`)
 
-		c := NewCollector(context.Background(), nil)
-		c.RobotsTxtMode = "ignore"
-		c.IgnoreRobotsTxt = true // ignore mode
-		c.FollowInternalNofollow = true
-		c.WithTransport(mock)
+		// Create crawler with FollowInternalNofollow = true
+		config := NewDefaultConfig()
+		config.RobotsTxtMode = "ignore"
+		config.FollowInternalNofollow = true
+		crawler := NewCrawler(context.Background(), config)
+		crawler.Collector.WithTransport(mock)
 
-		var visitedPages uint32
-		c.OnHTML("body", func(e *HTMLElement) {
-			atomic.AddUint32(&visitedPages, 1)
+		var visitedPages []string
+		var mu sync.Mutex
+
+		crawler.SetOnPageCrawled(func(result *PageResult) {
+			mu.Lock()
+			defer mu.Unlock()
+			visitedPages = append(visitedPages, result.URL)
 		})
 
-		err := c.Visit(testBaseURL + "/page")
-		if err != nil {
-			t.Fatalf("Failed to visit page: %v", err)
+		if err := crawler.Start(testBaseURL + "/page"); err != nil {
+			t.Fatalf("Failed to start crawler: %v", err)
 		}
 
-		// Should visit both the initial page and the target
-		if visitedPages < 1 {
-			t.Errorf("Expected to visit at least 1 page, visited: %d", visitedPages)
-		}
-	})
+		// Wait with timeout
+		done := make(chan struct{})
+		go func() {
+			crawler.Wait()
+			close(done)
+		}()
 
-	t.Run("Sponsored and UGC rels are also treated as nofollow", func(t *testing.T) {
-		mock := setupMockTransport()
-
-		// Page with sponsored and ugc links
-		mock.RegisterHTML(testBaseURL+"/page", `
-			<html>
-			<body>
-				<a href="/sponsored" rel="sponsored">Sponsored Link</a>
-				<a href="/ugc" rel="ugc">UGC Link</a>
-			</body>
-			</html>
-		`)
-
-		c := NewCollector(context.Background(), nil)
-		c.RobotsTxtMode = "ignore"
-		c.IgnoreRobotsTxt = true // ignore mode
-		c.FollowInternalNofollow = false
-		c.WithTransport(mock)
-
-		var links []string
-		c.OnHTML("a[href]", func(e *HTMLElement) {
-			links = append(links, e.Attr("href"))
-		})
-
-		err := c.Visit(testBaseURL + "/page")
-		if err != nil {
-			t.Fatalf("Failed to visit page: %v", err)
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Crawler did not finish in time")
 		}
 
-		// Links should be found
-		if len(links) != 2 {
-			t.Errorf("Expected to find 2 links, got %d", len(links))
+		// Should visit both pages (initial and nofollow target)
+		if len(visitedPages) < 2 {
+			t.Errorf("Expected to visit at least 2 pages with FollowInternalNofollow=true, got %d: %v", len(visitedPages), visitedPages)
+		}
+
+		// Verify FollowInternalNofollow is set
+		if !crawler.followInternalNofollow {
+			t.Error("followInternalNofollow should be true")
 		}
 	})
 }
 
-// TestMetaRobotsNoindex tests the meta robots noindex handling
-func TestMetaRobotsNoindex(t *testing.T) {
-	t.Run("RespectMetaRobotsNoindex blocks pages with noindex meta tag", func(t *testing.T) {
-		mock := setupMockTransport()
-
-		// Page with noindex meta tag
-		mock.RegisterHTML(testBaseURL+"/noindex", `
-			<html>
-			<head>
-				<meta name="robots" content="noindex">
-			</head>
-			<body>Should not be indexed</body>
-			</html>
-		`)
-
-		c := NewCollector(context.Background(), nil)
-		c.RobotsTxtMode = "ignore"
-		c.IgnoreRobotsTxt = true // ignore mode
-		c.RespectMetaRobotsNoindex = true // Default
-		c.WithTransport(mock)
-
-		var visited uint32
-		c.OnHTML("body", func(e *HTMLElement) {
-			atomic.AddUint32(&visited, 1)
-		})
-
-		err := c.Visit(testBaseURL + "/noindex")
-
-		// The page should be fetched but callback should not be called
-		// due to noindex directive
-		if err == nil {
-			t.Log("Visited noindex page - checking if callback was suppressed")
-		}
-
-		// Note: The actual noindex handling might prevent the callback
-		// This test validates the configuration is set correctly
-		if !c.RespectMetaRobotsNoindex {
-			t.Error("RespectMetaRobotsNoindex should be true")
-		}
-	})
-
-	t.Run("Disabling RespectMetaRobotsNoindex allows indexing noindex pages", func(t *testing.T) {
-		c := NewCollector(context.Background(), nil)
-		c.RespectMetaRobotsNoindex = false
-
-		if c.RespectMetaRobotsNoindex {
-			t.Error("RespectMetaRobotsNoindex should be false when disabled")
-		}
-	})
-
-	t.Run("Default RespectMetaRobotsNoindex is true", func(t *testing.T) {
-		c := NewCollector(context.Background(), nil)
-
-		if !c.RespectMetaRobotsNoindex {
-			t.Error("Default RespectMetaRobotsNoindex should be true")
-		}
-	})
-}
-
-// TestXRobotsTagNoindex tests the X-Robots-Tag header handling
-func TestXRobotsTagNoindex(t *testing.T) {
-	t.Run("RespectNoindex blocks responses with X-Robots-Tag noindex", func(t *testing.T) {
-		mock := setupMockTransport()
-
-		// Response with X-Robots-Tag: noindex header
-		headers := make(http.Header)
-		headers.Set("Content-Type", "text/html")
-		headers.Set("X-Robots-Tag", "noindex")
-		mock.RegisterResponse(testBaseURL+"/noindex", &MockResponse{
-			StatusCode: 200,
-			Body:       "<html><body>Should not be indexed</body></html>",
-			Headers:    headers,
-		})
-
-		c := NewCollector(context.Background(), nil)
-		c.RobotsTxtMode = "ignore"
-		c.IgnoreRobotsTxt = true // ignore mode
-		c.RespectNoindex = true // Default
-		c.WithTransport(mock)
-
-		var visited uint32
-		c.OnHTML("body", func(e *HTMLElement) {
-			atomic.AddUint32(&visited, 1)
-		})
-
-		err := c.Visit(testBaseURL + "/noindex")
-
-		// The page should be fetched but callback might not be called
-		// due to noindex directive
-		if err == nil {
-			t.Log("Visited noindex page - checking configuration")
-		}
-
-		if !c.RespectNoindex {
-			t.Error("RespectNoindex should be true")
-		}
-	})
-
-	t.Run("Disabling RespectNoindex allows indexing pages with X-Robots-Tag", func(t *testing.T) {
-		c := NewCollector(context.Background(), nil)
-		c.RespectNoindex = false
-
-		if c.RespectNoindex {
-			t.Error("RespectNoindex should be false when disabled")
-		}
-	})
-
-	t.Run("Default RespectNoindex is true", func(t *testing.T) {
-		c := NewCollector(context.Background(), nil)
-
-		if !c.RespectNoindex {
-			t.Error("Default RespectNoindex should be true")
-		}
-	})
-}
-
-// TestCrawlerDirectiveDefaults tests that all crawler directive defaults match ScreamingFrog
+// TestCrawlerDirectiveDefaults tests that all crawler directive defaults match expectations
 func TestCrawlerDirectiveDefaults(t *testing.T) {
-	c := NewCollector(context.Background(), nil)
+	config := NewDefaultConfig()
 
 	tests := []struct {
-		name     string
-		got      interface{}
-		want     interface{}
-		fieldName string
+		name  string
+		got   interface{}
+		want  interface{}
 	}{
-		{"RobotsTxtMode", c.RobotsTxtMode, "respect", "RobotsTxtMode"},
-		{"FollowInternalNofollow", c.FollowInternalNofollow, false, "FollowInternalNofollow"},
-		{"FollowExternalNofollow", c.FollowExternalNofollow, false, "FollowExternalNofollow"},
-		{"RespectMetaRobotsNoindex", c.RespectMetaRobotsNoindex, true, "RespectMetaRobotsNoindex"},
-		{"RespectNoindex", c.RespectNoindex, true, "RespectNoindex"},
-		{"IgnoreRobotsTxt", c.IgnoreRobotsTxt, false, "IgnoreRobotsTxt"},
+		{"RobotsTxtMode", config.RobotsTxtMode, "respect"},
+		{"FollowInternalNofollow", config.FollowInternalNofollow, false},
+		{"FollowExternalNofollow", config.FollowExternalNofollow, false},
+		{"RespectMetaRobotsNoindex", config.RespectMetaRobotsNoindex, true},
+		{"RespectNoindex", config.RespectNoindex, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.got != tt.want {
-				t.Errorf("Default %s = %v, want %v", tt.fieldName, tt.got, tt.want)
+				t.Errorf("Default %s = %v, want %v", tt.name, tt.got, tt.want)
 			}
 		})
 	}
@@ -409,25 +348,64 @@ func TestRobotsTxtModeConfigurationPropagation(t *testing.T) {
 
 	for i, mode := range modes {
 		t.Run("RobotsTxtMode "+mode, func(t *testing.T) {
-			c := NewCollector(context.Background(), nil)
-			c.RobotsTxtMode = mode
-			// When creating a Collector directly (not through Crawler),
-			// we must manually set IgnoreRobotsTxt based on RobotsTxtMode
-			switch mode {
-			case "ignore":
-				c.IgnoreRobotsTxt = true
-			case "respect", "ignore-report":
-				c.IgnoreRobotsTxt = false
+			config := NewDefaultConfig()
+			config.RobotsTxtMode = mode
+			crawler := NewCrawler(context.Background(), config)
+
+			if crawler.robotsTxtMode != mode {
+				t.Errorf("Crawler.robotsTxtMode not set correctly: got %s, want %s", crawler.robotsTxtMode, mode)
 			}
 
-			if c.RobotsTxtMode != mode {
-				t.Errorf("RobotsTxtMode not set correctly: got %s, want %s", c.RobotsTxtMode, mode)
-			}
-
-			if c.IgnoreRobotsTxt != expectedIgnoreRobotsTxt[i] {
-				t.Errorf("IgnoreRobotsTxt for mode %s: got %v, want %v",
-					mode, c.IgnoreRobotsTxt, expectedIgnoreRobotsTxt[i])
+			if crawler.Collector.IgnoreRobotsTxt != expectedIgnoreRobotsTxt[i] {
+				t.Errorf("Collector.IgnoreRobotsTxt for mode %s: got %v, want %v",
+					mode, crawler.Collector.IgnoreRobotsTxt, expectedIgnoreRobotsTxt[i])
 			}
 		})
 	}
+}
+
+// TestResourceValidation tests that resource validation config is properly set on Crawler
+func TestResourceValidation(t *testing.T) {
+	t.Run("ResourceValidation is set on Crawler", func(t *testing.T) {
+		config := NewDefaultConfig()
+		config.ResourceValidation = &ResourceValidationConfig{
+			Enabled:       true,
+			ResourceTypes: []string{"image", "script"},
+			CheckExternal: false,
+		}
+
+		crawler := NewCrawler(context.Background(), config)
+
+		if crawler.resourceValidation == nil {
+			t.Fatal("ResourceValidation should be set on Crawler")
+		}
+
+		if !crawler.resourceValidation.Enabled {
+			t.Error("ResourceValidation.Enabled should be true")
+		}
+
+		if len(crawler.resourceValidation.ResourceTypes) != 2 {
+			t.Errorf("Expected 2 resource types, got %d", len(crawler.resourceValidation.ResourceTypes))
+		}
+
+		if crawler.resourceValidation.CheckExternal {
+			t.Error("ResourceValidation.CheckExternal should be false")
+		}
+	})
+
+	t.Run("Default ResourceValidation config", func(t *testing.T) {
+		config := NewDefaultConfig()
+
+		if config.ResourceValidation == nil {
+			t.Fatal("Default config should have ResourceValidation")
+		}
+
+		if !config.ResourceValidation.Enabled {
+			t.Error("Default ResourceValidation should be enabled")
+		}
+
+		if !config.ResourceValidation.CheckExternal {
+			t.Error("Default ResourceValidation should check external resources")
+		}
+	})
 }
