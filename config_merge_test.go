@@ -100,13 +100,10 @@ func TestConfigMerging(t *testing.T) {
 
 		// Check key defaults
 		if c.IgnoreRobotsTxt {
-			t.Error("IgnoreRobotsTxt should be false by default (controlled by RobotsTxtMode=respect)")
+			t.Error("IgnoreRobotsTxt should be false by default")
 		}
 
-		// Check that RobotsTxtMode is set to default
-		if c.RobotsTxtMode != "respect" {
-			t.Errorf("RobotsTxtMode should be 'respect' by default, got %s", c.RobotsTxtMode)
-		}
+		// Note: RobotsTxtMode has been moved to Crawler - no longer on Collector
 
 		expectedMaxBodySize := 10 * 1024 * 1024 // 10MB
 		if c.MaxBodySize != expectedMaxBodySize {

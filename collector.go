@@ -47,7 +47,6 @@ import (
 	"github.com/antchfx/xmlquery"
 	"github.com/kennygrant/sanitize"
 	whatwgUrl "github.com/nlnwa/whatwg-url/url"
-	"github.com/temoto/robotstxt"
 	"google.golang.org/appengine/urlfetch"
 )
 
@@ -271,23 +270,10 @@ type Collector struct {
 	ContentHashAlgorithm string
 	// ContentHashConfig contains detailed configuration for content hashing
 	ContentHashConfig *ContentHashConfig
-	// ResourceValidation configures checking of non-HTML resources for broken links
-	ResourceValidation *ResourceValidationConfig
-	// RobotsTxtMode controls how robots.txt is handled
-	RobotsTxtMode string
-	// FollowInternalNofollow allows following links with rel="nofollow" on same domain
-	FollowInternalNofollow bool
-	// FollowExternalNofollow allows following links with rel="nofollow" on external domains
-	FollowExternalNofollow bool
-	// RespectMetaRobotsNoindex respects <meta name="robots" content="noindex">
-	RespectMetaRobotsNoindex bool
-	// RespectNoindex respects X-Robots-Tag: noindex headers
-	RespectNoindex bool
 
 	ctx                      context.Context // Lifecycle context for cancellation
 	store                    storage.Storage
 	debugger                 debug.Debugger
-	robotsMap                map[string]*robotstxt.RobotsData
 	htmlCallbacks            []*htmlCallbackContainer
 	xmlCallbacks             []*xmlCallbackContainer
 	requestCallbacks         []RequestCallback
@@ -331,9 +317,6 @@ type ScrapedCallback func(*Response)
 // Return nil to allow the redirect, or an error to block it.
 type RedirectCallback func(req *http.Request, via []*http.Request) error
 
-// ProxyFunc is a type alias for proxy setter functions.
-type ProxyFunc func(*http.Request) (*url.URL, error)
-
 // AlreadyVisitedError is the error type for already visited URLs.
 //
 // It's returned synchronously by Visit when the URL passed to Visit
@@ -373,15 +356,6 @@ type cookieJarSerializer struct {
 
 var collectorCounter uint32
 
-// The key type is unexported to prevent collisions with context keys defined in
-// other packages.
-type key int
-
-// ProxyURLKey is the context key for the request proxy address.
-const (
-	ProxyURLKey key = iota
-)
-
 var (
 	// ErrForbiddenDomain is the error thrown if visiting
 	// a domain which is not allowed in AllowedDomains
@@ -403,8 +377,6 @@ var (
 	ErrNoCookieJar = errors.New("cookie jar is not available")
 	// ErrNoPattern is the error type for LimitRules without patterns
 	ErrNoPattern = errors.New("no pattern defined in LimitRule")
-	// ErrEmptyProxyURL is the error type for empty Proxy URL list
-	ErrEmptyProxyURL = errors.New("proxy URL list is empty")
 	// ErrAbortedAfterHeaders is the error returned when OnResponseHeaders aborts the transfer.
 	ErrAbortedAfterHeaders = errors.New("aborted after receiving response headers")
 	// ErrAbortedBeforeRequest is the error returned when OnResponseHeaders aborts the transfer.
@@ -631,13 +603,6 @@ func NewCollector(ctx context.Context, config *HTTPConfig) *Collector {
 	c.ContentHashAlgorithm = config.ContentHashAlgorithm
 	c.ContentHashConfig = config.ContentHashConfig
 
-	// Initialize crawler directive defaults (following ScreamingFrog's defaults)
-	c.RobotsTxtMode = "respect"
-	c.FollowInternalNofollow = false
-	c.FollowExternalNofollow = false
-	c.RespectMetaRobotsNoindex = true
-	c.RespectNoindex = true
-
 	c.parseSettingsFromEnv()
 
 	return c
@@ -657,7 +622,6 @@ func (c *Collector) Init() {
 	c.backend.Init(jar)
 	c.backend.Client.CheckRedirect = c.checkRedirectFunc()
 	c.lock = &sync.RWMutex{}
-	c.robotsMap = make(map[string]*robotstxt.RobotsData)
 	c.IgnoreRobotsTxt = false // Default to respecting robots.txt
 	c.ID = atomic.AddUint32(&collectorCounter, 1)
 	c.TraceHTTP = false
@@ -893,9 +857,6 @@ func (c *Collector) fetch(u, method string, depth int, requestData io.Reader, ct
 		return !request.abort
 	}
 	response, err := c.backend.Cache(req, c.MaxBodySize, checkRequestHeadersFunc, checkResponseHeadersFunc, c.CacheDir, c.CacheExpiration)
-	if proxyURL, ok := req.Context().Value(ProxyURLKey).(string); ok {
-		request.ProxyURL = proxyURL
-	}
 	if err := c.handleOnError(response, err, request, ctx); err != nil {
 		return err
 	}
@@ -967,11 +928,11 @@ func (c *Collector) requestCheck(parsedURL *url.URL, method string, getBody func
 	// The Crawler is now responsible for all filtering (via isURLCrawlable).
 	// This eliminates duplicate filtering and centralizes filtering logic in Crawler.
 
-	if method != "HEAD" && !c.IgnoreRobotsTxt {
-		if err := c.checkRobots(parsedURL); err != nil {
-			return err
-		}
-	}
+	// robots.txt checking has been moved to Crawler.
+	// The Crawler checks robots.txt BEFORE enqueueing URLs (via isURLCrawlable).
+	// This eliminates duplicate checks and maintains proper architectural separation:
+	// Crawler = policy enforcement, Collector = HTTP mechanics.
+
 	// Visit checking has been removed from Collector.
 	// The Crawler is now responsible for all visit tracking (single-threaded processor).
 	// This eliminates race conditions where multiple goroutines could mark the same URL
@@ -979,74 +940,6 @@ func (c *Collector) requestCheck(parsedURL *url.URL, method string, getBody func
 	//
 	// If checkRevisit is true and you need visit checking, you must handle it externally
 	// before calling this method (see Crawler.processDiscoveredURL for the proper pattern).
-	return nil
-}
-
-func (c *Collector) checkRobots(u *url.URL) error {
-	c.lock.RLock()
-	robot, ok := c.robotsMap[u.Host]
-	c.lock.RUnlock()
-
-	if !ok {
-		// no robots file cached
-
-		// Prepare request,
-		req, err := http.NewRequest("GET", u.Scheme+"://"+u.Host+"/robots.txt", nil)
-		if err != nil {
-			return err
-		}
-		hdr := http.Header{}
-		if c.Headers != nil {
-			for k, v := range *c.Headers {
-				for _, value := range v {
-					hdr.Add(k, value)
-				}
-			}
-		}
-		if _, ok := hdr["User-Agent"]; !ok {
-			hdr.Set("User-Agent", c.UserAgent)
-		}
-		req.Header = hdr
-		// The Go HTTP API ignores "Host" in the headers, preferring the client
-		// to use the Host field on Request.
-		if hostHeader := hdr.Get("Host"); hostHeader != "" {
-			req.Host = hostHeader
-		}
-
-		resp, err := c.backend.Client.Do(req)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-
-		robot, err = robotstxt.FromResponse(resp)
-		if err != nil {
-			return err
-		}
-		c.lock.Lock()
-		c.robotsMap[u.Host] = robot
-		c.lock.Unlock()
-	}
-
-	uaGroup := robot.FindGroup(c.UserAgent)
-	if uaGroup == nil {
-		return nil
-	}
-
-	eu := u.EscapedPath()
-	if u.RawQuery != "" {
-		eu += "?" + u.Query().Encode()
-	}
-	if !uaGroup.Test(eu) {
-		// URL is blocked by robots.txt
-		// In "ignore-report" mode, log the block but don't return error
-		if c.RobotsTxtMode == "ignore-report" {
-			log.Printf("[robots.txt] Would block %s (ignored due to ignore-report mode)", u.String())
-			return nil
-		}
-		// In "respect" mode, return error to block the URL
-		return ErrRobotsTxtBlocked
-	}
 	return nil
 }
 
@@ -1246,41 +1139,6 @@ func (c *Collector) SetStorage(s storage.Storage) error {
 	return nil
 }
 
-// SetProxy sets a proxy for the collector. This method overrides the previously
-// used http.Transport if the type of the transport is not http.RoundTripper.
-// The proxy type is determined by the URL scheme. "http"
-// and "socks5" are supported. If the scheme is empty,
-// "http" is assumed.
-func (c *Collector) SetProxy(proxyURL string) error {
-	proxyParsed, err := url.Parse(proxyURL)
-	if err != nil {
-		return err
-	}
-
-	c.SetProxyFunc(http.ProxyURL(proxyParsed))
-
-	return nil
-}
-
-// SetProxyFunc sets a custom proxy setter/switcher function.
-// See built-in ProxyFuncs for more details.
-// This method overrides the previously used http.Transport
-// if the type of the transport is not *http.Transport.
-// The proxy type is determined by the URL scheme. "http"
-// and "socks5" are supported. If the scheme is empty,
-// "http" is assumed.
-func (c *Collector) SetProxyFunc(p ProxyFunc) {
-	t, ok := c.backend.Client.Transport.(*http.Transport)
-	if c.backend.Client.Transport != nil && ok {
-		t.Proxy = p
-		t.DisableKeepAlives = true
-	} else {
-		c.backend.Client.Transport = &http.Transport{
-			Proxy:             p,
-			DisableKeepAlives: true,
-		}
-	}
-}
 
 func createEvent(eventType string, requestID, collectorID uint32, kvargs map[string]string) *debug.Event {
 	return &debug.Event{
@@ -1594,8 +1452,7 @@ func (c *Collector) Cookies(URL string) []*http.Cookie {
 }
 
 // Clone creates an exact copy of a Collector without callbacks.
-// HTTP backend, robots.txt cache and cookie jar are shared
-// between collectors.
+// HTTP backend and cookie jar are shared between collectors.
 func (c *Collector) Clone() *Collector {
 	return &Collector{
 		AllowURLRevisit:        c.AllowURLRevisit,
@@ -1623,7 +1480,6 @@ func (c *Collector) Clone() *Collector {
 		lock:                   c.lock,
 		requestCallbacks:       make([]RequestCallback, 0, 8),
 		responseCallbacks:      make([]ResponseCallback, 0, 8),
-		robotsMap:              c.robotsMap,
 	}
 }
 
