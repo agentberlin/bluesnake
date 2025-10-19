@@ -25,27 +25,29 @@ import (
 	"sync"
 )
 
-// Storage is an interface which handles Collector's internal data,
-// like visited urls and cookies.
+// Storage is an interface which handles Collector's HTTP-level data.
 // The default Storage of the Collector is the InMemoryStorage.
-// Collector's storage can be changed by calling Collector.SetStorage()
-// function.
+// Collector's storage can be changed by calling Collector.SetStorage() function.
+//
+// NOTE: This is separate from CrawlerStore (which handles crawl orchestration).
+// Storage handles only HTTP client concerns:
+//   - Cookies (HTTP session state)
+//   - Content hashes (duplicate content detection)
+//
+// Visit tracking has been removed - Crawler owns all visit tracking via CrawlerStore.
 type Storage interface {
 	// Init initializes the storage
 	Init() error
-	// Visited receives and stores a request ID that is visited by the Collector
-	Visited(requestID uint64) error
-	// IsVisited returns true if the request was visited before IsVisited
-	// is called
-	IsVisited(requestID uint64) (bool, error)
-	// VisitIfNotVisited atomically checks if a request ID has been visited,
-	// and if not, marks it as visited. Returns true if the URL was already visited.
-	// This is the atomic equivalent of IsVisited() + Visited() and prevents race conditions.
-	VisitIfNotVisited(requestID uint64) (bool, error)
+
+	// HTTP Session Management (Cookies)
+
 	// Cookies retrieves stored cookies for a given host
 	Cookies(u *url.URL) string
 	// SetCookies stores cookies for a given host
 	SetCookies(u *url.URL, cookies string)
+
+	// Content Hash Management (Duplicate Detection)
+
 	// SetContentHash stores a content hash for a given URL
 	SetContentHash(url string, contentHash string) error
 	// GetContentHash retrieves the stored content hash for a given URL
@@ -57,21 +59,17 @@ type Storage interface {
 }
 
 // InMemoryStorage is the default storage backend of bluesnake.
-// InMemoryStorage keeps cookies and visited urls in memory
+// InMemoryStorage keeps cookies and content hashes in memory
 // without persisting data on the disk.
 type InMemoryStorage struct {
-	visitedURLs     map[uint64]bool
-	contentHashes   map[string]string // url -> content hash
-	visitedContent  map[string]bool   // content hash -> visited
-	lock            *sync.RWMutex
-	jar             *cookiejar.Jar
+	contentHashes  map[string]string // url -> content hash
+	visitedContent map[string]bool   // content hash -> visited
+	lock           *sync.RWMutex
+	jar            *cookiejar.Jar
 }
 
 // Init initializes InMemoryStorage
 func (s *InMemoryStorage) Init() error {
-	if s.visitedURLs == nil {
-		s.visitedURLs = make(map[uint64]bool)
-	}
 	if s.contentHashes == nil {
 		s.contentHashes = make(map[string]string)
 	}
@@ -87,39 +85,6 @@ func (s *InMemoryStorage) Init() error {
 		return err
 	}
 	return nil
-}
-
-// Visited implements Storage.Visited()
-func (s *InMemoryStorage) Visited(requestID uint64) error {
-	s.lock.Lock()
-	s.visitedURLs[requestID] = true
-	s.lock.Unlock()
-	return nil
-}
-
-// IsVisited implements Storage.IsVisited()
-func (s *InMemoryStorage) IsVisited(requestID uint64) (bool, error) {
-	s.lock.RLock()
-	visited := s.visitedURLs[requestID]
-	s.lock.RUnlock()
-	return visited, nil
-}
-
-// VisitIfNotVisited implements Storage.VisitIfNotVisited()
-// Atomically checks if a request ID has been visited, and if not, marks it as visited.
-// Returns true if the URL was already visited, false if it was newly marked as visited.
-func (s *InMemoryStorage) VisitIfNotVisited(requestID uint64) (bool, error) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	// Check if already visited
-	if s.visitedURLs[requestID] {
-		return true, nil // Already visited
-	}
-
-	// Mark as visited
-	s.visitedURLs[requestID] = true
-	return false, nil // Newly marked as visited
 }
 
 // Cookies implements Storage.Cookies()

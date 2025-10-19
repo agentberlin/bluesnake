@@ -380,7 +380,6 @@ type key int
 // ProxyURLKey is the context key for the request proxy address.
 const (
 	ProxyURLKey key = iota
-	CheckRevisitKey
 )
 
 var (
@@ -691,39 +690,28 @@ func (c *Collector) Appengine(ctx context.Context) {
 // Visit also calls the previously provided callbacks
 func (c *Collector) Visit(URL string) error {
 	if c.CheckHead {
-		if check := c.scrape(URL, "HEAD", 1, nil, nil, nil, true); check != nil {
+		if check := c.scrape(URL, "HEAD", 1, nil, nil, nil); check != nil {
 			return check
 		}
 	}
-	return c.scrape(URL, "GET", 1, nil, nil, nil, true)
-}
-
-// HasVisited checks if the provided URL has been visited
-func (c *Collector) HasVisited(URL string) (bool, error) {
-	return c.checkHasVisited(URL, nil)
-}
-
-// HasPosted checks if the provided URL and requestData has been visited
-// This method is useful more likely to prevent re-visit same URL and POST body
-func (c *Collector) HasPosted(URL string, requestData map[string]string) (bool, error) {
-	return c.checkHasVisited(URL, requestData)
+	return c.scrape(URL, "GET", 1, nil, nil, nil)
 }
 
 // Head starts a collector job by creating a HEAD request.
 func (c *Collector) Head(URL string) error {
-	return c.scrape(URL, "HEAD", 1, nil, nil, nil, false)
+	return c.scrape(URL, "HEAD", 1, nil, nil, nil)
 }
 
 // Post starts a collector job by creating a POST request.
 // Post also calls the previously provided callbacks
 func (c *Collector) Post(URL string, requestData map[string]string) error {
-	return c.scrape(URL, "POST", 1, createFormReader(requestData), nil, nil, true)
+	return c.scrape(URL, "POST", 1, createFormReader(requestData), nil, nil)
 }
 
 // PostRaw starts a collector job by creating a POST request with raw binary data.
 // Post also calls the previously provided callbacks
 func (c *Collector) PostRaw(URL string, requestData []byte) error {
-	return c.scrape(URL, "POST", 1, bytes.NewReader(requestData), nil, nil, true)
+	return c.scrape(URL, "POST", 1, bytes.NewReader(requestData), nil, nil)
 }
 
 // PostMultipart starts a collector job by creating a Multipart POST request
@@ -733,7 +721,7 @@ func (c *Collector) PostMultipart(URL string, requestData map[string][]byte) err
 	hdr := http.Header{}
 	hdr.Set("Content-Type", "multipart/form-data; boundary="+boundary)
 	hdr.Set("User-Agent", c.UserAgent)
-	return c.scrape(URL, "POST", 1, createMultipartReader(boundary, requestData), nil, hdr, true)
+	return c.scrape(URL, "POST", 1, createMultipartReader(boundary, requestData), nil, hdr)
 }
 
 // Request starts a collector job by creating a custom HTTP request
@@ -748,7 +736,7 @@ func (c *Collector) PostMultipart(URL string, requestData map[string][]byte) err
 //   - "PATCH"
 //   - "OPTIONS"
 func (c *Collector) Request(method, URL string, requestData io.Reader, ctx *Context, hdr http.Header) error {
-	return c.scrape(URL, method, 1, requestData, ctx, hdr, true)
+	return c.scrape(URL, method, 1, requestData, ctx, hdr)
 }
 
 // SetDebugger attaches a debugger to the collector
@@ -787,7 +775,7 @@ func (c *Collector) UnmarshalRequest(r []byte) (*Request, error) {
 	}, nil
 }
 
-func (c *Collector) scrape(u, method string, depth int, requestData io.Reader, ctx *Context, hdr http.Header, checkRevisit bool) error {
+func (c *Collector) scrape(u, method string, depth int, requestData io.Reader, ctx *Context, hdr http.Header) error {
 	parsedWhatwgURL, err := urlParser.Parse(u)
 	if err != nil {
 		return err
@@ -828,9 +816,9 @@ func (c *Collector) scrape(u, method string, depth int, requestData io.Reader, c
 	}
 	// note: once 1.13 is minimum supported Go version,
 	// replace this with http.NewRequestWithContext
-	req = req.WithContext(context.WithValue(c.ctx, CheckRevisitKey, checkRevisit))
+	req = req.WithContext(c.ctx)
 
-	if err := c.requestCheck(parsedURL, method, req.GetBody, depth, checkRevisit); err != nil {
+	if err := c.requestCheck(parsedURL, method, req.GetBody, depth); err != nil {
 		return err
 	}
 	u = parsedURL.String()
@@ -960,7 +948,7 @@ func (c *Collector) fetch(u, method string, depth int, requestData io.Reader, ct
 	return err
 }
 
-func (c *Collector) requestCheck(parsedURL *url.URL, method string, getBody func() (io.ReadCloser, error), depth int, checkRevisit bool) error {
+func (c *Collector) requestCheck(parsedURL *url.URL, method string, getBody func() (io.ReadCloser, error), depth int) error {
 	// Check at start
 	select {
 	case <-c.ctx.Done():
@@ -1649,36 +1637,10 @@ func (c *Collector) checkRedirectFunc() func(req *http.Request, via []*http.Requ
 			}
 		}
 
-		// allow redirects to the original destination
-		// to support websites redirecting to the same page while setting
-		// session cookies
-		samePageRedirect := normalizeURL(req.URL.String()) == normalizeURL(via[0].URL.String())
-
-		if !c.AllowURLRevisit && !samePageRedirect {
-			var body io.ReadCloser
-			if req.GetBody != nil {
-				var err error
-				body, err = req.GetBody()
-				if err != nil {
-					return err
-				}
-				defer body.Close()
-			}
-			uHash := requestHash(req.URL.String(), body)
-			visited, err := c.store.IsVisited(uHash)
-			if err != nil {
-				return err
-			}
-			if visited {
-				if checkRevisit, ok := req.Context().Value(CheckRevisitKey).(bool); !ok || checkRevisit {
-					return &AlreadyVisitedError{req.URL}
-				}
-			}
-			err = c.store.Visited(uHash)
-			if err != nil {
-				return err
-			}
-		}
+		// Visit tracking has been removed from Collector's redirect handler.
+		// The Crawler now owns ALL visit tracking (including redirect destinations)
+		// via the OnRedirect callback. This eliminates race conditions and maintains
+		// architectural separation: Crawler = visit tracking, Collector = HTTP mechanics.
 
 		if c.redirectHandler != nil {
 			return c.redirectHandler(req, via)
@@ -1712,11 +1674,6 @@ func (c *Collector) parseSettingsFromEnv() {
 			log.Println("Unknown environment variable:", pair[0])
 		}
 	}
-}
-
-func (c *Collector) checkHasVisited(URL string, requestData map[string]string) (bool, error) {
-	hash := requestHash(URL, createFormReader(requestData))
-	return c.store.IsVisited(hash)
 }
 
 // SanitizeFileName replaces dangerous characters in a string
@@ -1818,6 +1775,66 @@ func (j *cookieJarSerializer) Cookies(u *url.URL) []*http.Cookie {
 		cnew = append(cnew, c)
 	}
 	return cnew
+}
+
+// FetchSitemapURLs fetches URLs from a sitemap using the Collector's HTTP client.
+// This ensures sitemap fetching uses the same transport/configuration as regular crawling.
+// Handles both regular sitemaps and sitemap indexes automatically.
+// Returns all discovered URLs from the sitemap (empty slice if sitemap cannot be fetched).
+// This is the proper way for Crawler to access sitemap data without touching backend.Client directly.
+func (c *Collector) FetchSitemapURLs(sitemapURL string) ([]string, error) {
+	// Use ForceGet with a custom fetch function that uses the Collector's HTTP client
+	// This ensures we use the same transport as regular crawling (for mocks, custom transports, etc.)
+	SetFetch(func(url string, options interface{}) ([]byte, error) {
+		resp, err := c.backend.Client.Get(url)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		return io.ReadAll(resp.Body)
+	})
+
+	// Use ForceGet to be resilient to partial errors in sitemap indexes
+	sitemap, err := ForceGet(sitemapURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch sitemap from %s: %w", sitemapURL, err)
+	}
+
+	// Extract all URLs from the sitemap
+	urls := make([]string, 0, len(sitemap.URL))
+	for _, u := range sitemap.URL {
+		if u.Loc != "" {
+			urls = append(urls, u.Loc)
+		}
+	}
+
+	return urls, nil
+}
+
+// TryDefaultSitemaps tries to fetch sitemaps from common default locations using the Collector's HTTP client.
+// It tries /sitemap.xml first, then /sitemap_index.xml.
+// Returns all discovered URLs from available sitemaps (empty slice if none found).
+// This method does not return errors - it returns an empty slice if no sitemaps are found.
+func (c *Collector) TryDefaultSitemaps(baseURL string) []string {
+	// Ensure baseURL doesn't have trailing slash
+	baseURL = strings.TrimSuffix(baseURL, "/")
+
+	// Common sitemap locations to try
+	sitemapLocations := []string{
+		baseURL + "/sitemap.xml",
+		baseURL + "/sitemap_index.xml",
+	}
+
+	var allURLs []string
+	for _, location := range sitemapLocations {
+		urls, err := c.FetchSitemapURLs(location)
+		if err == nil && len(urls) > 0 {
+			allURLs = append(allURLs, urls...)
+		}
+		// Continue trying other locations even if one fails
+	}
+
+	return allURLs
 }
 
 func isMatchingFilter(fs []*regexp.Regexp, d []byte) bool {
