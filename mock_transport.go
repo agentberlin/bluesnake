@@ -111,6 +111,31 @@ func (m *MockTransport) RegisterJSON(url, json string) {
 	})
 }
 
+// RegisterRedirect is a convenience method to register a redirect response
+func (m *MockTransport) RegisterRedirect(fromURL, toURL string, statusCode int) {
+	headers := make(http.Header)
+	headers.Set("Location", toURL)
+
+	m.RegisterResponse(fromURL, &MockResponse{
+		StatusCode: statusCode,
+		Body:       "",
+		Headers:    headers,
+	})
+}
+
+// RegisterRedirectWithDelay is a convenience method to register a redirect response with a delay
+func (m *MockTransport) RegisterRedirectWithDelay(fromURL, toURL string, statusCode int, delay time.Duration) {
+	headers := make(http.Header)
+	headers.Set("Location", toURL)
+
+	m.RegisterResponse(fromURL, &MockResponse{
+		StatusCode: statusCode,
+		Body:       "",
+		Headers:    headers,
+		Delay:      delay,
+	})
+}
+
 // RegisterError registers a mock error for a URL (simulates network failure)
 func (m *MockTransport) RegisterError(url string, err error) {
 	m.RegisterResponse(url, &MockResponse{

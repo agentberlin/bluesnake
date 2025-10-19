@@ -174,6 +174,22 @@ The architecture strictly separates concerns between two components:
 - **OnRedirect callback added** - Allows Crawler to inject redirect validation logic into Collector (maintains separation)
 - **Tests moved** - All filtering tests moved from `collector_test.go` → `crawler_test.go`
 
+**Redirect Visit Tracking Fix (2025-10-19):**
+- **Problem Solved:** Race condition where redirect destinations were marked as visited by Collector's redirect handler, but Crawler didn't know about them
+- **Solution:** Moved ALL redirect visit tracking from Collector to Crawler's `OnRedirect` callback via `setupRedirectHandler()`
+- **Architecture Maintained:** Crawler owns ALL visit tracking (including redirect destinations), Collector only handles HTTP mechanics
+- **How It Works:**
+  - Crawler's `setupRedirectHandler()` registers an `OnRedirect` callback with Collector
+  - Callback is invoked by Go's HTTP client for each redirect before following it
+  - Callback validates redirect destination using Crawler's URL filters
+  - Callback marks redirect destination as visited using thread-safe storage
+  - Handles redirect chains naturally (called for each hop: A→B→C)
+- **Benefits:**
+  - Eliminates race conditions in redirect handling
+  - Maintains architectural separation (Crawler = visit tracking, Collector = HTTP mechanics)
+  - Thread-safe operations (mutex-protected storage)
+  - Idempotent marking (safe to mark same URL multiple times)
+
 **Upcoming Improvements:**
 - Add accessor methods (`GetContext()`, `GetHTTPClient()`, `MarkVisited()`) to eliminate direct field access
 - Rename `scrape()` → `FetchURL()` for clearer API intent

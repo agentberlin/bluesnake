@@ -18,13 +18,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/agentberlin/bluesnake/storage"
 )
 
 // Link represents a single outbound link discovered on a page
@@ -169,13 +170,12 @@ type Crawler struct {
 	onURLDiscovered OnURLDiscoveredFunc
 
 	// Internal state tracking
-	queuedURLs   *sync.Map // map[string]URLAction - tracks discovered URLs and their actions
+	store        *storage.CrawlerStore // Crawler's own storage (visit tracking, URL actions, page metadata)
 	crawledPages int
 	mutex        sync.RWMutex
 
 	// Link tracking
-	rootDomain   string    // Root domain for internal/external classification
-	pageMetadata *sync.Map // map[string]PageMetadata - cached page metadata
+	rootDomain string // Root domain for internal/external classification
 
 	// Discovery configuration
 	discoveryMechanisms []DiscoveryMechanism // Enabled discovery mechanisms
@@ -235,11 +235,10 @@ func NewCrawler(ctx context.Context, config *CrawlerConfig) *Crawler {
 	crawler := &Crawler{
 		Collector:            c,
 		ctx:                  ctx,
-		queuedURLs:           &sync.Map{},
+		store:                storage.NewCrawlerStore(),
 		crawledPages:         0,
 		discoveryMechanisms:  discoveryMechanisms,
 		sitemapURLs:          config.SitemapURLs,
-		pageMetadata:         &sync.Map{},
 		discoveryChannel:     make(chan URLDiscoveryRequest, discoveryChannelSize),
 		processorDone:        make(chan struct{}),
 		workerPool:           NewWorkerPool(ctx, parallelism, workQueueSize),
@@ -270,43 +269,42 @@ func NewCrawler(ctx context.Context, config *CrawlerConfig) *Crawler {
 		c.IgnoreRobotsTxt = false
 	}
 
-	// Configure sitemap fetching to use the same HTTP client as the collector
-	// This ensures mocks and custom transports work for sitemap fetching too
-	crawler.configureSitemapFetch()
-
-	// Set up redirect validation callback to inject Crawler's URL filtering logic
-	crawler.setupRedirectValidation()
+	// Set up redirect handler to inject Crawler's URL filtering and visit tracking
+	crawler.setupRedirectHandler()
 
 	crawler.setupCallbacks()
 	return crawler
 }
 
-// configureSitemapFetch configures the sitemap library to use the Collector's HTTP client.
-// This ensures that sitemap fetching uses the same transport as regular crawling,
-// which is crucial for testing with mock transports.
-// Note: We access cr.Collector.backend.Client dynamically (not capturing it) so that
-// changes to the transport (like calling WithTransport) are properly reflected.
-func (cr *Crawler) configureSitemapFetch() {
-	SetFetch(func(url string, options interface{}) ([]byte, error) {
-		// Access the client dynamically to pick up any transport changes
-		resp, err := cr.Collector.backend.Client.Get(url)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-		return io.ReadAll(resp.Body)
-	})
-}
-
-// setupRedirectValidation injects the Crawler's URL filtering logic into the Collector.
-// This ensures that redirect destinations are validated using the same domain and URL filters
-// as regular crawled URLs, maintaining architectural separation between Collector and Crawler.
-func (cr *Crawler) setupRedirectValidation() {
+// setupRedirectHandler configures the Collector's redirect handling to integrate with Crawler's
+// architecture. This callback is invoked by the HTTP client for each redirect before following it.
+//
+// Responsibilities:
+// 1. URL Validation - Applies Crawler's domain filters and URL patterns to redirect destinations
+// 2. Visit Tracking - Marks redirect destinations as visited (Crawler owns ALL visit tracking)
+//
+// This maintains architectural separation: Crawler handles business logic (filtering, tracking),
+// while Collector handles HTTP mechanics (following redirects, managing connections).
+func (cr *Crawler) setupRedirectHandler() {
 	cr.Collector.OnRedirect(func(req *http.Request, via []*http.Request) error {
 		// Apply Crawler's URL filtering logic (domain filters, URL patterns, robots.txt)
 		if !cr.isURLCrawlable(req.URL.String()) {
 			return fmt.Errorf("redirect destination blocked by URL filters")
 		}
+
+		// Mark redirect destination as visited (Crawler owns ALL visit tracking)
+		// This prevents race conditions where another goroutine discovers this URL
+		// directly while the redirect is being followed.
+		// Storage is thread-safe (mutex-protected), so this is safe to call from
+		// the HTTP client's redirect handler.
+		uHash := requestHash(req.URL.String(), nil)
+		// Use VisitIfNotVisited which returns (alreadyVisited, error)
+		// We can ignore the return value since we just want to mark it
+		_, err := cr.store.VisitIfNotVisited(uHash)
+		if err != nil {
+			return err
+		}
+
 		return nil
 	})
 }
@@ -437,7 +435,7 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
 	// Step 4: Check if already visited and mark as visited (ATOMIC)
 	// This is the CRITICAL section - only ONE goroutine executes this
 	uHash := requestHash(req.URL, nil)
-	alreadyVisited, err := cr.Collector.store.VisitIfNotVisited(uHash)
+	alreadyVisited, err := cr.store.VisitIfNotVisited(uHash)
 	if err != nil {
 		cr.wg.Done() // Work item complete (error)
 		return
@@ -462,9 +460,9 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
 		// This happens AFTER scrape() and ALL callbacks complete
 		defer cr.wg.Done()
 
-		// We already marked this URL as visited in step 3 above.
-		// Call scrape() directly with checkRevisit=false to bypass any visit checking.
-		cr.Collector.scrape(req.URL, "GET", req.Depth, nil, req.Context, nil, false)
+		// We already marked this URL as visited in step 4 above.
+		// Call scrape() directly - no visit checking needed.
+		cr.Collector.scrape(req.URL, "GET", req.Depth, nil, req.Context, nil)
 		// wg.Done() via defer happens here
 	})
 
@@ -479,12 +477,12 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
 }
 
 // getOrDetermineURLAction determines the action for a URL by calling the OnURLDiscovered callback.
-// The callback is invoked only once per unique URL (results are memoized in queuedURLs).
+// The callback is invoked only once per unique URL (results are memoized in store).
 // On subsequent calls for the same URL, the cached action is returned.
 // This ensures deduplication - the application callback won't be called multiple times for the same URL.
 func (cr *Crawler) getOrDetermineURLAction(urlStr string) URLAction {
 	// Check if we've already determined action for this URL
-	if actionInterface, exists := cr.queuedURLs.Load(urlStr); exists {
+	if actionInterface, exists := cr.store.GetAction(urlStr); exists {
 		return actionInterface.(URLAction)
 	}
 
@@ -498,8 +496,8 @@ func (cr *Crawler) getOrDetermineURLAction(urlStr string) URLAction {
 		action = callback(urlStr)
 	}
 
-	// Store the action in queuedURLs (memoization - callback won't be called again for this URL)
-	cr.queuedURLs.Store(urlStr, action)
+	// Store the action in store (memoization - callback won't be called again for this URL)
+	cr.store.StoreAction(urlStr, action)
 
 	return action
 }
@@ -557,11 +555,7 @@ func (cr *Crawler) Wait() {
 	cr.workerPool.Close()
 
 	// Calculate totals
-	totalDiscovered := 0
-	cr.queuedURLs.Range(func(key, value interface{}) bool {
-		totalDiscovered++
-		return true
-	})
+	totalDiscovered := cr.store.CountActions()
 
 	// Check if context was cancelled
 	wasStopped := false
@@ -761,7 +755,7 @@ func (cr *Crawler) setupCallbacks() {
 		pageURL := r.Request.URL.String()
 
 		// Store page metadata for future link population
-		cr.pageMetadata.Store(pageURL, PageMetadata{
+		cr.store.StoreMetadata(pageURL, PageMetadata{
 			Status:      status,
 			Title:       title,
 			ContentType: contentType,
@@ -815,7 +809,7 @@ func (cr *Crawler) setupCallbacks() {
 			// OnResponse callbacks. Memory optimization can be added later if needed.
 
 			// Store minimal metadata for link population (so links can show status/type)
-			cr.pageMetadata.Store(pageURL, PageMetadata{
+			cr.store.StoreMetadata(pageURL, PageMetadata{
 				Status:      r.StatusCode,
 				Title:       "", // Resources don't have titles
 				ContentType: contentType,
@@ -1083,28 +1077,23 @@ func (cr *Crawler) hasDiscoveryMechanism(mechanism DiscoveryMechanism) bool {
 // Uses custom sitemap URLs if provided, otherwise tries default locations.
 // Returns all discovered URLs from sitemaps (empty slice if none found).
 func (cr *Crawler) fetchSitemapURLs(baseURL string) []string {
-	var sitemapLocations []string
-
 	// Use custom sitemap URLs if provided
 	if len(cr.sitemapURLs) > 0 {
-		sitemapLocations = cr.sitemapURLs
-	} else {
-		// Try default locations
-		return TryDefaultSitemaps(baseURL)
-	}
-
-	// Fetch URLs from custom sitemap locations
-	var allURLs []string
-	for _, sitemapURL := range sitemapLocations {
-		urls, err := FetchSitemapURLs(sitemapURL)
-		if err != nil {
-			// Log error but continue with other sitemaps
-			continue
+		// Fetch URLs from custom sitemap locations
+		var allURLs []string
+		for _, sitemapURL := range cr.sitemapURLs {
+			urls, err := cr.Collector.FetchSitemapURLs(sitemapURL)
+			if err != nil {
+				// Log error but continue with other sitemaps
+				continue
+			}
+			allURLs = append(allURLs, urls...)
 		}
-		allURLs = append(allURLs, urls...)
+		return allURLs
 	}
 
-	return allURLs
+	// Try default locations using Collector's method
+	return cr.Collector.TryDefaultSitemaps(baseURL)
 }
 
 // buildPageLinks constructs the Links structure for a given page
@@ -1161,7 +1150,7 @@ func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 		// Get metadata if this URL has been crawled
 		var status *int
 		var title, contentType string
-		if meta, ok := cr.pageMetadata.Load(absoluteURL); ok {
+		if meta, ok := cr.store.GetMetadata(absoluteURL); ok {
 			metadata := meta.(PageMetadata)
 			status = &metadata.Status
 			title = metadata.Title
