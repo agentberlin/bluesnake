@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/agentberlin/bluesnake/testutil"
 )
 
 // TestDiscoveredURLs tests that discovered URLs are correctly identified as internal outbound links
@@ -1586,7 +1588,7 @@ func TestCrawlerURLRevisitAllowed(t *testing.T) {
 // TestCrawlerRedirectVisitTracking tests that redirects are properly tracked as visited
 func TestCrawlerRedirectVisitTracking(t *testing.T) {
 	// Create test server for redirect testing
-	ts := newTestServer()
+	ts := testutil.NewTestServer()
 	defer ts.Close()
 
 	var mu sync.Mutex
@@ -1756,7 +1758,7 @@ func TestCrawler_DisallowedDomains(t *testing.T) {
 // TestCrawler_DisallowedURLFilters tests URL pattern filtering including redirects
 func TestCrawler_DisallowedURLFilters(t *testing.T) {
 	// Create test server for redirect testing
-	ts := newTestServer()
+	ts := testutil.NewTestServer()
 	defer ts.Close()
 
 	var mu sync.Mutex
@@ -1890,7 +1892,7 @@ func TestCrawler_BlockedDomainsNotVisited(t *testing.T) {
 // TestCrawler_RedirectURLFiltering tests that URL filters are applied to redirect destinations via OnRedirect callback
 func TestCrawler_RedirectURLFiltering(t *testing.T) {
 	// Create test server for redirect testing
-	ts := newTestServer()
+	ts := testutil.NewTestServer()
 	defer ts.Close()
 
 	t.Run("disallowed URL filter blocks redirect destination", func(t *testing.T) {

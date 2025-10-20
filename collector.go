@@ -244,9 +244,6 @@ type Collector struct {
 	// DetectCharset can enable character encoding detection for non-utf8 response bodies
 	// without explicit charset declaration. This feature uses https://github.com/saintfish/chardet
 	DetectCharset bool
-	// RedirectHandler allows control on how a redirect will be managed
-	// use c.SetRedirectHandler to set this value
-	redirectHandler func(req *http.Request, via []*http.Request) error
 	// redirectCallback is called when a redirect is encountered
 	// Set via OnRedirect to handle or filter redirects
 	redirectCallback RedirectCallback
@@ -401,13 +398,6 @@ var envMap = map[string]func(*Collector, string){
 	},
 	"IGNORE_ROBOTSTXT": func(c *Collector, val string) {
 		c.IgnoreRobotsTxt = isYesString(val)
-	},
-	"FOLLOW_REDIRECTS": func(c *Collector, val string) {
-		if !isYesString(val) {
-			c.redirectHandler = func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			}
-		}
 	},
 	"MAX_BODY_SIZE": func(c *Collector, val string) {
 		size, err := strconv.Atoi(val)
@@ -1420,12 +1410,6 @@ func (c *Collector) Limits(rules []*LimitRule) error {
 	return c.backend.Limits(rules)
 }
 
-// SetRedirectHandler instructs the Collector to allow multiple downloads of the same URL
-func (c *Collector) SetRedirectHandler(f func(req *http.Request, via []*http.Request) error) {
-	c.redirectHandler = f
-	c.backend.Client.CheckRedirect = c.checkRedirectFunc()
-}
-
 // SetCookies handles the receipt of the cookies in a reply for the given URL
 func (c *Collector) SetCookies(URL string, cookies []*http.Cookie) error {
 	if c.backend.Client.Jar == nil {
@@ -1472,7 +1456,6 @@ func (c *Collector) Clone() *Collector {
 		store:                  c.store,
 		backend:                c.backend,
 		debugger:               c.debugger,
-		redirectHandler:        c.redirectHandler,
 		errorCallbacks:         make([]ErrorCallback, 0, 8),
 		htmlCallbacks:          make([]*htmlCallbackContainer, 0, 8),
 		xmlCallbacks:           make([]*xmlCallbackContainer, 0, 8),
@@ -1496,28 +1479,11 @@ func (c *Collector) checkRedirectFunc() func(req *http.Request, via []*http.Requ
 			}
 		}
 
-		// Visit tracking has been removed from Collector's redirect handler.
-		// The Crawler now owns ALL visit tracking (including redirect destinations)
-		// via the OnRedirect callback. This eliminates race conditions and maintains
-		// architectural separation: Crawler = visit tracking, Collector = HTTP mechanics.
-
-		if c.redirectHandler != nil {
-			return c.redirectHandler(req, via)
-		}
-
-		// Honor golangs default of maximum of 10 redirects
-		if len(via) >= 10 {
-			return http.ErrUseLastResponse
-		}
-
-		lastRequest := via[len(via)-1]
-
-		// If domain has changed, remove the Authorization-header if it exists
-		if req.URL.Host != lastRequest.URL.Host {
-			req.Header.Del("Authorization")
-		}
-
-		return nil
+		// IMPORTANT: Always return http.ErrUseLastResponse to disable automatic redirect following.
+		// This allows us to manually handle redirects in http_backend.go:Do() and capture
+		// intermediate responses with their actual status codes (301, 302, 307, 308).
+		// The Crawler's OnRedirect callback (above) handles URL filtering and visit tracking.
+		return http.ErrUseLastResponse
 	}
 }
 

@@ -25,6 +25,7 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/app"
 	"github.com/agentberlin/bluesnake/internal/store"
+	"github.com/agentberlin/bluesnake/internal/types"
 )
 
 // TestCrawlerIntegration tests the full crawling flow from UI perspective:
@@ -475,3 +476,177 @@ func TestRedirectDestinationCrawled(t *testing.T) {
 
 	t.Log("✓ Redirect destination regression test passed!")
 }
+
+// TestRedirectChainWithStatusCodes is an integration test for the redirect race condition fix.
+// This test verifies that intermediate redirects in a chain are properly reported to the application
+// with their actual redirect status codes (301, 302, 307, 308) instead of being silently marked as visited.
+//
+// This is the critical fix for the race condition where redirect destinations were marked as visited
+// but never reported to OnPageCrawled callbacks, causing them to not appear in crawl results.
+func TestRedirectChainWithStatusCodes(t *testing.T) {
+	// Create a test HTTP server with a redirect chain
+	mux := http.NewServeMux()
+
+	// Main page links to /redirect-1
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		html := `<!DOCTYPE html>
+<html>
+<head><title>Main Page</title></head>
+<body>
+    <h1>Main Page</h1>
+    <a href="/redirect-1">Link to redirect chain</a>
+</body>
+</html>`
+		fmt.Fprint(w, html)
+	})
+
+	// /redirect-1 redirects to /redirect-2 with 301 (permanent)
+	mux.HandleFunc("/redirect-1", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/redirect-2", http.StatusMovedPermanently)
+	})
+
+	// /redirect-2 redirects to /final with 302 (temporary)
+	mux.HandleFunc("/redirect-2", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/final", http.StatusFound)
+	})
+
+	// /final is the actual destination
+	mux.HandleFunc("/final", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		html := `<!DOCTYPE html>
+<html>
+<head><title>Final Page</title></head>
+<body>
+    <h1>Final Destination</h1>
+    <p>You made it through the redirect chain!</p>
+</body>
+</html>`
+		fmt.Fprint(w, html)
+	})
+
+	testServer := httptest.NewServer(mux)
+	defer testServer.Close()
+
+	// Create a temporary database for this test
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/redirect_chain_test.db"
+
+	testStore, err := store.NewStoreForTesting(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create test store: %v", err)
+	}
+
+	// Create app with test emitter
+	emitter := &testEmitter{events: make(map[string]int)}
+	coreApp := app.NewApp(testStore, emitter)
+	ctx := context.Background()
+	coreApp.Startup(ctx)
+
+	// Start the crawl
+	err = coreApp.StartCrawl(testServer.URL)
+	if err != nil {
+		t.Fatalf("Failed to start crawl: %v", err)
+	}
+
+	// Wait for crawl to complete
+	maxWaitTime := 10 * time.Second
+	checkInterval := 100 * time.Millisecond
+	timeout := time.After(maxWaitTime)
+	ticker := time.NewTicker(checkInterval)
+	defer ticker.Stop()
+
+	crawlCompleted := false
+	for !crawlCompleted {
+		select {
+		case <-timeout:
+			t.Fatalf("Crawl did not complete within %v", maxWaitTime)
+		case <-ticker.C:
+			activeCrawls := coreApp.GetActiveCrawls()
+			if len(activeCrawls) == 0 {
+				// Check if we have a completed crawl
+				projects, err := coreApp.GetProjects()
+				if err == nil && len(projects) > 0 {
+					crawls, err := coreApp.GetCrawls(projects[0].ID)
+					if err == nil && len(crawls) > 0 {
+						crawlCompleted = true
+					}
+				}
+			}
+		}
+	}
+
+	// Get the project and crawl results
+	projects, err := coreApp.GetProjects()
+	if err != nil || len(projects) == 0 {
+		t.Fatalf("Failed to get projects: %v", err)
+	}
+
+	crawls, err := coreApp.GetCrawls(projects[0].ID)
+	if err != nil || len(crawls) == 0 {
+		t.Fatalf("Failed to get crawls: %v", err)
+	}
+
+	crawlID := crawls[0].ID
+
+	// Get all crawled URLs
+	results, err := coreApp.GetCrawlWithResultsPaginated(crawlID, 1000, 0, "all")
+	if err != nil {
+		t.Fatalf("Failed to get crawl results: %v", err)
+	}
+
+	// Create a map of URL to result for easier verification
+	urlResults := make(map[string]*types.CrawlResult)
+	for i, result := range results.Results {
+		urlResults[result.URL] = &results.Results[i]
+	}
+
+	// Verify that ALL URLs in the redirect chain were crawled and have correct status codes
+	expectedURLs := map[string]int{
+		testServer.URL + "/":           200, // Main page (200 OK)
+		testServer.URL + "/redirect-1": 301, // First redirect (301 Moved Permanently)
+		testServer.URL + "/redirect-2": 302, // Second redirect (302 Found)
+		testServer.URL + "/final":      200, // Final destination (200 OK)
+	}
+
+	for url, expectedStatus := range expectedURLs {
+		result, found := urlResults[url]
+		if !found {
+			t.Errorf("❌ CRITICAL: URL not found in crawl results: %s", url)
+			t.Errorf("   ↳ This means the redirect was not reported to the application!")
+			continue
+		}
+
+		if result.Status != expectedStatus {
+			t.Errorf("❌ URL %s has incorrect status code: expected %d, got %d", url, expectedStatus, result.Status)
+		} else {
+			t.Logf("✓ Found: %s (Status: %d, Title: %s)", url, result.Status, result.Title)
+		}
+
+		// Verify redirect URLs have empty titles
+		if expectedStatus >= 300 && expectedStatus < 400 {
+			if result.Title != "" {
+				t.Errorf("Redirect URL %s should have empty title, got '%s'", url, result.Title)
+			}
+		}
+
+		// Verify final pages have titles
+		if expectedStatus == 200 {
+			if result.Title == "" {
+				t.Errorf("Final page %s should have a title", url)
+			}
+		}
+	}
+
+	// Verify we have exactly the expected number of results (4: main page + 2 redirects + final page)
+	if len(urlResults) != len(expectedURLs) {
+		t.Errorf("Expected %d URLs in results, got %d", len(expectedURLs), len(urlResults))
+		t.Log("URLs found:")
+		for url, result := range urlResults {
+			t.Logf("  - %s (Status: %d)", url, result.Status)
+		}
+	}
+
+	t.Log("✓ Redirect chain integration test passed! All intermediate redirects reported with correct status codes.")
+}
+

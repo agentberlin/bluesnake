@@ -18,9 +18,11 @@
 package bluesnake
 
 import (
+	"compress/gzip"
 	"crypto/sha1"
 	"encoding/gob"
 	"encoding/hex"
+	"errors"
 	"io"
 	"math/rand"
 	"net/http"
@@ -30,8 +32,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"compress/gzip"
 
 	"github.com/gobwas/glob"
 )
@@ -195,43 +195,140 @@ func (h *httpBackend) Do(request *http.Request, bodySize int, checkRequestHeader
 	if !checkRequestHeadersFunc(request) {
 		return nil, ErrAbortedBeforeRequest
 	}
-	res, err := h.Client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
 
-	finalRequest := request
-	if res.Request != nil {
-		finalRequest = res.Request
-	}
-	if !checkResponseHeadersFunc(finalRequest, res.StatusCode, res.Header) {
-		// closing res.Body (see defer above) without reading it aborts
-		// the download
-		return nil, ErrAbortedAfterHeaders
-	}
+	// Manual redirect handling to capture intermediate responses
+	// Since CheckRedirect returns http.ErrUseLastResponse, we need to follow redirects manually
+	var redirectChain []*RedirectResponse
+	var via []*http.Request // Track the chain of requests for CheckRedirect callback
+	currentRequest := request
+	maxRedirects := 10
 
-	var bodyReader io.Reader = res.Body
-	if bodySize > 0 {
-		bodyReader = io.LimitReader(bodyReader, int64(bodySize))
-	}
-	contentEncoding := strings.ToLower(res.Header.Get("Content-Encoding"))
-	if !res.Uncompressed && (strings.Contains(contentEncoding, "gzip") || (contentEncoding == "" && strings.Contains(strings.ToLower(res.Header.Get("Content-Type")), "gzip")) || strings.HasSuffix(strings.ToLower(finalRequest.URL.Path), ".xml.gz")) {
-		bodyReader, err = gzip.NewReader(bodyReader)
+	for redirectCount := 0; redirectCount < maxRedirects; redirectCount++ {
+		res, err := h.Client.Do(currentRequest)
 		if err != nil {
 			return nil, err
 		}
-		defer bodyReader.(*gzip.Reader).Close()
+
+		// Check if this is a redirect (3xx status code)
+		isRedirect := res.StatusCode >= 300 && res.StatusCode < 400
+		location := res.Header.Get("Location")
+
+		if isRedirect && location != "" {
+			// Parse the redirect location
+			redirectURL, err := currentRequest.URL.Parse(location)
+			if err != nil {
+				res.Body.Close()
+				return nil, err
+			}
+
+			// Call CheckRedirect to validate the redirect (allows Crawler to filter URLs)
+			// Build the via chain for the callback
+			via = append(via, currentRequest)
+
+			// Create a temporary request for the redirect destination
+			tempReq, err := http.NewRequest("GET", redirectURL.String(), nil)
+			if err != nil {
+				res.Body.Close()
+				return nil, err
+			}
+
+			// Call CheckRedirect if it's set
+			if h.Client.CheckRedirect != nil {
+				err = h.Client.CheckRedirect(tempReq, via)
+				// If CheckRedirect returns an error OTHER than ErrUseLastResponse, stop the redirect
+				if err != nil && err != http.ErrUseLastResponse {
+					res.Body.Close()
+					// Return the error to indicate redirect was blocked
+					return nil, err
+				}
+			}
+			// This is an intermediate redirect - store it in the chain
+			redirectChain = append(redirectChain, &RedirectResponse{
+				URL:        currentRequest.URL.String(),
+				StatusCode: res.StatusCode,
+				Headers:    &res.Header,
+				Location:   location,
+			})
+
+			// Close the current response body (we don't need it for redirects)
+			res.Body.Close()
+
+			// Create new request for the redirect destination
+			// Preserve method and body based on redirect type
+			var newMethod string
+			var newBody io.Reader
+
+			if res.StatusCode == 307 || res.StatusCode == 308 {
+				// 307/308: Preserve method and body
+				newMethod = currentRequest.Method
+				newBody = currentRequest.Body
+			} else {
+				// 301/302/303: Convert to GET and drop body
+				newMethod = "GET"
+				newBody = nil
+			}
+
+			newRequest, err := http.NewRequest(newMethod, redirectURL.String(), newBody)
+			if err != nil {
+				return nil, err
+			}
+
+			// Copy headers from original request
+			for key, values := range currentRequest.Header {
+				for _, value := range values {
+					newRequest.Header.Add(key, value)
+				}
+			}
+
+			// Drop Authorization header if host changes (security measure)
+			if newRequest.URL.Host != currentRequest.URL.Host {
+				newRequest.Header.Del("Authorization")
+			}
+
+			// Continue with the redirect
+			currentRequest = newRequest
+			continue
+		}
+
+		// Not a redirect or no more redirects - this is the final response
+		defer res.Body.Close()
+
+		finalRequest := currentRequest
+		if res.Request != nil {
+			finalRequest = res.Request
+		}
+		if !checkResponseHeadersFunc(finalRequest, res.StatusCode, res.Header) {
+			// closing res.Body (see defer above) without reading it aborts
+			// the download
+			return nil, ErrAbortedAfterHeaders
+		}
+
+		var bodyReader io.Reader = res.Body
+		if bodySize > 0 {
+			bodyReader = io.LimitReader(bodyReader, int64(bodySize))
+		}
+		contentEncoding := strings.ToLower(res.Header.Get("Content-Encoding"))
+		if !res.Uncompressed && (strings.Contains(contentEncoding, "gzip") || (contentEncoding == "" && strings.Contains(strings.ToLower(res.Header.Get("Content-Type")), "gzip")) || strings.HasSuffix(strings.ToLower(finalRequest.URL.Path), ".xml.gz")) {
+			bodyReader, err = gzip.NewReader(bodyReader)
+			if err != nil {
+				return nil, err
+			}
+			defer bodyReader.(*gzip.Reader).Close()
+		}
+		body, err := io.ReadAll(bodyReader)
+		if err != nil {
+			return nil, err
+		}
+		return &Response{
+			StatusCode:    res.StatusCode,
+			Body:          body,
+			Headers:       &res.Header,
+			RedirectChain: redirectChain,
+		}, nil
 	}
-	body, err := io.ReadAll(bodyReader)
-	if err != nil {
-		return nil, err
-	}
-	return &Response{
-		StatusCode: res.StatusCode,
-		Body:       body,
-		Headers:    &res.Header,
-	}, nil
+
+	// Exceeded maximum redirects
+	return nil, errors.New("stopped after 10 redirects")
 }
 
 func (h *httpBackend) Limit(rule *LimitRule) error {
