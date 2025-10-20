@@ -1110,7 +1110,8 @@
 }
 
 .status-server-error {
-  color: #d32f2f;
+  color: #ff1744;
+  font-weight: 600;
 }
 
 .meta-desc-col {
