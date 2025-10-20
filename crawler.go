@@ -202,6 +202,9 @@ type Crawler struct {
 	// Crawler directive fields (policy enforcement)
 	resourceValidation         *ResourceValidationConfig // Resource validation configuration
 	robotsTxtMode              string                    // robots.txt handling mode: "respect", "ignore", "ignore-report"
+
+	// Debug configuration
+	debugURLs []string // URLs to log detailed processing information for (race condition debugging)
 	followInternalNofollow     bool                      // Allow following internal nofollow links
 	followExternalNofollow     bool                      // Allow following external nofollow links
 	respectMetaRobotsNoindex   bool                      // Respect meta robots noindex
@@ -267,6 +270,8 @@ func NewCrawler(ctx context.Context, config *CrawlerConfig) *Crawler {
 		respectMetaRobotsNoindex: config.RespectMetaRobotsNoindex,
 		respectNoindex:           config.RespectNoindex,
 		robotsMap:                make(map[string]*robotstxt.RobotsData),
+		// Debug configuration
+		debugURLs: config.DebugURLs,
 	}
 
 	// Set IgnoreRobotsTxt on Collector based on RobotsTxtMode
@@ -287,6 +292,32 @@ func NewCrawler(ctx context.Context, config *CrawlerConfig) *Crawler {
 
 	crawler.setupCallbacks()
 	return crawler
+}
+
+// shouldDebugURL checks if detailed logging should be enabled for this URL
+// Used for race condition debugging by filtering logs to specific problematic URLs
+// Uses exact matching to avoid logging all subpaths
+func (cr *Crawler) shouldDebugURL(urlStr string) bool {
+	if len(cr.debugURLs) == 0 {
+		return false
+	}
+
+	// Normalize URL for comparison (remove trailing slash, scheme variations)
+	normalizedURL := strings.TrimSuffix(urlStr, "/")
+	normalizedURL = strings.TrimPrefix(normalizedURL, "https://")
+	normalizedURL = strings.TrimPrefix(normalizedURL, "http://")
+
+	for _, debugURL := range cr.debugURLs {
+		normalizedDebug := strings.TrimSuffix(debugURL, "/")
+		normalizedDebug = strings.TrimPrefix(normalizedDebug, "https://")
+		normalizedDebug = strings.TrimPrefix(normalizedDebug, "http://")
+
+		// Exact match only
+		if normalizedURL == normalizedDebug {
+			return true
+		}
+	}
+	return false
 }
 
 // setupRedirectHandler configures the Collector's redirect handling to integrate with Crawler's
@@ -328,16 +359,28 @@ func (cr *Crawler) setupRedirectHandler() {
 
 		// Mark the FINAL destination as visited first (the URL we actually fetched)
 		// This ensures the final URL is marked even though it wasn't explicitly queued
-		finalHash := requestHash(r.Request.URL.String(), nil)
-		cr.store.VisitIfNotVisited(finalHash)
+		finalURL := r.Request.URL.String()
+		finalHash := requestHash(finalURL, nil)
+		alreadyVisited, _ := cr.store.VisitIfNotVisited(finalHash)
+
+		debugFinal := cr.shouldDebugURL(finalURL)
+		if debugFinal {
+			log.Printf("[DEBUG-REDIRECT] Final destination: %s (already_visited=%v, content_type=%s, status=%d)",
+				finalURL, alreadyVisited, finalContentType, r.StatusCode)
+		}
 
 		// Process each intermediate redirect in the chain
 		// For redirect chain A→B→C, RedirectChain contains [A, B]
 		// The final response (C) is processed normally via OnHTML/OnScraped
-		for _, redirectResp := range r.RedirectChain {
+		for i, redirectResp := range r.RedirectChain {
 			// Mark the redirect URL as visited to prevent re-crawling
 			redirectHash := requestHash(redirectResp.URL, nil)
-			cr.store.VisitIfNotVisited(redirectHash)
+			alreadyVisited, _ := cr.store.VisitIfNotVisited(redirectHash)
+
+			if cr.shouldDebugURL(redirectResp.URL) || cr.shouldDebugURL(finalURL) {
+				log.Printf("[DEBUG-REDIRECT] Chain[%d]: %s -> status=%d (already_visited=%v)",
+					i, redirectResp.URL, redirectResp.StatusCode, alreadyVisited)
+			}
 
 			// Get the Content-Type from the redirect response itself (may be empty)
 			redirectContentType := redirectResp.Headers.Get("Content-Type")
@@ -434,6 +477,12 @@ func (cr *Crawler) SetOnURLDiscovered(f OnURLDiscoveredFunc) {
 // The WaitGroup is decremented when processing completes (in the worker function).
 // This ensures Wait() doesn't return while work is still queued or being processed.
 func (cr *Crawler) queueURL(req URLDiscoveryRequest) {
+	debugThis := cr.shouldDebugURL(req.URL)
+	if debugThis {
+		log.Printf("[DEBUG-QUEUE] ATTEMPT: url=%s, source=%s, parent=%s, depth=%d",
+			req.URL, req.Source, req.ParentURL, req.Depth)
+	}
+
 	// Add to WaitGroup BEFORE queuing to track pending work
 	// This ensures wg counts both "queued" and "processing" work
 	cr.wg.Add(1)
@@ -441,13 +490,22 @@ func (cr *Crawler) queueURL(req URLDiscoveryRequest) {
 	select {
 	case cr.discoveryChannel <- req:
 		// Successfully queued (non-blocking if channel has buffer space)
+		if debugThis {
+			log.Printf("[DEBUG-QUEUE] QUEUED: url=%s", req.URL)
+		}
 
 	case <-cr.ctx.Done():
 		// Failed to queue due to cancellation - undo the Add
+		if debugThis {
+			log.Printf("[DEBUG-QUEUE] CANCELLED: url=%s", req.URL)
+		}
 		cr.wg.Done()
 
 	default:
 		// Failed to queue due to full channel - undo the Add
+		if debugThis {
+			log.Printf("[DEBUG-QUEUE] DROPPED: url=%s (channel full)", req.URL)
+		}
 		cr.wg.Done()
 		if req.Source == "initial" {
 			// Never drop the initial URL - log error
@@ -492,9 +550,21 @@ func (cr *Crawler) runURLProcessor() {
 // CRITICAL: This function is responsible for ensuring wg.Done() is called.
 // wg.Done() must be called for every URL that was queued (wg.Add in queueURL).
 func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
+	debugThis := cr.shouldDebugURL(req.URL)
+	if debugThis {
+		log.Printf("[DEBUG-PROCESS] START: url=%s, source=%s, parent=%s, depth=%d",
+			req.URL, req.Source, req.ParentURL, req.Depth)
+	}
+
 	// Step 1: Determine action for this URL (callback called once, memoized)
 	action := cr.getOrDetermineURLAction(req.URL)
+	if debugThis {
+		log.Printf("[DEBUG-PROCESS] Action determined: url=%s, action=%s", req.URL, action)
+	}
 	if action == URLActionSkip {
+		if debugThis {
+			log.Printf("[DEBUG-PROCESS] SKIP: url=%s (action=skip)", req.URL)
+		}
 		cr.wg.Done() // Work item complete (skipped)
 		return
 	}
@@ -528,18 +598,35 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
 	// This is the CRITICAL section - only ONE goroutine executes this
 	uHash := requestHash(req.URL, nil)
 	alreadyVisited, err := cr.store.VisitIfNotVisited(uHash)
+	if debugThis {
+		log.Printf("[DEBUG-PROCESS] Visit check: url=%s, already_visited=%v, err=%v",
+			req.URL, alreadyVisited, err)
+	}
 	if err != nil {
+		if debugThis {
+			log.Printf("[DEBUG-PROCESS] ERROR: url=%s, err=%v", req.URL, err)
+		}
 		cr.wg.Done() // Work item complete (error)
 		return
 	}
 	if alreadyVisited {
+		if debugThis {
+			log.Printf("[DEBUG-PROCESS] ALREADY_VISITED: url=%s", req.URL)
+		}
 		cr.wg.Done() // Work item complete (already visited)
 		return
+	}
+
+	if debugThis {
+		log.Printf("[DEBUG-PROCESS] MARKED_VISITED: url=%s (first time)", req.URL)
 	}
 
 	// Step 5: URL is now marked as visited - we own it
 	// Only crawl if action is "crawl" (not "record")
 	if action != URLActionCrawl {
+		if debugThis {
+			log.Printf("[DEBUG-PROCESS] RECORD_ONLY: url=%s (action=%s)", req.URL, action)
+		}
 		cr.wg.Done() // Work item complete (record-only)
 		return
 	}
@@ -547,14 +634,25 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
 	// Step 6: Submit to worker pool for actual fetching
 	// CRITICAL: This blocks if worker pool queue is full
 	// This backpressure prevents the processor from racing ahead
+	if debugThis {
+		log.Printf("[DEBUG-PROCESS] SUBMITTING_TO_WORKER: url=%s", req.URL)
+	}
 	err = cr.workerPool.Submit(func() {
 		// Ensure wg.Done() is called when this worker finishes
 		// This happens AFTER FetchURL() and ALL callbacks complete
 		defer cr.wg.Done()
 
+		if debugThis {
+			log.Printf("[DEBUG-PROCESS] WORKER_START: url=%s", req.URL)
+		}
+
 		// We already marked this URL as visited in step 4 above.
 		// Call FetchURL() directly - no visit checking needed.
 		cr.Collector.FetchURL(req.URL, "GET", req.Depth, nil, req.Context, nil)
+
+		if debugThis {
+			log.Printf("[DEBUG-PROCESS] WORKER_COMPLETE: url=%s", req.URL)
+		}
 		// wg.Done() via defer happens here
 	})
 
@@ -719,12 +817,14 @@ func (cr *Crawler) setupCallbacks() {
 					shouldCrawl := isInternal || cr.shouldValidateResource(link)
 					if action == URLActionCrawl && shouldCrawl && cr.isURLCrawlable(networkURL) {
 						// Queue this URL for processing (action already stored in queuedURLs by getOrDetermineURLAction)
+						// IMPORTANT: Pass nil Context so each request gets its own independent context
+						// to prevent race conditions where concurrent requests overwrite shared context data
 						cr.queueURL(URLDiscoveryRequest{
 							URL:       networkURL,
 							Source:    "network",
 							ParentURL: e.Request.URL.String(),
 							Depth:     e.Request.Depth,
-							Context:   e.Request.Ctx,
+							Context:   nil, // Each request needs its own context
 						})
 					}
 				}
@@ -768,12 +868,14 @@ func (cr *Crawler) setupCallbacks() {
 				}
 
 				// Queue this URL for processing (action already stored in queuedURLs)
+				// IMPORTANT: Pass nil Context so each request gets its own independent context
+				// to prevent race conditions where concurrent requests overwrite shared context data
 				cr.queueURL(URLDiscoveryRequest{
 					URL:       link.URL,
 					Source:    "spider",
 					ParentURL: e.Request.URL.String(),
 					Depth:     e.Request.Depth + 1,
-					Context:   e.Request.Ctx,
+					Context:   nil, // Each request needs its own context
 				})
 			}
 		}
@@ -792,12 +894,14 @@ func (cr *Crawler) setupCallbacks() {
 				}
 
 				// Queue this resource for processing (action already stored in queuedURLs)
+				// IMPORTANT: Pass nil Context so each request gets its own independent context
+				// to prevent race conditions where concurrent requests overwrite shared context data
 				cr.queueURL(URLDiscoveryRequest{
 					URL:       link.URL,
 					Source:    "resource",
 					ParentURL: e.Request.URL.String(),
 					Depth:     e.Request.Depth,
-					Context:   e.Request.Ctx,
+					Context:   nil, // Each request needs its own context
 				})
 			}
 		}
@@ -822,10 +926,29 @@ func (cr *Crawler) setupCallbacks() {
 
 	// OnScraped fires AFTER all OnHTML callbacks complete, ensuring all URLs are discovered
 	cr.Collector.OnScraped(func(r *Response) {
+		pageURL := r.Request.URL.String()
+		debugThis := cr.shouldDebugURL(pageURL)
+
+		if debugThis {
+			log.Printf("[DEBUG-ONSCRAPED] START: url=%s", pageURL)
+		}
+
 		// Only process HTML pages here (non-HTML is handled in OnResponse)
 		contentType := r.Ctx.Get("contentType")
+
+		if debugThis {
+			log.Printf("[DEBUG-ONSCRAPED] contentType from context: url=%s, contentType=%s", pageURL, contentType)
+		}
+
 		if !strings.Contains(contentType, "text/html") {
+			if debugThis {
+				log.Printf("[DEBUG-ONSCRAPED] SKIP: url=%s, not HTML (contentType=%s)", pageURL, contentType)
+			}
 			return
+		}
+
+		if debugThis {
+			log.Printf("[DEBUG-ONSCRAPED] Processing HTML page: url=%s", pageURL)
 		}
 
 		// Get title from context (set by OnHTML)
@@ -849,8 +972,6 @@ func (cr *Crawler) setupCallbacks() {
 		if statusStr := r.Ctx.Get("status"); statusStr != "" {
 			fmt.Sscanf(statusStr, "%d", &status)
 		}
-
-		pageURL := r.Request.URL.String()
 
 		// Store page metadata for future link population
 		cr.store.StoreMetadata(pageURL, PageMetadata{
@@ -887,6 +1008,14 @@ func (cr *Crawler) setupCallbacks() {
 
 	// Handle all responses (HTML and non-HTML)
 	cr.Collector.OnResponse(func(r *Response) {
+		pageURL := r.Request.URL.String()
+		debugThis := cr.shouldDebugURL(pageURL)
+
+		if debugThis {
+			log.Printf("[DEBUG-ONRESPONSE] General handler: url=%s, status=%d, hasRedirectChain=%v",
+				pageURL, r.StatusCode, len(r.RedirectChain) > 0)
+		}
+
 		contentType := r.Headers.Get("Content-Type")
 		xRobotsTag := r.Headers.Get("X-Robots-Tag")
 		isIndexable := "Yes"
@@ -894,12 +1023,15 @@ func (cr *Crawler) setupCallbacks() {
 			isIndexable = "No"
 		}
 
+		if debugThis {
+			log.Printf("[DEBUG-ONRESPONSE] Setting context: url=%s, contentType=%s, status=%d, isIndexable=%s",
+				pageURL, contentType, r.StatusCode, isIndexable)
+		}
+
 		// Store in context for OnHTML to use
 		r.Request.Ctx.Put("isIndexable", isIndexable)
 		r.Request.Ctx.Put("status", fmt.Sprintf("%d", r.StatusCode))
 		r.Request.Ctx.Put("contentType", contentType)
-
-		pageURL := r.Request.URL.String()
 
 		// For non-HTML content, route to OnResourceVisit callback instead of OnPageCrawled
 		if !strings.Contains(contentType, "text/html") {
@@ -964,12 +1096,14 @@ func (cr *Crawler) setupCallbacks() {
 					// Only queue URLs marked for crawling
 					if action == URLActionCrawl && shouldCrawl && cr.isURLCrawlable(absoluteURL) {
 						// Queue this URL for processing (action already stored in queuedURLs)
+						// IMPORTANT: Pass nil Context so each request gets its own independent context
+						// to prevent race conditions where concurrent requests overwrite shared context data
 						cr.queueURL(URLDiscoveryRequest{
 							URL:       absoluteURL,
 							Source:    "resource",
 							ParentURL: r.Request.URL.String(),
 							Depth:     r.Request.Depth,
-							Context:   r.Request.Ctx,
+							Context:   nil, // Each request needs its own context
 						})
 					}
 				}
@@ -1216,23 +1350,39 @@ func (cr *Crawler) isLikelyResource(urlStr string) bool {
 
 // callOnPageCrawled safely calls the OnPageCrawled callback if set
 func (cr *Crawler) callOnPageCrawled(result *PageResult) {
+	if cr.shouldDebugURL(result.URL) {
+		log.Printf("[DEBUG-CALLBACK] OnPageCrawled: url=%s, status=%d, title=%s, error=%s",
+			result.URL, result.Status, result.Title, result.Error)
+	}
+
 	cr.mutex.RLock()
 	callback := cr.onPageCrawled
 	cr.mutex.RUnlock()
 
 	if callback != nil {
 		callback(result)
+		if cr.shouldDebugURL(result.URL) {
+			log.Printf("[DEBUG-CALLBACK] OnPageCrawled completed: url=%s", result.URL)
+		}
 	}
 }
 
 // callOnResourceVisit safely calls the OnResourceVisit callback if set
 func (cr *Crawler) callOnResourceVisit(result *ResourceResult) {
+	if cr.shouldDebugURL(result.URL) {
+		log.Printf("[DEBUG-CALLBACK] OnResourceVisit: url=%s, status=%d, content_type=%s, error=%s",
+			result.URL, result.Status, result.ContentType, result.Error)
+	}
+
 	cr.mutex.RLock()
 	callback := cr.onResourceVisit
 	cr.mutex.RUnlock()
 
 	if callback != nil {
 		callback(result)
+		if cr.shouldDebugURL(result.URL) {
+			log.Printf("[DEBUG-CALLBACK] OnResourceVisit completed: url=%s", result.URL)
+		}
 	}
 }
 
