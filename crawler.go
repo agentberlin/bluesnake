@@ -330,20 +330,23 @@ func (cr *Crawler) setupRedirectHandler() {
 		return nil
 	})
 
-	// Mark redirect destinations as visited AFTER response processing completes
+	// Mark redirect URLs as visited AFTER response processing completes
+	// This ensures callbacks run first, then URLs are marked to prevent re-crawling
 	cr.Collector.OnResponse(func(r *Response) {
 		finalURL := r.Request.URL.String()
 
 		// Check if this URL is the final destination of a redirect chain
 		if urls, ok := cr.store.GetAndClearRedirectDestinations(finalURL); ok {
-			// Mark all intermediate and final redirect URLs as visited
+			// Mark ALL URLs in the redirect chain as visited (including final destination)
+			// This is safe because:
+			// 1. OnResponse fires AFTER OnHTML/OnScraped, so callbacks have already run
+			// 2. The HTTP client already fetched the content, so we have the data
+			// 3. This prevents the redirect destination from being queued again by spider
 			for _, url := range urls {
 				urlHash := requestHash(url, nil)
 				cr.store.VisitIfNotVisited(urlHash)
 
 				// Also clean up any intermediate redirect entries
-				// For chain A→B→C, we store {"B": ["B"]} and {"C": ["B", "C"]}
-				// When we process C, we need to clean up the B entry too
 				if url != finalURL {
 					cr.store.GetAndClearRedirectDestinations(url)
 				}
@@ -574,16 +577,22 @@ func (cr *Crawler) Start(url string) error {
 		Depth:  0,
 	})
 
-	// If sitemap discovery is enabled, fetch and queue sitemap URLs
+	// If sitemap discovery is enabled, fetch and queue sitemap URLs asynchronously
+	// This prevents blocking the crawler startup and avoids race conditions where
+	// slow/failed sitemap fetches cause URLs to be missed
 	if cr.hasDiscoveryMechanism(DiscoverySitemap) {
-		sitemapURLs := cr.fetchSitemapURLs(url)
-		for _, sitemapURL := range sitemapURLs {
-			cr.queueURL(URLDiscoveryRequest{
-				URL:    sitemapURL,
-				Source: "sitemap",
-				Depth:  1,
-			})
-		}
+		cr.wg.Add(1) // Track sitemap fetch as pending work
+		go func() {
+			defer cr.wg.Done()
+			sitemapURLs := cr.fetchSitemapURLs(url)
+			for _, sitemapURL := range sitemapURLs {
+				cr.queueURL(URLDiscoveryRequest{
+					URL:    sitemapURL,
+					Source: "sitemap",
+					Depth:  1,
+				})
+			}
+		}()
 	}
 
 	// Spider mode link following is handled by setupCallbacks if enabled
