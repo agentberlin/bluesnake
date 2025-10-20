@@ -1083,6 +1083,7 @@ function App() {
 
 
   const getStatusColor = (status: number): string => {
+    if (status === 0) return 'status-server-error'; // Network/timeout errors in red
     if (status >= 200 && status < 300) return 'status-success';
     if (status >= 300 && status < 400) return 'status-redirect';
     if (status >= 400 && status < 500) return 'status-client-error';
