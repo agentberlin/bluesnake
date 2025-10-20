@@ -62,13 +62,26 @@ func TestRedirectVisitTracking(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Verify page B was crawled (should receive the final response)
-	if len(crawledPages) != 1 {
-		t.Errorf("Expected 1 page crawled, got %d: %v", len(crawledPages), crawledPages)
+	// Verify BOTH pages were crawled (page-a redirect + page-b final)
+	// This is the CORRECT behavior after the race condition fix
+	if len(crawledPages) != 2 {
+		t.Errorf("Expected 2 pages crawled (redirect + final), got %d: %v", len(crawledPages), crawledPages)
 	}
 
-	if crawledPages[0] != "https://example.com/page-b" {
-		t.Errorf("Expected to crawl page-b, got %s", crawledPages[0])
+	// Verify both pages were crawled
+	expectedURLs := map[string]bool{
+		"https://example.com/page-a": false,
+		"https://example.com/page-b": false,
+	}
+	for _, url := range crawledPages {
+		if _, exists := expectedURLs[url]; exists {
+			expectedURLs[url] = true
+		}
+	}
+	for url, found := range expectedURLs {
+		if !found {
+			t.Errorf("Expected %s to be in crawled pages", url)
+		}
 	}
 
 	// Verify both URLs are marked as visited in storage
@@ -135,13 +148,27 @@ func TestRedirectChainVisitTracking(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Verify only the final page was crawled (page-c)
-	if len(crawledPages) != 1 {
-		t.Errorf("Expected 1 page crawled, got %d: %v", len(crawledPages), crawledPages)
+	// Verify ALL three pages were reported (page-a redirect, page-b redirect, page-c final)
+	// This is the CORRECT behavior after the race condition fix
+	if len(crawledPages) != 3 {
+		t.Errorf("Expected 3 pages crawled (including redirects), got %d: %v", len(crawledPages), crawledPages)
 	}
 
-	if crawledPages[0] != "https://example.com/page-c" {
-		t.Errorf("Expected to crawl page-c, got %s", crawledPages[0])
+	// Verify all expected URLs were crawled
+	expectedURLs := map[string]bool{
+		"https://example.com/page-a": false,
+		"https://example.com/page-b": false,
+		"https://example.com/page-c": false,
+	}
+	for _, url := range crawledPages {
+		if _, exists := expectedURLs[url]; exists {
+			expectedURLs[url] = true
+		}
+	}
+	for url, found := range expectedURLs {
+		if !found {
+			t.Errorf("Expected %s to be in crawled pages", url)
+		}
 	}
 
 	// Verify ALL three URLs in the chain are marked as visited

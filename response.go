@@ -45,6 +45,22 @@ type Response struct {
 	// Trace contains the HTTPTrace for the request. Will only be set by the
 	// collector if Collector.TraceHTTP is set to true.
 	Trace *HTTPTrace
+	// RedirectChain contains all intermediate redirect responses for this request.
+	// For a redirect chain A→B→C, this contains responses for A and B (not C, which is the main Response).
+	// Each entry has the actual redirect status code (301, 302, 307, 308) and headers.
+	RedirectChain []*RedirectResponse
+}
+
+// RedirectResponse represents an intermediate redirect in a redirect chain
+type RedirectResponse struct {
+	// URL is the URL that issued the redirect
+	URL string
+	// StatusCode is the HTTP redirect status code (301, 302, 307, 308, etc.)
+	StatusCode int
+	// Headers contains the redirect response headers
+	Headers *http.Header
+	// Location is the value of the Location header (where the redirect points to)
+	Location string
 }
 
 // Save writes response body to disk

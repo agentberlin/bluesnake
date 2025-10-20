@@ -217,46 +217,111 @@ URLs with <100% appearance rate (as of 2025-10-19):
 - `mass_crawl.py` - Run parallel crawls for statistical analysis
 - `analyze_mass_crawls.py` - Analyze link sources and identify patterns
 
-## Implementation Checklist
+## Implementation Status (2025-10-20)
 
-### Step 1: Modify HTTP Client Configuration
-- [ ] Locate HTTP client setup in collector.go
-- [ ] Override `CheckRedirect` to disable automatic redirect following
-- [ ] Return error to prevent automatic redirect (e.g., `http.ErrUseLastResponse`)
+### ✅ Implementation Completed
 
-### Step 2: Implement Manual Redirect Handling
-- [ ] Create redirect chain tracking structure in collector or crawler
-- [ ] Modify main request handling to catch redirect responses
-- [ ] Implement redirect following loop:
-  - [ ] Check if response is a redirect (3xx status)
-  - [ ] Extract `Location` header for next URL
-  - [ ] Store current response (status, headers, body if needed)
-  - [ ] Create new request for redirect destination
-  - [ ] Handle method/body conversion (301/302/303 → GET, 307/308 → preserve)
-  - [ ] Drop `Authorization` header if host changes
-  - [ ] Respect 10 redirect maximum
-  - [ ] Handle cookies via client's Jar
+**Step 1: Modified HTTP Client Configuration**
+- ✅ Modified `collector.go:checkRedirectFunc()` to return `http.ErrUseLastResponse`
+- ✅ Disabled automatic redirect following
 
-### Step 3: Integrate with Callback System
-- [ ] Store all intermediate responses in accessible structure
-- [ ] Modify `setupRedirectHandler()` or create new handler for captured responses
-- [ ] For each intermediate response:
-  - [ ] Mark URL as visited in CrawlerStore
-  - [ ] Store metadata with actual status code and Content-Type
-  - [ ] Determine if HTML or resource based on Content-Type
-  - [ ] Create appropriate result object (PageResult or ResourceResult)
-  - [ ] Call appropriate callback (`OnPageCrawled` or `OnResourceVisit`)
-  - [ ] Increment crawled pages counter (for HTML only)
+**Step 2: Implemented Manual Redirect Handling**
+- ✅ Added `RedirectResponse` struct in `response.go` to store intermediate redirect data
+- ✅ Implemented manual redirect loop in `http_backend.go:Do()`:
+  - ✅ Captures all 3xx redirect responses with actual status codes
+  - ✅ Extracts Location header for each redirect
+  - ✅ Stores intermediate responses in `Response.RedirectChain`
+  - ✅ Handles method/body conversion (301/302/303 → GET, 307/308 → preserve)
+  - ✅ Drops Authorization header when host changes
+  - ✅ Respects 10 redirect maximum
+  - ✅ Integrates with `CheckRedirect` callback for URL filtering
 
-### Step 4: Testing
-- [ ] Add unit tests for redirect chain handling
-- [ ] Test various redirect scenarios:
-  - [ ] Single redirect (A→B)
-  - [ ] Redirect chain (A→B→C)
-  - [ ] Different redirect types (301, 302, 307, 308)
-  - [ ] Mixed content types (HTML→HTML, image→image)
-  - [ ] Host changes (auth header dropping)
-  - [ ] Redirect loops (should respect 10 limit)
-- [ ] Run sequential crawls with real websites
-- [ ] Confirm all previously unstable URLs now appear in 100% of crawls
-- [ ] Verify accurate status codes for redirect URLs in database
+**Step 3: Integrated with Callback System**
+- ✅ Modified `crawler.go:setupRedirectHandler()` to process `Response.RedirectChain`
+- ✅ For each intermediate redirect:
+  - ✅ Marks URL as visited in CrawlerStore
+  - ✅ Stores metadata with actual status code and Content-Type
+  - ✅ Determines HTML vs resource based on final destination's Content-Type
+  - ✅ Creates PageResult or ResourceResult with actual redirect status codes
+  - ✅ Calls OnPageCrawled or OnResourceVisit callbacks
+- ✅ Marks final destination as visited (fixes case where final URL wasn't queued)
+
+**Step 4: Testing**
+- ✅ Added comprehensive unit tests in `redirect_chain_test.go`:
+  - ✅ Single redirect (A→B) with status code verification
+  - ✅ Redirect chain (A→B→C) with multiple status codes
+  - ✅ Different redirect types (301, 302, 307, 308)
+  - ✅ Long redirect chains (8 redirects)
+  - ✅ All URLs marked as visited verification
+- ✅ Added integration test `TestRedirectChainWithStatusCodes` in `integration_tests/crawler_test.go`
+- ✅ Updated existing tests to expect new correct behavior (all URLs in chain reported)
+- ⏳ Sequential crawl verification in progress (not yet confirmed stable)
+
+### 🔴 Known Test Failures (3 failures)
+
+**1. Build Error - integration_tests**
+```
+integration_tests/crawler_test.go:598:37: undefined: app.CrawlResult
+```
+- **Cause**: Integration test uses `app.CrawlResult` type that may not exist or be named differently
+- **Impact**: Integration test cannot compile
+- **Fix needed**: Update type reference in integration test
+
+**2. TestCrawler_RedirectURLFiltering/disallowed_URL_filter_blocks_redirect_destination**
+```
+Expected error when redirect destination is blocked by URL filter
+Filtered redirect destination should not be successfully crawled
+OnRedirect correctly blocked redirect destination: crawled 2 URLs
+```
+- **Cause**: Manual redirect loop calls `CheckRedirect` but continues processing even when redirect is blocked
+- **Impact**: Redirects to disallowed URLs are still being crawled and reported
+- **Fix needed**: Handle CheckRedirect errors that indicate blocking (non-ErrUseLastResponse errors) and abort redirect processing
+
+**3. TestExternalRedirect**
+```
+External redirect destination should not have been crawled
+External redirect destination should NOT be marked as visited (redirect blocked)
+```
+- **Cause**: Same as #2 - external redirects blocked by domain filters are still being processed
+- **Impact**: External redirect destinations are being marked as visited and reported
+- **Fix needed**: Same as #2
+
+### ✅ Core Functionality Working
+
+All core redirect chain tests passing:
+- ✅ TestRedirectChainStatusCodes - Verifies actual status codes (301, 302, etc.)
+- ✅ TestSingleRedirectStatusCode - Single redirect with correct status
+- ✅ TestRedirectChainAllURLsMarkedVisited - All URLs in chain marked
+- ✅ TestRedirectChainVisitTracking - Visit tracking works correctly
+- ✅ TestLongRedirectChain - Long chains handled properly
+- ✅ TestNoRedirect - Non-redirect pages unaffected
+- ✅ TestHttpBackendManualRedirect - HTTP backend correctly captures redirects
+
+### ⏳ Stability Verification Pending
+
+**Not Yet Verified:**
+- Sequential crawl consistency (100% URL appearance rate)
+- Real-world crawl stability with agentberlin.ai
+- Previously unstable URLs now stable
+
+**Action Required:**
+1. Fix the 3 test failures (integration test build error + redirect filtering issues)
+2. Run full sequential crawl test to completion
+3. Analyze results to confirm 100% consistency for previously unstable URLs
+4. Verify no new race conditions introduced
+
+### 📝 Implementation Notes
+
+**Key Design Decisions:**
+1. **Final URL marking**: Final redirect destination is marked as visited in `setupRedirectHandler` because it's never separately queued through the discovery process
+2. **Content-Type determination**: All redirects in a chain use the final destination's Content-Type to categorize as HTML or resource (since redirects themselves don't have content)
+3. **CheckRedirect integration**: Manual redirect loop calls `CheckRedirect` with proper `via` chain to maintain URL filtering capabilities
+
+**Files Modified:**
+- `collector.go` - Modified CheckRedirect behavior
+- `http_backend.go` - Implemented manual redirect loop
+- `response.go` - Added RedirectResponse struct
+- `crawler.go` - Updated setupRedirectHandler to process redirect chains
+- `redirect_chain_test.go` - New comprehensive unit tests
+- `redirect_visit_tracking_test.go` - Updated to expect new behavior
+- `integration_tests/crawler_test.go` - Added redirect chain integration test

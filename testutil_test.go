@@ -18,35 +18,22 @@
 package bluesnake
 
 import (
-	"context"
 	"bytes"
+	"context"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/agentberlin/bluesnake/debug"
+	"github.com/agentberlin/bluesnake/testutil"
 )
 
-var serverIndexResponse = []byte("hello world\n")
-var callbackTestHTML = []byte(`
-<!DOCTYPE html>
-<html>
-<head>
-<title>Callback Test Page</title>
-</head>
-<body>
-<div id="firstElem">First</div>
-<div id="secondElem">Second</div>
-<div id="thirdElem">Third</div>
-</body>
-</html>
-`)
-var robotsFile = `
-User-agent: *
-Allow: /allowed
-Disallow: /disallowed
-Disallow: /allowed*q=
-`
+// Use shared test data from testutil package
+var (
+	serverIndexResponse = testutil.ServerIndexResponse
+	callbackTestHTML    = testutil.CallbackTestHTML
+	robotsFile          = testutil.RobotsFile
+)
 
 const testBaseURL = "http://test.local"
 

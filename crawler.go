@@ -300,56 +300,89 @@ func NewCrawler(ctx context.Context, config *CrawlerConfig) *Crawler {
 // This maintains architectural separation: Crawler handles business logic (filtering, tracking),
 // while Collector handles HTTP mechanics (following redirects, managing connections).
 func (cr *Crawler) setupRedirectHandler() {
+	// Set up URL filtering for redirects
+	// The manual redirect loop in http_backend.go:Do() calls CheckRedirect for each redirect (line 237),
+	// which invokes this OnRedirect callback, allowing us to filter redirect destinations
 	cr.Collector.OnRedirect(func(req *http.Request, via []*http.Request) error {
-		// Apply Crawler's URL filtering logic (domain filters, URL patterns, robots.txt)
+		// Apply Crawler's URL filtering logic (domain filters, URL patterns)
 		if !cr.isURLCrawlable(req.URL.String()) {
 			return fmt.Errorf("redirect destination blocked by URL filters")
 		}
-
-		// Track redirect destinations for post-processing visit marking
-		// For redirect chains A→B→C, this is called twice:
-		// - First: req=B, via=[A] - store B under finalURL=B
-		// - Second: req=C, via=[A,B] - store B and C under finalURL=C
-		//
-		// We store using the current destination (req.URL) as key,
-		// because that's what OnResponse will have access to.
-		if len(via) > 0 {
-			destURL := req.URL.String()
-
-			// Add all intermediate URLs (everything except the original)
-			// For chains, via contains [original, intermediate1, intermediate2, ...]
-			for i := 1; i < len(via); i++ {
-				intermediateURL := via[i].URL.String()
-				cr.store.AddRedirectDestination(destURL, intermediateURL)
-			}
-
-			// Also add the current destination itself
-			cr.store.AddRedirectDestination(destURL, destURL)
-		}
-
+		// URL is allowed - return nil to continue
 		return nil
 	})
 
-	// Mark redirect URLs as visited AFTER response processing completes
-	// This ensures callbacks run first, then URLs are marked to prevent re-crawling
+	// Process intermediate redirects BEFORE main response processing completes
+	// We register this callback early so it fires first and reports redirects before the final destination
 	cr.Collector.OnResponse(func(r *Response) {
-		finalURL := r.Request.URL.String()
+		// Check if this response has a redirect chain
+		if len(r.RedirectChain) == 0 {
+			return
+		}
 
-		// Check if this URL is the final destination of a redirect chain
-		if urls, ok := cr.store.GetAndClearRedirectDestinations(finalURL); ok {
-			// Mark ALL URLs in the redirect chain as visited (including final destination)
-			// This is safe because:
-			// 1. OnResponse fires AFTER OnHTML/OnScraped, so callbacks have already run
-			// 2. The HTTP client already fetched the content, so we have the data
-			// 3. This prevents the redirect destination from being queued again by spider
-			for _, url := range urls {
-				urlHash := requestHash(url, nil)
-				cr.store.VisitIfNotVisited(urlHash)
+		// Determine content type from the FINAL destination (not the redirect itself)
+		// This is because redirects don't have content, so we use the final destination's type
+		// to categorize all URLs in the chain
+		finalContentType := r.Headers.Get("Content-Type")
+		isFinalHTML := strings.Contains(finalContentType, "text/html")
 
-				// Also clean up any intermediate redirect entries
-				if url != finalURL {
-					cr.store.GetAndClearRedirectDestinations(url)
+		// Mark the FINAL destination as visited first (the URL we actually fetched)
+		// This ensures the final URL is marked even though it wasn't explicitly queued
+		finalHash := requestHash(r.Request.URL.String(), nil)
+		cr.store.VisitIfNotVisited(finalHash)
+
+		// Process each intermediate redirect in the chain
+		// For redirect chain A→B→C, RedirectChain contains [A, B]
+		// The final response (C) is processed normally via OnHTML/OnScraped
+		for _, redirectResp := range r.RedirectChain {
+			// Mark the redirect URL as visited to prevent re-crawling
+			redirectHash := requestHash(redirectResp.URL, nil)
+			cr.store.VisitIfNotVisited(redirectHash)
+
+			// Get the Content-Type from the redirect response itself (may be empty)
+			redirectContentType := redirectResp.Headers.Get("Content-Type")
+
+			// If redirect doesn't have a Content-Type, use the final destination's type
+			// This handles the common case where redirects don't specify Content-Type
+			if redirectContentType == "" {
+				redirectContentType = finalContentType
+			}
+
+			// Store metadata for the redirect (for link population)
+			cr.store.StoreMetadata(redirectResp.URL, PageMetadata{
+				Status:      redirectResp.StatusCode,
+				Title:       "", // Redirects don't have page content
+				ContentType: redirectContentType,
+			})
+
+			// Report redirect based on final destination type
+			// If final destination is HTML, report redirect as PageResult
+			// If final destination is resource, report redirect as ResourceResult
+			if isFinalHTML {
+				// Create PageResult for HTML redirect
+				result := &PageResult{
+					URL:                redirectResp.URL,
+					Status:             redirectResp.StatusCode,
+					Title:              "",
+					MetaDescription:    "",
+					Indexable:          "Yes", // Redirects are typically indexable (search engines follow them)
+					ContentType:        redirectContentType,
+					Error:              "",
+					Links:              &Links{Internal: []Link{}, External: []Link{}}, // No links for redirects
+					ContentHash:        "",
+					IsDuplicateContent: false,
+					response:           nil,
 				}
+				cr.callOnPageCrawled(result)
+			} else {
+				// Create ResourceResult for non-HTML redirect
+				result := &ResourceResult{
+					URL:         redirectResp.URL,
+					Status:      redirectResp.StatusCode,
+					ContentType: redirectContentType,
+					Error:       "",
+				}
+				cr.callOnResourceVisit(result)
 			}
 		}
 	})
