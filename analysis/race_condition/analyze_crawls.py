@@ -1,12 +1,55 @@
 #!/usr/bin/env python3
+"""
+Analyze URL consistency across multiple crawls
+Usage: python3 analyze_crawls.py <project_id> [crawl_count]
+  project_id: The project ID to analyze
+  crawl_count: Number of recent crawls to analyze (default: 22)
+"""
 import json
 import urllib.request
 from collections import defaultdict
+import sys
 
-# Crawl IDs and their page counts
-crawls = [
-    167, 166, 165, 164, 163, 162, 161, 160, 159, 158, 157, 156, 155, 154, 153, 152, 151, 150, 149, 148, 147, 146
-]
+if len(sys.argv) < 2:
+    print("Error: Project ID is required")
+    print("Usage: python3 analyze_crawls.py <project_id> [crawl_count]")
+    sys.exit(1)
+
+try:
+    PROJECT_ID = int(sys.argv[1])
+except ValueError:
+    print(f"Error: Invalid project ID '{sys.argv[1]}'. Must be an integer.")
+    sys.exit(1)
+
+CRAWL_COUNT = int(sys.argv[2]) if len(sys.argv) > 2 else 22
+
+def fetch_crawls_for_project(project_id):
+    """Fetch all crawl IDs for a given project"""
+    url = f"http://localhost:8080/api/v1/projects/{project_id}"
+    try:
+        with urllib.request.urlopen(url) as response:
+            data = json.loads(response.read())
+            # Get crawls from the project data
+            # We need to fetch crawls separately
+            crawls_url = f"http://localhost:8080/api/v1/projects/{project_id}/crawls"
+            with urllib.request.urlopen(crawls_url) as crawls_response:
+                crawls_data = json.loads(crawls_response.read())
+                # Return most recent crawl IDs
+                crawl_ids = [c['id'] for c in crawls_data]
+                return sorted(crawl_ids, reverse=True)[:CRAWL_COUNT]
+    except Exception as e:
+        print(f"Error fetching crawls for project {project_id}: {e}")
+        print("Falling back to manual crawl ID list. Please update the script.")
+        return []
+
+# Fetch crawl IDs for the project
+print(f"Fetching crawls for project {PROJECT_ID}...")
+crawls = fetch_crawls_for_project(PROJECT_ID)
+if not crawls:
+    print("No crawls found. Please ensure the project ID is correct.")
+    sys.exit(1)
+
+print(f"Found {len(crawls)} crawls to analyze: {crawls}")
 
 def fetch_urls(crawl_id):
     """Fetch all URLs for a given crawl"""

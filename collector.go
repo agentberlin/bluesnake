@@ -212,6 +212,12 @@ type CrawlerConfig struct {
 	// Default: 10
 	Parallelism int
 
+	// DebugURLs contains exact URLs to enable detailed logging for (scheme and trailing slash ignored)
+	// Used for debugging race conditions by filtering logs to specific problematic URLs
+	// Uses exact matching to avoid logging all subpaths
+	// Example: []string{"handbook.agentberlin.ai/intro", "handbook.agentberlin.ai"}
+	DebugURLs []string
+
 	// HTTP contains HTTP client configuration for the underlying Collector
 	HTTP *HTTPConfig
 }
@@ -732,6 +738,19 @@ func (c *Collector) UnmarshalRequest(r []byte) (*Request, error) {
 // FetchURL performs an HTTP request and processes the response synchronously.
 // This method is intentionally exported for use by Crawler.
 // It handles HTTP fetch, HTML parsing, and executes all registered callbacks.
+//
+// IMPORTANT - Context Parameter:
+// In most cases, pass nil for ctx to create a fresh Context for each request.
+// This ensures proper isolation and prevents race conditions where concurrent
+// requests overwrite shared Context data (contentType, title, etc.).
+//
+// Only pass a non-nil Context when you explicitly need to preserve data from
+// a previous request, such as:
+//   - Request.Retry() - Preserving state across retry attempts
+//   - Request.Visit() - Manual navigation with session continuity
+//   - Custom request chaining where you need to pass authentication tokens or session data
+//
+// The Crawler automatically passes nil to ensure each discovered URL gets its own Context.
 func (c *Collector) FetchURL(u, method string, depth int, requestData io.Reader, ctx *Context, hdr http.Header) error {
 	parsedWhatwgURL, err := urlParser.Parse(u)
 	if err != nil {
@@ -799,6 +818,9 @@ func (c *Collector) fetch(u, method string, depth int, requestData io.Reader, ct
 	default:
 	}
 
+	// Create fresh Context if not provided
+	// This is the normal case - each request gets its own isolated Context
+	// to prevent race conditions from concurrent requests sharing state
 	if ctx == nil {
 		ctx = NewContext()
 	}

@@ -120,13 +120,16 @@ func (r *Request) AbsoluteURL(u string) string {
 
 // Visit continues Collector's collecting job by creating a
 // request and preserves the Context of the previous request.
+// This allows passing data (like authentication tokens or session state)
+// from the current request to the next one.
 // Visit also calls the previously provided callbacks
 func (r *Request) Visit(URL string) error {
 	return r.collector.FetchURL(r.AbsoluteURL(URL), "GET", r.Depth+1, nil, r.Ctx, nil)
 }
 
 // Post continues a collector job by creating a POST request and preserves the Context
-// of the previous request.
+// of the previous request. This allows passing data (like authentication tokens or
+// session state) from the current request to the next one.
 // Post also calls the previously provided callbacks
 func (r *Request) Post(URL string, requestData map[string]string) error {
 	return r.collector.FetchURL(r.AbsoluteURL(URL), "POST", r.Depth+1, createFormReader(requestData), r.Ctx, nil)
@@ -150,7 +153,9 @@ func (r *Request) PostMultipart(URL string, requestData map[string][]byte) error
 	return r.collector.FetchURL(r.AbsoluteURL(URL), "POST", r.Depth+1, createMultipartReader(boundary, requestData), r.Ctx, hdr)
 }
 
-// Retry submits HTTP request again with the same parameters
+// Retry submits HTTP request again with the same parameters.
+// The Context is preserved across retries, allowing you to track retry attempts
+// or maintain state between the original request and retries.
 func (r *Request) Retry() error {
 	if r.Headers != nil {
 		r.Headers.Del("Cookie")

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-Script to run 100 crawls SEQUENTIALLY (one at a time, waiting for completion)
+Script to run crawls SEQUENTIALLY (one at a time, waiting for completion)
+Usage: python3 sequential_crawl.py [crawl_count] [target_url]
+  crawl_count: Number of crawls to run (default: 200)
+  target_url: URL to crawl (default: https://agentberlin.ai)
 """
 import json
 import urllib.request
@@ -8,8 +11,21 @@ import time
 import sys
 
 BASE_URL = "http://localhost:8080"
-TARGET_CRAWLS = 200
-TARGET_URL = "https://agentberlin.ai"
+
+# Parse command line arguments
+if len(sys.argv) > 1:
+    try:
+        TARGET_CRAWLS = int(sys.argv[1])
+    except ValueError:
+        print(f"Error: Invalid crawl count '{sys.argv[1]}'. Must be an integer.")
+        sys.exit(1)
+else:
+    TARGET_CRAWLS = 200
+
+if len(sys.argv) > 2:
+    TARGET_URL = sys.argv[2]
+else:
+    TARGET_URL = "https://agentberlin.ai"
 
 def api_call(endpoint, method="GET", data=None):
     """Make API call to the server"""
