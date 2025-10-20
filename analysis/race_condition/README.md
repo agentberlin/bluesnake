@@ -1,223 +1,262 @@
-# Race Condition Analysis & Debugging Guide
+# Race Condition: Redirect Destination URLs Not Appearing in Crawl Results
 
-## Problem Overview
+## Problem Statement
 
-The crawler produces inconsistent results when crawling the same website multiple times. For example, crawling `agentberlin.ai` yields between 139-145 total URLs per crawl, with certain URLs appearing in only 78-99.5% of crawls instead of 100%.
+The crawler produces inconsistent results when crawling the same website multiple times. URLs that are redirect destinations (e.g., `handbook.agentberlin.ai/intro` which redirects from `handbook.agentberlin.ai/`) appear in only 78-99.5% of crawls instead of 100%. For example, crawling `agentberlin.ai` yields between 139-145 total URLs per crawl, with certain URLs missing in some crawls.
 
 **Key characteristic**: The race condition occurs even in sequential (non-parallel) crawls, indicating timing-dependent behavior rather than concurrency issues.
 
----
+**Note**: This document focuses on one identified root cause (redirect destinations not being reported). There may be additional causes contributing to the race condition that require further investigation.
 
-## Fixed Issues
+## Root Cause
 
-### ✅ Redirect Destination Race Condition
+Intermediate URLs in redirect chains are **marked as visited** but **never reported to application callbacks**, resulting in them not being stored in the database.
 
-**Symptom**: URLs that are redirect destinations (e.g., `handbook.agentberlin.ai/intro` which redirects from `handbook.agentberlin.ai/`) appeared in only 78% of crawls.
+### Current Flow for Redirect Chain A→B→C
 
-**Root Cause**: The `setupRedirectHandler()` function in `crawler.go` was marking redirect destinations as "visited" BEFORE their responses were processed. This caused the Collector to reject the redirect destination response as "already visited", preventing `OnHTML`/`OnScraped` callbacks from being called.
+1. **OnRedirect fires** (crawler.go:303-331):
+   - Called for A→B transition: stores B in `redirectDestinations` map
+   - Called for B→C transition: stores B and C in `redirectDestinations` map
+   - **Note**: OnRedirect is called for EACH redirect in the chain, not just once for the entire chain
 
-**Non-deterministic behavior**:
-- If a page linking directly to `/intro` is crawled first → `/intro` gets properly queued and crawled ✓
-- If the redirect to `/intro` happens first → `/intro` gets marked visited but skipped ✗
+2. **HTTP client follows redirects** and fetches final destination (C)
 
-**Fix Applied**: Modified `setupRedirectHandler()` to track redirect chains and mark redirect URLs as visited AFTER response processing:
+3. **OnResponse fires ONLY for C** (crawler.go:335-356):
+   - Marks A, B, C as visited in `CrawlerStore` ✓
+   - Clears redirect destinations from map ✓
+   - **Problem**: Does NOT report A or B to application callbacks ✗
 
-1. **OnRedirect callback**: Stores intermediate URLs in redirect chains
-   - For chain A→B→C: creates entries `{"B": ["B"]}` and `{"C": ["B", "C"]}`
+4. **OnHTML fires ONLY for C** (crawler.go:650-771):
+   - Extracts links from C
 
-2. **OnResponse callback**: Marks all redirect URLs as visited after processing
-   - Ensures callbacks are called and links are extracted
-   - Cleans up redirect entries to prevent memory leaks
+5. **OnScraped fires ONLY for C** (crawler.go:791-853):
+   - Calls `OnPageCrawled(C)` - C is reported to application ✓
+   - Stores C's metadata in database ✓
 
-**Files Modified**:
-- `crawler.go:302-346` - `setupRedirectHandler()` function
-- `storage/crawler_store.go` - Added `redirectDestinations` map and helper methods
-- `integration_tests/crawler_test.go` - Added `TestRedirectDestinationCrawled` regression test
+**Result**: Only C appears in crawl results. A and B are marked visited (preventing re-crawl) but never reported to the application layer, so they never reach the database.
 
-**Verification**: After fix, `handbook.agentberlin.ai/intro` now appears in 100% of crawls (was 78%).
+### Why URLs Sometimes Appear
 
----
+The non-deterministic behavior occurs because:
 
-## Known Remaining Issues
+- **If a URL is discovered directly** (via sitemap, spider link, etc.) BEFORE it appears in a redirect chain:
+  - It goes through normal flow: OnResponse → OnHTML → OnScraped → OnPageCrawled ✓
+  - Gets stored in database ✓
 
-### ⚠️ Remaining Unstable URLs (93-99.5% appearance rate)
+- **If a URL is ONLY discovered as a redirect destination**:
+  - Gets marked as visited in OnResponse ✓
+  - Never gets reported to OnPageCrawled ✗
+  - Never gets stored in database ✗
 
-These URLs still exhibit inconsistent crawling behavior:
+The race is between:
+1. Spider/sitemap discovering the URL directly (works correctly)
+2. Redirect chain marking the URL as visited before spider discovers it (URL missing from results)
 
-1. `agentberlin.ai/refund-policy` - 93.0%
-2. `agentberlin.ai/privacy-policy` - 96.0%
-3. `handbook.agentberlin.ai/topic_first_seo` - 97.5%
-4. `workspace.agentberlin.ai/login?next=%2F` - 98.0%
-5. `agentberlin.ai/terms-of-service` - 98.0%
-6. `workspace.agentberlin.ai/login?next=%2Fcheckout%3Fplan%3Dscale` - 98.0%
-7. `agentberlin.ai/blog` - 98.5%
-8. `workspace.agentberlin.ai/login?next=%2Fcheckout%3Fplan%3Ddominate` - 99.0%
-9. `agentberlin.ai/newsletter` - 99.0%
-10. `agentberlin.ai/pricing` - 99.5%
+## Code Locations
 
-**Possible Causes**:
-- JavaScript rendering timing issues
-- Conditional link rendering (A/B testing, session state)
-- Link discovery/extraction race conditions
-- URL queue processing timing
+### Redirect Handling Setup
+- `crawler.go:302-356` - `setupRedirectHandler()` function
+  - Lines 303-331: OnRedirect callback (stores redirect destinations)
+  - Lines 335-356: OnResponse callback (marks URLs as visited, needs fix)
 
----
+### Application Callbacks
+- `crawler.go:361-394` - Callback setters
+  - `SetOnPageCrawled` - For HTML pages (crawler.go:361-365)
+  - `SetOnResourceVisit` - For non-HTML resources (crawler.go:370-374)
 
-## Debugging Tools & Scripts
+### Callback Invocation
+- `crawler.go:791-853` - OnScraped handler (calls OnPageCrawled for HTML)
+- `crawler.go:856-950` - OnResponse handler (calls OnResourceVisit for non-HTML)
+- `crawler.go:1184-1203` - Helper methods that invoke callbacks
 
-### Sequential Crawl Test
+### Storage
+- `storage/crawler_store.go:105-125` - Redirect destination tracking
+  - `AddRedirectDestination` (line 109) - Stores intermediate URLs
+  - `GetAndClearRedirectDestinations` (line 117) - Retrieves and clears
 
-Run multiple sequential crawls to establish baseline stability:
+## Solution Design
 
-```bash
-cd analysis/race_condition
-python3 sequential_crawl.py
+### Where to Fix
+
+Fix should be implemented in **OnResponse callback** (crawler.go:335-356) where we currently mark redirect URLs as visited. This is the correct location because:
+
+1. OnResponse fires AFTER all HTML processing is complete for the final destination
+2. We already have the redirect chain data (`GetAndClearRedirectDestinations`)
+3. We have the final response data (status code, Content-Type)
+4. We cannot use OnRedirect because it fires BEFORE the response, so we don't have status codes yet
+5. We cannot use OnScraped because it only fires for the final URL, not intermediates
+
+### Implementation Strategy
+
+For each intermediate URL in the redirect chain (excluding the final destination):
+
+1. **Store metadata** in `pageMetadata` map so future links can reference it
+2. **Create appropriate result object**:
+   - If final destination is HTML (`text/html`): Create `PageResult` and call `OnPageCrawled`
+   - If final destination is non-HTML: Create `ResourceResult` and call `OnResourceVisit`
+3. **Increment crawled pages counter** (for HTML only)
+
+### Data Available in OnResponse
+
+When processing redirect chain A→B→C in OnResponse, we have:
+
+✅ **Available data:**
+- All intermediate URLs (A, B) from `redirectDestinations` map
+- Final destination URL (C) from `r.Request.URL.String()`
+- Final status code from `r.StatusCode` (e.g., 200)
+- Final Content-Type from `r.Headers.Get("Content-Type")`
+- Final title from `r.Request.Ctx.Get("title")` (if HTML)
+
+❌ **NOT available (with current implementation):**
+- Intermediate redirect status codes (301, 302, 307, 308)
+- Intermediate Content-Types
+- Intermediate response headers
+
+**Why**: Go's default `http.Client` behavior automatically follows redirects and only returns the final response, discarding all intermediate responses. The `CheckRedirect` callback receives `[]*http.Request` (not `[]*http.Response`), so intermediate response data is not accessible.
+
+### Solution: Custom Redirect Handler
+
+Override Go's default redirect handling to capture each intermediate response.
+
+#### Problem with Default Go Behavior
+
+By default, Go's `http.Client` automatically follows redirects and only returns the final response — discarding all intermediate responses (and their status codes). We need to capture every response in the redirect chain, e.g. [301, 302, 200], for accurate crawl data.
+
+#### What the Default CheckRedirect Does
+
+When `CheckRedirect` is `nil`, Go internally:
+- Follows up to 10 redirects (then errors out)
+- Copies most headers, but drops sensitive ones like `Authorization` when host changes
+- Adjusts request method based on the redirect code:
+  - 301/302/303 → converts POST → GET
+  - 307/308 → preserves method and body
+- Retains cookies via the client's Jar, if configured
+
+#### Implementation Strategy
+
+Override `CheckRedirect` to manually follow redirects and capture each response:
+
+1. **Disable automatic redirect following**: Set `CheckRedirect` to return an error to stop automatic following
+2. **Manual redirect handling**: In the main request handling code, catch redirect responses
+3. **Capture each response**: Store status code, headers, and body for each step in the redirect chain
+4. **Preserve security**: Drop `Authorization` headers when host changes
+5. **Preserve default behavior**: Handle method/body conversion based on redirect code (301/302/303 vs 307/308)
+6. **Respect redirect limit**: Follow up to 10 redirects maximum
+7. **Report all responses**: Pass each intermediate response to application callbacks
+
+**Key Implementation Points:**
+- For chain A→B→C, we'll capture all three responses with their actual status codes
+- Store intermediate responses in a structure accessible to callbacks
+- Ensure cookies are handled correctly across redirects
+- Handle edge cases: redirect loops, mixed protocol redirects, etc.
+
+**Benefits:**
+- Accurate status codes and headers for all redirects (301 vs 307 vs 302)
+- Complete crawl data for SEO analysis
+- Better debugging and analytics
+- No data assumptions needed
+
+### PageResult/ResourceResult Structure
+
+**PageResult** (for HTML redirects):
+```go
+&PageResult{
+    URL:                intermediateURL,
+    Status:             actualRedirectStatus,  // Actual status from intermediate response (301, 302, 307, 308)
+    Title:              "",                     // Redirects don't have page content
+    MetaDescription:    "",                     // Not available for redirects
+    Indexable:          "Yes",
+    ContentType:        actualContentType,      // Actual Content-Type from intermediate response
+    Error:              "",
+    Links:              &Links{Internal: []Link{}, External: []Link{}}, // No links for redirects
+    ContentHash:        "",
+    IsDuplicateContent: false,
+    response:           nil,                    // Can store intermediate response if needed
+}
 ```
 
-**Parameters** (edit in script):
-- `TARGET_CRAWLS`: Number of crawls to run (default: 200)
-- `TARGET_URL`: Website to crawl
-- `PROJECT_ID`: Project ID in database
-
-**Output**: Identifies which URLs are unstable and their appearance rates.
-
-### Mass Parallel Crawl Test
-
-Run many parallel crawls for statistical analysis:
-
-```bash
-python3 mass_crawl.py
+**ResourceResult** (for non-HTML redirects):
+```go
+&ResourceResult{
+    URL:         intermediateURL,
+    Status:      actualRedirectStatus,  // Actual status from intermediate response (301, 302, 307, 308)
+    ContentType: actualContentType,      // Actual Content-Type from intermediate response
+    Error:       "",
+}
 ```
 
-**Parameters** (edit in script):
-- `TARGET_CRAWLS`: Number of parallel crawls (default: 1000)
-- `MAX_WAIT_MINUTES`: Timeout for crawl completion (default: 10)
+## Testing Approach
 
-**Use case**: Test for concurrency-related race conditions.
+### Verification Steps
 
-### Comprehensive Link Analysis
+1. **Run sequential crawls** to establish baseline:
+   ```bash
+   cd analysis/race_condition
+   python3 sequential_crawl.py
+   ```
 
-Analyze crawl results to identify the source of inconsistencies:
+2. **Check for unstable URLs**: After fix, all URLs should appear in 100% of crawls
 
-```bash
-python3 analyze_mass_crawls.py | tee full_report.txt
-```
+3. **Verify redirect URLs are reported**: Check that intermediate redirect URLs appear in crawl results with appropriate metadata
 
-**What it does**:
-- Identifies unstable URLs across all crawls
-- Analyzes inbound links to unstable URLs
-- Determines if source pages exist in crawls where target is missing
-- Checks if source pages have links when target URL is missing
+### Known Unstable URLs (Pre-Fix)
 
-**Key Questions Answered**:
-1. Do source pages exist in crawls where target is missing?
-   - If NO → Race is in discovering the source page
-   - If YES → Proceed to question 2
-2. Do source pages still contain links to target when it's missing?
-   - If NO → Links are conditionally rendered
-   - If YES → Race is in link following/queue processing
+URLs with <100% appearance rate (as of 2025-10-19):
+- `handbook.agentberlin.ai/intro` - 78-100% (redirect destination)
+- `handbook.agentberlin.ai/topic_first_seo` - 90.0%
+- `agentberlin.ai/refund-policy` - 94.0%
+- `agentberlin.ai/privacy-policy` - 96.0%
+- `agentberlin.ai/blog` - 96.0%
+- `workspace.agentberlin.ai/login?next=%2F` - 98.0%
+- `workspace.agentberlin.ai/login?next=%2Fcheckout%3Fplan%3Ddominate` - 98.0%
+- `workspace.agentberlin.ai/login?next=%2Fcheckout%3Fplan%3Dscale` - 98.0%
 
-### Full Analysis Pipeline
+### Debugging Tools
 
-Run all analysis steps in sequence:
+- `sequential_crawl.py` - Run multiple sequential crawls to identify unstable URLs
+- `mass_crawl.py` - Run parallel crawls for statistical analysis
+- `analyze_mass_crawls.py` - Analyze link sources and identify patterns
 
-```bash
-bash run_full_analysis.sh
-```
+## Implementation Checklist
 
-**What it does**:
-1. Runs mass crawls
-2. Analyzes results with link analysis
-3. Generates comprehensive report
+### Step 1: Modify HTTP Client Configuration
+- [ ] Locate HTTP client setup in collector.go
+- [ ] Override `CheckRedirect` to disable automatic redirect following
+- [ ] Return error to prevent automatic redirect (e.g., `http.ErrUseLastResponse`)
 
----
+### Step 2: Implement Manual Redirect Handling
+- [ ] Create redirect chain tracking structure in collector or crawler
+- [ ] Modify main request handling to catch redirect responses
+- [ ] Implement redirect following loop:
+  - [ ] Check if response is a redirect (3xx status)
+  - [ ] Extract `Location` header for next URL
+  - [ ] Store current response (status, headers, body if needed)
+  - [ ] Create new request for redirect destination
+  - [ ] Handle method/body conversion (301/302/303 → GET, 307/308 → preserve)
+  - [ ] Drop `Authorization` header if host changes
+  - [ ] Respect 10 redirect maximum
+  - [ ] Handle cookies via client's Jar
 
-## Debugging Workflow
+### Step 3: Integrate with Callback System
+- [ ] Store all intermediate responses in accessible structure
+- [ ] Modify `setupRedirectHandler()` or create new handler for captured responses
+- [ ] For each intermediate response:
+  - [ ] Mark URL as visited in CrawlerStore
+  - [ ] Store metadata with actual status code and Content-Type
+  - [ ] Determine if HTML or resource based on Content-Type
+  - [ ] Create appropriate result object (PageResult or ResourceResult)
+  - [ ] Call appropriate callback (`OnPageCrawled` or `OnResourceVisit`)
+  - [ ] Increment crawled pages counter (for HTML only)
 
-### 1. Reproduce the Issue
-
-```bash
-# Verify server is running
-curl http://localhost:8080/api/v1/health
-
-# Run sequential crawls to identify unstable URLs
-python3 analysis/race_condition/sequential_crawl.py
-```
-
-### 2. Identify the Pattern
-
-Look for:
-- Which URLs are unstable?
-- What do they have in common? (subdomain, link type, page depth)
-- Is there mutual exclusivity between certain URLs?
-
-### 3. Run Link Analysis
-
-```bash
-python3 analysis/race_condition/analyze_mass_crawls.py
-```
-
-Determine if the race is in:
-- **Link discovery**: Source pages don't exist in some crawls
-- **Link extraction**: Links are conditionally rendered
-- **Link following**: Source pages and links exist, but aren't followed
-
-### 4. Investigate Code Paths
-
-Based on link analysis results:
-
-- **If source pages are missing**: Check initial page discovery in `crawler.go`
-- **If links are missing**: Check JavaScript rendering timing (headless browser integration)
-- **If links exist but aren't followed**: Check URL queue/deduplication logic in `storage/crawler_store.go`
-
-### 5. Test the Fix
-
-```bash
-# Run sequential crawls to verify fix
-python3 analysis/race_condition/sequential_crawl.py
-
-# Run parallel crawls to test for concurrency issues
-python3 analysis/race_condition/mass_crawl.py
-```
-
----
-
-## Common Root Causes
-
-### Timing-Dependent Issues
-- JavaScript rendering timing varies
-- Network latency affects page load order
-- Async resource loading (fonts, images, scripts)
-
-### Conditional Rendering
-- A/B testing variations
-- Session state simulation
-- Client-side random logic
-- Authentication state differences
-
-### URL Processing Issues
-- Deduplication logic bugs
-- URL normalization inconsistencies
-- Queue processing race conditions
-- Visit tracking errors
-
----
-
-## Code Locations to Investigate
-
-- `crawler.go:302-346` - Redirect handling
-- `crawler.go` - Main crawler logic, URL queue processing
-- `storage/crawler_store.go` - Visit tracking, URL deduplication
-- JavaScript rendering integration (if applicable)
-
----
-
-## Server Considerations
-
-Before running large crawl batches:
-
-1. **Monitor resource usage** - CPU, memory, database connections
-2. **Check for memory leaks** - Especially in long-running crawls
-3. **Verify database connection pooling** - Ensure proper configuration
-4. **Consider rate limiting** - On crawl start endpoint if needed
-5. **Run in batches** - Start with 10-20 crawls, then scale up
+### Step 4: Testing
+- [ ] Add unit tests for redirect chain handling
+- [ ] Test various redirect scenarios:
+  - [ ] Single redirect (A→B)
+  - [ ] Redirect chain (A→B→C)
+  - [ ] Different redirect types (301, 302, 307, 308)
+  - [ ] Mixed content types (HTML→HTML, image→image)
+  - [ ] Host changes (auth header dropping)
+  - [ ] Redirect loops (should respect 10 limit)
+- [ ] Run sequential crawls with real websites
+- [ ] Confirm all previously unstable URLs now appear in 100% of crawls
+- [ ] Verify accurate status codes for redirect URLs in database
