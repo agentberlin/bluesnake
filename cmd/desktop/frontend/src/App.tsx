@@ -82,6 +82,94 @@ function CustomDropdown({ value, options, onChange, disabled, formatOption }: Cu
   );
 }
 
+interface ColumnSelectorProps {
+  visibleColumns: Record<string, boolean>;
+  onColumnToggle: (column: string) => void;
+}
+
+function ColumnSelector({ visibleColumns, onColumnToggle }: ColumnSelectorProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const [menuPosition, setMenuPosition] = useState({ top: 0, right: 0 });
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    if (isOpen && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      setMenuPosition({
+        top: rect.bottom + 4,
+        right: window.innerWidth - rect.right
+      });
+    }
+  }, [isOpen]);
+
+  const columns = [
+    { key: 'url', label: 'URL' },
+    { key: 'status', label: 'Status' },
+    { key: 'title', label: 'Title' },
+    { key: 'metaDescription', label: 'Meta Description' },
+    { key: 'indexable', label: 'Indexable' },
+    { key: 'contentType', label: 'Type' }
+  ];
+
+  const visibleCount = Object.values(visibleColumns).filter(Boolean).length;
+
+  return (
+    <div className="column-selector" ref={dropdownRef}>
+      <button
+        ref={buttonRef}
+        className="column-selector-button"
+        onClick={() => setIsOpen(!isOpen)}
+        title="Select visible columns"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 3h7v7H3z"></path>
+          <path d="M14 3h7v7h-7z"></path>
+          <path d="M14 14h7v7h-7z"></path>
+          <path d="M3 14h7v7H3z"></path>
+        </svg>
+        <span className="column-selector-text">Columns ({visibleCount})</span>
+        <svg className="column-selector-arrow" width="12" height="8" viewBox="0 0 12 8" fill="none">
+          <path d="M1 1.5L6 6.5L11 1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </button>
+      {isOpen && (
+        <div
+          className="column-selector-menu"
+          style={{ top: `${menuPosition.top}px`, right: `${menuPosition.right}px` }}
+        >
+          {columns.map((column) => (
+            <label
+              key={column.key}
+              className="column-selector-item"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <input
+                type="checkbox"
+                checked={visibleColumns[column.key]}
+                onChange={() => onColumnToggle(column.key)}
+                className="column-selector-checkbox"
+              />
+              <span className="column-selector-label">{column.label}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface CrawlResult {
   url: string;
   status: number;
@@ -320,6 +408,16 @@ function App() {
   const crawlTypeDropdownRef = useRef<HTMLDivElement>(null);
   const [activeCrawlStats, setActiveCrawlStats] = useState<ActiveCrawlStats | null>(null);
   const [crawlStats, setCrawlStats] = useState<ActiveCrawlStats | null>(null);
+
+  // Column visibility state
+  const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>({
+    url: true,
+    status: true,
+    title: true,
+    metaDescription: true,
+    indexable: true,
+    contentType: true
+  });
 
   // Pagination state
   const [cursor, setCursor] = useState<number>(0);
@@ -1169,6 +1267,31 @@ function App() {
     }
   };
 
+  const handleColumnToggle = (column: string) => {
+    setVisibleColumns(prev => ({
+      ...prev,
+      [column]: !prev[column]
+    }));
+  };
+
+  // Helper function to generate grid template based on visible columns
+  const getGridTemplate = () => {
+    const columnSizes: Record<string, string> = {
+      url: '2fr',
+      status: '100px',
+      title: '2fr',
+      metaDescription: '2fr',
+      indexable: '100px',
+      contentType: '120px'
+    };
+
+    const visibleCols = Object.entries(visibleColumns)
+      .filter(([_, isVisible]) => isVisible)
+      .map(([col, _]) => columnSizes[col]);
+
+    return visibleCols.join(' ');
+  };
+
   // Infinite scroll effect
   useEffect(() => {
     const resultsBody = resultsBodyRef.current;
@@ -1636,14 +1759,18 @@ function App() {
               >
                 Others ({(isCrawling ? activeCrawlStats : crawlStats)?.others || 0})
               </button>
+              <ColumnSelector
+                visibleColumns={visibleColumns}
+                onColumnToggle={handleColumnToggle}
+              />
             </div>
-            <div className="results-header">
-              <div className="header-cell url-col">URL</div>
-              <div className="header-cell status-col">Status</div>
-              <div className="header-cell title-col">Title</div>
-              <div className="header-cell meta-desc-col">Meta Description</div>
-              <div className="header-cell indexable-col">Indexable</div>
-              <div className="header-cell content-type-col">Type</div>
+            <div className="results-header" style={{ gridTemplateColumns: getGridTemplate() }}>
+              {visibleColumns.url && <div className="header-cell url-col">URL</div>}
+              {visibleColumns.status && <div className="header-cell status-col">Status</div>}
+              {visibleColumns.title && <div className="header-cell title-col">Title</div>}
+              {visibleColumns.metaDescription && <div className="header-cell meta-desc-col">Meta Description</div>}
+              {visibleColumns.indexable && <div className="header-cell indexable-col">Indexable</div>}
+              {visibleColumns.contentType && <div className="header-cell content-type-col">Type</div>}
             </div>
 
             <div className="results-body" ref={resultsBodyRef}>
@@ -1656,43 +1783,55 @@ function App() {
                     key={index}
                     className="result-row"
                     onClick={() => isClickable && handleUrlClick(result.url)}
-                    style={{ cursor: isClickable ? 'pointer' : 'default' }}
+                    style={{ cursor: isClickable ? 'pointer' : 'default', gridTemplateColumns: getGridTemplate() }}
                     title={isClickable ? 'Click row to view internal links' : ''}
                   >
-                    <div className="result-cell url-col">
-                      <span
-                        className="url-link"
-                        style={{ opacity: isClickable ? 1 : 0.6 }}
-                        onClick={(e) => {
-                          if (isClickable) {
-                            e.stopPropagation();
-                            handleOpenUrl(result.url);
-                          }
-                        }}
-                        title={isClickable ? 'Click to open URL in browser' : ''}
-                      >
-                        {result.url}
-                      </span>
-                    </div>
-                    <div className={`result-cell status-col ${getStatusColor(result.status)}`} style={{ opacity: isClickable ? 1 : 0.6 }}>
-                      {isInProgress ? 'Queued' : isUnvisitedURL ? 'Not visited' : (result.error ? 'Error' : result.status)}
-                    </div>
-                    <div className="result-cell title-col" style={{ opacity: isClickable ? 1 : 0.6 }}>
-                      {result.error ? result.error : result.title || '(no title)'}
-                    </div>
-                    <div className="result-cell meta-desc-col" style={{ opacity: isClickable ? 1 : 0.6 }} title={result.metaDescription || ''}>
-                      {result.metaDescription || '-'}
-                    </div>
-                    <div className="result-cell indexable-col" style={{ opacity: isClickable ? 1 : 0.6 }}>
-                      <span className={`indexable-badge ${result.indexable === 'Yes' ? 'indexable-yes' : 'indexable-no'}`}>
-                        {result.indexable}
-                      </span>
-                    </div>
-                    <div className="result-cell content-type-col" style={{ opacity: isClickable ? 1 : 0.6 }}>
-                      <span className={`content-type-badge content-type-${categorizeContentType(result.contentType)}`}>
-                        {getContentTypeDisplay(result.contentType)}
-                      </span>
-                    </div>
+                    {visibleColumns.url && (
+                      <div className="result-cell url-col">
+                        <span
+                          className="url-link"
+                          style={{ opacity: isClickable ? 1 : 0.6 }}
+                          onClick={(e) => {
+                            if (isClickable) {
+                              e.stopPropagation();
+                              handleOpenUrl(result.url);
+                            }
+                          }}
+                          title={isClickable ? 'Click to open URL in browser' : ''}
+                        >
+                          {result.url}
+                        </span>
+                      </div>
+                    )}
+                    {visibleColumns.status && (
+                      <div className={`result-cell status-col ${getStatusColor(result.status)}`} style={{ opacity: isClickable ? 1 : 0.6 }}>
+                        {isInProgress ? 'Queued' : isUnvisitedURL ? 'Not visited' : (result.error ? 'Error' : result.status)}
+                      </div>
+                    )}
+                    {visibleColumns.title && (
+                      <div className="result-cell title-col" style={{ opacity: isClickable ? 1 : 0.6 }}>
+                        {result.error ? result.error : result.title || '(no title)'}
+                      </div>
+                    )}
+                    {visibleColumns.metaDescription && (
+                      <div className="result-cell meta-desc-col" style={{ opacity: isClickable ? 1 : 0.6 }} title={result.metaDescription || ''}>
+                        {result.metaDescription || '-'}
+                      </div>
+                    )}
+                    {visibleColumns.indexable && (
+                      <div className="result-cell indexable-col" style={{ opacity: isClickable ? 1 : 0.6 }}>
+                        <span className={`indexable-badge ${result.indexable === 'Yes' ? 'indexable-yes' : 'indexable-no'}`}>
+                          {result.indexable}
+                        </span>
+                      </div>
+                    )}
+                    {visibleColumns.contentType && (
+                      <div className="result-cell content-type-col" style={{ opacity: isClickable ? 1 : 0.6 }}>
+                        <span className={`content-type-badge content-type-${categorizeContentType(result.contentType)}`}>
+                          {getContentTypeDisplay(result.contentType)}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 );
               })}
