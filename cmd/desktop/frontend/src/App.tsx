@@ -23,6 +23,7 @@ import ServerControl from './ServerControl';
 import Sidebar from './Sidebar';
 import AICrawlers from './AICrawlers';
 import { types } from "../wailsjs/go/models";
+import { Button, Icon, DropdownMenu, Dropdown, CircularProgress, SplitButton } from './design-system';
 
 interface CustomDropdownProps {
   value: number;
@@ -33,52 +34,19 @@ interface CustomDropdownProps {
 }
 
 function CustomDropdown({ value, options, onChange, disabled, formatOption }: CustomDropdownProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const selectedOption = options.find(opt => opt.id === value);
+  const dropdownOptions = options.map(crawl => ({
+    value: crawl.id,
+    label: formatOption(crawl)
+  }));
 
   return (
-    <div className={`custom-dropdown ${disabled ? 'disabled' : ''}`} ref={dropdownRef}>
-      <div
-        className={`custom-dropdown-header ${isOpen ? 'open' : ''}`}
-        onClick={() => !disabled && setIsOpen(!isOpen)}
-      >
-        <span className="custom-dropdown-value">
-          {selectedOption ? formatOption(selectedOption) : 'Select crawl'}
-        </span>
-        <svg className="custom-dropdown-arrow" width="12" height="8" viewBox="0 0 12 8" fill="none">
-          <path d="M1 1.5L6 6.5L11 1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-      </div>
-      {isOpen && !disabled && (
-        <div className="custom-dropdown-menu">
-          {options.map((option) => (
-            <div
-              key={option.id}
-              className={`custom-dropdown-option ${option.id === value ? 'selected' : ''}`}
-              onClick={() => {
-                onChange(option.id);
-                setIsOpen(false);
-              }}
-            >
-              {formatOption(option)}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+    <Dropdown
+      value={value}
+      options={dropdownOptions}
+      onChange={onChange}
+      disabled={disabled}
+      placeholder="Select crawl"
+    />
   );
 }
 
@@ -88,32 +56,6 @@ interface ColumnSelectorProps {
 }
 
 function ColumnSelector({ visibleColumns, onColumnToggle }: ColumnSelectorProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const [menuPosition, setMenuPosition] = useState({ top: 0, right: 0 });
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  useEffect(() => {
-    if (isOpen && buttonRef.current) {
-      const rect = buttonRef.current.getBoundingClientRect();
-      setMenuPosition({
-        top: rect.bottom + 4,
-        right: window.innerWidth - rect.right
-      });
-    }
-  }, [isOpen]);
-
   const columns = [
     { key: 'url', label: 'URL' },
     { key: 'status', label: 'Status' },
@@ -125,47 +67,29 @@ function ColumnSelector({ visibleColumns, onColumnToggle }: ColumnSelectorProps)
 
   const visibleCount = Object.values(visibleColumns).filter(Boolean).length;
 
+  const items = columns.map(col => ({
+    id: col.key,
+    label: col.label,
+    checked: visibleColumns[col.key]
+  }));
+
   return (
-    <div className="column-selector" ref={dropdownRef}>
-      <button
-        ref={buttonRef}
-        className="column-selector-button"
-        onClick={() => setIsOpen(!isOpen)}
-        title="Select visible columns"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M3 3h7v7H3z"></path>
-          <path d="M14 3h7v7h-7z"></path>
-          <path d="M14 14h7v7h-7z"></path>
-          <path d="M3 14h7v7H3z"></path>
-        </svg>
-        <span className="column-selector-text">Columns ({visibleCount})</span>
-        <svg className="column-selector-arrow" width="12" height="8" viewBox="0 0 12 8" fill="none">
-          <path d="M1 1.5L6 6.5L11 1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-      </button>
-      {isOpen && (
-        <div
-          className="column-selector-menu"
-          style={{ top: `${menuPosition.top}px`, right: `${menuPosition.right}px` }}
-        >
-          {columns.map((column) => (
-            <label
-              key={column.key}
-              className="column-selector-item"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <input
-                type="checkbox"
-                checked={visibleColumns[column.key]}
-                onChange={() => onColumnToggle(column.key)}
-                className="column-selector-checkbox"
-              />
-              <span className="column-selector-label">{column.label}</span>
-            </label>
-          ))}
-        </div>
-      )}
+    <div style={{ marginLeft: 'auto', paddingLeft: '16px' }}>
+      <DropdownMenu
+        trigger={
+          <Button
+            variant="secondary"
+            size="small"
+            icon={<Icon name="grid" size={14} />}
+            style={{ fontSize: '12px', padding: '8px 12px' }}
+          >
+            Columns ({visibleCount})
+          </Button>
+        }
+        items={items}
+        onItemToggle={onColumnToggle}
+        position="bottom-right"
+      />
     </div>
   );
 }
@@ -262,44 +186,21 @@ interface ConfigData {
 type View = 'start' | 'dashboard';
 type DashboardSection = 'crawl-results' | 'config' | 'ai-crawlers';
 
-interface CircularProgressProps {
+interface CrawlProgressProps {
   crawled: number;
   total: number;
 }
 
-function CircularProgress({ crawled, total }: CircularProgressProps) {
-  const percentage = total > 0 ? (crawled / total) * 100 : 0;
-  const radius = 8;
-  const circumference = 2 * Math.PI * radius;
-  const strokeDashoffset = circumference - (percentage / 100) * circumference;
-
+function CrawlProgress({ crawled, total }: CrawlProgressProps) {
   return (
-    <div className="circular-progress">
-      <svg width="20" height="20" viewBox="0 0 20 20" className="progress-ring">
-        <circle
-          className="progress-ring-circle-bg"
-          cx="10"
-          cy="10"
-          r={radius}
-          strokeWidth="2"
-          fill="none"
-        />
-        <circle
-          className="progress-ring-circle"
-          cx="10"
-          cy="10"
-          r={radius}
-          strokeWidth="2"
-          fill="none"
-          strokeDasharray={circumference}
-          strokeDashoffset={strokeDashoffset}
-          transform="rotate(-90 10 10)"
-        />
-      </svg>
-      <span className="progress-text">
-        {crawled} / {total}
-      </span>
-    </div>
+    <CircularProgress
+      value={crawled}
+      max={total}
+      size={20}
+      strokeWidth={2}
+      showLabel={true}
+      showPercentage={false}
+    />
   );
 }
 
@@ -404,8 +305,6 @@ function App() {
   const crawlDropdownRef = useRef<HTMLDivElement>(null);
   const [appVersion, setAppVersion] = useState<string>('');
   const [contentTypeFilter, setContentTypeFilter] = useState<string>('html');
-  const [isCrawlTypeDropdownOpen, setIsCrawlTypeDropdownOpen] = useState(false);
-  const crawlTypeDropdownRef = useRef<HTMLDivElement>(null);
   const [activeCrawlStats, setActiveCrawlStats] = useState<ActiveCrawlStats | null>(null);
   const [crawlStats, setCrawlStats] = useState<ActiveCrawlStats | null>(null);
 
@@ -813,26 +712,11 @@ function App() {
     }
   }, [isCrawlDropdownOpen]);
 
-  // Handle click outside crawl type dropdown
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (crawlTypeDropdownRef.current && !crawlTypeDropdownRef.current.contains(event.target as Node)) {
-        setIsCrawlTypeDropdownOpen(false);
-      }
-    };
-
-    if (isCrawlTypeDropdownOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
-    }
-  }, [isCrawlTypeDropdownOpen]);
 
   const handleNewCrawl = async () => {
     if (!url.trim()) return;
 
     try {
-      // Close the dropdown
-      setIsCrawlTypeDropdownOpen(false);
 
       // First, get existing config to preserve user settings
       try {
@@ -917,8 +801,6 @@ function App() {
     if (!url.trim()) return;
 
     try {
-      // Close the dropdown
-      setIsCrawlTypeDropdownOpen(false);
 
       // First, get existing config to preserve user settings
       try {
@@ -1005,9 +887,6 @@ function App() {
 
   const handleOpenConfigFromHome = async () => {
     if (!url.trim()) return;
-
-    // Close the dropdown
-    setIsCrawlTypeDropdownOpen(false);
 
     // Try to load the project if it exists
     await loadCurrentProjectFromUrl(url);
@@ -1336,51 +1215,40 @@ function App() {
               autoCapitalize="off"
               spellCheck={false}
             />
-            <div className="split-button-container" ref={crawlTypeDropdownRef}>
-              <button
-                className="go-button"
-                onClick={handleNewCrawl}
-                disabled={!url.trim()}
-                title="Start full website crawl"
-              >
+            <SplitButton
+              label=""
+              onClick={handleNewCrawl}
+              disabled={!url.trim()}
+              icon={
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="5" y1="12" x2="19" y2="12"></line>
                   <polyline points="12 5 19 12 12 19"></polyline>
                 </svg>
-              </button>
-              <button
-                className="go-button-dropdown"
-                onClick={() => setIsCrawlTypeDropdownOpen(!isCrawlTypeDropdownOpen)}
-                disabled={!url.trim()}
-                title="More crawl options"
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="6 9 12 15 18 9"></polyline>
-                </svg>
-              </button>
-              {isCrawlTypeDropdownOpen && (
-                <div className="crawl-type-dropdown">
-                  <div className="crawl-type-option" onClick={handleNewCrawl}>
-                    <div className="crawl-type-option-content">
-                      <span className="crawl-type-option-title">Full Website Crawl</span>
-                      <span className="crawl-type-option-desc">Discover and crawl pages by following links and sitemaps</span>
-                    </div>
-                  </div>
-                  <div className="crawl-type-option" onClick={handleSinglePageCrawl}>
-                    <div className="crawl-type-option-content">
-                      <span className="crawl-type-option-title">Single Page Crawl</span>
-                      <span className="crawl-type-option-desc">Analyze only this specific URL without following any links</span>
-                    </div>
-                  </div>
-                  <div className="crawl-type-option" onClick={handleOpenConfigFromHome}>
-                    <div className="crawl-type-option-content">
-                      <span className="crawl-type-option-title">Configure And Crawl</span>
-                      <span className="crawl-type-option-desc">Customize settings before starting your crawl</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+              }
+              menuItems={[
+                {
+                  id: 'full-crawl',
+                  label: 'Full Website Crawl',
+                  description: 'Discover and crawl pages by following links and sitemaps',
+                  onClick: handleNewCrawl,
+                },
+                {
+                  id: 'single-page',
+                  label: 'Single Page Crawl',
+                  description: 'Analyze only this specific URL without following any links',
+                  onClick: handleSinglePageCrawl,
+                },
+                {
+                  id: 'configure',
+                  label: 'Configure And Crawl',
+                  description: 'Customize settings before starting your crawl',
+                  onClick: handleOpenConfigFromHome,
+                },
+              ]}
+              variant="primary"
+              size="medium"
+              menuPosition="bottom-right"
+            />
           </div>
 
           {projects.length > 0 && (
@@ -1425,7 +1293,7 @@ function App() {
                         <>
                           <div className="project-date">Currently crawling...</div>
                           <div className="project-stats">
-                            <CircularProgress
+                            <CrawlProgress
                               crawled={activeCrawl.totalUrlsCrawled}
                               total={activeCrawl.totalDiscovered}
                             />
@@ -1643,37 +1511,9 @@ function App() {
                   {stoppingProjects.has(currentProject.id) ? 'Stopping...' : 'Stop Crawl'}
                 </button>
               )}
-              <div className="header-split-button-container" ref={crawlTypeDropdownRef}>
-                <button className="new-crawl-button" onClick={handleNewCrawl} disabled={isCrawling} title="Start full website crawl">
-                  New Crawl
-                </button>
-                <button
-                  className="new-crawl-button-dropdown"
-                  onClick={() => setIsCrawlTypeDropdownOpen(!isCrawlTypeDropdownOpen)}
-                  disabled={isCrawling}
-                  title="More crawl options"
-                >
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="6 9 12 15 18 9"></polyline>
-                  </svg>
-                </button>
-                {isCrawlTypeDropdownOpen && (
-                  <div className="crawl-type-dropdown">
-                    <div className="crawl-type-option" onClick={handleNewCrawl}>
-                      <div className="crawl-type-option-content">
-                        <span className="crawl-type-option-title">Full Website Crawl</span>
-                        <span className="crawl-type-option-desc">Discover and crawl pages by following links and sitemaps</span>
-                      </div>
-                    </div>
-                    <div className="crawl-type-option" onClick={handleSinglePageCrawl}>
-                      <div className="crawl-type-option-content">
-                        <span className="crawl-type-option-title">Single Page Crawl</span>
-                        <span className="crawl-type-option-desc">Analyze only this specific URL without following any links</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
+              <button className="new-crawl-button" onClick={handleNewCrawl} disabled={isCrawling} title="Start full website crawl">
+                New Crawl
+              </button>
             </div>
           )}
         </div>
@@ -1853,7 +1693,7 @@ function App() {
             <div className="footer-content">
               {isCrawling && currentProject && (
                 <div className="status-indicator">
-                  <CircularProgress
+                  <CrawlProgress
                     crawled={activeCrawlStats ? activeCrawlStats.crawled : 0}
                     total={activeCrawlStats ? activeCrawlStats.total : 0}
                   />

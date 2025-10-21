@@ -1,0 +1,99 @@
+/* Input Component Styles */
+
+.ds-input-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ds-input-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #333;
+}
+
+.ds-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.ds-input {
+  width: 100%;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 300;
+  font-family: inherit;
+  color: #333;
+  background: #fafafa;
+  border: 1px solid #e0e0e0;
+  border-radius: 2px;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.ds-input:focus {
+  border-color: #999;
+  background: #fff;
+}
+
+.ds-input::placeholder {
+  color: #aaa;
+  font-weight: 300;
+}
+
+.ds-input--error {
+  border-color: #f44336;
+  background: #fff;
+}
+
+.ds-input--error:focus {
+  border-color: #f44336;
+}
+
+.ds-input--disabled {
+  background: #f5f5f5;
+  color: #999;
+  cursor: not-allowed;
+}
+
+.ds-input--has-left-icon {
+  padding-left: 44px;
+}
+
+.ds-input--has-right-icon {
+  padding-right: 44px;
+}
+
+.ds-input-icon {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #999;
+  pointer-events: none;
+}
+
+.ds-input-icon--left {
+  left: 14px;
+}
+
+.ds-input-icon--right {
+  right: 14px;
+}
+
+.ds-input:focus ~ .ds-input-icon {
+  color: #666;
+}
+
+.ds-input-error {
+  font-size: 13px;
+  color: #f44336;
+  font-weight: 400;
+}
+
+.ds-input-hint {
+  font-size: 13px;
+  color: #666;
+  font-weight: 300;
+}

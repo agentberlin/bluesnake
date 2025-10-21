@@ -1,0 +1,33 @@
+/* Loading Component Styles */
+
+.ds-spinner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  animation: spin 1s linear infinite;
+  color: #2196f3;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ds-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+}
+
+.ds-loading__text {
+  font-size: 14px;
+  color: #666;
+  font-weight: 300;
+}
