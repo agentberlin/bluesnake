@@ -1,0 +1,42 @@
+/* Badge Component Styles */
+
+.ds-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+
+.ds-badge--default {
+  background: #f5f5f5;
+  color: #666;
+}
+
+.ds-badge--success {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.ds-badge--error {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.ds-badge--warning {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.ds-badge--info {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.ds-badge--neutral {
+  background: #fafafa;
+  color: #333;
+  border: 1px solid #e0e0e0;
+}

@@ -1,0 +1,68 @@
+/* SplitButton Component Styles */
+
+.ds-split-button {
+  display: inline-flex;
+  align-items: stretch;
+  position: relative;
+}
+
+/* Main button */
+.ds-split-button-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: none;
+}
+
+/* Dropdown button */
+.ds-split-button-dropdown {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  min-width: auto !important;
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+  height: auto !important;
+  align-self: stretch;
+}
+
+/* Menu container should stretch to match button height */
+.ds-split-button > .ds-menu-container {
+  display: flex;
+  align-items: stretch;
+  position: relative;
+  overflow: visible;
+}
+
+/* Add border between buttons for visual separation */
+.ds-split-button-main + .ds-menu-container .ds-split-button-dropdown {
+  position: relative;
+}
+
+.ds-split-button-main + .ds-menu-container .ds-split-button-dropdown::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 20%;
+  bottom: 20%;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Primary variant */
+.ds-split-button .ds-button--primary.ds-split-button-dropdown::before {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Secondary variant */
+.ds-split-button .ds-button--secondary.ds-split-button-dropdown::before {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+/* Danger variant */
+.ds-split-button .ds-button--danger.ds-split-button-dropdown::before {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Ghost variant - no separator */
+.ds-split-button .ds-button--ghost.ds-split-button-dropdown::before {
+  display: none;
+}
