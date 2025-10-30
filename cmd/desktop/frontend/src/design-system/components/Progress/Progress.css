@@ -7,6 +7,13 @@
   justify-content: center;
 }
 
+.ds-circular-progress--with-external-label {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
 .ds-circular-progress__bg {
   stroke: #e0e0e0;
 }
@@ -19,6 +26,15 @@
 
 .ds-circular-progress__label {
   position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 500;
+  color: #333;
+}
+
+.ds-circular-progress__label-external {
   display: flex;
   align-items: center;
   justify-content: center;
