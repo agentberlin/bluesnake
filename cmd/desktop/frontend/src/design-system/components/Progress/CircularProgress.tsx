@@ -40,10 +40,13 @@ export const CircularProgress: React.FC<CircularProgressProps> = ({
   const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (percentage / 100) * circumference;
 
+  // Scale font size based on component size for better readability
+  // For external labels, use a slightly larger font size
+  const fontSize = size < 40 ? Math.max(10, size * 0.6) : 12;
+
   return (
     <div
-      className={classNames('ds-circular-progress', className)}
-      style={{ width: size, height: size }}
+      className={classNames('ds-circular-progress', 'ds-circular-progress--with-external-label', className)}
     >
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
         {/* Background circle */}
@@ -69,7 +72,7 @@ export const CircularProgress: React.FC<CircularProgressProps> = ({
         />
       </svg>
       {showLabel && (
-        <div className="ds-circular-progress__label">
+        <div className="ds-circular-progress__label-external" style={{ fontSize: `${fontSize}px` }}>
           {showPercentage ? (
             <span className="ds-circular-progress__percentage">{percentage.toFixed(0)}%</span>
           ) : (

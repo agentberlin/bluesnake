@@ -196,7 +196,7 @@ function CrawlProgress({ crawled, total }: CrawlProgressProps) {
     <CircularProgress
       value={crawled}
       max={total}
-      size={20}
+      size={18}
       strokeWidth={2}
       showLabel={true}
       showPercentage={false}
@@ -443,6 +443,13 @@ function App() {
         const activeCrawl = crawls.find((c: CrawlProgress) => c.projectId === currentProject.id);
 
         if (activeCrawl) {
+          // Update activeCrawls map with latest data
+          setActiveCrawls(prev => {
+            const newMap = new Map(prev);
+            newMap.set(currentProject.id, activeCrawl);
+            return newMap;
+          });
+
           // Active crawl - get stats from backend (efficient COUNT queries)
           const stats = await GetActiveCrawlStats(currentProject.id);
           setActiveCrawlStats(stats);
@@ -460,6 +467,13 @@ function App() {
           // The pagination/search effect will handle loading the data
           setIsCrawling(false);
           setActiveCrawlStats(null);
+
+          // Remove from activeCrawls map
+          setActiveCrawls(prev => {
+            const newMap = new Map(prev);
+            newMap.delete(currentProject.id);
+            return newMap;
+          });
 
           // Clear from stopping projects if it was there
           setStoppingProjects(prev => {
@@ -1694,8 +1708,8 @@ function App() {
               {isCrawling && currentProject && (
                 <div className="status-indicator">
                   <CrawlProgress
-                    crawled={activeCrawlStats ? activeCrawlStats.crawled : 0}
-                    total={activeCrawlStats ? activeCrawlStats.total : 0}
+                    crawled={activeCrawls.get(currentProject.id)?.totalUrlsCrawled || 0}
+                    total={activeCrawls.get(currentProject.id)?.totalDiscovered || 0}
                   />
                   <span className="status-text">Crawling...</span>
                 </div>
