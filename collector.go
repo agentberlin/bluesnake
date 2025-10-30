@@ -1235,7 +1235,11 @@ func (c *Collector) handleOnHTML(resp *Response) error {
 	// If rendering is enabled, use chromedp to get the rendered HTML
 	var bodyReader *bytes.Buffer
 	if c.EnableRendering {
-		renderer := getRenderer()
+		renderer, err := getRenderer()
+		if err != nil {
+			// Critical error: Chrome not available
+			return fmt.Errorf("FATAL: Chrome browser not available for JavaScript rendering: %w. Please install Google Chrome or set CHROME_EXECUTABLE_PATH environment variable", err)
+		}
 		renderedHTML, discoveredURLs, err := renderer.RenderPage(resp.Request.URL.String(), c.RenderingConfig)
 		if err != nil {
 			// If rendering fails, fall back to original HTML

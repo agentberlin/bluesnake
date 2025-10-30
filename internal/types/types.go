@@ -181,3 +181,11 @@ type ActiveCrawlStats struct {
 	Unvisited      int  `json:"unvisited"`      // Count of unvisited URLs
 	Others         int  `json:"others"`         // Count of other content types
 }
+
+// SystemHealthCheck represents the result of a system health check
+type SystemHealthCheck struct {
+	IsHealthy   bool   `json:"isHealthy"`   // Overall health status
+	ErrorTitle  string `json:"errorTitle"`  // Error title if not healthy
+	ErrorMsg    string `json:"errorMsg"`    // Detailed error message
+	Suggestion  string `json:"suggestion"`  // Suggestion to fix the issue
+}

@@ -17,6 +17,8 @@ package bluesnake
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -37,18 +39,39 @@ var (
 )
 
 // getRenderer returns the global chromedp renderer instance
-func getRenderer() *chromedpRenderer {
+func getRenderer() (*chromedpRenderer, error) {
+	var initErr error
 	globalRendererOnce.Do(func() {
 		globalRenderer = &chromedpRenderer{
 			timeout: 30 * time.Second,
 		}
-		globalRenderer.init()
+		initErr = globalRenderer.init()
 	})
-	return globalRenderer
+	if initErr != nil {
+		return nil, initErr
+	}
+	return globalRenderer, nil
 }
 
 // init initializes the browser allocator context
-func (r *chromedpRenderer) init() {
+func (r *chromedpRenderer) init() error {
+	// Log environment info for debugging
+	log.Println("=== Initializing chromedp renderer ===")
+	log.Printf("Working directory: %s", os.Getenv("PWD"))
+	log.Printf("PATH: %s", os.Getenv("PATH"))
+
+	// Try to detect Chrome installation
+	chromeExecPath := os.Getenv("CHROME_EXECUTABLE_PATH")
+	if chromeExecPath != "" {
+		log.Printf("Using Chrome from CHROME_EXECUTABLE_PATH: %s", chromeExecPath)
+		// Verify the Chrome executable exists
+		if _, err := os.Stat(chromeExecPath); os.IsNotExist(err) {
+			return fmt.Errorf("Chrome executable not found at specified path: %s", chromeExecPath)
+		}
+	} else {
+		log.Println("CHROME_EXECUTABLE_PATH not set, using chromedp auto-detection")
+	}
+
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-gpu", true),
@@ -56,7 +79,14 @@ func (r *chromedpRenderer) init() {
 		chromedp.Flag("disable-dev-shm-usage", true),
 	)
 
+	// If custom Chrome path is set, use it
+	if chromeExecPath != "" {
+		opts = append(opts, chromedp.ExecPath(chromeExecPath))
+	}
+
 	r.allocCtx, r.allocCancel = chromedp.NewExecAllocator(context.Background(), opts...)
+	log.Println("=== chromedp renderer initialized ===")
+	return nil
 }
 
 // Close cleans up the renderer resources
@@ -71,6 +101,10 @@ func (r *chromedpRenderer) Close() {
 // the LimitRule in http_backend.go. Setting very high parallelism (>10) may cause
 // high memory/CPU usage as each browser context consumes ~100-200MB RAM.
 func (r *chromedpRenderer) RenderPage(url string, config *RenderingConfig) (string, []string, error) {
+	if r.allocCtx == nil {
+		return "", nil, fmt.Errorf("chromedp renderer not properly initialized")
+	}
+
 	// Create a new browser context
 	ctx, cancel := chromedp.NewContext(r.allocCtx)
 	defer cancel()
@@ -107,6 +141,7 @@ func (r *chromedpRenderer) RenderPage(url string, config *RenderingConfig) (stri
 	})
 
 	// Run the chromedp tasks
+	log.Printf("Starting chromedp render for URL: %s", url)
 	err := chromedp.Run(ctx,
 		// Enable network tracking
 		network.Enable(),
@@ -130,8 +165,11 @@ func (r *chromedpRenderer) RenderPage(url string, config *RenderingConfig) (stri
 	)
 
 	if err != nil {
+		log.Printf("ERROR: chromedp rendering failed for %s: %v", url, err)
 		return "", nil, fmt.Errorf("chromedp rendering failed: %w", err)
 	}
+
+	log.Printf("Successfully rendered %s, discovered %d URLs", url, len(discoveredURLs))
 
 	// Convert map to slice
 	urls := make([]string, 0, len(discoveredURLs))

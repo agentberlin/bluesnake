@@ -776,6 +776,9 @@ func (n *NoOpEmitter) Emit(eventType app.EventType, data interface{}) {
 
 **Public Methods:**
 ```go
+// System Health
+CheckSystemHealth() *types.SystemHealthCheck
+
 // Crawl Management
 StartCrawl(urlStr string) error
 StopCrawl(projectID uint) error
@@ -821,6 +824,36 @@ func NewApp(store *store.Store, emitter EventEmitter) *App {
 }
 ```
 
+**System Health Check:**
+
+The app provides a `CheckSystemHealth()` method that validates critical dependencies on startup:
+
+```go
+type SystemHealthCheck struct {
+    IsHealthy   bool   // Overall health status
+    ErrorTitle  string // Error title if not healthy
+    ErrorMsg    string // Detailed error message
+    Suggestion  string // Suggestion to fix the issue
+}
+```
+
+**Health Checks Performed:**
+1. **Chrome/Chromium Availability**: Required for JavaScript rendering
+   - Checks `CHROME_EXECUTABLE_PATH` environment variable
+   - Searches common installation paths (macOS, Windows, Linux)
+   - Searches system PATH for Chrome executables
+
+**Frontend Integration:**
+- Called on app startup (before UI loads)
+- Displays modal dialog if health check fails
+- User-friendly error messages with actionable suggestions
+- Non-blocking: app continues to work without Chrome (JS rendering disabled)
+
+**Design Philosophy:**
+- Method-based (not event-based) for predictable startup validation
+- Fails gracefully with clear user guidance
+- Testable and maintainable
+
 **Key Implementation Details:**
 
 1. **Crawler Integration:**
@@ -841,6 +874,9 @@ func NewApp(store *store.Store, emitter EventEmitter) *App {
    ```
 
    Events are **indicational only** with no payload. Frontend uses polling to fetch actual data.
+
+   **Note:** Errors are NOT communicated via events. System errors are detected via `CheckSystemHealth()`
+   at startup, and crawl errors are logged but not surfaced to the UI in real-time.
 
 3. **Framework Detection:**
    - Uses `internal/framework/detector.go` to detect web frameworks

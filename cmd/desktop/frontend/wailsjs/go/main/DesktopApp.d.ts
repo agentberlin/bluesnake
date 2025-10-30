@@ -5,6 +5,8 @@ import {context} from '../models';
 
 export function CheckForUpdate():Promise<types.UpdateInfo>;
 
+export function CheckSystemHealth():Promise<types.SystemHealthCheck>;
+
 export function DeleteCrawlByID(arg1:number):Promise<void>;
 
 export function DeleteProjectByID(arg1:number):Promise<void>;

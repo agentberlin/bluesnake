@@ -412,6 +412,24 @@ export namespace types {
 	        this.error = source["error"];
 	    }
 	}
+	export class SystemHealthCheck {
+	    isHealthy: boolean;
+	    errorTitle: string;
+	    errorMsg: string;
+	    suggestion: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SystemHealthCheck(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.isHealthy = source["isHealthy"];
+	        this.errorTitle = source["errorTitle"];
+	        this.errorMsg = source["errorMsg"];
+	        this.suggestion = source["suggestion"];
+	    }
+	}
 	export class UpdateInfo {
 	    currentVersion: string;
 	    latestVersion: string;
