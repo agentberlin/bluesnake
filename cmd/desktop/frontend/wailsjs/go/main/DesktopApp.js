@@ -6,6 +6,10 @@ export function CheckForUpdate() {
   return window['go']['main']['DesktopApp']['CheckForUpdate']();
 }
 
+export function CheckSystemHealth() {
+  return window['go']['main']['DesktopApp']['CheckSystemHealth']();
+}
+
 export function DeleteCrawlByID(arg1) {
   return window['go']['main']['DesktopApp']['DeleteCrawlByID'](arg1);
 }

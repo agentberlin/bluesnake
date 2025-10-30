@@ -206,3 +206,8 @@ func (d *DesktopApp) SaveAICrawlerData(projectURL string, data *types.AICrawlerD
 func (d *DesktopApp) RunAICrawlerChecks(projectURL string) error {
 	return d.app.RunAICrawlerChecks(projectURL)
 }
+
+// CheckSystemHealth wraps app.CheckSystemHealth
+func (d *DesktopApp) CheckSystemHealth() *types.SystemHealthCheck {
+	return d.app.CheckSystemHealth()
+}

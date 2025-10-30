@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl, GetProjects, GetCrawls, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlStats, GetCrawlStats, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL, UpdateConfigForDomain, GetConfigForDomain, DetectJSRenderingNeed, SearchCrawlResultsPaginated } from "../wailsjs/go/main/DesktopApp";
+import { StartCrawl, GetProjects, GetCrawls, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlStats, GetCrawlStats, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL, UpdateConfigForDomain, GetConfigForDomain, DetectJSRenderingNeed, SearchCrawlResultsPaginated, CheckSystemHealth } from "../wailsjs/go/main/DesktopApp";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
@@ -292,6 +292,14 @@ function App() {
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [showBlockModal, setShowBlockModal] = useState(false);
 
+  // Error dialog state
+  const [showErrorDialog, setShowErrorDialog] = useState(false);
+  const [errorDialogData, setErrorDialogData] = useState<{
+    title: string;
+    error: string;
+    suggestion: string;
+  } | null>(null);
+
   // Links panel state
   const [isPanelOpen, setIsPanelOpen] = useState(false);
   const [selectedUrlForPanel, setSelectedUrlForPanel] = useState('');
@@ -326,6 +334,22 @@ function App() {
   const PAGINATION_LIMIT = 100;
 
   useEffect(() => {
+    // Check system health on startup
+    CheckSystemHealth()
+      .then((health: types.SystemHealthCheck) => {
+        if (!health.isHealthy) {
+          setErrorDialogData({
+            title: health.errorTitle,
+            error: health.errorMsg,
+            suggestion: health.suggestion
+          });
+          setShowErrorDialog(true);
+        }
+      })
+      .catch((error: any) => {
+        console.error('Failed to check system health:', error);
+      });
+
     // Load projects on start
     loadProjects();
 
@@ -1836,6 +1860,33 @@ function App() {
             <div className="modal-actions">
               <button className="modal-button primary" onClick={handleUpdate} disabled={isUpdating}>
                 {isUpdating ? 'Updating...' : `Update to ${updateInfo.latestVersion}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Error Dialog */}
+      {showErrorDialog && errorDialogData && (
+        <div className="modal-overlay" onClick={() => setShowErrorDialog(false)}>
+          <div className="modal error-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="version-modal-icon block-icon">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line>
+                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+              </svg>
+            </div>
+            <h3>{errorDialogData.title}</h3>
+            <p className="error-message" style={{ whiteSpace: 'pre-wrap', marginTop: '16px', marginBottom: '16px' }}>
+              {errorDialogData.error}
+            </p>
+            <p className="error-suggestion" style={{ whiteSpace: 'pre-wrap', color: '#666', fontSize: '14px' }}>
+              {errorDialogData.suggestion}
+            </p>
+            <div className="modal-actions">
+              <button className="modal-button primary" onClick={() => setShowErrorDialog(false)}>
+                OK
               </button>
             </div>
           </div>
