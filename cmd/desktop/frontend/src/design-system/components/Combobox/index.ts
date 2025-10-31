@@ -12,20 +12,5 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Base Components
-export * from './Button';
-export * from './SplitButton';
-export * from './Input';
-export * from './Checkbox';
-export * from './Badge';
-export * from './Icon';
-
-// Overlay Components
-export * from './Dropdown';
-export * from './Combobox';
-export * from './Menu';
-export * from './Modal';
-
-// Feedback Components
-export * from './Loading';
-export * from './Progress';
+export { Combobox } from './Combobox';
+export type { ComboboxOption, ComboboxProps } from './Combobox';
