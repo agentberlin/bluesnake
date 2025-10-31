@@ -14,6 +14,8 @@
 
 import { useState, useEffect } from 'react';
 import { GetConfigForDomain, UpdateConfigForDomain } from "../wailsjs/go/main/DesktopApp";
+import { Combobox } from './design-system/components/Combobox';
+import { USER_AGENTS } from './constants/userAgents';
 import './Config.css';
 
 type ConfigTab = 'scope' | 'rendering' | 'performance' | 'advanced';
@@ -435,12 +437,12 @@ function Config({ url, onClose }: ConfigProps) {
                       <label className="config-label-text">
                         User Agent
                       </label>
-                      <input
-                        type="text"
+                      <Combobox
                         value={userAgent}
-                        onChange={(e) => setUserAgent(e.target.value)}
-                        className="config-number-input"
-                        placeholder="bluesnake/1.0 (+https://snake.blue)"
+                        options={USER_AGENTS}
+                        onChange={(value) => setUserAgent(value)}
+                        placeholder="Type or select a user-agent"
+                        allowCustomValue={true}
                       />
                       <p className="config-hint">
                         Custom User-Agent string for HTTP requests (default: bluesnake/1.0)
