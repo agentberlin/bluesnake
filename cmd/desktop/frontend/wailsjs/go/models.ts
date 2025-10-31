@@ -380,38 +380,6 @@ export namespace types {
 	        this.latestCrawlId = source["latestCrawlId"];
 	    }
 	}
-	export class ServerInfo {
-	    publicURL: string;
-	    port: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new ServerInfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.publicURL = source["publicURL"];
-	        this.port = source["port"];
-	    }
-	}
-	export class ServerStatus {
-	    isRunning: boolean;
-	    publicURL: string;
-	    port: number;
-	    error?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ServerStatus(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.isRunning = source["isRunning"];
-	        this.publicURL = source["publicURL"];
-	        this.port = source["port"];
-	        this.error = source["error"];
-	    }
-	}
 	export class SystemHealthCheck {
 	    isHealthy: boolean;
 	    errorTitle: string;

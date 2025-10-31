@@ -41,9 +41,8 @@ func (w *WailsEmitter) Emit(eventType app.EventType, data interface{}) {
 // DesktopApp is the Wails-specific adapter that wraps the core App
 // All methods here are thin wrappers that simply delegate to the core app
 type DesktopApp struct {
-	app           *app.App
-	ctx           context.Context
-	serverManager *ServerManager
+	app *app.App
+	ctx context.Context
 }
 
 // NewDesktopApp creates a new DesktopApp adapter
@@ -57,7 +56,6 @@ func NewDesktopApp(coreApp *app.App) *DesktopApp {
 func (d *DesktopApp) Startup(ctx context.Context) {
 	d.ctx = ctx
 	d.app.Startup(ctx)
-	d.serverManager = NewServerManager(ctx, d.app)
 }
 
 // GetProjects wraps app.GetProjects
@@ -160,21 +158,6 @@ func (d *DesktopApp) DownloadAndInstallUpdate() error {
 // GetVersion wraps app.GetVersion
 func (d *DesktopApp) GetVersion() string {
 	return d.app.GetVersion()
-}
-
-// StartServerWithTunnel starts the HTTP server on localhost
-func (d *DesktopApp) StartServerWithTunnel() (*types.ServerInfo, error) {
-	return d.serverManager.StartWithTunnel()
-}
-
-// StopServerWithTunnel stops the HTTP server
-func (d *DesktopApp) StopServerWithTunnel() error {
-	return d.serverManager.Stop()
-}
-
-// GetServerStatus returns the current server status
-func (d *DesktopApp) GetServerStatus() *types.ServerStatus {
-	return d.serverManager.GetStatus()
 }
 
 // DetectJSRenderingNeed detects if a URL needs JavaScript rendering

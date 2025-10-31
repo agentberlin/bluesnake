@@ -37,8 +37,6 @@ export function GetPageLinksForURL(arg1:number,arg2:string):Promise<types.PageLi
 
 export function GetProjects():Promise<Array<types.ProjectInfo>>;
 
-export function GetServerStatus():Promise<types.ServerStatus>;
-
 export function GetVersion():Promise<string>;
 
 export function RunAICrawlerChecks(arg1:string):Promise<void>;
@@ -49,12 +47,8 @@ export function SearchCrawlResultsPaginated(arg1:number,arg2:string,arg3:string,
 
 export function StartCrawl(arg1:string):Promise<void>;
 
-export function StartServerWithTunnel():Promise<types.ServerInfo>;
-
 export function Startup(arg1:context.Context):Promise<void>;
 
 export function StopCrawl(arg1:number):Promise<void>;
-
-export function StopServerWithTunnel():Promise<void>;
 
 export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number,arg4:number,arg5:number,arg6:number,arg7:string,arg8:boolean,arg9:boolean,arg10:boolean,arg11:Array<string>,arg12:boolean,arg13:boolean,arg14:string,arg15:boolean,arg16:boolean,arg17:boolean,arg18:boolean):Promise<void>;
