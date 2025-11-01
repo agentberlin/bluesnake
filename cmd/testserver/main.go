@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/agentberlin/bluesnake/internal/app"
+	"github.com/agentberlin/bluesnake/internal/server"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
@@ -46,13 +47,13 @@ func main() {
 	coreApp.Startup(context.Background())
 
 	// Create HTTP server
-	server := NewServer(coreApp)
+	srv := server.NewServer(coreApp)
 
 	// Create HTTP server with graceful shutdown
 	addr := fmt.Sprintf("%s:%d", *host, *port)
 	httpServer := &http.Server{
 		Addr:         addr,
-		Handler:      server,
+		Handler:      srv,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
