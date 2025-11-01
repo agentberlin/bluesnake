@@ -1280,15 +1280,20 @@ function App() {
       <div className="app">
         <div className="start-screen">
           <div className="mcp-button-container">
-            <Button
+            <SplitButton
+              label={isStartingMcpServer ? "Starting..." : isMcpServerRunning ? "MCP Config" : "Start MCP"}
               variant={isMcpServerRunning ? "primary" : "secondary"}
               size="small"
-              icon={<Icon name={isMcpServerRunning ? "check-circle" : "external-link"} size={14} />}
+              icon={isMcpServerRunning ? <Icon name="settings" size={14} /> : undefined}
               onClick={handleStartMCPServer}
               disabled={isStartingMcpServer}
-            >
-              {isStartingMcpServer ? "Starting..." : isMcpServerRunning ? "MCP Server Running" : "Start MCP Server"}
-            </Button>
+              secondaryAction={isMcpServerRunning ? {
+                onClick: handleStopMCPServer,
+                icon: <Icon name="stop" size={14} />,
+                variant: "danger",
+                disabled: false
+              } : undefined}
+            />
           </div>
 
           <div className="logo-container">
