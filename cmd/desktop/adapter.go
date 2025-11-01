@@ -16,6 +16,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 
 	"github.com/agentberlin/bluesnake/internal/app"
 	"github.com/agentberlin/bluesnake/internal/types"
@@ -193,4 +195,21 @@ func (d *DesktopApp) RunAICrawlerChecks(projectURL string) error {
 // CheckSystemHealth wraps app.CheckSystemHealth
 func (d *DesktopApp) CheckSystemHealth() *types.SystemHealthCheck {
 	return d.app.CheckSystemHealth()
+}
+
+// GetExecutablePath returns the absolute path to the current executable
+// This is used for MCP configuration to show the correct command path
+func (d *DesktopApp) GetExecutablePath() (string, error) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+
+	// Resolve any symlinks to get the actual path
+	realPath, err := filepath.EvalSymlinks(exePath)
+	if err != nil {
+		return exePath, nil // Return the original path if we can't resolve symlinks
+	}
+
+	return realPath, nil
 }

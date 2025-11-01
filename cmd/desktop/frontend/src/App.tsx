@@ -21,6 +21,7 @@ import Config from './Config';
 import LinksPanel from './LinksPanel';
 import Sidebar from './Sidebar';
 import AICrawlers from './AICrawlers';
+import { MCPModal } from './MCPModal';
 import { types } from "../wailsjs/go/models";
 import { Button, Icon, DropdownMenu, Dropdown, CircularProgress, SplitButton } from './design-system';
 
@@ -290,6 +291,7 @@ function App() {
   const [isUpdating, setIsUpdating] = useState(false);
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [showBlockModal, setShowBlockModal] = useState(false);
+  const [showMCPModal, setShowMCPModal] = useState(false);
 
   // Error dialog state
   const [showErrorDialog, setShowErrorDialog] = useState(false);
@@ -1230,6 +1232,17 @@ function App() {
     return (
       <div className="app">
         <div className="start-screen">
+          <div className="mcp-button-container">
+            <Button
+              variant="secondary"
+              size="small"
+              icon={<Icon name="external-link" size={14} />}
+              onClick={() => setShowMCPModal(true)}
+            >
+              Start MCP
+            </Button>
+          </div>
+
           <div className="logo-container">
             <img src={logo} alt="BlueSnake Logo" className="logo-image" />
           </div>
@@ -1412,6 +1425,9 @@ function App() {
             </div>
           </div>
         )}
+
+        {/* MCP Modal */}
+        <MCPModal isOpen={showMCPModal} onClose={() => setShowMCPModal(false)} />
       </div>
     );
   }

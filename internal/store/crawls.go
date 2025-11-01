@@ -97,7 +97,14 @@ func (s *Store) SaveDiscoveredUrl(crawlID uint, url string, visited bool, status
 
 // DeleteCrawl deletes a crawl and all its crawled URLs (cascade)
 func (s *Store) DeleteCrawl(crawlID uint) error {
-	return s.db.Delete(&Crawl{}, crawlID).Error
+	result := s.db.Delete(&Crawl{}, crawlID)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("crawl with ID %d not found", crawlID)
+	}
+	return nil
 }
 
 // GetCrawlResultsPaginated gets paginated discovered URLs for a specific crawl with cursor-based pagination
