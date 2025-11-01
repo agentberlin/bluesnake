@@ -6,8 +6,9 @@ BlueSnake is a production-grade web crawler with multiple interfaces. It consist
 
 1. **BlueSnake Crawler Package** - Go-based crawling library with channel-based architecture (root directory)
 2. **Internal Packages** - Shared business logic and data layers (internal/ directory)
-3. **Desktop Application** - Wails-based GUI application (cmd/desktop/ directory)
-4. **HTTP Server** - REST API server (cmd/server/ directory)
+3. **Desktop Application** - Wails-based GUI application with embedded MCP server (cmd/desktop/ directory)
+4. **MCP Server** - Model Context Protocol server for AI/LLM integration (internal/mcp/ directory)
+5. **HTTP Server** - REST API server (internal/server/ directory - not shipped standalone)
 
 ## Project Structure
 
@@ -55,20 +56,24 @@ bluesnake/
 │   │   ├── links.go          # Link management
 │   │   ├── favicon.go        # Favicon handling
 │   │   └── updater.go        # Update checking
-│   └── framework/            # Framework detection
-│       ├── detector.go       # Framework detection logic
-│       └── filters.go        # Framework-specific URL filters
+│   ├── framework/            # Framework detection
+│   │   ├── detector.go       # Framework detection logic
+│   │   └── filters.go        # Framework-specific URL filters
+│   ├── mcp/                  # MCP (Model Context Protocol) server
+│   │   ├── server.go         # MCP server implementation
+│   │   └── tools.go          # MCP tools (crawl, search, config, etc.)
+│   └── server/               # HTTP REST API server (internal package)
+│       └── server.go         # HTTP handlers and routing
 └── cmd/                      # Application executables
     ├── desktop/              # Wails desktop application
     │   ├── main.go           # Application entry point
-    │   ├── adapter.go        # Wails adapter (WailsEmitter, DesktopApp)
+    │   ├── adapter.go        # Wails adapter (WailsEmitter, DesktopApp, MCP integration)
     │   └── frontend/         # React/TypeScript UI
     │       └── src/
     │           ├── App.tsx       # Main UI component
     │           └── Config.tsx    # Configuration UI
-    └── server/               # HTTP REST API server
-        ├── main.go           # Server initialization
-        └── server.go         # HTTP handlers and routing
+    └── testserver/           # Test HTTP server (development only)
+        └── main.go           # Standalone server for testing
 ```
 
 ---
@@ -679,10 +684,13 @@ BlueSnake uses a layered architecture that separates business logic from transpo
 │                    Transport Layer                          │
 │                                                             │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│  │   Desktop    │  │  HTTP Server │  │  MCP Server  │    │
-│  │   (Wails)    │  │   (REST)     │  │   (Future)   │    │
+│  │   Desktop    │  │  MCP Server  │  │ HTTP Server  │    │
+│  │   (Wails)    │  │   (MCP)      │  │ (internal/)  │    │
 │  │              │  │              │  │              │    │
-│  │ WailsEmitter │  │  NoOpEmitter │  │  MCPEmitter  │    │
+│  │ WailsEmitter │  │  NoOpEmitter │  │ NoOpEmitter  │    │
+│  │              │  │              │  │              │    │
+│  │ Embeds MCP   │  │ Standalone   │  │ Dev/Testing  │    │
+│  │ (optional)   │  │   Mode       │  │   Only       │    │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘    │
 │         │                 │                  │             │
 └─────────┼─────────────────┼──────────────────┼─────────────┘
@@ -760,11 +768,11 @@ func (w *WailsEmitter) Emit(eventType app.EventType, data interface{}) {
     runtime.EventsEmit(w.ctx, string(eventType), data)
 }
 
-// HTTP implementation (cmd/server/main.go)
+// HTTP/MCP implementation (internal/server/, internal/mcp/)
 type NoOpEmitter struct{}
 
 func (n *NoOpEmitter) Emit(eventType app.EventType, data interface{}) {
-    // Do nothing - HTTP server uses polling instead
+    // Do nothing - HTTP/MCP servers use polling instead
 }
 ```
 
@@ -982,6 +990,7 @@ type PageLink struct {
 - **Frontend:** React + TypeScript + Vite
 - **Database:** SQLite with GORM (via internal/store)
 - **Communication:** Wails runtime bindings + events
+- **MCP Integration:** Embedded MCP server (optional, user-controlled)
 
 ### Backend Components
 
@@ -1025,17 +1034,28 @@ func (w *WailsEmitter) Emit(eventType app.EventType, data interface{}) {
 }
 ```
 
-**DesktopApp:** Thin wrapper that delegates to internal/app
+**DesktopApp:** Thin wrapper that delegates to internal/app with MCP server integration
 ```go
 type DesktopApp struct {
-    app *app.App
-    ctx context.Context
+    app            *app.App
+    ctx            context.Context
+    mcpServer      *mcp.MCPServer       // Embedded MCP server
+    mcpHTTPServer  *http.Server         // HTTP server for MCP
+    mcpServerURL   string               // Server URL (e.g., http://localhost:8080)
+    mcpServerMutex sync.Mutex
 }
 
 func (d *DesktopApp) GetProjects() ([]types.ProjectInfo, error) {
-    return d.app.GetProjects() // Simple delegation
+    return d.app.GetProjects() // Simple delegation to core app
 }
+
+// MCP server methods
+func (d *DesktopApp) StartMCPServer() (string, error)
+func (d *DesktopApp) StopMCPServer() error
+func (d *DesktopApp) GetMCPServerStatus() map[string]interface{}
 ```
+
+See the [MCP Server section](#mcp-server-internalmcp) for detailed MCP integration documentation.
 
 ### Frontend Components
 
@@ -1302,24 +1322,30 @@ Frontend (React)          Backend (Go)           Crawler              Database
 
 ---
 
-## HTTP Server (cmd/server/)
+## HTTP Server (internal/server/)
 
-### Initialization
+**Note:** The HTTP server is an internal package and is NOT shipped as a standalone binary. It is used for development and testing purposes only. The primary shipping targets are:
+- Desktop application (with optional embedded MCP server)
+- MCP server (standalone mode for AI/LLM integration)
+
+### Implementation
+
+The HTTP server is located at `internal/server/` and provides a REST API for testing and development:
 
 ```go
-func main() {
-    st, err := store.NewStore()
+// internal/server/server.go
+type Server struct {
+    app *app.App
+    mux *http.ServeMux
+}
 
-    coreApp := app.NewApp(st, &app.NoOpEmitter{})
-    coreApp.Startup(context.Background())
-
-    server := NewServer(coreApp)
-
-    httpServer := &http.Server{
-        Addr:    ":8080",
-        Handler: server,
+func NewServer(app *app.App) *Server {
+    s := &Server{
+        app: app,
+        mux: http.NewServeMux(),
     }
-    httpServer.ListenAndServe()
+    s.registerRoutes()
+    return s
 }
 ```
 
@@ -1335,14 +1361,236 @@ DELETE /api/v1/projects/{id}
 GET    /api/v1/crawls/{id}
 DELETE /api/v1/crawls/{id}
 GET    /api/v1/crawls/{id}/pages/{url}/links
+GET    /api/v1/crawls/{id}/pages/{url}/content
 
 POST   /api/v1/crawl
 POST   /api/v1/stop-crawl/{projectID}
 GET    /api/v1/active-crawls
+GET    /api/v1/projects/{id}/active-stats
 
 GET    /api/v1/config?url=example.com
 PUT    /api/v1/config
+
+GET    /api/v1/search/{crawlID}?q={query}&type={contentType}&limit=100&cursor=0
 ```
+
+---
+
+## MCP Server (internal/mcp/)
+
+### Overview
+
+The MCP (Model Context Protocol) server enables AI/LLM integration with BlueSnake, exposing crawler functionality through standardized tools. The MCP server can be:
+1. **Embedded in Desktop App** - Started/stopped via UI for local AI tool integration
+2. **Standalone Mode** - Run independently for remote AI/LLM access (future)
+
+### Architecture
+
+**MCP Server Structure:**
+```go
+// internal/mcp/server.go
+type MCPServer struct {
+    server *mcp.Server        // MCP protocol server
+    app    *app.App            // Core BlueSnake app
+    store  *store.Store        // Database access
+    ctx    context.Context
+    logger *log.Logger
+}
+
+func NewMCPServer(ctx context.Context) (*MCPServer, error) {
+    // Initialize database store
+    st, err := store.NewStore()
+
+    // Create core app with NoOp emitter
+    emitter := &app.NoOpEmitter{}
+    coreApp := app.NewApp(st, emitter)
+    coreApp.Startup(ctx)
+
+    // Create MCP server
+    mcpServer := mcp.NewServer(&mcp.Implementation{
+        Name:    "bluesnake",
+        Version: "1.0.0",
+    }, nil)
+
+    s := &MCPServer{
+        server: mcpServer,
+        app:    coreApp,
+        store:  st,
+        ctx:    ctx,
+        logger: logger,
+    }
+
+    // Register all tools
+    s.registerTools()
+
+    return s, nil
+}
+```
+
+### MCP Tools (internal/mcp/tools.go)
+
+The MCP server exposes the following tools for AI/LLM agents:
+
+**Core Crawl Management:**
+- `crawl_website` - Start a new crawl with optional configuration
+- `stop_crawl` - Stop an active crawl gracefully
+- `get_crawl_status` - Get real-time progress for active/completed crawls
+
+**Result Retrieval:**
+- `get_crawl_results` - Retrieve paginated crawl results with filters
+- `search_crawl_results` - Search results with pattern matching
+- `get_crawl_statistics` - Get detailed statistics (content types, indexability)
+
+**Link and Content Analysis:**
+- `get_page_links` - Get link graph (inbound/outbound links) for a page
+- `get_page_content` - Retrieve extracted text content from a page
+
+**Project Management:**
+- `list_projects` - List all projects with latest crawl info
+- `list_project_crawls` - List all crawls for a specific project
+- `delete_project` - Delete project and all associated crawls
+- `delete_crawl` - Delete a specific crawl
+
+**Configuration:**
+- `get_domain_config` - Get crawler configuration for a domain
+- `update_domain_config` - Update domain configuration
+
+### Desktop Integration
+
+The desktop app embeds MCP server functionality via the adapter:
+
+```go
+// cmd/desktop/adapter.go
+type DesktopApp struct {
+    app            *app.App
+    ctx            context.Context
+    mcpServer      *mcp.MCPServer
+    mcpHTTPServer  *http.Server
+    mcpServerURL   string
+    mcpServerMutex sync.Mutex
+}
+
+// StartMCPServer starts embedded MCP server on available port
+func (d *DesktopApp) StartMCPServer() (string, error) {
+    // Find available port (8080-8090)
+    // Create MCP server instance
+    mcpServer, err := mcp.NewMCPServer(d.ctx)
+
+    // Start HTTP server with StreamableHTTPHandler
+    addr := fmt.Sprintf(":%d", port)
+    httpServer, err := mcpServer.RunHTTP(addr)
+
+    // Store references
+    d.mcpServer = mcpServer
+    d.mcpHTTPServer = httpServer
+    d.mcpServerURL = fmt.Sprintf("http://localhost%s", addr)
+
+    return d.mcpServerURL, nil
+}
+
+// StopMCPServer gracefully shuts down embedded server
+func (d *DesktopApp) StopMCPServer() error
+
+// GetMCPServerStatus returns current server status
+func (d *DesktopApp) GetMCPServerStatus() map[string]interface{}
+```
+
+### HTTP Transport
+
+The MCP server uses HTTP with Server-Sent Events (SSE) for communication:
+
+```go
+// RunHTTP starts MCP server with HTTP transport
+func (s *MCPServer) RunHTTP(addr string) (*http.Server, error) {
+    // Create StreamableHTTPHandler for SSE support
+    handler := mcp.NewStreamableHTTPHandler(
+        func(req *http.Request) *mcp.Server {
+            return s.server
+        },
+        nil, // Use default options
+    )
+
+    httpServer := &http.Server{
+        Addr:    addr,
+        Handler: handler,
+    }
+
+    go func() {
+        if err := httpServer.ListenAndServe(); err != nil {
+            s.logger.Printf("HTTP server error: %v", err)
+        }
+    }()
+
+    return httpServer, nil
+}
+```
+
+### Tool Example: crawl_website
+
+```go
+type CrawlWebsiteArgs struct {
+    URL    string           `json:"url"`
+    Config *CrawlConfigArgs `json:"config,omitempty"`
+}
+
+type CrawlConfigArgs struct {
+    IncludeSubdomains      *bool    `json:"includeSubdomains,omitempty"`
+    SinglePageMode         *bool    `json:"singlePageMode,omitempty"`
+    JSRenderingEnabled     *bool    `json:"jsRenderingEnabled,omitempty"`
+    Parallelism            *int     `json:"parallelism,omitempty"`
+    DiscoveryMechanisms    []string `json:"discoveryMechanisms,omitempty"`
+    RobotsTxtMode          *string  `json:"robotsTxtMode,omitempty"`
+    CheckExternalResources *bool    `json:"checkExternalResources,omitempty"`
+    // ... other config options
+}
+
+mcp.AddTool(s.server, &mcp.Tool{
+    Name:        "crawl_website",
+    Description: "Initiates a new web crawl for the specified URL with optional configuration",
+}, func(ctx context.Context, req *mcp.CallToolRequest, args CrawlWebsiteArgs) (*mcp.CallToolResult, any, error) {
+    // Apply configuration if provided
+    if args.Config != nil {
+        s.applyConfig(args.URL, args.Config)
+    }
+
+    // Start the crawl
+    err = s.app.StartCrawl(args.URL)
+
+    // Get active crawl details
+    activeCrawls := s.app.GetActiveCrawls()
+
+    return &mcp.CallToolResult{
+        Content: []mcp.Content{
+            &mcp.TextContent{
+                Text: fmt.Sprintf("Crawl started successfully for %s (Project ID: %d, Crawl ID: %d)",
+                    domain, projectID, crawlID),
+            },
+        },
+    }, result, nil
+})
+```
+
+### Usage Scenarios
+
+**1. Desktop App with MCP (Default):**
+- User starts desktop app
+- Optional: Click "Start MCP Server" in UI
+- Server starts on localhost:8080-8090
+- AI tools (Claude Desktop, etc.) can connect via URL
+- User can stop server when done
+
+**2. Standalone MCP Server (Future):**
+- Run dedicated MCP server binary
+- AI/LLM services connect remotely
+- Shared crawler instance for team use
+
+### Key Design Decisions
+
+1. **NoOpEmitter for MCP** - MCP uses polling/synchronous calls, no events needed
+2. **HTTP+SSE Transport** - Standard MCP transport for broad compatibility
+3. **Shared Database** - MCP server shares ~/.bluesnake/bluesnake.db with desktop
+4. **Port Auto-Discovery** - Desktop app finds available port (8080-8090)
+5. **Graceful Shutdown** - Proper cleanup when stopping embedded server
 
 ---
 
@@ -1532,21 +1780,33 @@ db.AutoMigrate(&PerformanceMetric{})
 
 ## Adding New Transports
 
-### Example: CLI
+### Example: Custom Transport
+
+Adding a new transport layer (e.g., gRPC, WebSocket, CLI) is straightforward:
 
 ```go
+// example: Simple CLI transport
 func main() {
+    // 1. Initialize store
     st, err := store.NewStore()
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // 2. Create app with appropriate emitter (NoOp for CLI)
     coreApp := app.NewApp(st, &app.NoOpEmitter{})
     coreApp.Startup(context.Background())
 
+    // 3. Parse CLI arguments
     url := flag.String("url", "", "URL to crawl")
     flag.Parse()
 
+    // 4. Start crawl using core app methods
     if err := coreApp.StartCrawl(*url); err != nil {
         log.Fatal(err)
     }
 
+    // 5. Poll for completion
     for {
         crawls := coreApp.GetActiveCrawls()
         if len(crawls) == 0 {
@@ -1554,10 +1814,83 @@ func main() {
         }
         time.Sleep(1 * time.Second)
     }
+
+    fmt.Println("Crawl complete!")
 }
 ```
 
-No changes to internal packages required!
+**Key Point:** No changes to `internal/` packages required - all business logic is reusable!
+
+---
+
+## Shipping and Deployment
+
+### Shipped Components
+
+BlueSnake ships the following components:
+
+**1. Desktop Application (Primary Distribution)**
+- **Location:** `cmd/desktop/`
+- **Includes:**
+  - Wails-based GUI application
+  - Embedded MCP server (optional, user-controlled)
+  - Complete crawler functionality
+  - Project and configuration management
+- **Platforms:** macOS, Windows, Linux
+- **Distribution:** Native binaries via GitHub releases
+
+**2. MCP Server (AI/LLM Integration)**
+- **Location:** `internal/mcp/`
+- **Modes:**
+  - Embedded in desktop app (default)
+  - Standalone mode (future)
+- **Purpose:** Enable AI tools to control crawler
+- **Protocol:** Model Context Protocol (HTTP+SSE)
+
+### Non-Shipped Components
+
+**1. HTTP REST API Server**
+- **Location:** `internal/server/`
+- **Status:** Internal package, NOT shipped as standalone binary
+- **Purpose:** Development and testing only
+- **Reason:** Desktop app (with MCP) is the primary interface; standalone HTTP server is redundant
+
+**2. Test Server**
+- **Location:** `cmd/testserver/`
+- **Status:** Development only
+- **Purpose:** Testing HTTP server functionality in isolation
+
+### Why MCP Instead of HTTP?
+
+BlueSnake shifted focus from standalone HTTP server to MCP server for the following reasons:
+
+1. **AI-First Design** - MCP enables direct integration with AI tools (Claude, GPT, etc.)
+2. **Standardized Protocol** - MCP provides consistent tool interface for LLMs
+3. **Desktop Integration** - Embedded MCP server provides best of both worlds
+4. **Future Flexibility** - MCP can be run standalone if needed
+5. **Reduced Complexity** - One primary interface (desktop) instead of multiple binaries
+
+### Deployment Scenarios
+
+**Scenario 1: Individual User (Default)**
+```
+User installs desktop app → Uses GUI for crawling → Optionally enables MCP for AI integration
+```
+
+**Scenario 2: AI/LLM Integration**
+```
+User starts desktop app → Enables MCP server → AI tool (Claude Desktop) connects → AI controls crawler
+```
+
+**Scenario 3: Standalone MCP (Future)**
+```
+Deploy MCP server on cloud/server → Multiple AI agents connect remotely → Shared crawler instance
+```
+
+**Scenario 4: Development/Testing**
+```
+Use cmd/testserver for HTTP API testing → Not for production deployment
+```
 
 ---
 
@@ -1568,7 +1901,7 @@ BlueSnake demonstrates a clean layered architecture:
 1. **Crawler Package** - Channel-based crawling with race-free visit tracking
 2. **Store Layer** - Data persistence
 3. **Business Logic** - Transport-agnostic orchestration
-4. **Transport Layers** - Thin adapters (Desktop, HTTP Server, future: CLI, MCP)
+4. **Transport Layers** - Desktop (Wails), MCP (AI integration), HTTP (testing only)
 
 ### Key Benefits
 
@@ -1578,12 +1911,14 @@ BlueSnake demonstrates a clean layered architecture:
 4. **Maintainability**: Clear boundaries and single responsibility
 5. **Reliability**: Channel-based architecture eliminates race conditions
 6. **Determinism**: Every crawl produces consistent, complete results
+7. **AI-Ready**: Native MCP integration for LLM/AI agents
 
 ### Design Patterns
 
 - **Repository Pattern**: Store layer abstracts database
 - **Dependency Injection**: Store and EventEmitter injected
 - **Adapter Pattern**: Transport layers adapt core App
-- **Observer Pattern**: EventEmitter for decoupled events
+- **Observer Pattern**: EventEmitter for decoupled events (desktop only)
 - **Channel-Based Concurrency**: Single-threaded processor with worker pool
 - **Pipeline Pattern**: URL discovery → processor → worker pool
+- **Embedded Server Pattern**: MCP server embedded in desktop app
