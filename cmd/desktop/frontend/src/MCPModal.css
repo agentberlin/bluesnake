@@ -113,3 +113,96 @@
   margin: 0;
   font-size: 14px;
 }
+
+/* Server warning */
+.mcp-server-warning {
+  padding: 20px;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.mcp-server-warning p {
+  margin: 0;
+  color: #856404;
+  font-size: 14px;
+}
+
+/* Tabs */
+.mcp-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.mcp-tab {
+  background: none;
+  border: none;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #666;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s ease;
+  position: relative;
+  bottom: -1px;
+}
+
+.mcp-tab:hover {
+  color: #1a1a1a;
+  background: #fafafa;
+}
+
+.mcp-tab.active {
+  color: #1a1a1a;
+  border-bottom-color: #1a1a1a;
+}
+
+.mcp-tab-content {
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.mcp-tab-description {
+  margin: 0 0 16px 0;
+  font-size: 13px;
+  color: #666;
+  line-height: 1.5;
+}
+
+.mcp-url-display {
+  background: #fafafa;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 16px;
+  margin-bottom: 12px;
+  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+  font-size: 14px;
+  color: #1a1a1a;
+  word-break: break-all;
+}
+
+/* Stop server section */
+.mcp-stop-server-section {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid #e0e0e0;
+  display: flex;
+  justify-content: flex-end;
+}

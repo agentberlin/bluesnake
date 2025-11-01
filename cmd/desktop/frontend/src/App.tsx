@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl, GetProjects, GetCrawls, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlStats, GetCrawlStats, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL, UpdateConfigForDomain, GetConfigForDomain, DetectJSRenderingNeed, SearchCrawlResultsPaginated, CheckSystemHealth } from "../wailsjs/go/main/DesktopApp";
+import { StartCrawl, GetProjects, GetCrawls, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlStats, GetCrawlStats, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL, UpdateConfigForDomain, GetConfigForDomain, DetectJSRenderingNeed, SearchCrawlResultsPaginated, CheckSystemHealth, StartMCPServer, StopMCPServer, GetMCPServerStatus } from "../wailsjs/go/main/DesktopApp";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
@@ -292,6 +292,9 @@ function App() {
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [showMCPModal, setShowMCPModal] = useState(false);
+  const [mcpServerUrl, setMcpServerUrl] = useState<string>('');
+  const [isMcpServerRunning, setIsMcpServerRunning] = useState(false);
+  const [isStartingMcpServer, setIsStartingMcpServer] = useState(false);
 
   // Error dialog state
   const [showErrorDialog, setShowErrorDialog] = useState(false);
@@ -415,6 +418,18 @@ function App() {
       // Just trigger a refresh - polling will handle the updates
       loadProjects();
     });
+
+    // Check MCP server status on mount
+    GetMCPServerStatus()
+      .then((status: any) => {
+        if (status.running) {
+          setIsMcpServerRunning(true);
+          setMcpServerUrl(status.url);
+        }
+      })
+      .catch((error: any) => {
+        console.error('Failed to get MCP server status:', error);
+      });
   }, []);
 
   const loadProjects = async () => {
@@ -1127,6 +1142,38 @@ function App() {
     }
   };
 
+  const handleStartMCPServer = async () => {
+    if (isMcpServerRunning) {
+      // If already running, just show the modal
+      setShowMCPModal(true);
+      return;
+    }
+
+    try {
+      setIsStartingMcpServer(true);
+      const url = await StartMCPServer();
+      setMcpServerUrl(url);
+      setIsMcpServerRunning(true);
+      setShowMCPModal(true);
+    } catch (error) {
+      console.error('Failed to start MCP server:', error);
+      alert(`Failed to start MCP server: ${error}`);
+    } finally {
+      setIsStartingMcpServer(false);
+    }
+  };
+
+  const handleStopMCPServer = async () => {
+    try {
+      await StopMCPServer();
+      setIsMcpServerRunning(false);
+      setMcpServerUrl('');
+    } catch (error) {
+      console.error('Failed to stop MCP server:', error);
+      alert(`Failed to stop MCP server: ${error}`);
+    }
+  };
+
   const handleUpdate = async () => {
     if (!updateInfo?.updateAvailable) return;
 
@@ -1234,12 +1281,13 @@ function App() {
         <div className="start-screen">
           <div className="mcp-button-container">
             <Button
-              variant="secondary"
+              variant={isMcpServerRunning ? "primary" : "secondary"}
               size="small"
-              icon={<Icon name="external-link" size={14} />}
-              onClick={() => setShowMCPModal(true)}
+              icon={<Icon name={isMcpServerRunning ? "check-circle" : "external-link"} size={14} />}
+              onClick={handleStartMCPServer}
+              disabled={isStartingMcpServer}
             >
-              Start MCP
+              {isStartingMcpServer ? "Starting..." : isMcpServerRunning ? "MCP Server Running" : "Start MCP Server"}
             </Button>
           </div>
 
@@ -1427,7 +1475,12 @@ function App() {
         )}
 
         {/* MCP Modal */}
-        <MCPModal isOpen={showMCPModal} onClose={() => setShowMCPModal(false)} />
+        <MCPModal
+          isOpen={showMCPModal}
+          onClose={() => setShowMCPModal(false)}
+          serverUrl={mcpServerUrl}
+          onStopServer={handleStopMCPServer}
+        />
       </div>
     );
   }

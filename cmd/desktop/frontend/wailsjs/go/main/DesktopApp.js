@@ -54,12 +54,12 @@ export function GetCrawls(arg1) {
   return window['go']['main']['DesktopApp']['GetCrawls'](arg1);
 }
 
-export function GetExecutablePath() {
-  return window['go']['main']['DesktopApp']['GetExecutablePath']();
-}
-
 export function GetFaviconData(arg1) {
   return window['go']['main']['DesktopApp']['GetFaviconData'](arg1);
+}
+
+export function GetMCPServerStatus() {
+  return window['go']['main']['DesktopApp']['GetMCPServerStatus']();
 }
 
 export function GetPageContent(arg1, arg2) {
@@ -94,12 +94,20 @@ export function StartCrawl(arg1) {
   return window['go']['main']['DesktopApp']['StartCrawl'](arg1);
 }
 
+export function StartMCPServer() {
+  return window['go']['main']['DesktopApp']['StartMCPServer']();
+}
+
 export function Startup(arg1) {
   return window['go']['main']['DesktopApp']['Startup'](arg1);
 }
 
 export function StopCrawl(arg1) {
   return window['go']['main']['DesktopApp']['StopCrawl'](arg1);
+}
+
+export function StopMCPServer() {
+  return window['go']['main']['DesktopApp']['StopMCPServer']();
 }
 
 export function UpdateConfigForDomain(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18) {
