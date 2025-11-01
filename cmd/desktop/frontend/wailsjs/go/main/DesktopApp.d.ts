@@ -29,6 +29,8 @@ export function GetCrawlWithResultsPaginated(arg1:number,arg2:number,arg3:number
 
 export function GetCrawls(arg1:number):Promise<Array<types.CrawlInfo>>;
 
+export function GetExecutablePath():Promise<string>;
+
 export function GetFaviconData(arg1:string):Promise<string>;
 
 export function GetPageContent(arg1:number,arg2:string):Promise<string>;

@@ -54,6 +54,10 @@ export function GetCrawls(arg1) {
   return window['go']['main']['DesktopApp']['GetCrawls'](arg1);
 }
 
+export function GetExecutablePath() {
+  return window['go']['main']['DesktopApp']['GetExecutablePath']();
+}
+
 export function GetFaviconData(arg1) {
   return window['go']['main']['DesktopApp']['GetFaviconData'](arg1);
 }

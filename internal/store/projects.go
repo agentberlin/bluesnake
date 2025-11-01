@@ -116,7 +116,14 @@ func (s *Store) GetProjectByID(id uint) (*Project, error) {
 
 // DeleteProject deletes a project and all its crawls (cascade)
 func (s *Store) DeleteProject(projectID uint) error {
-	return s.db.Delete(&Project{}, projectID).Error
+	result := s.db.Delete(&Project{}, projectID)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("project with ID %d not found", projectID)
+	}
+	return nil
 }
 
 // GetProjectByDomain gets a project by domain

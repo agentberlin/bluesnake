@@ -16,9 +16,44 @@ package app
 
 import (
 	"fmt"
+	"net"
 	"net/url"
+	"regexp"
 	"strings"
 )
+
+// hostnameRegex matches valid hostnames and IP addresses
+// Valid hostname components: alphanumeric, hyphens (not at start/end)
+// Must have at least one dot OR be "localhost" OR be an IP address
+var hostnameRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
+
+// isValidHostname validates a hostname or IP address
+func isValidHostname(hostname string) bool {
+	// Check if it's "localhost"
+	if hostname == "localhost" {
+		return true
+	}
+
+	// Check if it's a valid IPv4 address
+	if ip := net.ParseIP(hostname); ip != nil && ip.To4() != nil {
+		return true
+	}
+
+	// Check if it's a valid IPv6 address
+	if ip := net.ParseIP(hostname); ip != nil && ip.To16() != nil {
+		return true
+	}
+
+	// Check if it matches valid hostname pattern (must have at least one dot)
+	// This rejects single words like "randomstring" but allows "example.com"
+	if !strings.Contains(hostname, ".") && hostname != "localhost" {
+		return false
+	}
+
+	// Additional validation: hostname must match standard DNS naming rules
+	// or be localhost or an IP address
+	return hostnameRegex.MatchString(hostname)
+}
 
 // normalizeURL normalizes a URL input and extracts the domain identifier
 // Returns: (normalizedURL, domain, error)
@@ -49,6 +84,11 @@ func normalizeURL(input string) (string, string, error) {
 
 	// Convert hostname to lowercase for case-insensitive comparison
 	hostname = strings.ToLower(hostname)
+
+	// Validate hostname format
+	if !isValidHostname(hostname) {
+		return "", "", fmt.Errorf("invalid hostname: %s (must be a valid domain name, IP address, or 'localhost')", hostname)
+	}
 
 	// Build normalized URL
 	// Keep port if it's non-standard (not 80 for http, not 443 for https)
