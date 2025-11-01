@@ -16,10 +16,14 @@ package main
 
 import (
 	"context"
-	"os"
-	"path/filepath"
+	"fmt"
+	"net"
+	"net/http"
+	"sync"
+	"time"
 
 	"github.com/agentberlin/bluesnake/internal/app"
+	"github.com/agentberlin/bluesnake/internal/mcp"
 	"github.com/agentberlin/bluesnake/internal/types"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -43,8 +47,12 @@ func (w *WailsEmitter) Emit(eventType app.EventType, data interface{}) {
 // DesktopApp is the Wails-specific adapter that wraps the core App
 // All methods here are thin wrappers that simply delegate to the core app
 type DesktopApp struct {
-	app *app.App
-	ctx context.Context
+	app            *app.App
+	ctx            context.Context
+	mcpServer      *mcp.MCPServer
+	mcpHTTPServer  *http.Server
+	mcpServerURL   string
+	mcpServerMutex sync.Mutex
 }
 
 // NewDesktopApp creates a new DesktopApp adapter
@@ -197,19 +205,89 @@ func (d *DesktopApp) CheckSystemHealth() *types.SystemHealthCheck {
 	return d.app.CheckSystemHealth()
 }
 
-// GetExecutablePath returns the absolute path to the current executable
-// This is used for MCP configuration to show the correct command path
-func (d *DesktopApp) GetExecutablePath() (string, error) {
-	exePath, err := os.Executable()
-	if err != nil {
-		return "", err
+// StartMCPServer starts the MCP HTTP server on an available port
+func (d *DesktopApp) StartMCPServer() (string, error) {
+	d.mcpServerMutex.Lock()
+	defer d.mcpServerMutex.Unlock()
+
+	// Check if server is already running
+	if d.mcpHTTPServer != nil {
+		return d.mcpServerURL, nil
 	}
 
-	// Resolve any symlinks to get the actual path
-	realPath, err := filepath.EvalSymlinks(exePath)
-	if err != nil {
-		return exePath, nil // Return the original path if we can't resolve symlinks
+	// Find an available port starting from 8080
+	port := 8080
+	for {
+		addr := fmt.Sprintf(":%d", port)
+		listener, err := net.Listen("tcp", addr)
+		if err == nil {
+			listener.Close()
+			break
+		}
+		port++
+		if port > 8090 {
+			return "", fmt.Errorf("no available ports found between 8080-8090")
+		}
 	}
 
-	return realPath, nil
+	// Create MCP server instance
+	mcpServer, err := mcp.NewMCPServer(d.ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to create MCP server: %w", err)
+	}
+
+	// Start HTTP server
+	addr := fmt.Sprintf(":%d", port)
+	httpServer, err := mcpServer.RunHTTP(addr)
+	if err != nil {
+		return "", fmt.Errorf("failed to start HTTP server: %w", err)
+	}
+
+	// Store server references
+	d.mcpServer = mcpServer
+	d.mcpHTTPServer = httpServer
+	d.mcpServerURL = fmt.Sprintf("http://localhost%s", addr)
+
+	return d.mcpServerURL, nil
+}
+
+// StopMCPServer gracefully shuts down the MCP HTTP server
+func (d *DesktopApp) StopMCPServer() error {
+	d.mcpServerMutex.Lock()
+	defer d.mcpServerMutex.Unlock()
+
+	if d.mcpHTTPServer == nil {
+		return nil // Server not running
+	}
+
+	// Shutdown HTTP server
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := d.mcpHTTPServer.Shutdown(ctx); err != nil {
+		return fmt.Errorf("failed to shutdown HTTP server: %w", err)
+	}
+
+	// Close MCP server
+	if d.mcpServer != nil {
+		d.mcpServer.Close()
+	}
+
+	// Clear references
+	d.mcpHTTPServer = nil
+	d.mcpServer = nil
+	d.mcpServerURL = ""
+
+	return nil
+}
+
+// GetMCPServerStatus returns the current MCP server status
+func (d *DesktopApp) GetMCPServerStatus() map[string]interface{} {
+	d.mcpServerMutex.Lock()
+	defer d.mcpServerMutex.Unlock()
+
+	return map[string]interface{}{
+		"running": d.mcpHTTPServer != nil,
+		"url":     d.mcpServerURL,
+	}
 }

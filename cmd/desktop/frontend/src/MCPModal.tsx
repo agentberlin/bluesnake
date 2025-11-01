@@ -13,13 +13,15 @@
 // limitations under the License.
 
 import React, { useState, useEffect } from 'react';
-import { Modal, ModalContent, ModalActions, Button, Icon, Badge } from './design-system';
-import { GetExecutablePath } from '../wailsjs/go/main/DesktopApp';
+import { Modal, ModalContent, Button, Icon, Badge } from './design-system';
+import { GetMCPServerStatus } from '../wailsjs/go/main/DesktopApp';
 import './MCPModal.css';
 
 interface MCPModalProps {
   isOpen: boolean;
   onClose: () => void;
+  serverUrl?: string;
+  onStopServer?: () => void;
 }
 
 const detectPlatform = (): 'macOS' | 'Windows' | 'Linux' => {
@@ -30,56 +32,60 @@ const detectPlatform = (): 'macOS' | 'Windows' | 'Linux' => {
   return 'Linux';
 };
 
-const getConfigForPlatform = (platform: string) => {
+const getConfigPathForPlatform = (platform: string) => {
   const configs = {
-    'macOS': {
-      command: '/Applications/BlueSnake.app/Contents/MacOS/BlueSnake',
-      configPath: '~/Library/Application Support/Claude/claude_desktop_config.json'
-    },
-    'Windows': {
-      command: 'C:\\Program Files\\BlueSnake\\BlueSnake.exe',
-      configPath: '%APPDATA%\\Claude\\claude_desktop_config.json'
-    },
-    'Linux': {
-      command: '/opt/bluesnake/bluesnake',
-      configPath: '~/.config/Claude/claude_desktop_config.json'
-    }
+    'macOS': '~/Library/Application Support/Claude/claude_desktop_config.json',
+    'Windows': '%APPDATA%\\Claude\\claude_desktop_config.json',
+    'Linux': '~/.config/Claude/claude_desktop_config.json'
   };
 
   return configs[platform as keyof typeof configs];
 };
 
-export const MCPModal: React.FC<MCPModalProps> = ({ isOpen, onClose }) => {
+type ConfigTab = 'desktop' | 'code' | 'web';
+
+export const MCPModal: React.FC<MCPModalProps> = ({ isOpen, onClose, serverUrl: propServerUrl, onStopServer }) => {
   const [copied, setCopied] = useState(false);
-  const [executablePath, setExecutablePath] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<ConfigTab>('desktop');
+  const [serverUrl, setServerUrl] = useState<string>(propServerUrl || '');
+  const [isServerRunning, setIsServerRunning] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const platform = detectPlatform();
-  const platformConfig = getConfigForPlatform(platform);
+  const configPath = getConfigPathForPlatform(platform);
 
-  // Fetch the actual executable path when modal opens
+  // Fetch server status when modal opens
   useEffect(() => {
     if (isOpen) {
       setIsLoading(true);
-      GetExecutablePath()
-        .then((path: string) => {
-          setExecutablePath(path);
+      GetMCPServerStatus()
+        .then((status: any) => {
+          setIsServerRunning(status.running);
+          if (status.url) {
+            setServerUrl(status.url);
+          }
           setIsLoading(false);
         })
         .catch((error: any) => {
-          console.error('Failed to get executable path:', error);
-          // Fallback to default path
-          setExecutablePath(platformConfig.command);
+          console.error('Failed to get server status:', error);
           setIsLoading(false);
         });
     }
-  }, [isOpen, platformConfig.command]);
+  }, [isOpen]);
 
-  const configJSON = JSON.stringify(
+  // Update serverUrl when prop changes
+  useEffect(() => {
+    if (propServerUrl) {
+      setServerUrl(propServerUrl);
+      setIsServerRunning(true);
+    }
+  }, [propServerUrl]);
+
+  const desktopConfig = JSON.stringify(
     {
       mcpServers: {
         bluesnake: {
-          command: executablePath || platformConfig.command,
-          args: ['mcp']
+          command: 'npx',
+          args: ['-y', 'mcp-remote', serverUrl]
         }
       }
     },
@@ -87,13 +93,36 @@ export const MCPModal: React.FC<MCPModalProps> = ({ isOpen, onClose }) => {
     2
   );
 
-  const handleCopyConfig = async () => {
+  const codeConfig = JSON.stringify(
+    {
+      mcpServers: {
+        bluesnake: {
+          url: serverUrl,
+          transport: 'streamable'
+        }
+      }
+    },
+    null,
+    2
+  );
+
+  const handleCopyConfig = async (config: string) => {
     try {
-      await navigator.clipboard.writeText(configJSON);
+      await navigator.clipboard.writeText(config);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (error) {
       console.error('Failed to copy configuration:', error);
+    }
+  };
+
+  const handleCopyUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(serverUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (error) {
+      console.error('Failed to copy URL:', error);
     }
   };
 
@@ -109,47 +138,171 @@ export const MCPModal: React.FC<MCPModalProps> = ({ isOpen, onClose }) => {
     >
       <ModalContent>
         <div className="mcp-modal-intro">
-          <p>Access BlueSnake's web crawling capabilities directly from Claude AI conversations.</p>
+          <p>Access BlueSnake's web crawling capabilities from Claude AI, Claude Code, and other AI assistants.</p>
         </div>
 
         {isLoading ? (
           <div className="mcp-loading">
-            <p>Detecting executable path...</p>
+            <p>Checking server status...</p>
+          </div>
+        ) : !isServerRunning ? (
+          <div className="mcp-server-warning">
+            <Icon name="alert-triangle" size={20} />
+            <p>MCP server is not running. Click "Start MCP Server" to enable access.</p>
           </div>
         ) : (
           <>
-            <div className="mcp-config-section">
-              <h4>Configuration for {platform}</h4>
-              <pre className="mcp-config-code">
-                <code>{configJSON}</code>
-              </pre>
-              <Button
-                variant="primary"
-                size="small"
-                icon={<Icon name={copied ? "check" : "copy"} size={14} />}
-                onClick={handleCopyConfig}
+            <div className="mcp-tabs">
+              <button
+                className={`mcp-tab ${activeTab === 'desktop' ? 'active' : ''}`}
+                onClick={() => setActiveTab('desktop')}
               >
-                {copied ? "Copied!" : "Copy Configuration"}
-              </Button>
+                Claude Desktop
+              </button>
+              <button
+                className={`mcp-tab ${activeTab === 'code' ? 'active' : ''}`}
+                onClick={() => setActiveTab('code')}
+              >
+                Claude Code
+              </button>
+              <button
+                className={`mcp-tab ${activeTab === 'web' ? 'active' : ''}`}
+                onClick={() => setActiveTab('web')}
+              >
+                Web & Others
+              </button>
             </div>
 
-            <div className="mcp-config-location">
-              <h4>Config File Location</h4>
-              <Badge variant="neutral">
-                <code>{platformConfig.configPath}</code>
-              </Badge>
-            </div>
+            {activeTab === 'desktop' && (
+              <div className="mcp-tab-content">
+                <div className="mcp-config-section">
+                  <h4>Configuration for Claude Desktop</h4>
+                  <p className="mcp-tab-description">
+                    Requires <code>mcp-remote</code> proxy to connect Claude Desktop to HTTP servers.
+                  </p>
+                  <pre className="mcp-config-code">
+                    <code>{desktopConfig}</code>
+                  </pre>
+                  <Button
+                    variant="primary"
+                    size="small"
+                    icon={<Icon name={copied ? "check" : "copy"} size={14} />}
+                    onClick={() => handleCopyConfig(desktopConfig)}
+                  >
+                    {copied ? "Copied!" : "Copy Configuration"}
+                  </Button>
+                </div>
 
-            <div className="mcp-instructions">
-              <h4>Setup Instructions</h4>
-              <ol>
-                <li>Copy the configuration above</li>
-                <li>Open your Claude Desktop config file at the location shown</li>
-                <li>Add the configuration under the <code>mcpServers</code> key</li>
-                <li>Restart Claude Desktop to apply changes</li>
-              </ol>
-            </div>
+                <div className="mcp-config-location">
+                  <h4>Config File Location</h4>
+                  <Badge variant="neutral">
+                    <code>{configPath}</code>
+                  </Badge>
+                </div>
+
+                <div className="mcp-instructions">
+                  <h4>Setup Instructions</h4>
+                  <ol>
+                    <li>Copy the configuration above</li>
+                    <li>Open your Claude Desktop config file at the location shown</li>
+                    <li>Add the configuration under the <code>mcpServers</code> key</li>
+                    <li>Restart Claude Desktop to apply changes</li>
+                  </ol>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'code' && (
+              <div className="mcp-tab-content">
+                <div className="mcp-config-section">
+                  <h4>Configuration for Claude Code</h4>
+                  <p className="mcp-tab-description">
+                    Claude Code supports direct HTTP/Streamable transport connections.
+                  </p>
+                  <pre className="mcp-config-code">
+                    <code>{codeConfig}</code>
+                  </pre>
+                  <Button
+                    variant="primary"
+                    size="small"
+                    icon={<Icon name={copied ? "check" : "copy"} size={14} />}
+                    onClick={() => handleCopyConfig(codeConfig)}
+                  >
+                    {copied ? "Copied!" : "Copy Configuration"}
+                  </Button>
+                </div>
+
+                <div className="mcp-config-location">
+                  <h4>Config File Location</h4>
+                  <Badge variant="neutral">
+                    <code>~/.claude/claude_code_config.json</code>
+                  </Badge>
+                </div>
+
+                <div className="mcp-instructions">
+                  <h4>Setup Instructions</h4>
+                  <ol>
+                    <li>Copy the configuration above</li>
+                    <li>Open your Claude Code config file</li>
+                    <li>Add the configuration under the <code>mcpServers</code> key</li>
+                    <li>Reload Claude Code to apply changes</li>
+                  </ol>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'web' && (
+              <div className="mcp-tab-content">
+                <div className="mcp-config-section">
+                  <h4>Server URL</h4>
+                  <p className="mcp-tab-description">
+                    Use this URL for Claude.ai web interface, GPT connectors, or other AI assistants.
+                  </p>
+                  <div className="mcp-url-display">
+                    <code>{serverUrl}</code>
+                  </div>
+                  <Button
+                    variant="primary"
+                    size="small"
+                    icon={<Icon name={copied ? "check" : "copy"} size={14} />}
+                    onClick={handleCopyUrl}
+                  >
+                    {copied ? "Copied!" : "Copy URL"}
+                  </Button>
+                </div>
+
+                <div className="mcp-instructions">
+                  <h4>Remote Access (Optional)</h4>
+                  <p>To share with friends or access remotely, use a tunnel service:</p>
+                  <pre className="mcp-config-code">
+                    <code>cloudflared tunnel --url {serverUrl}</code>
+                  </pre>
+                  <p style={{ marginTop: '10px', fontSize: '14px', color: '#666' }}>
+                    Or use ngrok: <code>ngrok http {serverUrl.replace('http://localhost:', '')}</code>
+                  </p>
+                  <p style={{ marginTop: '10px', fontSize: '14px', color: '#666' }}>
+                    <strong>Note:</strong> The tunnel will provide a public URL that you can share.
+                  </p>
+                </div>
+              </div>
+            )}
           </>
+        )}
+
+        {isServerRunning && onStopServer && (
+          <div className="mcp-stop-server-section">
+            <Button
+              variant="danger"
+              size="small"
+              icon={<Icon name="x" size={14} />}
+              onClick={() => {
+                onStopServer();
+                onClose();
+              }}
+            >
+              Stop MCP Server
+            </Button>
+          </div>
         )}
       </ModalContent>
     </Modal>

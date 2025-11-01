@@ -21,7 +21,6 @@ import (
 	"os"
 
 	"github.com/agentberlin/bluesnake/internal/app"
-	"github.com/agentberlin/bluesnake/internal/mcp"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/agentberlin/bluesnake/internal/version"
 	"github.com/wailsapp/wails/v2"
@@ -33,12 +32,6 @@ import (
 var assets embed.FS
 
 func main() {
-	// Check if running in MCP mode
-	if len(os.Args) > 1 && os.Args[1] == "mcp" {
-		runMCPMode()
-		return
-	}
-
 	// Create desktop app adapter (will be initialized in OnStartup)
 	desktopApp := &DesktopApp{}
 
@@ -85,26 +78,4 @@ func main() {
 	if err != nil {
 		println("Error:", err.Error())
 	}
-}
-
-// runMCPMode starts the MCP server on stdio transport
-func runMCPMode() {
-	log.SetOutput(os.Stderr) // All logs go to stderr
-	log.Println("Starting BlueSnake MCP server...")
-
-	ctx := context.Background()
-
-	// Create and run MCP server
-	mcpServer, err := mcp.NewMCPServer(ctx)
-	if err != nil {
-		log.Fatalf("Failed to create MCP server: %v", err)
-	}
-	defer mcpServer.Close()
-
-	// Run the server (blocks until stdin closes or error)
-	if err := mcpServer.Run(); err != nil {
-		log.Fatalf("MCP server error: %v", err)
-	}
-
-	log.Println("BlueSnake MCP server stopped")
 }

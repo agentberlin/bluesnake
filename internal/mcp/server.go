@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 
 	"github.com/agentberlin/bluesnake/internal/app"
@@ -61,10 +62,38 @@ func NewMCPServer(ctx context.Context) (*MCPServer, error) {
 	return s, nil
 }
 
-// Run starts the MCP server with stdio transport
-func (s *MCPServer) Run() error {
-	s.logger.Printf("Starting MCP server on stdio transport...")
-	return s.server.Run(s.ctx, &mcp.StdioTransport{})
+// GetServer returns the internal MCP server instance
+func (s *MCPServer) GetServer() *mcp.Server {
+	return s.server
+}
+
+// RunHTTP starts the MCP server with HTTP transport using StreamableHTTPHandler
+func (s *MCPServer) RunHTTP(addr string) (*http.Server, error) {
+	s.logger.Printf("Starting MCP HTTP server on %s...", addr)
+
+	// Create StreamableHTTPHandler
+	handler := mcp.NewStreamableHTTPHandler(
+		func(req *http.Request) *mcp.Server {
+			return s.server
+		},
+		nil, // Use default StreamableHTTPOptions
+	)
+
+	// Create HTTP server
+	httpServer := &http.Server{
+		Addr:    addr,
+		Handler: handler,
+	}
+
+	// Start server in goroutine
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.logger.Printf("HTTP server error: %v", err)
+		}
+	}()
+
+	s.logger.Printf("MCP HTTP server started successfully on %s", addr)
+	return httpServer, nil
 }
 
 // Close performs cleanup
