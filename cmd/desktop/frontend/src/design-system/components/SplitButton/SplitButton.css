@@ -24,6 +24,17 @@
   align-self: stretch;
 }
 
+/* Secondary action button */
+.ds-split-button-secondary {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  min-width: auto !important;
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+  height: auto !important;
+  align-self: stretch;
+}
+
 /* Menu container should stretch to match button height */
 .ds-split-button > .ds-menu-container {
   display: flex;
@@ -33,11 +44,13 @@
 }
 
 /* Add border between buttons for visual separation */
-.ds-split-button-main + .ds-menu-container .ds-split-button-dropdown {
+.ds-split-button-main + .ds-menu-container .ds-split-button-dropdown,
+.ds-split-button-main + .ds-split-button-secondary {
   position: relative;
 }
 
-.ds-split-button-main + .ds-menu-container .ds-split-button-dropdown::before {
+.ds-split-button-main + .ds-menu-container .ds-split-button-dropdown::before,
+.ds-split-button-main + .ds-split-button-secondary::before {
   content: '';
   position: absolute;
   left: 0;
@@ -48,21 +61,25 @@
 }
 
 /* Primary variant */
-.ds-split-button .ds-button--primary.ds-split-button-dropdown::before {
+.ds-split-button .ds-button--primary.ds-split-button-dropdown::before,
+.ds-split-button .ds-button--primary.ds-split-button-secondary::before {
   background: rgba(255, 255, 255, 0.2);
 }
 
 /* Secondary variant */
-.ds-split-button .ds-button--secondary.ds-split-button-dropdown::before {
+.ds-split-button .ds-button--secondary.ds-split-button-dropdown::before,
+.ds-split-button .ds-button--secondary.ds-split-button-secondary::before {
   background: rgba(0, 0, 0, 0.1);
 }
 
 /* Danger variant */
-.ds-split-button .ds-button--danger.ds-split-button-dropdown::before {
+.ds-split-button .ds-button--danger.ds-split-button-dropdown::before,
+.ds-split-button .ds-button--danger.ds-split-button-secondary::before {
   background: rgba(255, 255, 255, 0.2);
 }
 
 /* Ghost variant - no separator */
-.ds-split-button .ds-button--ghost.ds-split-button-dropdown::before {
+.ds-split-button .ds-button--ghost.ds-split-button-dropdown::before,
+.ds-split-button .ds-button--ghost.ds-split-button-secondary::before {
   display: none;
 }

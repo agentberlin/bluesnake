@@ -34,7 +34,8 @@ export type IconName =
   | 'alert-triangle'
   | 'info'
   | 'check-circle'
-  | 'arrow-right';
+  | 'arrow-right'
+  | 'stop';
 
 export interface IconProps {
   name: IconName;
@@ -155,6 +156,7 @@ const iconPaths: Record<IconName, JSX.Element> = {
       <polyline points="12 5 19 12 12 19" />
     </>
   ),
+  'stop': <rect x="6" y="6" width="12" height="12" rx="2" />,
 };
 
 export const Icon: React.FC<IconProps> = ({

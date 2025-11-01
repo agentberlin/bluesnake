@@ -46,7 +46,7 @@ type ConfigTab = 'desktop' | 'code' | 'web';
 
 export const MCPModal: React.FC<MCPModalProps> = ({ isOpen, onClose, serverUrl: propServerUrl, onStopServer }) => {
   const [copied, setCopied] = useState(false);
-  const [activeTab, setActiveTab] = useState<ConfigTab>('desktop');
+  const [activeTab, setActiveTab] = useState<ConfigTab>('web');
   const [serverUrl, setServerUrl] = useState<string>(propServerUrl || '');
   const [isServerRunning, setIsServerRunning] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -154,6 +154,12 @@ export const MCPModal: React.FC<MCPModalProps> = ({ isOpen, onClose, serverUrl: 
           <>
             <div className="mcp-tabs">
               <button
+                className={`mcp-tab ${activeTab === 'web' ? 'active' : ''}`}
+                onClick={() => setActiveTab('web')}
+              >
+                Connectors
+              </button>
+              <button
                 className={`mcp-tab ${activeTab === 'desktop' ? 'active' : ''}`}
                 onClick={() => setActiveTab('desktop')}
               >
@@ -164,12 +170,6 @@ export const MCPModal: React.FC<MCPModalProps> = ({ isOpen, onClose, serverUrl: 
                 onClick={() => setActiveTab('code')}
               >
                 Claude Code
-              </button>
-              <button
-                className={`mcp-tab ${activeTab === 'web' ? 'active' : ''}`}
-                onClick={() => setActiveTab('web')}
-              >
-                Web & Others
               </button>
             </div>
 
@@ -289,21 +289,6 @@ export const MCPModal: React.FC<MCPModalProps> = ({ isOpen, onClose, serverUrl: 
           </>
         )}
 
-        {isServerRunning && onStopServer && (
-          <div className="mcp-stop-server-section">
-            <Button
-              variant="danger"
-              size="small"
-              icon={<Icon name="x" size={14} />}
-              onClick={() => {
-                onStopServer();
-                onClose();
-              }}
-            >
-              Stop MCP Server
-            </Button>
-          </div>
-        )}
       </ModalContent>
     </Modal>
   );
