@@ -170,11 +170,39 @@ func (a *App) CheckRobotsTxt(targetURL string) (map[string]types.BotAccess, erro
 		Timeout: 10 * time.Second,
 	}
 
-	resp, err := client.Get(robotsURL)
+	req, err := http.NewRequest("GET", robotsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	// Set a proper User-Agent to avoid being blocked by servers
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; BlueSnake/1.0; +https://github.com/agentberlin/bluesnake)")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch robots.txt: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// Load bot configuration
+	config, err := loadBotsConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load bots config: %w", err)
+	}
+
+	// Check each bot
+	results := make(map[string]types.BotAccess)
+
+	// If robots.txt doesn't exist (404), all bots are allowed by default
+	if resp.StatusCode == http.StatusNotFound {
+		for _, bot := range config.Bots {
+			results[bot.Name] = types.BotAccess{
+				Allowed: true,
+				Domain:  bot.Domain,
+				Message: "No robots.txt (all allowed)",
+			}
+		}
+		return results, nil
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("robots.txt returned status %d", resp.StatusCode)
@@ -191,14 +219,6 @@ func (a *App) CheckRobotsTxt(targetURL string) (map[string]types.BotAccess, erro
 		return nil, fmt.Errorf("failed to parse robots.txt: %w", err)
 	}
 
-	// Load bot configuration
-	config, err := loadBotsConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load bots config: %w", err)
-	}
-
-	// Check each bot
-	results := make(map[string]types.BotAccess)
 	for _, bot := range config.Bots {
 		userAgent := buildUserAgent(bot)
 		allowed := robotsData.TestAgent(targetURL, userAgent)
@@ -395,7 +415,14 @@ func (a *App) CheckSSR(targetURL string) (*types.ContentVisibilityResult, string
 		Timeout: 10 * time.Second,
 	}
 
-	resp, err := client.Get(targetURL)
+	req, err := http.NewRequest("GET", targetURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create request: %w", err)
+	}
+	// Set a proper User-Agent to avoid being blocked by servers
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; BlueSnake/1.0; +https://github.com/agentberlin/bluesnake)")
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to fetch URL: %w", err)
 	}
