@@ -34,6 +34,7 @@ interface CompetitorInfo {
   totalUrls: number;
   latestCrawlId: number;
   isCrawling: boolean;
+  parentProjectId?: number;
 }
 
 interface ProjectInfo {
