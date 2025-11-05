@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl, GetProjects, GetCrawls, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlStats, GetCrawlStats, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL, UpdateConfigForDomain, GetConfigForDomain, DetectJSRenderingNeed, SearchCrawlResultsPaginated, CheckSystemHealth, StartMCPServer, StopMCPServer, GetMCPServerStatus } from "../wailsjs/go/main/DesktopApp";
+import { StartCrawl, StartCompetitorCrawl, GetProjects, GetCrawls, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlStats, GetCrawlStats, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL, UpdateConfigForDomain, GetConfigForDomain, DetectJSRenderingNeed, SearchCrawlResultsPaginated, CheckSystemHealth, StartMCPServer, StopMCPServer, GetMCPServerStatus } from "../wailsjs/go/main/DesktopApp";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
@@ -134,6 +134,7 @@ interface ProjectInfo {
   pagesCrawled: number;
   totalUrls: number;
   latestCrawlId: number;
+  isCompetitor?: boolean;
 }
 
 interface CrawlInfo {
@@ -835,7 +836,12 @@ function App() {
         });
       }
 
-      await StartCrawl(url);
+      // Call appropriate crawl method based on project type
+      if (currentProject?.isCompetitor) {
+        await StartCompetitorCrawl(url);
+      } else {
+        await StartCrawl(url);
+      }
 
       // Immediately load the project and navigate to crawl view
       await loadCurrentProjectFromUrl(url);
@@ -919,7 +925,12 @@ function App() {
         });
       }
 
-      await StartCrawl(url);
+      // Call appropriate crawl method based on project type
+      if (currentProject?.isCompetitor) {
+        await StartCompetitorCrawl(url);
+      } else {
+        await StartCrawl(url);
+      }
 
       // Immediately load the project and navigate to crawl view
       await loadCurrentProjectFromUrl(url);
@@ -1520,6 +1531,7 @@ function App() {
                 pagesCrawled: competitor.pagesCrawled,
                 totalUrls: competitor.totalUrls,
                 latestCrawlId: competitor.latestCrawlId,
+                isCompetitor: true,
               });
               setDashboardSection('crawl-results');
             }} />

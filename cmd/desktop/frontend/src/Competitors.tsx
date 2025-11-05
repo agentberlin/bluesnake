@@ -56,6 +56,7 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [faviconCache, setFaviconCache] = useState<Map<string, string>>(new Map());
+  const [recrawlingAll, setRecrawlingAll] = useState(false);
 
   // Load competitors and stats
   useEffect(() => {
@@ -110,7 +111,10 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
     }
   };
 
-  const handleDeleteCompetitor = async (competitorId: number) => {
+  const handleDeleteCompetitor = async (competitorId: number, event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+
     if (!confirm('Are you sure you want to delete this competitor and all its crawl data?')) {
       return;
     }
@@ -124,12 +128,56 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
     }
   };
 
-  const handleStopCrawl = async (competitorId: number) => {
+  const handleStopCrawl = async (competitorId: number, event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+
     try {
       await StopCrawl(competitorId);
       loadData();
     } catch (err) {
       console.error('Failed to stop crawl:', err);
+    }
+  };
+
+  const handleRecrawlCompetitor = async (competitorUrl: string, event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    try {
+      await StartCompetitorCrawl(competitorUrl);
+      loadData();
+    } catch (err) {
+      console.error('Failed to re-crawl competitor:', err);
+      alert('Failed to start re-crawl');
+    }
+  };
+
+  const handleRecrawlAll = async () => {
+    if (competitors.length === 0) return;
+
+    if (!confirm(`Start re-crawl for all ${competitors.length} competitors?`)) {
+      return;
+    }
+
+    setRecrawlingAll(true);
+
+    try {
+      // Start crawls for all competitors sequentially
+      for (const competitor of competitors) {
+        if (!competitor.isCrawling) {
+          try {
+            await StartCompetitorCrawl(competitor.url);
+            // Small delay between starting crawls
+            await new Promise(resolve => setTimeout(resolve, 500));
+          } catch (err) {
+            console.error(`Failed to start crawl for ${competitor.domain}:`, err);
+          }
+        }
+      }
+      loadData();
+    } finally {
+      setRecrawlingAll(false);
     }
   };
 
@@ -162,42 +210,58 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
   return (
     <div className="competitors-page">
       <div className="competitors-content">
-        {/* Header with Title and Action */}
+        {/* Header with Actions */}
         <div className="competitors-header">
           <div className="competitors-header-left">
             <h2 className="competitors-title">Competitors</h2>
-            {stats && (
-              <div className="competitors-stats-bar">
-                <div className="stat-item">
-                  <span className="stat-item-value">{stats.totalCompetitors}</span>
-                  <span className="stat-item-label">Total</span>
-                </div>
+            <div className="competitors-subtitle">
+              Track and analyze competitor websites
+            </div>
+          </div>
+          <div className="competitors-header-actions">
+            <Button
+              variant="secondary"
+              size="medium"
+              onClick={handleRecrawlAll}
+              disabled={competitors.length === 0 || recrawlingAll}
+              loading={recrawlingAll}
+            >
+              Re-crawl All
+            </Button>
+            <Button variant="primary" size="medium" onClick={() => setIsAddingCompetitor(true)}>
+              Add Competitor
+            </Button>
+          </div>
+        </div>
+
+        {/* Stats Bar */}
+        {stats && competitors.length > 0 && (
+          <div className="competitors-stats-bar">
+            <div className="stat-item">
+              <span className="stat-item-value">{stats.totalCompetitors}</span>
+              <span className="stat-item-label">Total Competitors</span>
+            </div>
+            <div className="stat-divider"></div>
+            <div className="stat-item">
+              <span className="stat-item-value">{stats.totalPages.toLocaleString()}</span>
+              <span className="stat-item-label">Pages Crawled</span>
+            </div>
+            <div className="stat-divider"></div>
+            <div className="stat-item">
+              <span className="stat-item-value">{formatTimeAgo(stats.lastCrawlTime)}</span>
+              <span className="stat-item-label">Last Crawl</span>
+            </div>
+            {stats.activeCrawls > 0 && (
+              <>
                 <div className="stat-divider"></div>
-                <div className="stat-item">
-                  <span className="stat-item-value">{stats.totalPages.toLocaleString()}</span>
-                  <span className="stat-item-label">Pages Crawled</span>
+                <div className="stat-item stat-item-active">
+                  <span className="stat-item-value">{stats.activeCrawls}</span>
+                  <span className="stat-item-label">Active Now</span>
                 </div>
-                <div className="stat-divider"></div>
-                <div className="stat-item">
-                  <span className="stat-item-value">{formatTimeAgo(stats.lastCrawlTime)}</span>
-                  <span className="stat-item-label">Last Crawl</span>
-                </div>
-                {stats.activeCrawls > 0 && (
-                  <>
-                    <div className="stat-divider"></div>
-                    <div className="stat-item stat-item-active">
-                      <span className="stat-item-value">{stats.activeCrawls}</span>
-                      <span className="stat-item-label">Active</span>
-                    </div>
-                  </>
-                )}
-              </div>
+              </>
             )}
           </div>
-          <Button variant="primary" size="medium" onClick={() => setIsAddingCompetitor(true)}>
-            Add Competitor
-          </Button>
-        </div>
+        )}
 
         {/* Add Competitor Modal */}
         <Modal
@@ -248,7 +312,7 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
         ) : (
           <div className="competitors-grid">
             {competitors.map((competitor) => (
-              <Card key={competitor.id} variant="default" hoverable>
+              <Card key={competitor.id} variant="default">
                 <CardHeader>
                   <div className="competitor-card-header">
                     <div className="competitor-header-left">
@@ -265,15 +329,13 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
                       )}
                       <div className="competitor-domain-name">{competitor.domain}</div>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="small"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteCompetitor(competitor.id);
-                      }}
-                      icon={<Icon name="x" size={14} />}
-                    />
+                    <button
+                      className="competitor-delete-button"
+                      onClick={(e) => handleDeleteCompetitor(competitor.id, e)}
+                      title="Delete competitor"
+                    >
+                      <Icon name="x" size={14} />
+                    </button>
                   </div>
                 </CardHeader>
 
@@ -287,10 +349,7 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
                       <Button
                         variant="secondary"
                         size="small"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleStopCrawl(competitor.id);
-                        }}
+                        onClick={(e) => handleStopCrawl(competitor.id, e)}
                       >
                         Stop
                       </Button>
@@ -318,14 +377,25 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
                 </CardContent>
 
                 <CardFooter>
-                  <Button
-                    variant="secondary"
-                    size="medium"
-                    onClick={() => onCompetitorClick(competitor)}
-                    style={{ width: '100%' }}
-                  >
-                    View Results
-                  </Button>
+                  <div className="competitor-card-actions">
+                    {!competitor.isCrawling && (
+                      <Button
+                        variant="ghost"
+                        size="small"
+                        onClick={(e) => handleRecrawlCompetitor(competitor.url, e)}
+                        icon={<Icon name="arrow-right" size={14} />}
+                      >
+                        Re-crawl
+                      </Button>
+                    )}
+                    <Button
+                      variant="secondary"
+                      size="small"
+                      onClick={() => onCompetitorClick(competitor)}
+                    >
+                      View Results
+                    </Button>
+                  </div>
                 </CardFooter>
               </Card>
             ))}

@@ -32,7 +32,7 @@
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 32px;
+  margin-bottom: 24px;
   gap: 24px;
 }
 
@@ -45,8 +45,21 @@
   font-size: 20px;
   font-weight: 300;
   color: #1a1a1a;
-  margin: 0 0 16px 0;
+  margin: 0 0 4px 0;
   letter-spacing: -0.5px;
+}
+
+.competitors-subtitle {
+  font-size: 13px;
+  font-weight: 300;
+  color: #666;
+  margin: 0;
+}
+
+.competitors-header-actions {
+  display: flex;
+  gap: 12px;
+  flex-shrink: 0;
 }
 
 /* Stats Bar - Horizontal layout */
@@ -58,6 +71,7 @@
   background: #fff;
   border: 1px solid #e0e0e0;
   border-radius: 2px;
+  margin-bottom: 24px;
 }
 
 .stat-item {
@@ -134,6 +148,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
 }
 
 .competitor-header-left {
@@ -175,6 +190,27 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Delete Button */
+.competitor-delete-button {
+  padding: 6px;
+  background: transparent;
+  color: #999;
+  border: 1px solid #e0e0e0;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.competitor-delete-button:hover {
+  background: #f5f5f5;
+  color: #666;
+  border-color: #d0d0d0;
 }
 
 /* Crawling State */
@@ -225,6 +261,17 @@
   font-weight: 400;
 }
 
+/* Card Footer Actions */
+.competitor-card-actions {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.competitor-card-actions button {
+  flex: 1;
+}
+
 /* Responsive adjustments */
 @media (max-width: 1200px) {
   .competitors-grid {
@@ -236,6 +283,10 @@
   .competitors-header {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .competitors-header-actions {
+    justify-content: flex-end;
   }
 
   .competitors-stats-bar {
