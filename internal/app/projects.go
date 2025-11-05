@@ -69,9 +69,10 @@ func (a *App) DeleteProjectByID(projectID uint) error {
 // Competitor Management Methods
 // ============================================================================
 
-// GetCompetitors returns all competitor projects with their latest crawl info
-func (a *App) GetCompetitors() ([]types.CompetitorInfo, error) {
-	competitors, err := a.store.GetAllCompetitors()
+// GetCompetitors returns all competitor projects for a specific parent project with their latest crawl info
+func (a *App) GetCompetitors(parentProjectID uint) ([]types.CompetitorInfo, error) {
+	// Get competitors linked to this specific parent project
+	competitors, err := a.store.GetCompetitorsForProject(parentProjectID)
 	if err != nil {
 		return nil, err
 	}
@@ -161,8 +162,8 @@ func (a *App) GetCompetitorStats() (*types.CompetitorStats, error) {
 	return stats, nil
 }
 
-// StartCompetitorCrawl starts a crawl for a competitor domain
-func (a *App) StartCompetitorCrawl(urlStr string) error {
+// StartCompetitorCrawl starts a crawl for a competitor domain and links it to a parent project
+func (a *App) StartCompetitorCrawl(urlStr string, parentProjectID uint) error {
 	// Normalize the URL
 	normalizedURL, domain, err := normalizeURL(urlStr)
 	if err != nil {
@@ -179,6 +180,11 @@ func (a *App) StartCompetitorCrawl(urlStr string) error {
 	project, err := a.store.GetOrCreateCompetitor(normalizedURL, domain)
 	if err != nil {
 		return err
+	}
+
+	// Link competitor to parent project
+	if err := a.store.AddCompetitorToProject(parentProjectID, project.ID); err != nil {
+		return fmt.Errorf("failed to link competitor to project: %v", err)
 	}
 
 	// Check if already crawling

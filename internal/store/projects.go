@@ -115,7 +115,30 @@ func (s *Store) GetProjectByID(id uint) (*Project, error) {
 }
 
 // DeleteProject deletes a project and all its crawls (cascade)
+// If the project has competitors that are ONLY linked to this project, they are also deleted
 func (s *Store) DeleteProject(projectID uint) error {
+	// First, find all competitors linked to this project
+	var competitorIDs []uint
+	s.db.Model(&ProjectCompetitor{}).
+		Where("project_id = ?", projectID).
+		Pluck("competitor_id", &competitorIDs)
+
+	// For each competitor, check if it's linked to any other projects
+	// If not, we'll delete it after deleting the parent project
+	competitorsToDelete := []uint{}
+	for _, competitorID := range competitorIDs {
+		var count int64
+		s.db.Model(&ProjectCompetitor{}).
+			Where("competitor_id = ? AND project_id != ?", competitorID, projectID).
+			Count(&count)
+
+		// If this competitor is only linked to the project being deleted, mark it for deletion
+		if count == 0 {
+			competitorsToDelete = append(competitorsToDelete, competitorID)
+		}
+	}
+
+	// Delete the main project (this will cascade delete ProjectCompetitor relationships)
 	result := s.db.Delete(&Project{}, projectID)
 	if result.Error != nil {
 		return result.Error
@@ -123,6 +146,15 @@ func (s *Store) DeleteProject(projectID uint) error {
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("project with ID %d not found", projectID)
 	}
+
+	// Now delete competitors that were only linked to this project
+	for _, competitorID := range competitorsToDelete {
+		if err := s.db.Delete(&Project{}, competitorID).Error; err != nil {
+			// Log error but don't fail the whole operation
+			fmt.Printf("Warning: failed to delete orphaned competitor %d: %v\n", competitorID, err)
+		}
+	}
+
 	return nil
 }
 

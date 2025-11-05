@@ -1519,22 +1519,25 @@ function App() {
           ) : dashboardSection === 'ai-crawlers' ? (
             <AICrawlers url={url} />
           ) : dashboardSection === 'competitors' ? (
-            <Competitors onCompetitorClick={(competitor) => {
-              // Switch to crawl results view for the selected competitor
-              setCurrentProject({
-                id: competitor.id,
-                url: competitor.url,
-                domain: competitor.domain,
-                faviconPath: competitor.faviconPath,
-                crawlDateTime: competitor.crawlDateTime,
-                crawlDuration: competitor.crawlDuration,
-                pagesCrawled: competitor.pagesCrawled,
-                totalUrls: competitor.totalUrls,
-                latestCrawlId: competitor.latestCrawlId,
-                isCompetitor: true,
-              });
-              setDashboardSection('crawl-results');
-            }} />
+            <Competitors
+              projects={projects}
+              onCompetitorClick={(competitor) => {
+                // Switch to crawl results view for the selected competitor
+                setCurrentProject({
+                  id: competitor.id,
+                  url: competitor.url,
+                  domain: competitor.domain,
+                  faviconPath: competitor.faviconPath,
+                  crawlDateTime: competitor.crawlDateTime,
+                  crawlDuration: competitor.crawlDuration,
+                  pagesCrawled: competitor.pagesCrawled,
+                  totalUrls: competitor.totalUrls,
+                  latestCrawlId: competitor.latestCrawlId,
+                  isCompetitor: true,
+                });
+                setDashboardSection('crawl-results');
+              }}
+            />
           ) : (
             <div className="crawl-screen">
         <div className="header">

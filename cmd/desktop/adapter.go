@@ -296,9 +296,9 @@ func (d *DesktopApp) GetMCPServerStatus() map[string]interface{} {
 // Competitor Management Methods
 // ============================================================================
 
-// GetCompetitors wraps app.GetCompetitors
-func (d *DesktopApp) GetCompetitors() ([]types.CompetitorInfo, error) {
-	return d.app.GetCompetitors()
+// GetCompetitors wraps app.GetCompetitors and returns competitors for a specific parent project
+func (d *DesktopApp) GetCompetitors(parentProjectID uint) ([]types.CompetitorInfo, error) {
+	return d.app.GetCompetitors(parentProjectID)
 }
 
 // GetCompetitorStats wraps app.GetCompetitorStats
@@ -306,9 +306,9 @@ func (d *DesktopApp) GetCompetitorStats() (*types.CompetitorStats, error) {
 	return d.app.GetCompetitorStats()
 }
 
-// StartCompetitorCrawl wraps app.StartCompetitorCrawl
-func (d *DesktopApp) StartCompetitorCrawl(url string) error {
-	return d.app.StartCompetitorCrawl(url)
+// StartCompetitorCrawl wraps app.StartCompetitorCrawl and links the competitor to a parent project
+func (d *DesktopApp) StartCompetitorCrawl(url string, parentProjectID uint) error {
+	return d.app.StartCompetitorCrawl(url, parentProjectID)
 }
 
 // DeleteCompetitor wraps app.DeleteCompetitor

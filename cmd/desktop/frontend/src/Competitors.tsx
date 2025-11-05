@@ -36,11 +36,19 @@ interface CompetitorInfo {
   isCrawling: boolean;
 }
 
-interface CompetitorsProps {
-  onCompetitorClick: (competitor: CompetitorInfo) => void;
+interface ProjectInfo {
+  id: number;
+  url: string;
+  domain: string;
+  faviconPath: string;
 }
 
-function Competitors({ onCompetitorClick }: CompetitorsProps) {
+interface CompetitorsProps {
+  onCompetitorClick: (competitor: CompetitorInfo) => void;
+  projects: ProjectInfo[];
+}
+
+function Competitors({ onCompetitorClick, projects }: CompetitorsProps) {
   const [competitors, setCompetitors] = useState<CompetitorInfo[]>([]);
   const [isAddingCompetitor, setIsAddingCompetitor] = useState(false);
   const [newCompetitorUrl, setNewCompetitorUrl] = useState('');
@@ -48,17 +56,29 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
   const [loading, setLoading] = useState(false);
   const [faviconCache, setFaviconCache] = useState<Map<string, string>>(new Map());
   const [recrawlingAll, setRecrawlingAll] = useState(false);
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
 
-  // Load competitors and stats
+  // Set initial project when projects load
   useEffect(() => {
-    loadData();
-    const interval = setInterval(loadData, 2000); // Poll every 2 seconds
-    return () => clearInterval(interval);
-  }, []);
+    if (projects.length > 0 && selectedProjectId === null) {
+      setSelectedProjectId(projects[0].id);
+    }
+  }, [projects]);
+
+  // Load competitors when selected project changes
+  useEffect(() => {
+    if (selectedProjectId !== null) {
+      loadData();
+      const interval = setInterval(loadData, 2000); // Poll every 2 seconds
+      return () => clearInterval(interval);
+    }
+  }, [selectedProjectId]);
 
   const loadData = async () => {
+    if (selectedProjectId === null) return;
+
     try {
-      const competitorsData = await GetCompetitors();
+      const competitorsData = await GetCompetitors(selectedProjectId);
       setCompetitors(competitorsData || []);
 
       // Load favicons
@@ -83,11 +103,16 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
       return;
     }
 
+    if (selectedProjectId === null) {
+      setError('Please select a parent project');
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
     try {
-      await StartCompetitorCrawl(newCompetitorUrl);
+      await StartCompetitorCrawl(newCompetitorUrl, selectedProjectId);
       setNewCompetitorUrl('');
       setIsAddingCompetitor(false);
       loadData();
@@ -131,8 +156,10 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
     event.preventDefault();
     event.stopPropagation();
 
+    if (selectedProjectId === null) return;
+
     try {
-      await StartCompetitorCrawl(competitorUrl);
+      await StartCompetitorCrawl(competitorUrl, selectedProjectId);
       loadData();
     } catch (err) {
       console.error('Failed to re-crawl competitor:', err);
@@ -141,7 +168,7 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
   };
 
   const handleRecrawlAll = async () => {
-    if (competitors.length === 0) return;
+    if (competitors.length === 0 || selectedProjectId === null) return;
 
     if (!confirm(`Start re-crawl for all ${competitors.length} competitors?`)) {
       return;
@@ -154,7 +181,7 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
       for (const competitor of competitors) {
         if (!competitor.isCrawling) {
           try {
-            await StartCompetitorCrawl(competitor.url);
+            await StartCompetitorCrawl(competitor.url, selectedProjectId);
             // Small delay between starting crawls
             await new Promise(resolve => setTimeout(resolve, 500));
           } catch (err) {
@@ -204,18 +231,40 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
             <div className="competitors-subtitle">
               Track and analyze competitor websites
             </div>
+            {projects.length > 0 && (
+              <div className="competitors-project-selector">
+                <label htmlFor="project-select">For project:</label>
+                <select
+                  id="project-select"
+                  value={selectedProjectId || ''}
+                  onChange={(e) => setSelectedProjectId(Number(e.target.value))}
+                  className="project-select"
+                >
+                  {projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.domain}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
           <div className="competitors-header-actions">
             <Button
               variant="secondary"
               size="medium"
               onClick={handleRecrawlAll}
-              disabled={competitors.length === 0 || recrawlingAll}
+              disabled={competitors.length === 0 || recrawlingAll || selectedProjectId === null}
               loading={recrawlingAll}
             >
               Re-crawl All
             </Button>
-            <Button variant="primary" size="medium" onClick={() => setIsAddingCompetitor(true)}>
+            <Button
+              variant="primary"
+              size="medium"
+              onClick={() => setIsAddingCompetitor(true)}
+              disabled={selectedProjectId === null}
+            >
               Add Competitor
             </Button>
           </div>
@@ -258,7 +307,19 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
         </Modal>
 
         {/* Competitors Grid */}
-        {competitors.length === 0 ? (
+        {projects.length === 0 ? (
+          <div className="competitors-empty-state">
+            <Icon name="globe" size={48} />
+            <h3>No Projects Available</h3>
+            <p>You need to create a project first before adding competitors.</p>
+          </div>
+        ) : selectedProjectId === null ? (
+          <div className="competitors-empty-state">
+            <Icon name="globe" size={48} />
+            <h3>Select a Project</h3>
+            <p>Choose a project above to view and manage its competitors.</p>
+          </div>
+        ) : competitors.length === 0 ? (
           <div className="competitors-empty-state">
             <Icon name="globe" size={48} />
             <h3>No Competitors Yet</h3>
