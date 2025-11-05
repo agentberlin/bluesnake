@@ -130,6 +130,7 @@ interface ProjectInfo {
   domain: string;
   competitorFavicons?: string[];
   competitorCount?: number;
+  parentProjectId?: number;
   faviconPath: string;
   crawlDateTime: number;
   crawlDuration: number;
@@ -230,9 +231,10 @@ interface FaviconImageProps {
   alt: string;
   className: string;
   placeholderSize?: number;
+  style?: React.CSSProperties;
 }
 
-function FaviconImage({ faviconPath, alt, className, placeholderSize = 20 }: FaviconImageProps) {
+function FaviconImage({ faviconPath, alt, className, placeholderSize = 20, style }: FaviconImageProps) {
   const [faviconSrc, setFaviconSrc] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
@@ -260,7 +262,7 @@ function FaviconImage({ faviconPath, alt, className, placeholderSize = 20 }: Fav
 
   if (isLoading || !faviconPath || hasError) {
     return (
-      <div className={className.replace('favicon', 'favicon-placeholder')}>
+      <div className={className.replace('favicon', 'favicon-placeholder')} style={style}>
         <svg width={placeholderSize} height={placeholderSize} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <circle cx="12" cy="12" r="10"></circle>
           <path d="M2 12h20"></path>
@@ -269,7 +271,7 @@ function FaviconImage({ faviconPath, alt, className, placeholderSize = 20 }: Fav
     );
   }
 
-  return <img src={faviconSrc} alt={alt} className={className} />;
+  return <img src={faviconSrc} alt={alt} className={className} style={style} />;
 }
 
 function App() {
@@ -840,7 +842,11 @@ function App() {
 
       // Call appropriate crawl method based on project type
       if (currentProject?.isCompetitor) {
-        await StartCompetitorCrawl(url);
+        if (!currentProject.parentProjectId) {
+          alert('Cannot crawl competitor: missing parent project information');
+          return;
+        }
+        await StartCompetitorCrawl(url, currentProject.parentProjectId);
       } else {
         await StartCrawl(url);
       }
@@ -929,7 +935,11 @@ function App() {
 
       // Call appropriate crawl method based on project type
       if (currentProject?.isCompetitor) {
-        await StartCompetitorCrawl(url);
+        if (!currentProject.parentProjectId) {
+          alert('Cannot crawl competitor: missing parent project information');
+          return;
+        }
+        await StartCompetitorCrawl(url, currentProject.parentProjectId);
       } else {
         await StartCrawl(url);
       }
@@ -1542,7 +1552,7 @@ function App() {
           ) : dashboardSection === 'competitors' ? (
             <Competitors
               projects={projects}
-              onCompetitorClick={(competitor) => {
+              onCompetitorClick={(competitor: any) => {
                 // Switch to crawl results view for the selected competitor
                 setCurrentProject({
                   id: competitor.id,
@@ -1555,6 +1565,7 @@ function App() {
                   totalUrls: competitor.totalUrls,
                   latestCrawlId: competitor.latestCrawlId,
                   isCompetitor: true,
+                  parentProjectId: competitor.parentProjectId,
                 });
                 setDashboardSection('crawl-results');
               }}

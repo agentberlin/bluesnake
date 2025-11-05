@@ -410,7 +410,7 @@ function Competitors({ onCompetitorClick, projects }: CompetitorsProps) {
                     <Button
                       variant="secondary"
                       size="small"
-                      onClick={() => onCompetitorClick(competitor)}
+                      onClick={() => onCompetitorClick({ ...competitor, parentProjectId: selectedProjectId })}
                     >
                       View Results
                     </Button>
