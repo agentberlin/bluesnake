@@ -22,6 +22,7 @@ import {
   StopCrawl,
   GetFaviconData,
 } from '../wailsjs/go/main/DesktopApp';
+import { Button, Input, Modal, ModalContent, ModalActions, Card, CardHeader, CardContent, CardFooter, Spinner, Badge, Icon } from './design-system';
 
 interface CompetitorInfo {
   id: number;
@@ -159,164 +160,181 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
   };
 
   return (
-    <div className="competitors-container">
-      <div className="competitors-header">
-        <h1>Competitors</h1>
-        <button
-          className="add-competitor-button"
-          onClick={() => setIsAddingCompetitor(true)}
-        >
-          + Add Competitor
-        </button>
+    <div className="competitors-page">
+      {/* Header */}
+      <div className="competitors-page-header">
+        <h2 className="competitors-page-title">Competitors</h2>
+        <Button variant="primary" size="medium" onClick={() => setIsAddingCompetitor(true)}>
+          Add Competitor
+        </Button>
       </div>
 
       {/* Overview Statistics */}
       {stats && (
-        <div className="competitors-stats">
-          <div className="stat-card">
-            <div className="stat-label">Total Competitors</div>
-            <div className="stat-value">{stats.totalCompetitors}</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">Total Pages</div>
-            <div className="stat-value">{stats.totalPages.toLocaleString()}</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">Last Crawl</div>
-            <div className="stat-value">{formatTimeAgo(stats.lastCrawlTime)}</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-label">Active Crawls</div>
-            <div className="stat-value">{stats.activeCrawls}</div>
-          </div>
+        <div className="competitors-stats-grid">
+          <Card variant="default">
+            <CardContent>
+              <div className="stat-display">
+                <div className="stat-label">Total Competitors</div>
+                <div className="stat-value">{stats.totalCompetitors}</div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card variant="default">
+            <CardContent>
+              <div className="stat-display">
+                <div className="stat-label">Total Pages</div>
+                <div className="stat-value">{stats.totalPages.toLocaleString()}</div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card variant="default">
+            <CardContent>
+              <div className="stat-display">
+                <div className="stat-label">Last Crawl</div>
+                <div className="stat-value">{formatTimeAgo(stats.lastCrawlTime)}</div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card variant="default">
+            <CardContent>
+              <div className="stat-display">
+                <div className="stat-label">Active Crawls</div>
+                <div className="stat-value">{stats.activeCrawls}</div>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       )}
 
       {/* Add Competitor Modal */}
-      {isAddingCompetitor && (
-        <div className="modal-overlay" onClick={() => setIsAddingCompetitor(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h2>Add Competitor</h2>
-            <input
-              type="text"
-              className="competitor-url-input"
-              placeholder="https://example.com"
-              value={newCompetitorUrl}
-              onChange={(e) => setNewCompetitorUrl(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleAddCompetitor()}
-              autoFocus
-            />
-            {error && <div className="error-message">{error}</div>}
-            <div className="modal-actions">
-              <button
-                className="modal-button cancel"
-                onClick={() => setIsAddingCompetitor(false)}
-                disabled={loading}
-              >
-                Cancel
-              </button>
-              <button
-                className="modal-button primary"
-                onClick={handleAddCompetitor}
-                disabled={loading}
-              >
-                {loading ? 'Starting...' : 'Start Crawl'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <Modal
+        isOpen={isAddingCompetitor}
+        onClose={() => setIsAddingCompetitor(false)}
+        title="Add Competitor"
+        size="small"
+      >
+        <ModalContent>
+          <Input
+            type="text"
+            placeholder="https://example.com"
+            value={newCompetitorUrl}
+            onChange={(e) => setNewCompetitorUrl(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleAddCompetitor()}
+            error={error || undefined}
+            autoFocus
+          />
+        </ModalContent>
+        <ModalActions>
+          <Button
+            variant="secondary"
+            onClick={() => setIsAddingCompetitor(false)}
+            disabled={loading}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            onClick={handleAddCompetitor}
+            loading={loading}
+          >
+            Start Crawl
+          </Button>
+        </ModalActions>
+      </Modal>
 
       {/* Competitors List */}
       <div className="competitors-section">
-        <h2>Competitor Domains</h2>
+        <h3 className="competitors-section-title">Competitor Domains</h3>
         {competitors.length === 0 ? (
-          <div className="empty-state">
-            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <circle cx="12" cy="12" r="10"></circle>
-              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-              <path d="M2 12h20"></path>
-            </svg>
-            <h3>No Competitors Yet</h3>
+          <div className="competitors-empty-state">
+            <Icon name="globe" size={48} />
+            <h4>No Competitors Yet</h4>
             <p>Add competitor domains to track and analyze their websites.</p>
           </div>
         ) : (
           <div className="competitors-grid">
             {competitors.map((competitor) => (
-              <div key={competitor.id} className="competitor-card">
-                <div className="competitor-header">
-                  <div className="competitor-info">
-                    {competitor.faviconPath && faviconCache.has(competitor.faviconPath) ? (
-                      <img
-                        src={faviconCache.get(competitor.faviconPath)}
-                        alt="Favicon"
-                        className="competitor-favicon"
-                      />
-                    ) : (
-                      <div className="competitor-favicon-placeholder">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                          <circle cx="12" cy="12" r="10"></circle>
-                        </svg>
-                      </div>
-                    )}
-                    <div className="competitor-domain">{competitor.domain}</div>
-                  </div>
-                  <button
-                    className="delete-competitor-button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeleteCompetitor(competitor.id);
-                    }}
-                    title="Delete competitor"
-                  >
-                    ×
-                  </button>
-                </div>
-
-                {competitor.isCrawling ? (
-                  <div className="competitor-crawling">
-                    <div className="crawling-indicator">
-                      <div className="spinner"></div>
-                      <span>Crawling...</span>
+              <Card key={competitor.id} variant="default" hoverable>
+                <CardHeader>
+                  <div className="competitor-card-header">
+                    <div className="competitor-header-left">
+                      {competitor.faviconPath && faviconCache.has(competitor.faviconPath) ? (
+                        <img
+                          src={faviconCache.get(competitor.faviconPath)}
+                          alt="Favicon"
+                          className="competitor-favicon"
+                        />
+                      ) : (
+                        <div className="competitor-favicon-placeholder">
+                          <Icon name="globe" size={16} />
+                        </div>
+                      )}
+                      <div className="competitor-domain-name">{competitor.domain}</div>
                     </div>
-                    <button
-                      className="stop-crawl-button"
+                    <Button
+                      variant="ghost"
+                      size="small"
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleStopCrawl(competitor.id);
+                        handleDeleteCompetitor(competitor.id);
                       }}
-                    >
-                      Stop
-                    </button>
+                      icon={<Icon name="x" size={14} />}
+                    />
                   </div>
-                ) : (
-                  <div className="competitor-stats">
-                    <div className="stat-item">
-                      <span className="stat-label">Pages:</span>
-                      <span className="stat-value">{competitor.pagesCrawled}</span>
-                    </div>
-                    <div className="stat-item">
-                      <span className="stat-label">Total URLs:</span>
-                      <span className="stat-value">{competitor.totalUrls}</span>
-                    </div>
-                    <div className="stat-item">
-                      <span className="stat-label">Last crawl:</span>
-                      <span className="stat-value">{formatTimeAgo(competitor.crawlDateTime)}</span>
-                    </div>
-                    <div className="stat-item">
-                      <span className="stat-label">Duration:</span>
-                      <span className="stat-value">{formatDuration(competitor.crawlDuration)}</span>
-                    </div>
-                  </div>
-                )}
+                </CardHeader>
 
-                <button
-                  className="view-competitor-button"
-                  onClick={() => onCompetitorClick(competitor)}
-                >
-                  View Results
-                </button>
-              </div>
+                <CardContent>
+                  {competitor.isCrawling ? (
+                    <div className="competitor-crawling-state">
+                      <div className="crawling-indicator">
+                        <Spinner size="small" />
+                        <span className="crawling-text">Crawling...</span>
+                      </div>
+                      <Button
+                        variant="secondary"
+                        size="small"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleStopCrawl(competitor.id);
+                        }}
+                      >
+                        Stop
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="competitor-stats-list">
+                      <div className="stat-row">
+                        <span className="stat-row-label">Pages:</span>
+                        <span className="stat-row-value">{competitor.pagesCrawled}</span>
+                      </div>
+                      <div className="stat-row">
+                        <span className="stat-row-label">Total URLs:</span>
+                        <span className="stat-row-value">{competitor.totalUrls}</span>
+                      </div>
+                      <div className="stat-row">
+                        <span className="stat-row-label">Last crawl:</span>
+                        <span className="stat-row-value">{formatTimeAgo(competitor.crawlDateTime)}</span>
+                      </div>
+                      <div className="stat-row">
+                        <span className="stat-row-label">Duration:</span>
+                        <span className="stat-row-value">{formatDuration(competitor.crawlDuration)}</span>
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+
+                <CardFooter>
+                  <Button
+                    variant="secondary"
+                    size="medium"
+                    onClick={() => onCompetitorClick(competitor)}
+                    style={{ width: '100%' }}
+                  >
+                    View Results
+                  </Button>
+                </CardFooter>
+              </Card>
             ))}
           </div>
         )}

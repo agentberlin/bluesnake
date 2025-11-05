@@ -13,255 +13,115 @@
  * limitations under the License.
  */
 
-.competitors-container {
-  padding: 32px;
+/* Page Layout */
+.competitors-page {
+  padding: 40px;
   max-width: 1400px;
   margin: 0 auto;
-  color: #e0e0e0;
 }
 
-.competitors-header {
+/* Header */
+.competitors-page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 32px;
 }
 
-.competitors-header h1 {
-  font-size: 32px;
-  font-weight: 600;
-  color: #ffffff;
+.competitors-page-title {
+  font-size: 24px;
+  font-weight: 300;
+  color: #1a1a1a;
   margin: 0;
+  letter-spacing: -0.5px;
 }
 
-.add-competitor-button {
-  padding: 12px 24px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s ease;
-}
-
-.add-competitor-button:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-}
-
-.add-competitor-button:active {
-  transform: translateY(0);
-}
-
-/* Overview Statistics */
-.competitors-stats {
+/* Stats Grid */
+.competitors-stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 20px;
+  gap: 16px;
   margin-bottom: 40px;
 }
 
-.stat-card {
-  background: rgba(30, 30, 40, 0.6);
-  border: 1px solid rgba(100, 100, 120, 0.3);
-  border-radius: 12px;
-  padding: 24px;
+.stat-display {
   text-align: center;
-  transition: all 0.3s ease;
-}
-
-.stat-card:hover {
-  background: rgba(40, 40, 50, 0.6);
-  border-color: rgba(102, 126, 234, 0.5);
-  transform: translateY(-2px);
 }
 
 .stat-label {
-  font-size: 14px;
-  color: #a0a0b0;
+  font-size: 12px;
+  font-weight: 300;
+  color: #666;
   margin-bottom: 8px;
-  font-weight: 500;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
 }
 
 .stat-value {
-  font-size: 28px;
-  color: #ffffff;
-  font-weight: 700;
+  font-size: 32px;
+  font-weight: 300;
+  color: #1a1a1a;
+  letter-spacing: -1px;
 }
 
-/* Modal */
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  backdrop-filter: blur(4px);
-}
-
-.modal-content {
-  background: #1e1e28;
-  border: 1px solid rgba(100, 100, 120, 0.3);
-  border-radius: 16px;
-  padding: 32px;
-  width: 90%;
-  max-width: 500px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-}
-
-.modal-content h2 {
-  margin: 0 0 24px 0;
-  font-size: 24px;
-  color: #ffffff;
-  font-weight: 600;
-}
-
-.competitor-url-input {
-  width: 100%;
-  padding: 14px 16px;
-  background: rgba(30, 30, 40, 0.8);
-  border: 1px solid rgba(100, 100, 120, 0.3);
-  border-radius: 8px;
-  color: #e0e0e0;
-  font-size: 16px;
-  margin-bottom: 16px;
-  transition: border-color 0.3s ease;
-}
-
-.competitor-url-input:focus {
-  outline: none;
-  border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
-}
-
-.error-message {
-  color: #ff6b6b;
-  font-size: 14px;
-  margin-bottom: 16px;
-  padding: 8px 12px;
-  background: rgba(255, 107, 107, 0.1);
-  border-radius: 6px;
-  border: 1px solid rgba(255, 107, 107, 0.3);
-}
-
-.modal-actions {
-  display: flex;
-  gap: 12px;
-  justify-content: flex-end;
-}
-
-.modal-button {
-  padding: 12px 24px;
-  border: none;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s ease;
-}
-
-.modal-button.cancel {
-  background: rgba(100, 100, 120, 0.2);
-  color: #a0a0b0;
-}
-
-.modal-button.cancel:hover {
-  background: rgba(100, 100, 120, 0.3);
-}
-
-.modal-button.primary {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-}
-
-.modal-button.primary:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-}
-
-.modal-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none !important;
-}
-
-/* Competitors List */
+/* Competitors Section */
 .competitors-section {
   margin-top: 40px;
 }
 
-.competitors-section h2 {
-  font-size: 20px;
-  color: #ffffff;
-  margin-bottom: 24px;
-  font-weight: 600;
+.competitors-section-title {
+  font-size: 14px;
+  font-weight: 300;
+  color: #666;
+  margin: 0 0 20px 0;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
 }
 
-.empty-state {
+/* Empty State */
+.competitors-empty-state {
   text-align: center;
   padding: 80px 40px;
-  background: rgba(30, 30, 40, 0.4);
-  border: 2px dashed rgba(100, 100, 120, 0.3);
-  border-radius: 16px;
+  border: 1px solid #e0e0e0;
+  border-radius: 2px;
+  background: #fafafa;
 }
 
-.empty-state svg {
-  color: #667eea;
-  margin-bottom: 24px;
-  opacity: 0.6;
+.competitors-empty-state svg {
+  color: #999;
+  margin-bottom: 16px;
+  opacity: 0.5;
 }
 
-.empty-state h3 {
-  font-size: 20px;
-  color: #ffffff;
-  margin: 0 0 12px 0;
-  font-weight: 600;
+.competitors-empty-state h4 {
+  font-size: 16px;
+  font-weight: 300;
+  color: #333;
+  margin: 0 0 8px 0;
 }
 
-.empty-state p {
-  color: #a0a0b0;
+.competitors-empty-state p {
   font-size: 14px;
+  font-weight: 300;
+  color: #666;
   margin: 0;
 }
 
+/* Competitors Grid */
 .competitors-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 24px;
+  gap: 16px;
 }
 
-.competitor-card {
-  background: rgba(30, 30, 40, 0.6);
-  border: 1px solid rgba(100, 100, 120, 0.3);
-  border-radius: 12px;
-  padding: 20px;
-  transition: all 0.3s ease;
-  display: flex;
-  flex-direction: column;
-}
-
-.competitor-card:hover {
-  background: rgba(40, 40, 50, 0.6);
-  border-color: rgba(102, 126, 234, 0.5);
-  transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
-}
-
-.competitor-header {
+/* Competitor Card Header */
+.competitor-card-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
 }
 
-.competitor-info {
+.competitor-header-left {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -270,17 +130,18 @@
 }
 
 .competitor-favicon {
-  width: 24px;
-  height: 24px;
-  border-radius: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 2px;
   flex-shrink: 0;
 }
 
 .competitor-favicon-placeholder {
-  width: 24px;
-  height: 24px;
-  background: rgba(100, 100, 120, 0.2);
-  border-radius: 4px;
+  width: 20px;
+  height: 20px;
+  background: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  border-radius: 2px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -288,140 +149,63 @@
 }
 
 .competitor-favicon-placeholder svg {
-  color: #667eea;
+  color: #999;
   opacity: 0.5;
 }
 
-.competitor-domain {
-  font-size: 16px;
-  font-weight: 600;
-  color: #ffffff;
+.competitor-domain-name {
+  font-size: 14px;
+  font-weight: 400;
+  color: #1a1a1a;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.delete-competitor-button {
-  background: rgba(255, 107, 107, 0.1);
-  color: #ff6b6b;
-  border: 1px solid rgba(255, 107, 107, 0.3);
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.delete-competitor-button:hover {
-  background: rgba(255, 107, 107, 0.2);
-  border-color: #ff6b6b;
-}
-
-.competitor-crawling {
+/* Crawling State */
+.competitor-crawling-state {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px;
-  background: rgba(102, 126, 234, 0.1);
-  border: 1px solid rgba(102, 126, 234, 0.3);
-  border-radius: 8px;
-  margin-bottom: 16px;
+  padding: 12px;
+  background: #f8f9fa;
+  border: 1px solid #e0e0e0;
+  border-radius: 2px;
 }
 
 .crawling-indicator {
   display: flex;
   align-items: center;
-  gap: 12px;
-  color: #667eea;
-  font-weight: 600;
+  gap: 8px;
 }
 
-.spinner {
-  width: 16px;
-  height: 16px;
-  border: 2px solid rgba(102, 126, 234, 0.3);
-  border-top-color: #667eea;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.stop-crawl-button {
-  padding: 6px 16px;
-  background: rgba(255, 107, 107, 0.1);
-  color: #ff6b6b;
-  border: 1px solid rgba(255, 107, 107, 0.3);
-  border-radius: 6px;
+.crawling-text {
   font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
+  font-weight: 400;
+  color: #666;
 }
 
-.stop-crawl-button:hover {
-  background: rgba(255, 107, 107, 0.2);
-  border-color: #ff6b6b;
-}
-
-.competitor-stats {
+/* Stats List */
+.competitor-stats-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px;
-  background: rgba(20, 20, 30, 0.4);
-  border-radius: 8px;
-  margin-bottom: 16px;
 }
 
-.stat-item {
+.stat-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
   font-size: 13px;
+  padding: 4px 0;
 }
 
-.stat-item .stat-label {
-  color: #a0a0b0;
-  font-size: 13px;
-  margin: 0;
+.stat-row-label {
+  color: #666;
+  font-weight: 300;
 }
 
-.stat-item .stat-value {
-  color: #ffffff;
-  font-weight: 600;
-  font-size: 13px;
-}
-
-.view-competitor-button {
-  width: 100%;
-  padding: 12px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  margin-top: auto;
-}
-
-.view-competitor-button:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-}
-
-.view-competitor-button:active {
-  transform: translateY(0);
+.stat-row-value {
+  color: #1a1a1a;
+  font-weight: 400;
 }
