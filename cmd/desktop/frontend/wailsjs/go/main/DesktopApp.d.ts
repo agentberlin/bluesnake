@@ -11,6 +11,18 @@ export function DeleteCrawlByID(arg1:number):Promise<void>;
 
 export function DeleteProjectByID(arg1:number):Promise<void>;
 
+export function AddCompetitorToProject(arg1:number,arg2:number):Promise<void>;
+
+export function DeleteCompetitor(arg1:number):Promise<void>;
+
+export function GetCompetitors(arg1:number):Promise<Array<types.CompetitorInfo>>;
+
+export function GetCompetitorStats():Promise<types.CompetitorStats>;
+
+export function RemoveCompetitorFromProject(arg1:number,arg2:number):Promise<void>;
+
+export function StartCompetitorCrawl(arg1:string,arg2:number):Promise<void>;
+
 export function DetectJSRenderingNeed(arg1:string):Promise<boolean>;
 
 export function DownloadAndInstallUpdate():Promise<void>;

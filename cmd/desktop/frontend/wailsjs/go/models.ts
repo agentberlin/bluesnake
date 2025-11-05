@@ -104,6 +104,54 @@ export namespace types {
 		    return a;
 		}
 	}
+	export class CompetitorInfo {
+	    id: number;
+	    url: string;
+	    domain: string;
+	    faviconPath: string;
+	    crawlDateTime: number;
+	    crawlDuration: number;
+	    pagesCrawled: number;
+	    totalUrls: number;
+	    latestCrawlId: number;
+	    isCrawling: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new CompetitorInfo(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.url = source["url"];
+	        this.domain = source["domain"];
+	        this.faviconPath = source["faviconPath"];
+	        this.crawlDateTime = source["crawlDateTime"];
+	        this.crawlDuration = source["crawlDuration"];
+	        this.pagesCrawled = source["pagesCrawled"];
+	        this.totalUrls = source["totalUrls"];
+	        this.latestCrawlId = source["latestCrawlId"];
+	        this.isCrawling = source["isCrawling"];
+	    }
+	}
+	export class CompetitorStats {
+	    totalCompetitors: number;
+	    totalPages: number;
+	    lastCrawlTime: number;
+	    activeCrawls: number;
+
+	    static createFrom(source: any = {}) {
+	        return new CompetitorStats(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.totalCompetitors = source["totalCompetitors"];
+	        this.totalPages = source["totalPages"];
+	        this.lastCrawlTime = source["lastCrawlTime"];
+	        this.activeCrawls = source["activeCrawls"];
+	    }
+	}
 	export class ActiveCrawlStats {
 	    crawlId: number;
 	    total: number;
@@ -362,7 +410,9 @@ export namespace types {
 	    pagesCrawled: number;
 	    totalUrls: number;
 	    latestCrawlId: number;
-	
+	    competitorFavicons: string[];
+	    competitorCount: number;
+
 	    static createFrom(source: any = {}) {
 	        return new ProjectInfo(source);
 	    }
@@ -378,6 +428,8 @@ export namespace types {
 	        this.pagesCrawled = source["pagesCrawled"];
 	        this.totalUrls = source["totalUrls"];
 	        this.latestCrawlId = source["latestCrawlId"];
+	        this.competitorFavicons = source["competitorFavicons"];
+	        this.competitorCount = source["competitorCount"];
 	    }
 	}
 	export class SystemHealthCheck {

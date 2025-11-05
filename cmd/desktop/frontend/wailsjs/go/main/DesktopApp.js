@@ -18,6 +18,30 @@ export function DeleteProjectByID(arg1) {
   return window['go']['main']['DesktopApp']['DeleteProjectByID'](arg1);
 }
 
+export function AddCompetitorToProject(arg1, arg2) {
+  return window['go']['main']['DesktopApp']['AddCompetitorToProject'](arg1, arg2);
+}
+
+export function DeleteCompetitor(arg1) {
+  return window['go']['main']['DesktopApp']['DeleteCompetitor'](arg1);
+}
+
+export function GetCompetitors(arg1) {
+  return window['go']['main']['DesktopApp']['GetCompetitors'](arg1);
+}
+
+export function GetCompetitorStats() {
+  return window['go']['main']['DesktopApp']['GetCompetitorStats']();
+}
+
+export function RemoveCompetitorFromProject(arg1, arg2) {
+  return window['go']['main']['DesktopApp']['RemoveCompetitorFromProject'](arg1, arg2);
+}
+
+export function StartCompetitorCrawl(arg1, arg2) {
+  return window['go']['main']['DesktopApp']['StartCompetitorCrawl'](arg1, arg2);
+}
+
 export function DetectJSRenderingNeed(arg1) {
   return window['go']['main']['DesktopApp']['DetectJSRenderingNeed'](arg1);
 }
