@@ -41,15 +41,17 @@ type CrawlResult struct {
 
 // ProjectInfo represents project information for the frontend
 type ProjectInfo struct {
-	ID            uint   `json:"id"`
-	URL           string `json:"url"`
-	Domain        string `json:"domain"`
-	FaviconPath   string `json:"faviconPath"`
-	CrawlDateTime int64  `json:"crawlDateTime"`
-	CrawlDuration int64  `json:"crawlDuration"`
-	PagesCrawled  int    `json:"pagesCrawled"` // Number of HTML pages crawled
-	TotalURLs     int    `json:"totalUrls"`    // Total number of URLs discovered (including all resources)
-	LatestCrawlID uint   `json:"latestCrawlId"`
+	ID                  uint     `json:"id"`
+	URL                 string   `json:"url"`
+	Domain              string   `json:"domain"`
+	FaviconPath         string   `json:"faviconPath"`
+	CrawlDateTime       int64    `json:"crawlDateTime"`
+	CrawlDuration       int64    `json:"crawlDuration"`
+	PagesCrawled        int      `json:"pagesCrawled"`        // Number of HTML pages crawled
+	TotalURLs           int      `json:"totalUrls"`           // Total number of URLs discovered (including all resources)
+	LatestCrawlID       uint     `json:"latestCrawlId"`
+	CompetitorFavicons  []string `json:"competitorFavicons"`  // Favicon paths of competitors linked to this project
+	CompetitorCount     int      `json:"competitorCount"`     // Total number of competitors
 }
 
 // CrawlInfo represents crawl information for the frontend

@@ -269,6 +269,46 @@
   margin-right: 12px;
 }
 
+.project-competitors-avatars {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 0;
+}
+
+.competitor-avatars-stack {
+  display: flex;
+  align-items: center;
+}
+
+.competitor-avatar {
+  width: 24px !important;
+  height: 24px !important;
+  border-radius: 50% !important;
+  border: 2px solid #fff;
+  object-fit: cover;
+  margin-left: -8px;
+  transition: transform 0.2s ease, z-index 0s;
+  position: relative;
+}
+
+.competitor-avatar:first-child {
+  margin-left: 0;
+}
+
+.competitor-avatar:hover {
+  transform: translateY(-2px) scale(1.1);
+  z-index: 100 !important;
+}
+
+.competitor-count-label {
+  font-size: 11px;
+  font-weight: 300;
+  color: #666;
+  white-space: nowrap;
+}
+
 .project-favicon {
   width: 20px;
   height: 20px;

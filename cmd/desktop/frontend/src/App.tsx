@@ -128,6 +128,8 @@ interface ProjectInfo {
   id: number;
   url: string;
   domain: string;
+  competitorFavicons?: string[];
+  competitorCount?: number;
   faviconPath: string;
   crawlDateTime: number;
   crawlDuration: number;
@@ -1403,6 +1405,25 @@ function App() {
                           </svg>
                         </button>
                       </div>
+                      {project.competitorFavicons && project.competitorFavicons.length > 0 && (
+                        <div className="project-competitors-avatars">
+                          <div className="competitor-avatars-stack">
+                            {project.competitorFavicons.slice(0, 5).map((faviconPath, index) => (
+                              <FaviconImage
+                                key={index}
+                                faviconPath={faviconPath}
+                                alt="Competitor"
+                                className="competitor-avatar"
+                                placeholderSize={12}
+                                style={{ zIndex: 10 - index }}
+                              />
+                            ))}
+                          </div>
+                          <span className="competitor-count-label">
+                            {project.competitorCount} competitor{project.competitorCount !== 1 ? 's' : ''}
+                          </span>
+                        </div>
+                      )}
                       {isActivelyCrawling ? (
                         <>
                           <div className="project-date">Currently crawling...</div>

@@ -54,6 +54,24 @@ func (a *App) GetProjects() ([]types.ProjectInfo, error) {
 		}
 		// If no crawls, fields will be zero values (0 for int64/uint)
 
+		// Get competitors for this project
+		competitors, err := a.store.GetCompetitorsForProject(p.ID)
+		if err == nil {
+			projectInfo.CompetitorCount = len(competitors)
+			// Get up to 5 competitor favicons for display
+			competitorFavicons := make([]string, 0)
+			maxFavicons := 5
+			for i, comp := range competitors {
+				if i >= maxFavicons {
+					break
+				}
+				if comp.FaviconPath != "" {
+					competitorFavicons = append(competitorFavicons, comp.FaviconPath)
+				}
+			}
+			projectInfo.CompetitorFavicons = competitorFavicons
+		}
+
 		projectInfos = append(projectInfos, projectInfo)
 	}
 
