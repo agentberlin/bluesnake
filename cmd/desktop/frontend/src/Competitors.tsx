@@ -16,7 +16,6 @@ import { useState, useEffect } from 'react';
 import './Competitors.css';
 import {
   GetCompetitors,
-  GetCompetitorStats,
   StartCompetitorCrawl,
   DeleteCompetitor,
   StopCrawl,
@@ -37,20 +36,12 @@ interface CompetitorInfo {
   isCrawling: boolean;
 }
 
-interface CompetitorStats {
-  totalCompetitors: number;
-  totalPages: number;
-  lastCrawlTime: number;
-  activeCrawls: number;
-}
-
 interface CompetitorsProps {
   onCompetitorClick: (competitor: CompetitorInfo) => void;
 }
 
 function Competitors({ onCompetitorClick }: CompetitorsProps) {
   const [competitors, setCompetitors] = useState<CompetitorInfo[]>([]);
-  const [stats, setStats] = useState<CompetitorStats | null>(null);
   const [isAddingCompetitor, setIsAddingCompetitor] = useState(false);
   const [newCompetitorUrl, setNewCompetitorUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -67,12 +58,8 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
 
   const loadData = async () => {
     try {
-      const [competitorsData, statsData] = await Promise.all([
-        GetCompetitors(),
-        GetCompetitorStats(),
-      ]);
+      const competitorsData = await GetCompetitors();
       setCompetitors(competitorsData || []);
-      setStats(statsData);
 
       // Load favicons
       competitorsData?.forEach(async (competitor: CompetitorInfo) => {
@@ -233,35 +220,6 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
             </Button>
           </div>
         </div>
-
-        {/* Stats Bar */}
-        {stats && competitors.length > 0 && (
-          <div className="competitors-stats-bar">
-            <div className="stat-item">
-              <span className="stat-item-value">{stats.totalCompetitors}</span>
-              <span className="stat-item-label">Total Competitors</span>
-            </div>
-            <div className="stat-divider"></div>
-            <div className="stat-item">
-              <span className="stat-item-value">{stats.totalPages.toLocaleString()}</span>
-              <span className="stat-item-label">Pages Crawled</span>
-            </div>
-            <div className="stat-divider"></div>
-            <div className="stat-item">
-              <span className="stat-item-value">{formatTimeAgo(stats.lastCrawlTime)}</span>
-              <span className="stat-item-label">Last Crawl</span>
-            </div>
-            {stats.activeCrawls > 0 && (
-              <>
-                <div className="stat-divider"></div>
-                <div className="stat-item stat-item-active">
-                  <span className="stat-item-value">{stats.activeCrawls}</span>
-                  <span className="stat-item-label">Active Now</span>
-                </div>
-              </>
-            )}
-          </div>
-        )}
 
         {/* Add Competitor Modal */}
         <Modal

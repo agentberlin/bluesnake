@@ -149,6 +149,7 @@
   justify-content: space-between;
   align-items: center;
   gap: 12px;
+  position: relative;
 }
 
 .competitor-header-left {
@@ -205,12 +206,19 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+  pointer-events: auto;
 }
 
 .competitor-delete-button:hover {
   background: #f5f5f5;
   color: #666;
   border-color: #d0d0d0;
+}
+
+.competitor-delete-button:active {
+  background: #e8e8e8;
 }
 
 /* Crawling State */
