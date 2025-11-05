@@ -291,3 +291,37 @@ func (d *DesktopApp) GetMCPServerStatus() map[string]interface{} {
 		"url":     d.mcpServerURL,
 	}
 }
+
+// ============================================================================
+// Competitor Management Methods
+// ============================================================================
+
+// GetCompetitors wraps app.GetCompetitors
+func (d *DesktopApp) GetCompetitors() ([]types.CompetitorInfo, error) {
+	return d.app.GetCompetitors()
+}
+
+// GetCompetitorStats wraps app.GetCompetitorStats
+func (d *DesktopApp) GetCompetitorStats() (*types.CompetitorStats, error) {
+	return d.app.GetCompetitorStats()
+}
+
+// StartCompetitorCrawl wraps app.StartCompetitorCrawl
+func (d *DesktopApp) StartCompetitorCrawl(url string) error {
+	return d.app.StartCompetitorCrawl(url)
+}
+
+// DeleteCompetitor wraps app.DeleteCompetitor
+func (d *DesktopApp) DeleteCompetitor(competitorID uint) error {
+	return d.app.DeleteCompetitor(competitorID)
+}
+
+// AddCompetitorToProject wraps app.AddCompetitorToProject
+func (d *DesktopApp) AddCompetitorToProject(projectID uint, competitorID uint) error {
+	return d.app.AddCompetitorToProject(projectID, competitorID)
+}
+
+// RemoveCompetitorFromProject wraps app.RemoveCompetitorFromProject
+func (d *DesktopApp) RemoveCompetitorFromProject(projectID uint, competitorID uint) error {
+	return d.app.RemoveCompetitorFromProject(projectID, competitorID)
+}

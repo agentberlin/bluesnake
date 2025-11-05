@@ -16,8 +16,8 @@ import { useState } from 'react';
 import './Sidebar.css';
 
 interface SidebarProps {
-  activeSection: 'crawl-results' | 'config' | 'ai-crawlers';
-  onSectionChange: (section: 'crawl-results' | 'config' | 'ai-crawlers') => void;
+  activeSection: 'crawl-results' | 'config' | 'ai-crawlers' | 'competitors';
+  onSectionChange: (section: 'crawl-results' | 'config' | 'ai-crawlers' | 'competitors') => void;
   onHomeClick: () => void;
 }
 
@@ -91,6 +91,22 @@ function Sidebar({ activeSection, onSectionChange, onHomeClick }: SidebarProps) 
           </div>
           {isExpanded && <span className="sidebar-nav-label">AI Crawlers</span>}
           {!isExpanded && <div className="sidebar-tooltip">AI Crawlers</div>}
+        </div>
+
+        <div
+          className={`sidebar-nav-item ${activeSection === 'competitors' ? 'active' : ''}`}
+          onClick={() => onSectionChange('competitors')}
+          title={isExpanded ? '' : 'Competitors'}
+        >
+          <div className="sidebar-nav-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+              <path d="M2 12h20"></path>
+            </svg>
+          </div>
+          {isExpanded && <span className="sidebar-nav-label">Competitors</span>}
+          {!isExpanded && <div className="sidebar-tooltip">Competitors</div>}
         </div>
 
         <div

@@ -91,7 +91,7 @@ func newStoreWithPath(dbPath string) (*Store, error) {
 	sqlDB.SetConnMaxIdleTime(0)       // Idle connections never expire
 
 	// Auto migrate the schema
-	if err := database.AutoMigrate(&Config{}, &Project{}, &Crawl{}, &DiscoveredUrl{}, &PageLink{}, &DomainFramework{}); err != nil {
+	if err := database.AutoMigrate(&Config{}, &Project{}, &Crawl{}, &DiscoveredUrl{}, &PageLink{}, &DomainFramework{}, &ProjectCompetitor{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %v", err)
 	}
 

@@ -15,6 +15,9 @@
 package app
 
 import (
+	"fmt"
+	"net/url"
+
 	"github.com/agentberlin/bluesnake/internal/types"
 )
 
@@ -60,4 +63,150 @@ func (a *App) GetProjects() ([]types.ProjectInfo, error) {
 // DeleteProjectByID deletes a project and all its crawls
 func (a *App) DeleteProjectByID(projectID uint) error {
 	return a.store.DeleteProject(projectID)
+}
+
+// ============================================================================
+// Competitor Management Methods
+// ============================================================================
+
+// GetCompetitors returns all competitor projects with their latest crawl info
+func (a *App) GetCompetitors() ([]types.CompetitorInfo, error) {
+	competitors, err := a.store.GetAllCompetitors()
+	if err != nil {
+		return nil, err
+	}
+
+	// Get active crawls to check if any competitor is currently being crawled
+	activeCrawls := a.GetActiveCrawls()
+	activeCrawlMap := make(map[uint]bool)
+	for _, ac := range activeCrawls {
+		activeCrawlMap[ac.ProjectID] = true
+	}
+
+	// Convert to CompetitorInfo for frontend
+	competitorInfos := make([]types.CompetitorInfo, 0, len(competitors))
+	for _, c := range competitors {
+		competitorInfo := types.CompetitorInfo{
+			ID:          c.ID,
+			URL:         c.URL,
+			Domain:      c.Domain,
+			FaviconPath: c.FaviconPath,
+			IsCrawling:  activeCrawlMap[c.ID],
+		}
+
+		// Get the latest crawl for this competitor if it exists
+		if len(c.Crawls) > 0 {
+			latestCrawl := c.Crawls[0]
+			competitorInfo.CrawlDateTime = latestCrawl.CrawlDateTime
+			competitorInfo.CrawlDuration = latestCrawl.CrawlDuration
+			competitorInfo.PagesCrawled = latestCrawl.PagesCrawled
+			competitorInfo.LatestCrawlID = latestCrawl.ID
+
+			// Get total URLs count for this crawl
+			totalURLs, err := a.store.GetTotalURLsForCrawl(latestCrawl.ID)
+			if err == nil {
+				competitorInfo.TotalURLs = totalURLs
+			}
+		}
+
+		competitorInfos = append(competitorInfos, competitorInfo)
+	}
+
+	return competitorInfos, nil
+}
+
+// GetCompetitorStats returns aggregate statistics for all competitors
+func (a *App) GetCompetitorStats() (*types.CompetitorStats, error) {
+	competitors, err := a.store.GetAllCompetitors()
+	if err != nil {
+		return nil, err
+	}
+
+	stats := &types.CompetitorStats{
+		TotalCompetitors: len(competitors),
+	}
+
+	// Get active crawls to count how many competitors are currently being crawled
+	activeCrawls := a.GetActiveCrawls()
+	activeCrawlMap := make(map[uint]bool)
+	for _, ac := range activeCrawls {
+		activeCrawlMap[ac.ProjectID] = true
+	}
+
+	// Calculate aggregate stats
+	var lastCrawlTime int64
+	var totalPages int
+
+	for _, c := range competitors {
+		// Check if this competitor is being crawled
+		if activeCrawlMap[c.ID] {
+			stats.ActiveCrawls++
+		}
+
+		// Get latest crawl data
+		if len(c.Crawls) > 0 {
+			latestCrawl := c.Crawls[0]
+			totalPages += latestCrawl.PagesCrawled
+
+			// Track the most recent crawl time across all competitors
+			if latestCrawl.CrawlDateTime > lastCrawlTime {
+				lastCrawlTime = latestCrawl.CrawlDateTime
+			}
+		}
+	}
+
+	stats.TotalPages = totalPages
+	stats.LastCrawlTime = lastCrawlTime
+
+	return stats, nil
+}
+
+// StartCompetitorCrawl starts a crawl for a competitor domain
+func (a *App) StartCompetitorCrawl(urlStr string) error {
+	// Normalize the URL
+	normalizedURL, domain, err := normalizeURL(urlStr)
+	if err != nil {
+		return err
+	}
+
+	// Parse the normalized URL
+	parsedURL, err := url.Parse(normalizedURL)
+	if err != nil {
+		return err
+	}
+
+	// Get or create competitor project
+	project, err := a.store.GetOrCreateCompetitor(normalizedURL, domain)
+	if err != nil {
+		return err
+	}
+
+	// Check if already crawling
+	a.crawlsMutex.RLock()
+	_, alreadyCrawling := a.activeCrawls[project.ID]
+	a.crawlsMutex.RUnlock()
+
+	if alreadyCrawling {
+		return fmt.Errorf("crawl already in progress for this competitor")
+	}
+
+	// Start the crawl using the existing crawler logic
+	go a.runCrawler(parsedURL, normalizedURL, domain, project.ID)
+
+	return nil
+}
+
+// DeleteCompetitor deletes a competitor and all its crawls
+func (a *App) DeleteCompetitor(competitorID uint) error {
+	return a.store.DeleteProject(competitorID)
+}
+
+// AddCompetitorToProject links a competitor to a project
+func (a *App) AddCompetitorToProject(projectID uint, competitorID uint) error {
+	return a.store.AddCompetitorToProject(projectID, competitorID)
+}
+
+// RemoveCompetitorFromProject unlinks a competitor from a project
+func (a *App) RemoveCompetitorFromProject(projectID uint, competitorID uint) error {
+	return a.store.RemoveCompetitorFromProject(projectID, competitorID)
 }

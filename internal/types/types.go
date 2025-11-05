@@ -189,3 +189,25 @@ type SystemHealthCheck struct {
 	ErrorMsg    string `json:"errorMsg"`    // Detailed error message
 	Suggestion  string `json:"suggestion"`  // Suggestion to fix the issue
 }
+
+// CompetitorInfo represents competitor information for the frontend
+type CompetitorInfo struct {
+	ID            uint   `json:"id"`
+	URL           string `json:"url"`
+	Domain        string `json:"domain"`
+	FaviconPath   string `json:"faviconPath"`
+	CrawlDateTime int64  `json:"crawlDateTime"`
+	CrawlDuration int64  `json:"crawlDuration"`
+	PagesCrawled  int    `json:"pagesCrawled"`
+	TotalURLs     int    `json:"totalUrls"`
+	LatestCrawlID uint   `json:"latestCrawlId"`
+	IsCrawling    bool   `json:"isCrawling"`
+}
+
+// CompetitorStats represents aggregate statistics for all competitors
+type CompetitorStats struct {
+	TotalCompetitors int   `json:"totalCompetitors"`
+	TotalPages       int   `json:"totalPages"`
+	LastCrawlTime    int64 `json:"lastCrawlTime"`
+	ActiveCrawls     int   `json:"activeCrawls"`
+}

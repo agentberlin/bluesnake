@@ -21,6 +21,7 @@ import Config from './Config';
 import LinksPanel from './LinksPanel';
 import Sidebar from './Sidebar';
 import AICrawlers from './AICrawlers';
+import Competitors from './Competitors';
 import { MCPModal } from './MCPModal';
 import { types } from "../wailsjs/go/models";
 import { Button, Icon, DropdownMenu, Dropdown, CircularProgress, SplitButton } from './design-system';
@@ -184,7 +185,7 @@ interface ConfigData {
 }
 
 type View = 'start' | 'dashboard';
-type DashboardSection = 'crawl-results' | 'config' | 'ai-crawlers';
+type DashboardSection = 'crawl-results' | 'config' | 'ai-crawlers' | 'competitors';
 
 interface CrawlProgressProps {
   crawled: number;
@@ -1506,6 +1507,22 @@ function App() {
             <Config url={url} onClose={handleCloseConfig} />
           ) : dashboardSection === 'ai-crawlers' ? (
             <AICrawlers url={url} />
+          ) : dashboardSection === 'competitors' ? (
+            <Competitors onCompetitorClick={(competitor) => {
+              // Switch to crawl results view for the selected competitor
+              setCurrentProject({
+                id: competitor.id,
+                url: competitor.url,
+                domain: competitor.domain,
+                faviconPath: competitor.faviconPath,
+                crawlDateTime: competitor.crawlDateTime,
+                crawlDuration: competitor.crawlDuration,
+                pagesCrawled: competitor.pagesCrawled,
+                totalUrls: competitor.totalUrls,
+                latestCrawlId: competitor.latestCrawlId,
+              });
+              setDashboardSection('crawl-results');
+            }} />
           ) : (
             <div className="crawl-screen">
         <div className="header">

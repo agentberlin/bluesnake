@@ -105,6 +105,7 @@ type Project struct {
 	SSRScreenshot  string  `gorm:"type:text"`            // Path to SSR screenshot
 	JSScreenshot   string  `gorm:"type:text"`            // Path to JS-enabled screenshot
 	NoJSScreenshot string  `gorm:"type:text"`            // Path to JS-disabled screenshot
+	IsCompetitor   bool    `gorm:"default:false;index"`  // When true, this project is marked as a competitor
 	Crawls         []Crawl `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
 	CreatedAt      int64   `gorm:"autoCreateTime"`
 	UpdatedAt      int64   `gorm:"autoUpdateTime"`
@@ -188,4 +189,19 @@ type DomainFramework struct {
 // Unique constraint on (ProjectID, Domain)
 func (DomainFramework) TableName() string {
 	return "domain_frameworks"
+}
+
+// ProjectCompetitor represents the many-to-many relationship between projects and their competitors
+type ProjectCompetitor struct {
+	ID            uint     `gorm:"primaryKey"`
+	ProjectID     uint     `gorm:"not null;index:idx_project_competitor,unique"`
+	CompetitorID  uint     `gorm:"not null;index:idx_project_competitor,unique"`
+	Project       *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
+	Competitor    *Project `gorm:"foreignKey:CompetitorID;constraint:OnDelete:CASCADE"`
+	CreatedAt     int64    `gorm:"autoCreateTime"`
+}
+
+// Unique constraint on (ProjectID, CompetitorID)
+func (ProjectCompetitor) TableName() string {
+	return "project_competitors"
 }

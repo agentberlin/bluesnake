@@ -74,12 +74,12 @@ func (s *Store) GetOrCreateProject(urlStr string, domain string) (*Project, erro
 	return &project, nil
 }
 
-// GetAllProjects returns all projects with their latest crawl info
+// GetAllProjects returns all projects (excluding competitors) with their latest crawl info
 func (s *Store) GetAllProjects() ([]Project, error) {
 	var projects []Project
 
-	// First, get all projects
-	result := s.db.Order("id ASC").Find(&projects)
+	// Get all projects where IsCompetitor = false (exclude competitors from home page)
+	result := s.db.Where("is_competitor = ?", false).Order("id ASC").Find(&projects)
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get projects: %v", result.Error)
 	}
@@ -202,4 +202,174 @@ func (s *Store) GetTotalURLsForCrawl(crawlID uint) (int, error) {
 		return 0, fmt.Errorf("failed to count URLs for crawl %d: %v", crawlID, result.Error)
 	}
 	return int(count), nil
+}
+
+// ============================================================================
+// Competitor Management Methods
+// ============================================================================
+
+// GetOrCreateCompetitor gets or creates a competitor project (marked with IsCompetitor = true)
+func (s *Store) GetOrCreateCompetitor(urlStr string, domain string) (*Project, error) {
+	var project Project
+	result := s.db.Where("domain = ?", domain).First(&project)
+
+	if result.Error == gorm.ErrRecordNotFound {
+		// Create new competitor project
+		project = Project{
+			URL:          urlStr,
+			Domain:       domain,
+			IsCompetitor: true,
+		}
+		if err := s.db.Create(&project).Error; err != nil {
+			return nil, fmt.Errorf("failed to create competitor: %v", err)
+		}
+
+		// Fetch and save favicon asynchronously
+		go func(projectID uint, domain string) {
+			if faviconPath, err := fetchAndSaveFavicon(projectID, domain); err == nil {
+				s.db.Model(&Project{}).Where("id = ?", projectID).Update("favicon_path", faviconPath)
+			}
+		}(project.ID, domain)
+
+		return &project, nil
+	}
+
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get competitor: %v", result.Error)
+	}
+
+	// If project exists but is not marked as competitor, update it
+	if !project.IsCompetitor {
+		project.IsCompetitor = true
+		if err := s.db.Save(&project).Error; err != nil {
+			return nil, fmt.Errorf("failed to update project as competitor: %v", err)
+		}
+	}
+
+	// Update URL if it has changed
+	if project.URL != urlStr {
+		project.URL = urlStr
+		s.db.Save(&project)
+	}
+
+	// If favicon doesn't exist, try to fetch it
+	if project.FaviconPath == "" {
+		go func(projectID uint, domain string) {
+			if faviconPath, err := fetchAndSaveFavicon(projectID, domain); err == nil {
+				s.db.Model(&Project{}).Where("id = ?", projectID).Update("favicon_path", faviconPath)
+			}
+		}(project.ID, domain)
+	}
+
+	return &project, nil
+}
+
+// GetAllCompetitors returns all projects marked as competitors with their latest crawl info
+func (s *Store) GetAllCompetitors() ([]Project, error) {
+	var competitors []Project
+
+	// Get all projects where IsCompetitor = true
+	result := s.db.Where("is_competitor = ?", true).Order("id ASC").Find(&competitors)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get competitors: %v", result.Error)
+	}
+
+	// For each competitor, manually fetch the latest crawl
+	for i := range competitors {
+		var latestCrawl Crawl
+		err := s.db.Where("project_id = ?", competitors[i].ID).
+			Order("crawl_date_time DESC").
+			First(&latestCrawl).Error
+
+		if err == nil {
+			competitors[i].Crawls = []Crawl{latestCrawl}
+		} else if err != gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("failed to get latest crawl for competitor %d: %v", competitors[i].ID, err)
+		}
+	}
+
+	return competitors, nil
+}
+
+// GetCompetitorsForProject returns all competitors linked to a specific project
+func (s *Store) GetCompetitorsForProject(projectID uint) ([]Project, error) {
+	var competitors []Project
+
+	// Join through ProjectCompetitor table
+	result := s.db.
+		Joins("JOIN project_competitors ON project_competitors.competitor_id = projects.id").
+		Where("project_competitors.project_id = ?", projectID).
+		Find(&competitors)
+
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get competitors for project %d: %v", projectID, result.Error)
+	}
+
+	// For each competitor, fetch the latest crawl
+	for i := range competitors {
+		var latestCrawl Crawl
+		err := s.db.Where("project_id = ?", competitors[i].ID).
+			Order("crawl_date_time DESC").
+			First(&latestCrawl).Error
+
+		if err == nil {
+			competitors[i].Crawls = []Crawl{latestCrawl}
+		} else if err != gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("failed to get latest crawl for competitor %d: %v", competitors[i].ID, err)
+		}
+	}
+
+	return competitors, nil
+}
+
+// AddCompetitorToProject links a competitor to a project
+func (s *Store) AddCompetitorToProject(projectID uint, competitorID uint) error {
+	// Check if the relationship already exists
+	var existing ProjectCompetitor
+	result := s.db.Where("project_id = ? AND competitor_id = ?", projectID, competitorID).First(&existing)
+
+	if result.Error == nil {
+		// Relationship already exists
+		return nil
+	}
+
+	if result.Error != gorm.ErrRecordNotFound {
+		return fmt.Errorf("failed to check existing relationship: %v", result.Error)
+	}
+
+	// Create the relationship
+	relationship := ProjectCompetitor{
+		ProjectID:    projectID,
+		CompetitorID: competitorID,
+	}
+
+	if err := s.db.Create(&relationship).Error; err != nil {
+		return fmt.Errorf("failed to link competitor to project: %v", err)
+	}
+
+	return nil
+}
+
+// RemoveCompetitorFromProject unlinks a competitor from a project
+func (s *Store) RemoveCompetitorFromProject(projectID uint, competitorID uint) error {
+	result := s.db.Where("project_id = ? AND competitor_id = ?", projectID, competitorID).
+		Delete(&ProjectCompetitor{})
+
+	if result.Error != nil {
+		return fmt.Errorf("failed to unlink competitor from project: %v", result.Error)
+	}
+
+	return nil
+}
+
+// SetProjectAsCompetitor sets or unsets the IsCompetitor flag for a project
+func (s *Store) SetProjectAsCompetitor(projectID uint, isCompetitor bool) error {
+	result := s.db.Model(&Project{}).Where("id = ?", projectID).Update("is_competitor", isCompetitor)
+	if result.Error != nil {
+		return fmt.Errorf("failed to update project competitor status: %v", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("project with ID %d not found", projectID)
+	}
+	return nil
 }
