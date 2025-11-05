@@ -22,7 +22,7 @@ import {
   StopCrawl,
   GetFaviconData,
 } from '../wailsjs/go/main/DesktopApp';
-import { Button, Input, Modal, ModalContent, ModalActions, Card, CardHeader, CardContent, CardFooter, Spinner, Badge, Icon } from './design-system';
+import { Button, Input, Modal, ModalContent, ModalActions, Card, CardHeader, CardContent, CardFooter, Spinner, Icon } from './design-system';
 
 interface CompetitorInfo {
   id: number;
@@ -161,96 +161,89 @@ function Competitors({ onCompetitorClick }: CompetitorsProps) {
 
   return (
     <div className="competitors-page">
-      {/* Header */}
-      <div className="competitors-page-header">
-        <h2 className="competitors-page-title">Competitors</h2>
-        <Button variant="primary" size="medium" onClick={() => setIsAddingCompetitor(true)}>
-          Add Competitor
-        </Button>
-      </div>
-
-      {/* Overview Statistics */}
-      {stats && (
-        <div className="competitors-stats-grid">
-          <Card variant="default">
-            <CardContent>
-              <div className="stat-display">
-                <div className="stat-label">Total Competitors</div>
-                <div className="stat-value">{stats.totalCompetitors}</div>
+      <div className="competitors-content">
+        {/* Header with Title and Action */}
+        <div className="competitors-header">
+          <div className="competitors-header-left">
+            <h2 className="competitors-title">Competitors</h2>
+            {stats && (
+              <div className="competitors-stats-bar">
+                <div className="stat-item">
+                  <span className="stat-item-value">{stats.totalCompetitors}</span>
+                  <span className="stat-item-label">Total</span>
+                </div>
+                <div className="stat-divider"></div>
+                <div className="stat-item">
+                  <span className="stat-item-value">{stats.totalPages.toLocaleString()}</span>
+                  <span className="stat-item-label">Pages Crawled</span>
+                </div>
+                <div className="stat-divider"></div>
+                <div className="stat-item">
+                  <span className="stat-item-value">{formatTimeAgo(stats.lastCrawlTime)}</span>
+                  <span className="stat-item-label">Last Crawl</span>
+                </div>
+                {stats.activeCrawls > 0 && (
+                  <>
+                    <div className="stat-divider"></div>
+                    <div className="stat-item stat-item-active">
+                      <span className="stat-item-value">{stats.activeCrawls}</span>
+                      <span className="stat-item-label">Active</span>
+                    </div>
+                  </>
+                )}
               </div>
-            </CardContent>
-          </Card>
-          <Card variant="default">
-            <CardContent>
-              <div className="stat-display">
-                <div className="stat-label">Total Pages</div>
-                <div className="stat-value">{stats.totalPages.toLocaleString()}</div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card variant="default">
-            <CardContent>
-              <div className="stat-display">
-                <div className="stat-label">Last Crawl</div>
-                <div className="stat-value">{formatTimeAgo(stats.lastCrawlTime)}</div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card variant="default">
-            <CardContent>
-              <div className="stat-display">
-                <div className="stat-label">Active Crawls</div>
-                <div className="stat-value">{stats.activeCrawls}</div>
-              </div>
-            </CardContent>
-          </Card>
+            )}
+          </div>
+          <Button variant="primary" size="medium" onClick={() => setIsAddingCompetitor(true)}>
+            Add Competitor
+          </Button>
         </div>
-      )}
 
-      {/* Add Competitor Modal */}
-      <Modal
-        isOpen={isAddingCompetitor}
-        onClose={() => setIsAddingCompetitor(false)}
-        title="Add Competitor"
-        size="small"
-      >
-        <ModalContent>
-          <Input
-            type="text"
-            placeholder="https://example.com"
-            value={newCompetitorUrl}
-            onChange={(e) => setNewCompetitorUrl(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleAddCompetitor()}
-            error={error || undefined}
-            autoFocus
-          />
-        </ModalContent>
-        <ModalActions>
-          <Button
-            variant="secondary"
-            onClick={() => setIsAddingCompetitor(false)}
-            disabled={loading}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            onClick={handleAddCompetitor}
-            loading={loading}
-          >
-            Start Crawl
-          </Button>
-        </ModalActions>
-      </Modal>
+        {/* Add Competitor Modal */}
+        <Modal
+          isOpen={isAddingCompetitor}
+          onClose={() => setIsAddingCompetitor(false)}
+          title="Add Competitor"
+          size="small"
+        >
+          <ModalContent>
+            <Input
+              type="text"
+              placeholder="https://example.com"
+              value={newCompetitorUrl}
+              onChange={(e) => setNewCompetitorUrl(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleAddCompetitor()}
+              error={error || undefined}
+              autoFocus
+            />
+          </ModalContent>
+          <ModalActions>
+            <Button
+              variant="secondary"
+              onClick={() => setIsAddingCompetitor(false)}
+              disabled={loading}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              onClick={handleAddCompetitor}
+              loading={loading}
+            >
+              Start Crawl
+            </Button>
+          </ModalActions>
+        </Modal>
 
-      {/* Competitors List */}
-      <div className="competitors-section">
-        <h3 className="competitors-section-title">Competitor Domains</h3>
+        {/* Competitors Grid */}
         {competitors.length === 0 ? (
           <div className="competitors-empty-state">
             <Icon name="globe" size={48} />
-            <h4>No Competitors Yet</h4>
+            <h3>No Competitors Yet</h3>
             <p>Add competitor domains to track and analyze their websites.</p>
+            <Button variant="secondary" size="medium" onClick={() => setIsAddingCompetitor(true)} style={{ marginTop: '16px' }}>
+              Add Your First Competitor
+            </Button>
           </div>
         ) : (
           <div className="competitors-grid">

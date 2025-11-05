@@ -13,69 +13,83 @@
  * limitations under the License.
  */
 
-/* Page Layout */
+/* Page Layout - Full height with scrolling */
 .competitors-page {
-  padding: 40px;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  background: #fafafa;
+}
+
+.competitors-content {
   max-width: 1400px;
   margin: 0 auto;
+  padding: 32px;
 }
 
-/* Header */
-.competitors-page-header {
+/* Header Section */
+.competitors-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   margin-bottom: 32px;
+  gap: 24px;
 }
 
-.competitors-page-title {
-  font-size: 24px;
+.competitors-header-left {
+  flex: 1;
+  min-width: 0;
+}
+
+.competitors-title {
+  font-size: 20px;
   font-weight: 300;
   color: #1a1a1a;
-  margin: 0;
+  margin: 0 0 16px 0;
   letter-spacing: -0.5px;
 }
 
-/* Stats Grid */
-.competitors-stats-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 16px;
-  margin-bottom: 40px;
+/* Stats Bar - Horizontal layout */
+.competitors-stats-bar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 16px 20px;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 2px;
 }
 
-.stat-display {
-  text-align: center;
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.stat-label {
-  font-size: 12px;
-  font-weight: 300;
-  color: #666;
-  margin-bottom: 8px;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-}
-
-.stat-value {
-  font-size: 32px;
-  font-weight: 300;
+.stat-item-value {
+  font-size: 20px;
+  font-weight: 400;
   color: #1a1a1a;
-  letter-spacing: -1px;
+  line-height: 1;
+  letter-spacing: -0.5px;
 }
 
-/* Competitors Section */
-.competitors-section {
-  margin-top: 40px;
-}
-
-.competitors-section-title {
-  font-size: 14px;
+.stat-item-label {
+  font-size: 11px;
   font-weight: 300;
-  color: #666;
-  margin: 0 0 20px 0;
-  letter-spacing: 0.5px;
+  color: #999;
   text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stat-item-active .stat-item-value {
+  color: #333;
+}
+
+.stat-divider {
+  width: 1px;
+  height: 32px;
+  background: #e0e0e0;
 }
 
 /* Empty State */
@@ -84,20 +98,21 @@
   padding: 80px 40px;
   border: 1px solid #e0e0e0;
   border-radius: 2px;
-  background: #fafafa;
+  background: #fff;
 }
 
 .competitors-empty-state svg {
   color: #999;
-  margin-bottom: 16px;
+  margin-bottom: 20px;
   opacity: 0.5;
 }
 
-.competitors-empty-state h4 {
-  font-size: 16px;
+.competitors-empty-state h3 {
+  font-size: 18px;
   font-weight: 300;
   color: #333;
   margin: 0 0 8px 0;
+  letter-spacing: -0.3px;
 }
 
 .competitors-empty-state p {
@@ -107,10 +122,10 @@
   margin: 0;
 }
 
-/* Competitors Grid */
+/* Competitors Grid - More columns, better spacing */
 .competitors-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 16px;
 }
 
@@ -208,4 +223,26 @@
 .stat-row-value {
   color: #1a1a1a;
   font-weight: 400;
+}
+
+/* Responsive adjustments */
+@media (max-width: 1200px) {
+  .competitors-grid {
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .competitors-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .competitors-stats-bar {
+    flex-wrap: wrap;
+  }
+
+  .competitors-grid {
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  }
 }
