@@ -282,14 +282,16 @@ func (s *Server) handleStartCrawl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.app.StartCrawl(req.URL); err != nil {
+	projectInfo, err := s.app.StartCrawl(req.URL)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(map[string]string{
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"message": "Crawl started",
+		"project": projectInfo,
 	})
 }
 

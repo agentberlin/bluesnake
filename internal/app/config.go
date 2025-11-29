@@ -22,13 +22,16 @@ import (
 
 // GetConfigForDomain retrieves the configuration for a specific domain
 func (a *App) GetConfigForDomain(urlStr string) (*types.ConfigResponse, error) {
-	// Normalize the URL to extract domain
-	normalizedURL, domain, err := normalizeURL(urlStr)
+	// Resolve redirects to get canonical URL (e.g., amahahealth.com -> www.amahahealth.com)
+	resolvedURL := resolveURL(urlStr)
+
+	// Normalize the resolved URL to extract domain
+	normalizedURL, domain, err := normalizeURL(resolvedURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid URL: %v", err)
 	}
 
-	// Get or create the project
+	// Get or create the project using the canonical domain
 	project, err := a.store.GetOrCreateProject(normalizedURL, domain)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get project: %v", err)
@@ -80,13 +83,16 @@ func (a *App) UpdateConfigForDomain(
 	respectMetaRobotsNoindex bool,
 	respectNoindex bool,
 ) error {
-	// Normalize the URL to extract domain
-	normalizedURL, domain, err := normalizeURL(urlStr)
+	// Resolve redirects to get canonical URL (e.g., amahahealth.com -> www.amahahealth.com)
+	resolvedURL := resolveURL(urlStr)
+
+	// Normalize the resolved URL to extract domain
+	normalizedURL, domain, err := normalizeURL(resolvedURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %v", err)
 	}
 
-	// Get or create the project
+	// Get or create the project using the canonical domain
 	project, err := a.store.GetOrCreateProject(normalizedURL, domain)
 	if err != nil {
 		return fmt.Errorf("failed to get project: %v", err)

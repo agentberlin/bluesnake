@@ -295,6 +295,7 @@ function App() {
   const [mcpServerUrl, setMcpServerUrl] = useState<string>('');
   const [isMcpServerRunning, setIsMcpServerRunning] = useState(false);
   const [isStartingMcpServer, setIsStartingMcpServer] = useState(false);
+  const [isStartingCrawl, setIsStartingCrawl] = useState(false);
 
   // Error dialog state
   const [showErrorDialog, setShowErrorDialog] = useState(false);
@@ -768,10 +769,10 @@ function App() {
 
 
   const handleNewCrawl = async () => {
-    if (!url.trim()) return;
+    if (!url.trim() || isStartingCrawl) return;
 
+    setIsStartingCrawl(true);
     try {
-
       // First, get existing config to preserve user settings
       try {
         const existingConfig: ConfigData = await GetConfigForDomain(url);
@@ -834,25 +835,39 @@ function App() {
         });
       }
 
-      await StartCrawl(url);
+      const projectInfo = await StartCrawl(url);
 
-      // Immediately load the project and navigate to crawl view
-      await loadCurrentProjectFromUrl(url);
+      // Build a full project object from the response
+      const project: ProjectInfo = {
+        id: projectInfo.id,
+        url: projectInfo.url,
+        domain: projectInfo.domain,
+        faviconPath: '',
+        crawlDateTime: 0,
+        crawlDuration: 0,
+        pagesCrawled: 0,
+        totalUrls: 0,
+        latestCrawlId: projectInfo.latestCrawlId
+      };
 
-      // Set crawling state to start polling
+      // Use the same logic as clicking a project card - this calls GetCrawls, etc.
+      await handleProjectClick(project);
+
+      // Override isCrawling since we just started a crawl
+      // (handleProjectClick checks activeCrawls map which won't have this crawl yet)
       setIsCrawling(true);
-
-      // Navigate to dashboard
-      setDashboardSection('crawl-results');
-      setView('dashboard');
     } catch (error) {
       console.error('Failed to start crawl:', error);
       setIsCrawling(false);
+    } finally {
+      setIsStartingCrawl(false);
     }
   };
 
   const handleSinglePageCrawl = async () => {
-    if (!url.trim()) return;
+    if (!url.trim() || isStartingCrawl) return;
+
+    setIsStartingCrawl(true);
 
     try {
 
@@ -918,20 +933,32 @@ function App() {
         });
       }
 
-      await StartCrawl(url);
+      const projectInfo = await StartCrawl(url);
 
-      // Immediately load the project and navigate to crawl view
-      await loadCurrentProjectFromUrl(url);
+      // Build a full project object from the response
+      const project: ProjectInfo = {
+        id: projectInfo.id,
+        url: projectInfo.url,
+        domain: projectInfo.domain,
+        faviconPath: '',
+        crawlDateTime: 0,
+        crawlDuration: 0,
+        pagesCrawled: 0,
+        totalUrls: 0,
+        latestCrawlId: projectInfo.latestCrawlId
+      };
 
-      // Set crawling state to start polling
+      // Use the same logic as clicking a project card - this calls GetCrawls, etc.
+      await handleProjectClick(project);
+
+      // Override isCrawling since we just started a crawl
+      // (handleProjectClick checks activeCrawls map which won't have this crawl yet)
       setIsCrawling(true);
-
-      // Navigate to dashboard
-      setDashboardSection('crawl-results');
-      setView('dashboard');
     } catch (error) {
       console.error('Failed to start single page crawl:', error);
       setIsCrawling(false);
+    } finally {
+      setIsStartingCrawl(false);
     }
   };
 
@@ -1316,16 +1343,21 @@ function App() {
               autoCorrect="off"
               autoCapitalize="off"
               spellCheck={false}
+              disabled={isStartingCrawl}
             />
             <SplitButton
               label=""
               onClick={handleNewCrawl}
-              disabled={!url.trim()}
+              disabled={!url.trim() || isStartingCrawl}
               icon={
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="5" y1="12" x2="19" y2="12"></line>
-                  <polyline points="12 5 19 12 12 19"></polyline>
-                </svg>
+                isStartingCrawl ? (
+                  <SmallLoadingSpinner />
+                ) : (
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                    <polyline points="12 5 19 12 12 19"></polyline>
+                  </svg>
+                )
               }
               menuItems={[
                 {
@@ -1491,7 +1523,9 @@ function App() {
   }
 
   // Dashboard screen
-  const hasNoCrawls = availableCrawls.length === 0;
+  // Show empty state only if there are no crawls AND we don't have an active crawl ID
+  // (currentCrawlId is set immediately when starting a new crawl, before availableCrawls is populated)
+  const hasNoCrawls = availableCrawls.length === 0 && !currentCrawlId;
 
   return (
     <div className="app">

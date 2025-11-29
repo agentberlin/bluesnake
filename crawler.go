@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/agentberlin/bluesnake/storage"
 	"github.com/temoto/robotstxt"
@@ -1255,10 +1256,11 @@ func (cr *Crawler) checkRobots(u *url.URL) error {
 	cr.mutex.RUnlock()
 
 	if !ok {
-		// no robots file cached - fetch it using Collector's HTTP client
+		// no robots file cached - fetch it
 
 		// Prepare request
-		req, err := http.NewRequest("GET", u.Scheme+"://"+u.Host+"/robots.txt", nil)
+		robotsURL := u.Scheme + "://" + u.Host + "/robots.txt"
+		req, err := http.NewRequest("GET", robotsURL, nil)
 		if err != nil {
 			return err
 		}
@@ -1280,7 +1282,14 @@ func (cr *Crawler) checkRobots(u *url.URL) error {
 			req.Host = hostHeader
 		}
 
-		resp, err := cr.Collector.backend.Client.Do(req)
+		// Use a standard HTTP client that follows redirects for robots.txt
+		// The Collector's client is configured to NOT follow redirects (for tracking),
+		// but robots.txt fetching should follow redirects to the canonical location
+		robotsClient := &http.Client{
+			Timeout: 30 * time.Second,
+			// Default CheckRedirect follows up to 10 redirects
+		}
+		resp, err := robotsClient.Do(req)
 		if err != nil {
 			return err
 		}
@@ -1398,25 +1407,34 @@ func (cr *Crawler) hasDiscoveryMechanism(mechanism DiscoveryMechanism) bool {
 
 // fetchSitemapURLs fetches sitemap URLs based on configuration.
 // Uses custom sitemap URLs if provided, otherwise tries default locations.
-// Returns all discovered URLs from sitemaps (empty slice if none found).
+// Returns all discovered URLs from sitemaps including the sitemap URLs themselves.
 func (cr *Crawler) fetchSitemapURLs(baseURL string) []string {
-	// Use custom sitemap URLs if provided
-	if len(cr.sitemapURLs) > 0 {
-		// Fetch URLs from custom sitemap locations
-		var allURLs []string
-		for _, sitemapURL := range cr.sitemapURLs {
-			urls, err := cr.Collector.FetchSitemapURLs(sitemapURL)
-			if err != nil {
-				// Log error but continue with other sitemaps
-				continue
-			}
-			allURLs = append(allURLs, urls...)
+	// Determine which sitemap URLs to try
+	sitemapLocations := cr.sitemapURLs
+	if len(sitemapLocations) == 0 {
+		// Use default locations
+		baseURL = strings.TrimSuffix(baseURL, "/")
+		sitemapLocations = []string{
+			baseURL + "/sitemap.xml",
+			baseURL + "/sitemap_index.xml",
 		}
-		return allURLs
 	}
 
-	// Try default locations using Collector's method
-	return cr.Collector.TryDefaultSitemaps(baseURL)
+	// Fetch URLs from each sitemap location
+	var allURLs []string
+	for _, sitemapURL := range sitemapLocations {
+		urls, err := cr.Collector.FetchSitemapURLs(sitemapURL)
+		if err != nil {
+			// Log error but continue with other sitemaps
+			continue
+		}
+		if len(urls) > 0 {
+			// Include the sitemap URL itself as a discovered resource
+			allURLs = append(allURLs, sitemapURL)
+			allURLs = append(allURLs, urls...)
+		}
+	}
+	return allURLs
 }
 
 // buildPageLinks constructs the Links structure for a given page

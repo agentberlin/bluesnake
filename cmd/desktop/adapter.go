@@ -78,8 +78,9 @@ func (d *DesktopApp) GetCrawls(projectID uint) ([]types.CrawlInfo, error) {
 	return d.app.GetCrawls(projectID)
 }
 
-// StartCrawl wraps app.StartCrawl
-func (d *DesktopApp) StartCrawl(url string) error {
+// StartCrawl wraps app.StartCrawl and returns the project info.
+// The returned ProjectInfo contains the canonical domain (after following redirects).
+func (d *DesktopApp) StartCrawl(url string) (*types.ProjectInfo, error) {
 	return d.app.StartCrawl(url)
 }
 

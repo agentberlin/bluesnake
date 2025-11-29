@@ -28,6 +28,7 @@ import (
 
 	"github.com/agentberlin/bluesnake"
 	"github.com/agentberlin/bluesnake/internal/store"
+	"github.com/agentberlin/bluesnake/internal/types"
 )
 
 // activeCrawl tracks an ongoing crawl
@@ -58,24 +59,30 @@ type crawlStats struct {
 	crawledURLs    *sync.Map // URLs that have been crawled
 }
 
-// StartCrawl initiates a crawl for the given URL
-func (a *App) StartCrawl(urlStr string) error {
-	// Normalize the URL
-	normalizedURL, domain, err := normalizeURL(urlStr)
+// StartCrawl initiates a crawl for the given URL and returns the project info.
+// The returned ProjectInfo contains the canonical domain (after following redirects),
+// which may differ from the input URL (e.g., amahahealth.com -> www.amahahealth.com).
+func (a *App) StartCrawl(urlStr string) (*types.ProjectInfo, error) {
+	// Resolve redirects to get the canonical URL
+	// e.g., amahahealth.com -> www.amahahealth.com
+	resolvedURL := resolveURL(urlStr)
+
+	// Normalize the resolved URL
+	normalizedURL, domain, err := normalizeURL(resolvedURL)
 	if err != nil {
-		return fmt.Errorf("invalid URL: %v", err)
+		return nil, fmt.Errorf("invalid URL: %v", err)
 	}
 
 	// Parse the normalized URL
 	parsedURL, err := url.Parse(normalizedURL)
 	if err != nil {
-		return fmt.Errorf("failed to parse normalized URL: %v", err)
+		return nil, fmt.Errorf("failed to parse normalized URL: %v", err)
 	}
 
-	// Get or create project to check if already crawling
+	// Get or create project using the canonical domain
 	project, err := a.store.GetOrCreateProject(normalizedURL, domain)
 	if err != nil {
-		return fmt.Errorf("failed to get/create project: %v", err)
+		return nil, fmt.Errorf("failed to get/create project: %v", err)
 	}
 
 	// Check if this project is already being crawled
@@ -84,13 +91,27 @@ func (a *App) StartCrawl(urlStr string) error {
 	a.crawlsMutex.RUnlock()
 
 	if alreadyCrawling {
-		return fmt.Errorf("crawl already in progress for this project")
+		return nil, fmt.Errorf("crawl already in progress for this project")
+	}
+
+	// Create a new crawl record BEFORE starting the goroutine
+	// This ensures the crawl ID is available to return to the frontend
+	crawl, err := a.store.CreateCrawl(project.ID, time.Now().Unix(), 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create crawl: %v", err)
 	}
 
 	// Run crawler in a goroutine to not block the UI
-	go a.runCrawler(parsedURL, normalizedURL, domain, project.ID)
+	go a.runCrawler(parsedURL, normalizedURL, domain, project.ID, crawl.ID)
 
-	return nil
+	// Return project info so frontend knows which project was created
+	// Include the crawl ID so frontend can immediately start tracking it
+	return &types.ProjectInfo{
+		ID:            project.ID,
+		URL:           normalizedURL,
+		Domain:        domain,
+		LatestCrawlID: crawl.ID,
+	}, nil
 }
 
 // StopCrawl stops an active crawl for a specific project
@@ -234,14 +255,7 @@ func saveContentToDisk(domain string, crawlID uint, pageURL string, content stri
 	return nil
 }
 
-func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string, projectID uint) {
-	// Create a new crawl
-	crawl, err := a.store.CreateCrawl(projectID, time.Now().Unix(), 0, 0)
-	if err != nil {
-		log.Printf("Failed to create crawl: %v", err)
-		return
-	}
-
+func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string, projectID uint, crawlID uint) {
 	// Initialize crawl stats
 	stats := &crawlStats{
 		startTime:        time.Now(),
@@ -251,7 +265,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		url:              normalizedURL,
 		domain:           domain,
 		projectID:        projectID,
-		crawlID:          crawl.ID,
+		crawlID:          crawlID,
 		discoveredURLs:   &sync.Map{}, // Initialize for tracking discovered URLs
 		crawledURLs:      &sync.Map{}, // Initialize for tracking crawled URLs
 	}
@@ -264,7 +278,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 	stopChan := make(chan struct{}, 1)
 	activeCrawlInfo := &activeCrawl{
 		projectID:   projectID,
-		crawlID:     crawl.ID,
+		crawlID:     crawlID,
 		domain:      domain,
 		url:         normalizedURL,
 		cancel:      cancel,

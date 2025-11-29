@@ -1,4 +1,4 @@
-.PHONY: dev build install clean db-reset help
+.PHONY: dev build install clean reset-db help
 
 # Default target
 help:
@@ -9,7 +9,7 @@ help:
 	@echo "  make build     - Build BlueSnake for local machine"
 	@echo "  make install   - Install BlueSnake.app to ~/Applications (builds first)"
 	@echo "  make clean     - Clean build artifacts"
-	@echo "  make db-reset  - Delete the database file from ~/.bluesnake/"
+	@echo "  make reset-db  - Delete the database file from ~/.bluesnake/"
 
 # Run Wails development server
 dev:
@@ -48,7 +48,7 @@ clean:
 	@echo "✅ Clean complete!"
 
 # Delete database file
-db-reset:
+reset-db:
 	@echo "🗑️  Deleting database file..."
 	@if [ -f ~/.bluesnake/bluesnake.db ]; then \
 		rm ~/.bluesnake/bluesnake.db; \

@@ -17,9 +17,11 @@ package app
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // hostnameRegex matches valid hostnames and IP addresses
@@ -107,4 +109,44 @@ func normalizeURL(input string) (string, string, error) {
 	}
 
 	return normalizedURL, hostname, nil
+}
+
+// resolveURL follows redirects and returns the final destination URL.
+// This is used to resolve cases like amahahealth.com -> www.amahahealth.com
+// so that the project is created with the canonical domain.
+//
+// Returns the final URL after following redirects, or the input URL if:
+// - The request fails (network error, timeout, etc.)
+// - The URL is already the final destination (no redirects)
+func resolveURL(inputURL string) string {
+	// Ensure URL has a scheme
+	if !strings.HasPrefix(inputURL, "http://") && !strings.HasPrefix(inputURL, "https://") {
+		inputURL = "https://" + inputURL
+	}
+
+	// Create HTTP client with redirect tracking
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		// Default behavior follows redirects and we can get final URL from response
+	}
+
+	// Use HEAD request to minimize data transfer
+	req, err := http.NewRequest("HEAD", inputURL, nil)
+	if err != nil {
+		return inputURL // Fall back to input URL on error
+	}
+
+	// Set a reasonable user agent
+	req.Header.Set("User-Agent", "bluesnake/1.0 (+https://snake.blue)")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return inputURL // Fall back to input URL on error
+	}
+	defer resp.Body.Close()
+
+	// Get the final URL after all redirects
+	finalURL := resp.Request.URL.String()
+
+	return finalURL
 }

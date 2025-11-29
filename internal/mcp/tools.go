@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -88,18 +87,8 @@ func (s *MCPServer) registerCrawlWebsiteTool() {
 			}
 		}
 
-		// Extract domain from URL for response
-		parsedURL, err := url.Parse(args.URL)
-		if err != nil {
-			return nil, CrawlWebsiteResult{
-				Success: false,
-				Message: fmt.Sprintf("Invalid URL: %v", err),
-			}, nil
-		}
-		domain := parsedURL.Hostname()
-
-		// Start the crawl
-		err = s.app.StartCrawl(args.URL)
+		// Start the crawl - returns the canonical project info after resolving redirects
+		projectInfo, err := s.app.StartCrawl(args.URL)
 		if err != nil {
 			return nil, CrawlWebsiteResult{
 				Success: false,
@@ -107,16 +96,12 @@ func (s *MCPServer) registerCrawlWebsiteTool() {
 			}, nil
 		}
 
-		// Get the active crawl to retrieve project and crawl IDs
+		// Get the crawl ID from active crawls
 		activeCrawls := s.app.GetActiveCrawls()
 		var crawlID uint
-		var projectID uint
-
 		for _, crawl := range activeCrawls {
-			if crawl.Domain == domain {
+			if crawl.ProjectID == projectInfo.ID {
 				crawlID = crawl.CrawlID
-				projectID = crawl.ProjectID
-				domain = crawl.Domain
 				break
 			}
 		}
@@ -124,14 +109,14 @@ func (s *MCPServer) registerCrawlWebsiteTool() {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{
 				&mcp.TextContent{
-					Text: fmt.Sprintf("Crawl started successfully for %s (Project ID: %d, Crawl ID: %d)", domain, projectID, crawlID),
+					Text: fmt.Sprintf("Crawl started successfully for %s (Project ID: %d, Crawl ID: %d)", projectInfo.Domain, projectInfo.ID, crawlID),
 				},
 			},
 		}, CrawlWebsiteResult{
 			Success:   true,
-			ProjectID: projectID,
+			ProjectID: projectInfo.ID,
 			CrawlID:   crawlID,
-			Domain:    domain,
+			Domain:    projectInfo.Domain,
 			Message:   "Crawl started successfully",
 		}, nil
 	})

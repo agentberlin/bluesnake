@@ -47,7 +47,7 @@ export function SaveAICrawlerData(arg1:string,arg2:types.AICrawlerData,arg3:stri
 
 export function SearchCrawlResultsPaginated(arg1:number,arg2:string,arg3:string,arg4:number,arg5:number):Promise<types.CrawlResultPaginated>;
 
-export function StartCrawl(arg1:string):Promise<void>;
+export function StartCrawl(arg1:string):Promise<types.ProjectInfo>;
 
 export function StartMCPServer():Promise<string>;
 
