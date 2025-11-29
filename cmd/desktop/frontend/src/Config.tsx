@@ -36,7 +36,6 @@ interface ConfigData {
   includeSubdomains: boolean;
   discoveryMechanisms: string[];  // Not exposed directly, derived from checkboxes
   checkExternalResources: boolean;
-  singlePageMode: boolean;
   robotsTxtMode?: string;
   followInternalNofollow?: boolean;
   followExternalNofollow?: boolean;
@@ -59,7 +58,6 @@ function Config({ url, onClose }: ConfigProps) {
   const [includeSubdomains, setIncludeSubdomains] = useState(true); // Default to true as per requirement
   const [sitemapEnabled, setSitemapEnabled] = useState(false);
   const [checkExternalResources, setCheckExternalResources] = useState(true); // Default to true
-  const [singlePageMode, setSinglePageMode] = useState(false); // Default to false
 
   // Crawler directive settings
   const [respectRobotsTxt, setRespectRobotsTxt] = useState(true);
@@ -92,7 +90,6 @@ function Config({ url, onClose }: ConfigProps) {
       const mechanisms = config.discoveryMechanisms || ["spider"];
       setSitemapEnabled(mechanisms.includes("sitemap"));
       setCheckExternalResources(config.checkExternalResources !== undefined ? config.checkExternalResources : true);
-      setSinglePageMode(config.singlePageMode !== undefined ? config.singlePageMode : false);
 
       // Load crawler directive settings
       setRespectRobotsTxt(config.robotsTxtMode !== 'ignore');
@@ -123,7 +120,6 @@ function Config({ url, onClose }: ConfigProps) {
       setIncludeSubdomains(true); // Default to including subdomains
       setSitemapEnabled(false);
       setCheckExternalResources(true); // Default to checking external resources
-      setSinglePageMode(false); // Default to full website crawl
 
       // Set crawler directive defaults
       setRespectRobotsTxt(true);
@@ -154,7 +150,6 @@ function Config({ url, onClose }: ConfigProps) {
         sitemapEnabled,
         [], // No custom sitemap URLs in this version
         checkExternalResources,
-        singlePageMode,
         respectRobotsTxt ? "respect" : "ignore",
         !respectInternalNofollow,
         !respectExternalNofollow,
@@ -234,36 +229,6 @@ function Config({ url, onClose }: ConfigProps) {
                       <label className="config-label">
                         <input
                           type="checkbox"
-                          checked={singlePageMode}
-                          onChange={(e) => setSinglePageMode(e.target.checked)}
-                          className="config-checkbox"
-                        />
-                        <div>
-                          <span className="checkbox-label">Single Page Mode</span>
-                          <p className="config-hint">
-                            When enabled, only the starting URL will be crawled without following any links or sitemaps. This overrides all discovery mechanism settings.
-                          </p>
-                        </div>
-                      </label>
-                    </div>
-
-                    {singlePageMode && (
-                      <div className="config-warning-box">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-                          <line x1="12" y1="9" x2="12" y2="13"></line>
-                          <line x1="12" y1="17" x2="12.01" y2="17"></line>
-                        </svg>
-                        <p>
-                          Note: Single Page Mode is active. Discovery mechanisms (Spider/Sitemap) will be ignored.
-                        </p>
-                      </div>
-                    )}
-
-                    <div className="config-field">
-                      <label className="config-label">
-                        <input
-                          type="checkbox"
                           checked={includeSubdomains}
                           onChange={(e) => setIncludeSubdomains(e.target.checked)}
                           className="config-checkbox"
@@ -280,7 +245,7 @@ function Config({ url, onClose }: ConfigProps) {
                     <div className="config-field">
                       <label className="config-label-text">Discovery Mechanisms</label>
 
-                      <div style={{ opacity: singlePageMode ? 0.4 : 1, pointerEvents: singlePageMode ? 'none' : 'auto' }}>
+                      <div>
                         <label className="config-label">
                           <input
                             type="checkbox"
@@ -290,7 +255,7 @@ function Config({ url, onClose }: ConfigProps) {
                           />
                           <div>
                             <span className="checkbox-label">Spider</span>
-                            <p className="config-hint">Follow links discovered in HTML pages (always enabled{singlePageMode ? ', ignored in Single Page Mode' : ''})</p>
+                            <p className="config-hint">Follow links discovered in HTML pages (always enabled)</p>
                           </div>
                         </label>
 
@@ -300,12 +265,11 @@ function Config({ url, onClose }: ConfigProps) {
                             checked={sitemapEnabled}
                             onChange={(e) => setSitemapEnabled(e.target.checked)}
                             className="config-checkbox"
-                            disabled={singlePageMode}
                           />
                           <div>
                             <span className="checkbox-label">Sitemap</span>
                             <p className="config-hint">
-                              Discover URLs from sitemap.xml at default location (/sitemap.xml). When enabled, Spider is automatically included for comprehensive crawling{singlePageMode ? ' (ignored in Single Page Mode)' : ''}.
+                              Discover URLs from sitemap.xml at default location (/sitemap.xml). When enabled, Spider is automatically included for comprehensive crawling.
                             </p>
                           </div>
                         </label>

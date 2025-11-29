@@ -121,14 +121,13 @@ func (d *DesktopApp) UpdateConfigForDomain(
 	sitemapEnabled bool,
 	sitemapURLs []string,
 	checkExternalResources bool,
-	singlePageMode bool,
 	robotsTxtMode string,
 	followInternalNofollow bool,
 	followExternalNofollow bool,
 	respectMetaRobotsNoindex bool,
 	respectNoindex bool,
 ) error {
-	return d.app.UpdateConfigForDomain(url, jsRendering, initialWaitMs, scrollWaitMs, finalWaitMs, parallelism, userAgent, includeSubdomains, spiderEnabled, sitemapEnabled, sitemapURLs, checkExternalResources, singlePageMode, robotsTxtMode, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex)
+	return d.app.UpdateConfigForDomain(url, jsRendering, initialWaitMs, scrollWaitMs, finalWaitMs, parallelism, userAgent, includeSubdomains, spiderEnabled, sitemapEnabled, sitemapURLs, checkExternalResources, robotsTxtMode, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex)
 }
 
 // GetPageLinksForURL wraps app.GetPageLinksForURL

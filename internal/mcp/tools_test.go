@@ -153,7 +153,7 @@ func TestCrawlWebsiteTool(t *testing.T) {
 
 	t.Run("ValidURL_StartsCrawlSuccessfully", func(t *testing.T) {
 		// Start crawl via app
-		err := testApp.StartCrawl(server.URL)
+		_, err := testApp.StartCrawl(server.URL)
 		require.NoError(t, err)
 
 		// Wait for crawl to start (longer timeout due to HTTP delays)
@@ -180,7 +180,7 @@ func TestCrawlWebsiteTool(t *testing.T) {
 		}
 
 		for _, invalidURL := range invalidURLs {
-			err := testApp.StartCrawl(invalidURL)
+			_, err := testApp.StartCrawl(invalidURL)
 			assert.Error(t, err, "Expected error for invalid URL: %q", invalidURL)
 		}
 	})
@@ -195,7 +195,7 @@ func TestStopCrawlTool(t *testing.T) {
 
 	t.Run("StopActiveCrawl_Succeeds", func(t *testing.T) {
 		// Start a crawl
-		err := testApp.StartCrawl(server.URL)
+		_, err := testApp.StartCrawl(server.URL)
 		require.NoError(t, err)
 
 		projectID, _ := waitForCrawlToStart(t, testApp, 5*time.Second)
@@ -227,7 +227,7 @@ func TestGetCrawlStatusTool(t *testing.T) {
 
 	t.Run("ActiveCrawl_ReturnsProgressStats", func(t *testing.T) {
 		// Start a crawl
-		err := testApp.StartCrawl(server.URL)
+		_, err := testApp.StartCrawl(server.URL)
 		require.NoError(t, err)
 
 		projectID, _ := waitForCrawlToStart(t, testApp, 5*time.Second)
@@ -255,7 +255,7 @@ func TestGetCrawlStatusTool(t *testing.T) {
 
 	t.Run("CompletedCrawl_ReturnsFinalStats", func(t *testing.T) {
 		// Start and wait for crawl to complete
-		err := testApp.StartCrawl(server.URL)
+		_, err := testApp.StartCrawl(server.URL)
 		require.NoError(t, err)
 
 		projectID, crawlID := waitForCrawlToStart(t, testApp, 5*time.Second)
@@ -291,7 +291,7 @@ func TestGetCrawlResultsTool(t *testing.T) {
 	defer server.Close()
 
 	// Start and complete a crawl
-	err := testApp.StartCrawl(server.URL)
+	_, err := testApp.StartCrawl(server.URL)
 	require.NoError(t, err)
 
 	projectID, crawlID := waitForCrawlToStart(t, testApp, 5*time.Second)
@@ -331,7 +331,7 @@ func TestSearchCrawlResultsTool(t *testing.T) {
 	defer server.Close()
 
 	// Start and complete a crawl
-	err := testApp.StartCrawl(server.URL)
+	_, err := testApp.StartCrawl(server.URL)
 	require.NoError(t, err)
 
 	projectID, crawlID := waitForCrawlToStart(t, testApp, 5*time.Second)
@@ -363,7 +363,7 @@ func TestGetCrawlStatisticsTool(t *testing.T) {
 	defer server.Close()
 
 	// Start and complete a crawl
-	err := testApp.StartCrawl(server.URL)
+	_, err := testApp.StartCrawl(server.URL)
 	require.NoError(t, err)
 
 	projectID, crawlID := waitForCrawlToStart(t, testApp, 5*time.Second)
@@ -400,7 +400,7 @@ func TestGetPageLinksTool(t *testing.T) {
 	defer server.Close()
 
 	// Start and complete a crawl
-	err := testApp.StartCrawl(server.URL)
+	_, err := testApp.StartCrawl(server.URL)
 	require.NoError(t, err)
 
 	projectID, crawlID := waitForCrawlToStart(t, testApp, 5*time.Second)
@@ -430,7 +430,7 @@ func TestGetPageContentTool(t *testing.T) {
 	defer server.Close()
 
 	// Start and complete a crawl
-	err := testApp.StartCrawl(server.URL)
+	_, err := testApp.StartCrawl(server.URL)
 	require.NoError(t, err)
 
 	projectID, crawlID := waitForCrawlToStart(t, testApp, 5*time.Second)
@@ -495,7 +495,7 @@ func TestListProjectCrawlsTool(t *testing.T) {
 	defer server.Close()
 
 	// Start and complete a crawl
-	err := testApp.StartCrawl(server.URL)
+	_, err := testApp.StartCrawl(server.URL)
 	require.NoError(t, err)
 
 	projectID, _ := waitForCrawlToStart(t, testApp, 2*time.Second)
@@ -558,7 +558,7 @@ func TestDeleteCrawlTool(t *testing.T) {
 	defer server.Close()
 
 	// Start and complete a crawl
-	err := testApp.StartCrawl(server.URL)
+	_, err := testApp.StartCrawl(server.URL)
 	require.NoError(t, err)
 
 	projectID, crawlID := waitForCrawlToStart(t, testApp, 5*time.Second)
@@ -634,7 +634,6 @@ func TestUpdateDomainConfigTool(t *testing.T) {
 			false, // Sitemap enabled
 			[]string{},
 			true,  // Check external resources
-			false, // Single page mode
 			"respect",
 			true,  // Follow internal nofollow
 			false, // Follow external nofollow
@@ -655,7 +654,7 @@ func TestUpdateDomainConfigTool(t *testing.T) {
 		err := testApp.UpdateConfigForDomain(
 			"not-a-valid-url",
 			false, 1500, 2000, 1000, 5, "agent", false,
-			true, false, []string{}, false, false, "respect",
+			true, false, []string{}, false, "respect",
 			false, false, false, false,
 		)
 		assert.Error(t, err)

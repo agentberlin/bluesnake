@@ -57,156 +57,9 @@ func TestGetOrCreateConfigDefaults(t *testing.T) {
 	if config.CheckExternalResources != true {
 		t.Errorf("Expected CheckExternalResources = true, got %v", config.CheckExternalResources)
 	}
-	if config.SinglePageMode != false {
-		t.Errorf("Expected SinglePageMode = false, got %v", config.SinglePageMode)
-	}
 	mechanisms := config.GetDiscoveryMechanismsArray()
 	if len(mechanisms) != 2 || mechanisms[0] != "spider" || mechanisms[1] != "sitemap" {
 		t.Errorf("Expected DiscoveryMechanisms = [spider sitemap], got %v", mechanisms)
-	}
-}
-
-// TestUpdateConfigSinglePageMode tests updating SinglePageMode configuration
-func TestUpdateConfigSinglePageMode(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-
-	store, err := newStoreWithPath(dbPath)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-
-	projectID := uint(1)
-	domain := "example.com"
-
-	// Create initial config with defaults
-	_, err = store.GetOrCreateConfig(projectID, domain)
-	if err != nil {
-		t.Fatalf("GetOrCreateConfig() error = %v", err)
-	}
-
-	// Update config with SinglePageMode enabled
-	err = store.UpdateConfig(
-		projectID,
-		true,                       // jsRendering
-		1500,                       // initialWaitMs
-		2000,                       // scrollWaitMs
-		1000,                       // finalWaitMs
-		10,                         // parallelism
-		"test-agent",               // userAgent
-		false,                      // includeSubdomains
-		[]string{"spider"},         // discoveryMechanisms
-		[]string{},                 // sitemapURLs
-		false,                      // checkExternalResources
-		true,                       // singlePageMode
-		"respect",                  // robotsTxtMode
-		false,                      // followInternalNofollow
-		false,                      // followExternalNofollow
-		true,                       // respectMetaRobotsNoindex
-		true,                       // respectNoindex
-	)
-	if err != nil {
-		t.Fatalf("UpdateConfig() error = %v", err)
-	}
-
-	// Retrieve config and verify SinglePageMode was updated
-	config, err := store.GetOrCreateConfig(projectID, domain)
-	if err != nil {
-		t.Fatalf("GetOrCreateConfig() error = %v", err)
-	}
-
-	if !config.SinglePageMode {
-		t.Errorf("Expected SinglePageMode = true after update, got false")
-	}
-	if !config.JSRenderingEnabled {
-		t.Errorf("Expected JSRenderingEnabled = true after update, got false")
-	}
-	if config.Parallelism != 10 {
-		t.Errorf("Expected Parallelism = 10 after update, got %d", config.Parallelism)
-	}
-}
-
-// TestUpdateConfigToggleSinglePageMode tests toggling SinglePageMode on and off
-func TestUpdateConfigToggleSinglePageMode(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-
-	store, err := newStoreWithPath(dbPath)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-
-	projectID := uint(1)
-	domain := "example.com"
-
-	// Create initial config
-	_, err = store.GetOrCreateConfig(projectID, domain)
-	if err != nil {
-		t.Fatalf("GetOrCreateConfig() error = %v", err)
-	}
-
-	// Enable SinglePageMode
-	err = store.UpdateConfig(
-		projectID,
-		false,
-		1500,
-		2000,
-		1000,
-		5,
-		"bluesnake/1.0",
-		true,
-		[]string{"spider", "sitemap"},
-		[]string{},
-		true,
-		true,      // Enable single page mode
-		"respect", // robotsTxtMode
-		false,     // followInternalNofollow
-		false,     // followExternalNofollow
-		true,      // respectMetaRobotsNoindex
-		true,      // respectNoindex
-	)
-	if err != nil {
-		t.Fatalf("UpdateConfig() error = %v", err)
-	}
-
-	config, err := store.GetOrCreateConfig(projectID, domain)
-	if err != nil {
-		t.Fatalf("GetOrCreateConfig() error = %v", err)
-	}
-	if !config.SinglePageMode {
-		t.Errorf("Expected SinglePageMode = true, got false")
-	}
-
-	// Disable SinglePageMode
-	err = store.UpdateConfig(
-		projectID,
-		false,
-		1500,
-		2000,
-		1000,
-		5,
-		"bluesnake/1.0",
-		true,
-		[]string{"spider", "sitemap"},
-		[]string{},
-		true,
-		false,     // Disable single page mode
-		"respect", // robotsTxtMode
-		false,     // followInternalNofollow
-		false,     // followExternalNofollow
-		true,      // respectMetaRobotsNoindex
-		true,      // respectNoindex
-	)
-	if err != nil {
-		t.Fatalf("UpdateConfig() error = %v", err)
-	}
-
-	config, err = store.GetOrCreateConfig(projectID, domain)
-	if err != nil {
-		t.Fatalf("GetOrCreateConfig() error = %v", err)
-	}
-	if config.SinglePageMode {
-		t.Errorf("Expected SinglePageMode = false after disabling, got true")
 	}
 }
 
@@ -230,7 +83,7 @@ func TestConfigPersistence(t *testing.T) {
 			t.Fatalf("GetOrCreateConfig() error = %v", err)
 		}
 
-		err = store.UpdateConfig(projectID, true, 1500, 2000, 1000, 20, "test", false, []string{"spider"}, []string{}, false, true, "respect", false, false, true, true)
+		err = store.UpdateConfig(projectID, true, 1500, 2000, 1000, 20, "test", false, []string{"spider"}, []string{}, false, "respect", false, false, true, true)
 		if err != nil {
 			t.Fatalf("UpdateConfig() error = %v", err)
 		}
@@ -248,9 +101,6 @@ func TestConfigPersistence(t *testing.T) {
 			t.Fatalf("GetOrCreateConfig() error = %v", err)
 		}
 
-		if !config.SinglePageMode {
-			t.Errorf("Expected SinglePageMode = true after reopening, got false")
-		}
 		if !config.JSRenderingEnabled {
 			t.Errorf("Expected JSRenderingEnabled = true after reopening, got false")
 		}

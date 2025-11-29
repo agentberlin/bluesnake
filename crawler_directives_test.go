@@ -200,6 +200,180 @@ func TestRobotsTxtMode(t *testing.T) {
 	})
 }
 
+// TestRobotsTxtRedirect tests that robots.txt fetching handles redirects correctly.
+// This is a common scenario where non-www redirects to www (or vice versa).
+// The robots.txt client must follow redirects to get the canonical robots.txt.
+func TestRobotsTxtRedirect(t *testing.T) {
+	t.Run("robots.txt redirect from non-www to www is followed", func(t *testing.T) {
+		mock := NewMockTransport()
+
+		// Setup: non-www redirects to www for everything
+		// 1. robots.txt on non-www redirects to www
+		mock.RegisterRedirect("http://example.com/robots.txt", "http://www.example.com/robots.txt", 301)
+
+		// 2. robots.txt on www allows /allowed but disallows /secret
+		mock.RegisterResponse("http://www.example.com/robots.txt", &MockResponse{
+			StatusCode: 200,
+			Body:       "User-agent: *\nDisallow: /secret\nAllow: /\n",
+		})
+
+		// 3. Main page on non-www redirects to www
+		mock.RegisterRedirect("http://example.com/", "http://www.example.com/", 301)
+
+		// 4. Main page on www with links
+		mock.RegisterHTML("http://www.example.com/", `<!DOCTYPE html>
+<html>
+<head><title>Home</title></head>
+<body>
+    <h1>Welcome</h1>
+    <a href="/page1">Page 1</a>
+    <a href="/secret">Secret Page</a>
+</body>
+</html>`)
+
+		// 5. Allowed page
+		mock.RegisterHTML("http://www.example.com/page1", `<!DOCTYPE html>
+<html>
+<head><title>Page 1</title></head>
+<body><h1>Page 1 Content</h1></body>
+</html>`)
+
+		// 6. Secret page (should be blocked by robots.txt)
+		mock.RegisterHTML("http://www.example.com/secret", `<!DOCTYPE html>
+<html>
+<head><title>Secret</title></head>
+<body><h1>Secret Content</h1></body>
+</html>`)
+
+		// Create crawler with respect mode and www domain allowed
+		config := NewDefaultConfig()
+		config.RobotsTxtMode = "respect"
+		config.AllowedDomains = []string{"example.com", "www.example.com"}
+		crawler := NewCrawler(context.Background(), config)
+		crawler.Collector.WithTransport(mock)
+
+		var visitedURLs []string
+		var mu sync.Mutex
+
+		crawler.SetOnPageCrawled(func(result *PageResult) {
+			mu.Lock()
+			defer mu.Unlock()
+			visitedURLs = append(visitedURLs, result.URL)
+		})
+
+		// Start crawl from non-www (will redirect to www)
+		if err := crawler.Start("http://example.com/"); err != nil {
+			t.Fatalf("Failed to start crawler: %v", err)
+		}
+
+		// Wait with timeout
+		done := make(chan struct{})
+		go func() {
+			crawler.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Crawler did not finish in time")
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		// Should have visited: redirect entries + www home + page1
+		// Should NOT have visited: /secret (blocked by robots.txt)
+		hasHome := false
+		hasPage1 := false
+		hasSecret := false
+
+		for _, url := range visitedURLs {
+			if url == "http://www.example.com/" {
+				hasHome = true
+			}
+			if url == "http://www.example.com/page1" {
+				hasPage1 = true
+			}
+			if strings.Contains(url, "/secret") {
+				hasSecret = true
+			}
+		}
+
+		if !hasHome {
+			t.Error("Should have visited www home page")
+		}
+		if !hasPage1 {
+			t.Error("Should have visited page1")
+		}
+		if hasSecret {
+			t.Error("Should NOT have visited /secret (blocked by robots.txt after redirect)")
+		}
+
+		t.Logf("Visited URLs: %v", visitedURLs)
+	})
+
+	t.Run("robots.txt redirect chain is followed", func(t *testing.T) {
+		mock := NewMockTransport()
+
+		// Setup: robots.txt has a redirect chain
+		// example.com/robots.txt -> www.example.com/robots.txt -> cdn.example.com/robots.txt
+		mock.RegisterRedirect("http://example.com/robots.txt", "http://www.example.com/robots.txt", 301)
+		mock.RegisterRedirect("http://www.example.com/robots.txt", "http://cdn.example.com/robots.txt", 302)
+		mock.RegisterResponse("http://cdn.example.com/robots.txt", &MockResponse{
+			StatusCode: 200,
+			Body:       "User-agent: *\nAllow: /\n",
+		})
+
+		// Main page
+		mock.RegisterHTML("http://example.com/", `<!DOCTYPE html>
+<html>
+<head><title>Home</title></head>
+<body><h1>Welcome</h1></body>
+</html>`)
+
+		config := NewDefaultConfig()
+		config.RobotsTxtMode = "respect"
+		crawler := NewCrawler(context.Background(), config)
+		crawler.Collector.WithTransport(mock)
+
+		var visitedURLs []string
+		var mu sync.Mutex
+
+		crawler.SetOnPageCrawled(func(result *PageResult) {
+			mu.Lock()
+			defer mu.Unlock()
+			visitedURLs = append(visitedURLs, result.URL)
+		})
+
+		if err := crawler.Start("http://example.com/"); err != nil {
+			t.Fatalf("Failed to start crawler: %v", err)
+		}
+
+		done := make(chan struct{})
+		go func() {
+			crawler.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Crawler did not finish in time")
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		// Should have visited the home page (robots.txt redirect chain was followed successfully)
+		if len(visitedURLs) == 0 {
+			t.Error("Should have visited at least the home page after following robots.txt redirect chain")
+		}
+
+		t.Logf("Visited URLs after redirect chain: %v", visitedURLs)
+	})
+}
+
 // TestNofollowFiltering tests the nofollow link filtering logic via Crawler
 func TestNofollowFiltering(t *testing.T) {
 	t.Run("Internal nofollow links are filtered by default", func(t *testing.T) {

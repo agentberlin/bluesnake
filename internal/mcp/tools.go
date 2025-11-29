@@ -49,7 +49,6 @@ type CrawlWebsiteArgs struct {
 // CrawlConfigArgs defines the crawler configuration options
 type CrawlConfigArgs struct {
 	IncludeSubdomains      *bool    `json:"includeSubdomains,omitempty"`
-	SinglePageMode         *bool    `json:"singlePageMode,omitempty"`
 	JSRenderingEnabled     *bool    `json:"jsRenderingEnabled,omitempty"`
 	Parallelism            *int     `json:"parallelism,omitempty"`
 	DiscoveryMechanisms    []string `json:"discoveryMechanisms,omitempty"`
@@ -134,9 +133,6 @@ func (s *MCPServer) applyConfig(urlStr string, config *CrawlConfigArgs) error {
 	if config.IncludeSubdomains != nil {
 		configResp.IncludeSubdomains = *config.IncludeSubdomains
 	}
-	if config.SinglePageMode != nil {
-		configResp.SinglePageMode = *config.SinglePageMode
-	}
 	if config.JSRenderingEnabled != nil {
 		configResp.JSRenderingEnabled = *config.JSRenderingEnabled
 	}
@@ -191,7 +187,6 @@ func (s *MCPServer) applyConfig(urlStr string, config *CrawlConfigArgs) error {
 		sitemapEnabled,
 		configResp.SitemapURLs,
 		configResp.CheckExternalResources,
-		configResp.SinglePageMode,
 		configResp.RobotsTxtMode,
 		configResp.FollowInternalNofollow,
 		configResp.FollowExternalNofollow,

@@ -180,7 +180,6 @@ interface ConfigData {
   includeSubdomains: boolean;
   discoveryMechanisms: string[];
   checkExternalResources: boolean;
-  singlePageMode: boolean;
 }
 
 type View = 'start' | 'dashboard';
@@ -777,7 +776,7 @@ function App() {
       try {
         const existingConfig: ConfigData = await GetConfigForDomain(url);
 
-        // Update config with singlePageMode disabled, preserving other settings
+        // Update config preserving other settings
         const mechanisms = existingConfig.discoveryMechanisms || ["spider"];
         await UpdateConfigForDomain(
           url,
@@ -792,7 +791,6 @@ function App() {
           mechanisms.includes("sitemap"),
           [],    // sitemapURLs
           existingConfig.checkExternalResources,
-          false,  // singlePageMode - DISABLE for full crawl
           "respect",  // robotsTxtMode - default
           false,  // followInternalNofollow - default
           false,  // followExternalNofollow - default
@@ -824,7 +822,6 @@ function App() {
           false, // sitemapEnabled - default
           [],    // sitemapURLs
           true,  // checkExternalResources - default
-          false,  // singlePageMode - DISABLE for full crawl
           "respect",  // robotsTxtMode - default
           false,  // followInternalNofollow - default
           false,  // followExternalNofollow - default
@@ -858,104 +855,6 @@ function App() {
       setIsCrawling(true);
     } catch (error) {
       console.error('Failed to start crawl:', error);
-      setIsCrawling(false);
-    } finally {
-      setIsStartingCrawl(false);
-    }
-  };
-
-  const handleSinglePageCrawl = async () => {
-    if (!url.trim() || isStartingCrawl) return;
-
-    setIsStartingCrawl(true);
-
-    try {
-
-      // First, get existing config to preserve user settings
-      try {
-        const existingConfig: ConfigData = await GetConfigForDomain(url);
-
-        // Update config with singlePageMode enabled, preserving other settings
-        const mechanisms = existingConfig.discoveryMechanisms || ["spider"];
-        await UpdateConfigForDomain(
-          url,
-          existingConfig.jsRenderingEnabled,
-          existingConfig.initialWaitMs || 1500,
-          existingConfig.scrollWaitMs || 2000,
-          existingConfig.finalWaitMs || 1000,
-          existingConfig.parallelism,
-          existingConfig.userAgent || 'bluesnake/1.0 (+https://snake.blue)',
-          existingConfig.includeSubdomains,
-          true,  // spiderEnabled - always true (won't be used in single page mode)
-          mechanisms.includes("sitemap"),
-          [],    // sitemapURLs
-          existingConfig.checkExternalResources,
-          true,   // singlePageMode - ENABLE for single page crawl
-          "respect",  // robotsTxtMode - default
-          false,  // followInternalNofollow - default
-          false,  // followExternalNofollow - default
-          true,   // respectMetaRobotsNoindex - default
-          true    // respectNoindex - default
-        );
-      } catch {
-        // If config fetch fails (e.g., project doesn't exist yet), this is a first crawl
-        // Detect if JS rendering is needed
-        let jsRenderingEnabled = false;
-        try {
-          jsRenderingEnabled = await DetectJSRenderingNeed(url);
-          console.log(`JS rendering detection for ${url}: ${jsRenderingEnabled ? 'ENABLED' : 'DISABLED'}`);
-        } catch (detectionError) {
-          console.warn('JS rendering detection failed, using default (disabled):', detectionError);
-        }
-
-        // Create config with detected or default settings
-        await UpdateConfigForDomain(
-          url,
-          jsRenderingEnabled, // jsRendering - auto-detected or default false
-          1500,  // initialWaitMs - default
-          2000,  // scrollWaitMs - default
-          1000,  // finalWaitMs - default
-          5,     // parallelism - default
-          'bluesnake/1.0 (+https://snake.blue)', // userAgent
-          true,  // includeSubdomains - default (doesn't matter in single page mode)
-          true,  // spiderEnabled - always true (won't be used in single page mode)
-          false, // sitemapEnabled - default (won't be used in single page mode)
-          [],    // sitemapURLs
-          true,  // checkExternalResources - default
-          true,   // singlePageMode - ENABLE for single page crawl
-          "respect",  // robotsTxtMode - default
-          false,  // followInternalNofollow - default
-          false,  // followExternalNofollow - default
-          true,   // respectMetaRobotsNoindex - default
-          true    // respectNoindex - default
-        ).catch(() => {
-          // If this also fails, that's okay - config will be created with defaults
-        });
-      }
-
-      const projectInfo = await StartCrawl(url);
-
-      // Build a full project object from the response
-      const project: ProjectInfo = {
-        id: projectInfo.id,
-        url: projectInfo.url,
-        domain: projectInfo.domain,
-        faviconPath: '',
-        crawlDateTime: 0,
-        crawlDuration: 0,
-        pagesCrawled: 0,
-        totalUrls: 0,
-        latestCrawlId: projectInfo.latestCrawlId
-      };
-
-      // Use the same logic as clicking a project card - this calls GetCrawls, etc.
-      await handleProjectClick(project);
-
-      // Override isCrawling since we just started a crawl
-      // (handleProjectClick checks activeCrawls map which won't have this crawl yet)
-      setIsCrawling(true);
-    } catch (error) {
-      console.error('Failed to start single page crawl:', error);
       setIsCrawling(false);
     } finally {
       setIsStartingCrawl(false);
@@ -1365,12 +1264,6 @@ function App() {
                   label: 'Full Website Crawl',
                   description: 'Discover and crawl pages by following links and sitemaps',
                   onClick: handleNewCrawl,
-                },
-                {
-                  id: 'single-page',
-                  label: 'Single Page Crawl',
-                  description: 'Analyze only this specific URL without following any links',
-                  onClick: handleSinglePageCrawl,
                 },
                 {
                   id: 'configure',

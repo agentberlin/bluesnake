@@ -1125,6 +1125,13 @@ func (c *Collector) WithTransport(transport http.RoundTripper) {
 	c.backend.Client.Transport = transport
 }
 
+// GetTransport returns the current http.RoundTripper (transport)
+// This is useful for creating additional HTTP clients that should use the same transport
+// (e.g., for robots.txt fetching with redirect support)
+func (c *Collector) GetTransport() http.RoundTripper {
+	return c.backend.Client.Transport
+}
+
 // DisableCookies turns off cookie handling
 func (c *Collector) DisableCookies() {
 	c.backend.Client.Jar = nil

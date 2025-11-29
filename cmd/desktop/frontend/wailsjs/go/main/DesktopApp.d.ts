@@ -57,4 +57,4 @@ export function StopCrawl(arg1:number):Promise<void>;
 
 export function StopMCPServer():Promise<void>;
 
-export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number,arg4:number,arg5:number,arg6:number,arg7:string,arg8:boolean,arg9:boolean,arg10:boolean,arg11:Array<string>,arg12:boolean,arg13:boolean,arg14:string,arg15:boolean,arg16:boolean,arg17:boolean,arg18:boolean):Promise<void>;
+export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number,arg4:number,arg5:number,arg6:number,arg7:string,arg8:boolean,arg9:boolean,arg10:boolean,arg11:Array<string>,arg12:boolean,arg13:string,arg14:boolean,arg15:boolean,arg16:boolean,arg17:boolean):Promise<void>;

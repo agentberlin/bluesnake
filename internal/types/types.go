@@ -74,7 +74,6 @@ type ConfigResponse struct {
 	DiscoveryMechanisms      []string `json:"discoveryMechanisms"`
 	SitemapURLs              []string `json:"sitemapURLs"`
 	CheckExternalResources   bool     `json:"checkExternalResources"`
-	SinglePageMode           bool     `json:"singlePageMode"`
 	RobotsTxtMode            string   `json:"robotsTxtMode"`            // "respect", "ignore", or "ignore-report"
 	FollowInternalNofollow   bool     `json:"followInternalNofollow"`   // Follow internal links with rel="nofollow"
 	FollowExternalNofollow   bool     `json:"followExternalNofollow"`   // Follow external links with rel="nofollow"

@@ -365,7 +365,6 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			SitemapEnabled           bool     `json:"sitemapEnabled"`
 			SitemapURLs              []string `json:"sitemapURLs"`
 			CheckExternalResources   *bool    `json:"checkExternalResources,omitempty"` // Pointer to distinguish between false and not-provided
-			SinglePageMode           bool     `json:"singlePageMode"`
 			RobotsTxtMode            *string  `json:"robotsTxtMode,omitempty"`            // Pointer to distinguish between empty and not-provided
 			FollowInternalNofollow   *bool    `json:"followInternalNofollow,omitempty"`   // Pointer to distinguish between false and not-provided
 			FollowExternalNofollow   *bool    `json:"followExternalNofollow,omitempty"`   // Pointer to distinguish between false and not-provided
@@ -423,7 +422,6 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			req.SitemapEnabled,
 			req.SitemapURLs,
 			checkExternal,
-			req.SinglePageMode,
 			robotsTxtMode,
 			followInternalNofollow,
 			followExternalNofollow,

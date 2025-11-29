@@ -41,7 +41,6 @@ func (s *Store) GetOrCreateConfig(projectID uint, domain string) (*Config, error
 			DiscoveryMechanisms:    "[\"spider\",\"sitemap\"]", // Default to both spider and sitemap mode
 			SitemapURLs:            "",                         // Empty = use defaults when sitemap enabled
 			CheckExternalResources: true,                       // Default to checking external resources
-			SinglePageMode:         false,                      // Default to full website crawl
 			// Crawler directive defaults (following ScreamingFrog's defaults)
 			RobotsTxtMode:            "respect", // Default to respecting robots.txt
 			FollowInternalNofollow:   false,     // Default to NOT following internal nofollow links
@@ -65,7 +64,7 @@ func (s *Store) GetOrCreateConfig(projectID uint, domain string) (*Config, error
 }
 
 // UpdateConfig updates the configuration for a project
-func (s *Store) UpdateConfig(projectID uint, jsRendering bool, initialWaitMs, scrollWaitMs, finalWaitMs int, parallelism int, userAgent string, includeSubdomains bool, discoveryMechanisms []string, sitemapURLs []string, checkExternalResources bool, singlePageMode bool, robotsTxtMode string, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex bool) error {
+func (s *Store) UpdateConfig(projectID uint, jsRendering bool, initialWaitMs, scrollWaitMs, finalWaitMs int, parallelism int, userAgent string, includeSubdomains bool, discoveryMechanisms []string, sitemapURLs []string, checkExternalResources bool, robotsTxtMode string, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex bool) error {
 	var config Config
 
 	result := s.db.Where("project_id = ?", projectID).First(&config)
@@ -83,7 +82,6 @@ func (s *Store) UpdateConfig(projectID uint, jsRendering bool, initialWaitMs, sc
 	config.UserAgent = userAgent
 	config.IncludeSubdomains = includeSubdomains
 	config.CheckExternalResources = checkExternalResources
-	config.SinglePageMode = singlePageMode
 	config.RobotsTxtMode = robotsTxtMode
 	config.FollowInternalNofollow = followInternalNofollow
 	config.FollowExternalNofollow = followExternalNofollow

@@ -915,7 +915,6 @@ type Config struct {
     Parallelism            int
     UserAgent              string
     IncludeSubdomains      bool
-    SinglePageMode         bool
     DiscoveryMechanisms    string  // JSON array
     SitemapURLs            string  // JSON array
     CheckExternalResources bool
@@ -1535,7 +1534,6 @@ type CrawlWebsiteArgs struct {
 
 type CrawlConfigArgs struct {
     IncludeSubdomains      *bool    `json:"includeSubdomains,omitempty"`
-    SinglePageMode         *bool    `json:"singlePageMode,omitempty"`
     JSRenderingEnabled     *bool    `json:"jsRenderingEnabled,omitempty"`
     Parallelism            *int     `json:"parallelism,omitempty"`
     DiscoveryMechanisms    []string `json:"discoveryMechanisms,omitempty"`

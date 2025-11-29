@@ -1282,11 +1282,13 @@ func (cr *Crawler) checkRobots(u *url.URL) error {
 			req.Host = hostHeader
 		}
 
-		// Use a standard HTTP client that follows redirects for robots.txt
+		// Use a client that follows redirects for robots.txt but uses Collector's transport
 		// The Collector's client is configured to NOT follow redirects (for tracking),
-		// but robots.txt fetching should follow redirects to the canonical location
+		// but robots.txt fetching should follow redirects to the canonical location.
+		// We use the Collector's transport so that mock transports work in tests.
 		robotsClient := &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: cr.Collector.GetTransport(), // Use Collector's transport (supports mocks)
 			// Default CheckRedirect follows up to 10 redirects
 		}
 		resp, err := robotsClient.Do(req)

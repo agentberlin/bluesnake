@@ -55,7 +55,6 @@ func (a *App) GetConfigForDomain(urlStr string) (*types.ConfigResponse, error) {
 		DiscoveryMechanisms:      config.GetDiscoveryMechanismsArray(),
 		SitemapURLs:              config.GetSitemapURLsArray(),
 		CheckExternalResources:   config.CheckExternalResources,
-		SinglePageMode:           config.SinglePageMode,
 		RobotsTxtMode:            config.RobotsTxtMode,
 		FollowInternalNofollow:   config.FollowInternalNofollow,
 		FollowExternalNofollow:   config.FollowExternalNofollow,
@@ -76,7 +75,6 @@ func (a *App) UpdateConfigForDomain(
 	sitemapEnabled bool,
 	sitemapURLs []string,
 	checkExternalResources bool,
-	singlePageMode bool,
 	robotsTxtMode string,
 	followInternalNofollow bool,
 	followExternalNofollow bool,
@@ -112,5 +110,5 @@ func (a *App) UpdateConfigForDomain(
 		mechanisms = []string{"spider"}
 	}
 
-	return a.store.UpdateConfig(project.ID, jsRendering, initialWaitMs, scrollWaitMs, finalWaitMs, parallelism, userAgent, includeSubdomains, mechanisms, sitemapURLs, checkExternalResources, singlePageMode, robotsTxtMode, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex)
+	return a.store.UpdateConfig(project.ID, jsRendering, initialWaitMs, scrollWaitMs, finalWaitMs, parallelism, userAgent, includeSubdomains, mechanisms, sitemapURLs, checkExternalResources, robotsTxtMode, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex)
 }

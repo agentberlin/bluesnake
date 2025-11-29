@@ -31,7 +31,6 @@ type Config struct {
 	DiscoveryMechanisms    string   `gorm:"type:text;default:'[\"spider\",\"sitemap\"]'"` // JSON array
 	SitemapURLs            string   `gorm:"type:text"`                                    // JSON array, nullable
 	CheckExternalResources bool     `gorm:"default:true"`                                 // When true, validate external resources for broken links
-	SinglePageMode         bool     `gorm:"default:false"`                                // When true, only crawl the starting URL (MaxDepth=1)
 	// Crawler directive configuration (robots.txt, nofollow, noindex, etc.)
 	RobotsTxtMode            string `gorm:"default:'respect'"`  // "respect", "ignore", or "ignore-report"
 	FollowInternalNofollow   bool   `gorm:"default:false"`      // When true, follow links with rel="nofollow" on same domain

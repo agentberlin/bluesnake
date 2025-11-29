@@ -131,7 +131,7 @@ func TestCrawlerIntegration(t *testing.T) {
 
 	t.Logf("Starting crawl for URL: %s", startURL)
 
-	err = coreApp.StartCrawl(startURL)
+	_, err = coreApp.StartCrawl(startURL)
 	if err != nil {
 		t.Fatalf("Failed to start crawl: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestRedirectDestinationCrawled(t *testing.T) {
 	coreApp.Startup(ctx)
 
 	// Start the crawl
-	err = coreApp.StartCrawl(testServer.URL)
+	_, err = coreApp.StartCrawl(testServer.URL)
 	if err != nil {
 		t.Fatalf("Failed to start crawl: %v", err)
 	}
@@ -441,9 +441,9 @@ func TestRedirectDestinationCrawled(t *testing.T) {
 
 	// Verify that all expected pages were crawled
 	expectedURLs := map[string]bool{
-		testServer.URL + "/":                false, // Main page
+		testServer.URL + "/":                  false, // Main page
 		testServer.URL + "/final-destination": false, // Redirect destination (CRITICAL)
-		testServer.URL + "/important-page":   false, // Linked from redirect destination (CRITICAL)
+		testServer.URL + "/important-page":    false, // Linked from redirect destination (CRITICAL)
 	}
 
 	for _, result := range results.Results {
@@ -544,7 +544,7 @@ func TestRedirectChainWithStatusCodes(t *testing.T) {
 	coreApp.Startup(ctx)
 
 	// Start the crawl
-	err = coreApp.StartCrawl(testServer.URL)
+	_, err = coreApp.StartCrawl(testServer.URL)
 	if err != nil {
 		t.Fatalf("Failed to start crawl: %v", err)
 	}
