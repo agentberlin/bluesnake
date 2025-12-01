@@ -327,6 +327,18 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		return
 	}
 
+	// For incremental crawling, clear the queue on fresh crawl start
+	if config.IncrementalCrawlingEnabled {
+		// Clear existing queue for fresh crawl
+		if err := a.store.ClearQueue(projectID); err != nil {
+			log.Printf("Failed to clear queue for fresh crawl: %v", err)
+		}
+		// Add the initial URL to the queue
+		if err := a.store.AddSingleToQueue(projectID, parsedURL.String(), int64(bluesnake.URLHash(parsedURL.String())), "initial", 0); err != nil {
+			log.Printf("Failed to add initial URL to queue: %v", err)
+		}
+	}
+
 	// Build crawler configuration based on database config
 	crawlerConfig := &bluesnake.CrawlerConfig{
 		MaxDepth:            0,                              // 0 means unlimited depth
@@ -342,6 +354,8 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 			UserAgent:       config.UserAgent,
 			EnableRendering: config.JSRenderingEnabled,
 		},
+		// Incremental crawling settings
+		MaxURLsToVisit: config.CrawlBudget,
 	}
 
 	// Create the high-level crawler with context
@@ -415,6 +429,35 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		// Save to database - all crawling logic handled by bluesnake
 		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, result.Title, result.MetaDescription, result.ContentHash, result.Indexable, result.ContentType, result.Error); err != nil {
 			log.Printf("Failed to save crawled URL: %v", err)
+		}
+
+		// For incremental crawling, mark this URL as visited and add discovered URLs to queue
+		if config.IncrementalCrawlingEnabled {
+			if err := a.store.MarkURLVisitedByHash(projectID, int64(bluesnake.URLHash(result.URL))); err != nil {
+				log.Printf("Failed to mark URL visited in queue: %v", err)
+			}
+
+			// Add discovered URLs to queue
+			if result.Links != nil {
+				var queueItems []store.CrawlQueueItem
+				for _, link := range result.Links.Internal {
+					if link.Action == bluesnake.URLActionCrawl {
+						queueItems = append(queueItems, store.CrawlQueueItem{
+							ProjectID: projectID,
+							URL:       link.URL,
+							URLHash:   int64(bluesnake.URLHash(link.URL)),
+							Source:    "spider",
+							Depth:     0,
+							Visited:   false,
+						})
+					}
+				}
+				if len(queueItems) > 0 {
+					if err := a.store.AddToQueue(projectID, queueItems); err != nil {
+						log.Printf("Failed to add discovered URLs to queue: %v", err)
+					}
+				}
+			}
 		}
 
 		// Save page links to database
@@ -498,6 +541,42 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		}
 	})
 
+	// Set up callback for crawl paused (incremental crawling)
+	if config.IncrementalCrawlingEnabled && config.CrawlBudget > 0 {
+		crawler.SetOnCrawlPaused(func(urlsVisited int, pendingURLs []bluesnake.URLDiscoveryRequest) {
+			log.Printf("Crawl paused for project %d: visited=%d, pending=%d", projectID, urlsVisited, len(pendingURLs))
+
+			// Save pending URLs to the queue for later resume
+			var queueItems []store.CrawlQueueItem
+			for _, pending := range pendingURLs {
+				queueItems = append(queueItems, store.CrawlQueueItem{
+					ProjectID: projectID,
+					URL:       pending.URL,
+					URLHash:   int64(bluesnake.URLHash(pending.URL)),
+					Source:    pending.Source,
+					Depth:     pending.Depth,
+					Visited:   false,
+				})
+			}
+			if len(queueItems) > 0 {
+				if err := a.store.AddToQueue(projectID, queueItems); err != nil {
+					log.Printf("Failed to save pending URLs to queue: %v", err)
+				}
+			}
+
+			// Calculate crawl duration
+			crawlDuration := time.Since(stats.startTime).Milliseconds()
+
+			// Update crawl state to paused
+			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, store.CrawlStatePaused); err != nil {
+				log.Printf("Failed to update crawl state to paused: %v", err)
+			}
+
+			a.emitter.Emit(EventCrawlStopped, nil)
+			log.Printf("Crawl paused for project %d (incremental crawling)", projectID)
+		})
+	}
+
 	// Set up callback for crawl completion
 	crawler.SetOnCrawlComplete(func(wasStopped bool, totalPages int, totalDiscovered int) {
 		// Store the total discovered count from bluesnake
@@ -506,9 +585,24 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		// Calculate crawl duration
 		crawlDuration := time.Since(stats.startTime).Milliseconds()
 
-		// Update crawl statistics in database
-		if err := a.store.UpdateCrawlStats(stats.crawlID, crawlDuration, stats.pagesCrawled); err != nil {
-			log.Printf("Failed to update crawl stats: %v", err)
+		// Determine final state based on whether incremental crawling paused it
+		// If paused callback was called, state is already set to "paused"
+		// Otherwise set to completed or stopped based on wasStopped
+		currentState := store.CrawlStateCompleted
+		if wasStopped {
+			currentState = store.CrawlStateFailed // User-stopped is treated as failed for simplicity
+		}
+
+		// Only update state if not already paused (paused callback handles its own state)
+		if !config.IncrementalCrawlingEnabled || config.CrawlBudget == 0 {
+			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, currentState); err != nil {
+				log.Printf("Failed to update crawl stats: %v", err)
+			}
+		} else {
+			// Just update stats, state was already set by pause callback or we need to check
+			if err := a.store.UpdateCrawlStats(stats.crawlID, crawlDuration, stats.pagesCrawled); err != nil {
+				log.Printf("Failed to update crawl stats: %v", err)
+			}
 		}
 
 		// Send appropriate completion event (indicational only, no payload)
@@ -579,4 +673,469 @@ func (a *App) setupURLDiscoveryHandler(crawler *bluesnake.Crawler) {
 		// - Tracking: /pixel, /beacon, /telemetry
 		return bluesnake.URLActionCrawl
 	})
+}
+
+// ResumeCrawl continues a paused crawl for a project
+func (a *App) ResumeCrawl(projectID uint) (*types.ProjectInfo, error) {
+	// Get the project
+	project, err := a.store.GetProjectByID(projectID)
+	if err != nil {
+		return nil, fmt.Errorf("project not found: %v", err)
+	}
+
+	// Check if there's a paused crawl
+	pausedCrawl, err := a.store.GetLastPausedCrawl(projectID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check for paused crawl: %v", err)
+	}
+	if pausedCrawl == nil {
+		return nil, fmt.Errorf("no paused crawl to resume for this project")
+	}
+
+	// Check if there are pending URLs in the queue
+	hasPending, err := a.store.HasPendingURLs(projectID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check pending URLs: %v", err)
+	}
+	if !hasPending {
+		return nil, fmt.Errorf("no pending URLs to crawl - queue is empty")
+	}
+
+	// Check if this project is already being crawled
+	a.crawlsMutex.RLock()
+	_, alreadyCrawling := a.activeCrawls[projectID]
+	a.crawlsMutex.RUnlock()
+
+	if alreadyCrawling {
+		return nil, fmt.Errorf("crawl already in progress for this project")
+	}
+
+	// Parse the URL
+	parsedURL, err := url.Parse(project.URL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse project URL: %v", err)
+	}
+
+	// Create a new crawl record for this session
+	crawl, err := a.store.CreateCrawl(projectID, time.Now().Unix(), 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create crawl: %v", err)
+	}
+
+	// Run the crawler with resume flag
+	go a.runCrawlerWithResume(parsedURL, project.URL, project.Domain, projectID, crawl.ID)
+
+	return &types.ProjectInfo{
+		ID:            project.ID,
+		URL:           project.URL,
+		Domain:        project.Domain,
+		LatestCrawlID: crawl.ID,
+	}, nil
+}
+
+// GetQueueStatus returns the status of the crawl queue for a project
+func (a *App) GetQueueStatus(projectID uint) (*types.QueueStatus, error) {
+	// Get queue stats
+	stats, err := a.store.GetQueueStats(projectID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get queue stats: %v", err)
+	}
+
+	// Get last crawl to check state
+	lastCrawl, err := a.store.GetLatestCrawl(projectID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get latest crawl: %v", err)
+	}
+
+	var lastCrawlID uint
+	var lastState string
+	if lastCrawl != nil {
+		lastCrawlID = lastCrawl.ID
+		lastState = lastCrawl.State
+	}
+
+	// Can resume if there's a paused crawl and pending URLs
+	canResume := lastState == store.CrawlStatePaused && stats.Pending > 0
+
+	return &types.QueueStatus{
+		ProjectID:   projectID,
+		HasQueue:    stats.Total > 0,
+		Visited:     stats.Visited,
+		Pending:     stats.Pending,
+		Total:       stats.Total,
+		CanResume:   canResume,
+		LastCrawlID: lastCrawlID,
+		LastState:   lastState,
+	}, nil
+}
+
+// ClearCrawlQueue removes all URLs from the crawl queue for a project
+func (a *App) ClearCrawlQueue(projectID uint) error {
+	return a.store.ClearQueue(projectID)
+}
+
+// setupCrawlerCallbacks sets up all the crawler callbacks for both fresh and resume crawls
+func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context.Context, stats *crawlStats, config *store.Config, domain string, projectID uint, crawlID uint) {
+	// Set up callback for resource visits
+	crawler.SetOnResourceVisit(func(result *bluesnake.ResourceResult) {
+		select {
+		case <-crawlCtx.Done():
+			return
+		default:
+		}
+
+		indexable := "-"
+		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, "", "", "", indexable, result.ContentType, result.Error); err != nil {
+			log.Printf("Failed to save resource URL: %v", err)
+		}
+
+		if result.Error == "" {
+			stats.totalURLsCrawled++
+		}
+
+		// For incremental crawling, mark this URL as visited in the queue
+		if config.IncrementalCrawlingEnabled {
+			if err := a.store.MarkURLVisitedByHash(projectID, int64(bluesnake.URLHash(result.URL))); err != nil {
+				log.Printf("Failed to mark resource URL visited in queue: %v", err)
+			}
+		}
+	})
+
+	// Set up callback for page results
+	crawler.SetOnPageCrawled(func(result *bluesnake.PageResult) {
+		select {
+		case <-crawlCtx.Done():
+			return
+		default:
+		}
+
+		stats.crawledURLs.Store(result.URL, true)
+
+		if result.Links != nil {
+			for _, link := range result.Links.Internal {
+				stats.discoveredURLs.Store(link.URL, true)
+			}
+		}
+
+		if result.Error == "" {
+			stats.pagesCrawled++
+			stats.totalURLsCrawled++
+		}
+
+		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, result.Title, result.MetaDescription, result.ContentHash, result.Indexable, result.ContentType, result.Error); err != nil {
+			log.Printf("Failed to save crawled URL: %v", err)
+		}
+
+		// For incremental crawling, mark this URL as visited and add discovered URLs to queue
+		if config.IncrementalCrawlingEnabled {
+			if err := a.store.MarkURLVisitedByHash(projectID, int64(bluesnake.URLHash(result.URL))); err != nil {
+				log.Printf("Failed to mark URL visited in queue: %v", err)
+			}
+
+			// Add discovered URLs to queue
+			if result.Links != nil {
+				var queueItems []store.CrawlQueueItem
+				for _, link := range result.Links.Internal {
+					if link.Action == bluesnake.URLActionCrawl {
+						queueItems = append(queueItems, store.CrawlQueueItem{
+							ProjectID: projectID,
+							URL:       link.URL,
+							URLHash:   int64(bluesnake.URLHash(link.URL)),
+							Source:    "spider",
+							Depth:     0,
+							Visited:   false,
+						})
+					}
+				}
+				if len(queueItems) > 0 {
+					if err := a.store.AddToQueue(projectID, queueItems); err != nil {
+						log.Printf("Failed to add discovered URLs to queue: %v", err)
+					}
+				}
+			}
+		}
+
+		// Save page links
+		if result.Links != nil {
+			var outboundLinks []store.PageLinkData
+
+			for _, link := range result.Links.Internal {
+				status := 0
+				if link.Status != nil {
+					status = *link.Status
+				}
+				outboundLinks = append(outboundLinks, store.PageLinkData{
+					URL:         link.URL,
+					Type:        link.Type,
+					Text:        link.Text,
+					Context:     link.Context,
+					IsInternal:  link.IsInternal,
+					Status:      status,
+					Title:       link.Title,
+					ContentType: link.ContentType,
+					Position:    link.Position,
+					DOMPath:     link.DOMPath,
+					URLAction:   string(link.Action),
+				})
+
+				if link.Action == bluesnake.URLActionRecordOnly {
+					indexable := "-"
+					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", indexable, link.ContentType, ""); err != nil {
+						log.Printf("Failed to save unvisited URL: %v", err)
+					}
+				}
+			}
+			for _, link := range result.Links.External {
+				status := 0
+				if link.Status != nil {
+					status = *link.Status
+				}
+				outboundLinks = append(outboundLinks, store.PageLinkData{
+					URL:         link.URL,
+					Type:        link.Type,
+					Text:        link.Text,
+					Context:     link.Context,
+					IsInternal:  link.IsInternal,
+					Status:      status,
+					Title:       link.Title,
+					ContentType: link.ContentType,
+					Position:    link.Position,
+					DOMPath:     link.DOMPath,
+					URLAction:   string(link.Action),
+				})
+
+				if link.Action == bluesnake.URLActionRecordOnly {
+					indexable := "-"
+					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", indexable, link.ContentType, ""); err != nil {
+						log.Printf("Failed to save unvisited URL: %v", err)
+					}
+				}
+			}
+
+			if err := a.store.SavePageLinks(stats.crawlID, result.URL, outboundLinks, nil); err != nil {
+				log.Printf("Failed to save page links: %v", err)
+			}
+		}
+
+		// Save text content to disk
+		if result.Error == "" && strings.Contains(result.ContentType, "text/html") {
+			textContent := result.GetTextContent()
+			if textContent != "" {
+				if err := saveContentToDisk(domain, stats.crawlID, result.URL, textContent); err != nil {
+					log.Printf("Failed to save content for %s: %v", result.URL, err)
+				}
+			}
+		}
+	})
+
+	// Set up callback for crawl paused (incremental crawling)
+	if config.IncrementalCrawlingEnabled && config.CrawlBudget > 0 {
+		crawler.SetOnCrawlPaused(func(urlsVisited int, pendingURLs []bluesnake.URLDiscoveryRequest) {
+			log.Printf("Crawl paused for project %d: visited=%d, pending=%d", projectID, urlsVisited, len(pendingURLs))
+
+			var queueItems []store.CrawlQueueItem
+			for _, pending := range pendingURLs {
+				queueItems = append(queueItems, store.CrawlQueueItem{
+					ProjectID: projectID,
+					URL:       pending.URL,
+					URLHash:   int64(bluesnake.URLHash(pending.URL)),
+					Source:    pending.Source,
+					Depth:     pending.Depth,
+					Visited:   false,
+				})
+			}
+			if len(queueItems) > 0 {
+				if err := a.store.AddToQueue(projectID, queueItems); err != nil {
+					log.Printf("Failed to save pending URLs to queue: %v", err)
+				}
+			}
+
+			crawlDuration := time.Since(stats.startTime).Milliseconds()
+			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, store.CrawlStatePaused); err != nil {
+				log.Printf("Failed to update crawl state to paused: %v", err)
+			}
+
+			a.emitter.Emit(EventCrawlStopped, nil)
+		})
+	}
+
+	// Set up callback for crawl completion
+	crawler.SetOnCrawlComplete(func(wasStopped bool, totalPages int, totalDiscovered int) {
+		stats.totalDiscovered = totalDiscovered
+		crawlDuration := time.Since(stats.startTime).Milliseconds()
+
+		currentState := store.CrawlStateCompleted
+		if wasStopped {
+			currentState = store.CrawlStateFailed
+		}
+
+		if !config.IncrementalCrawlingEnabled || config.CrawlBudget == 0 {
+			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, currentState); err != nil {
+				log.Printf("Failed to update crawl stats: %v", err)
+			}
+		} else {
+			if err := a.store.UpdateCrawlStats(stats.crawlID, crawlDuration, stats.pagesCrawled); err != nil {
+				log.Printf("Failed to update crawl stats: %v", err)
+			}
+		}
+
+		if wasStopped {
+			a.emitter.Emit(EventCrawlStopped, nil)
+			log.Printf("Crawl stopped for project %d", projectID)
+		} else {
+			a.emitter.Emit(EventCrawlCompleted, nil)
+			log.Printf("Crawl completed normally for project %d", projectID)
+		}
+	})
+}
+
+// runCrawlerWithResume runs the crawler in resume mode, loading state from the queue
+func (a *App) runCrawlerWithResume(parsedURL *url.URL, normalizedURL string, domain string, projectID uint, crawlID uint) {
+	stats := &crawlStats{
+		startTime:        time.Now(),
+		pagesCrawled:     0,
+		totalURLsCrawled: 0,
+		totalDiscovered:  0,
+		url:              normalizedURL,
+		domain:           domain,
+		projectID:        projectID,
+		crawlID:          crawlID,
+		discoveredURLs:   &sync.Map{},
+		crawledURLs:      &sync.Map{},
+	}
+
+	crawlCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stopChan := make(chan struct{}, 1)
+	activeCrawlInfo := &activeCrawl{
+		projectID:   projectID,
+		crawlID:     crawlID,
+		domain:      domain,
+		url:         normalizedURL,
+		cancel:      cancel,
+		stopChan:    stopChan,
+		stats:       stats,
+		statusMutex: sync.RWMutex{},
+	}
+
+	a.crawlsMutex.Lock()
+	a.activeCrawls[projectID] = activeCrawlInfo
+	a.crawlsMutex.Unlock()
+
+	defer func() {
+		a.crawlsMutex.Lock()
+		delete(a.activeCrawls, projectID)
+		a.crawlsMutex.Unlock()
+	}()
+
+	config, err := a.store.GetOrCreateConfig(projectID, domain)
+	if err != nil {
+		log.Printf("Failed to get config for project %d: %v", projectID, err)
+		a.store.UpdateCrawlStatsAndState(crawlID, 0, 0, store.CrawlStateFailed)
+		return
+	}
+
+	visitedHashesInt64, err := a.store.GetVisitedURLHashes(projectID)
+	if err != nil {
+		log.Printf("Failed to load visited hashes: %v", err)
+		a.store.UpdateCrawlStatsAndState(crawlID, 0, 0, store.CrawlStateFailed)
+		return
+	}
+	// Convert int64 to uint64 for bluesnake (SQLite stores as signed, bluesnake uses unsigned)
+	preVisitedHashes := make([]uint64, len(visitedHashesInt64))
+	for i, h := range visitedHashesInt64 {
+		preVisitedHashes[i] = uint64(h)
+	}
+
+	pendingItems, err := a.store.GetPendingURLs(projectID)
+	if err != nil {
+		log.Printf("Failed to load pending URLs: %v", err)
+		a.store.UpdateCrawlStatsAndState(crawlID, 0, 0, store.CrawlStateFailed)
+		return
+	}
+
+	var seedURLs []bluesnake.URLDiscoveryRequest
+	for _, item := range pendingItems {
+		seedURLs = append(seedURLs, bluesnake.URLDiscoveryRequest{
+			URL:    item.URL,
+			Source: item.Source,
+			Depth:  item.Depth,
+		})
+	}
+
+	mechanisms := []bluesnake.DiscoveryMechanism{}
+	for _, m := range config.GetDiscoveryMechanismsArray() {
+		mechanisms = append(mechanisms, bluesnake.DiscoveryMechanism(m))
+	}
+
+	domainFilter, err := buildDomainFilter(domain, config.IncludeSubdomains)
+	if err != nil {
+		log.Printf("Failed to build domain filter: %v", err)
+		a.store.UpdateCrawlStatsAndState(crawlID, 0, 0, store.CrawlStateFailed)
+		return
+	}
+
+	crawlerConfig := &bluesnake.CrawlerConfig{
+		MaxDepth:            0,
+		URLFilters:          []*regexp.Regexp{domainFilter},
+		DiscoveryMechanisms: mechanisms,
+		SitemapURLs:         config.GetSitemapURLsArray(),
+		ResourceValidation: &bluesnake.ResourceValidationConfig{
+			Enabled:       true,
+			ResourceTypes: []string{"image", "script", "stylesheet", "font"},
+			CheckExternal: config.CheckExternalResources,
+		},
+		HTTP: &bluesnake.HTTPConfig{
+			UserAgent:       config.UserAgent,
+			EnableRendering: config.JSRenderingEnabled,
+		},
+		MaxURLsToVisit:   config.CrawlBudget,
+		PreVisitedHashes: preVisitedHashes,
+		SeedURLs:         seedURLs,
+	}
+
+	crawler := bluesnake.NewCrawler(crawlCtx, crawlerConfig)
+
+	if config.Parallelism > 0 {
+		crawler.Collector.Limit(&bluesnake.LimitRule{
+			DomainGlob:  "*",
+			Parallelism: config.Parallelism,
+		})
+	}
+
+	a.setupURLDiscoveryHandler(crawler)
+	a.setupCrawlerCallbacks(crawler, crawlCtx, stats, config, domain, projectID, crawlID)
+
+	a.emitter.Emit(EventCrawlStarted, nil)
+
+	if err := crawler.Start(parsedURL.String()); err != nil {
+		log.Printf("Failed to start resume crawl: %v", err)
+		a.store.UpdateCrawlStatsAndState(crawlID, 0, 0, store.CrawlStateFailed)
+		return
+	}
+
+	done := make(chan bool, 1)
+	go func() {
+		crawler.Wait()
+		done <- true
+	}()
+
+	select {
+	case <-done:
+		log.Printf("Resume crawl completed for project %d", projectID)
+	case <-stopChan:
+		log.Printf("Stop signal received for resume crawl project %d", projectID)
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	case <-crawlCtx.Done():
+		log.Printf("Resume crawl context cancelled for project %d", projectID)
+		select {
+		case <-done:
+		case <-time.After(1 * time.Second):
+		}
+	}
 }

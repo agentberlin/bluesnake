@@ -10,6 +10,10 @@ export function CheckSystemHealth() {
   return window['go']['main']['DesktopApp']['CheckSystemHealth']();
 }
 
+export function ClearCrawlQueue(arg1) {
+  return window['go']['main']['DesktopApp']['ClearCrawlQueue'](arg1);
+}
+
 export function DeleteCrawlByID(arg1) {
   return window['go']['main']['DesktopApp']['DeleteCrawlByID'](arg1);
 }
@@ -74,8 +78,16 @@ export function GetProjects() {
   return window['go']['main']['DesktopApp']['GetProjects']();
 }
 
+export function GetQueueStatus(arg1) {
+  return window['go']['main']['DesktopApp']['GetQueueStatus'](arg1);
+}
+
 export function GetVersion() {
   return window['go']['main']['DesktopApp']['GetVersion']();
+}
+
+export function ResumeCrawl(arg1) {
+  return window['go']['main']['DesktopApp']['ResumeCrawl'](arg1);
 }
 
 export function RunAICrawlerChecks(arg1) {
@@ -112,4 +124,8 @@ export function StopMCPServer() {
 
 export function UpdateConfigForDomain(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17) {
   return window['go']['main']['DesktopApp']['UpdateConfigForDomain'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17);
+}
+
+export function UpdateIncrementalConfigForDomain(arg1, arg2, arg3) {
+  return window['go']['main']['DesktopApp']['UpdateIncrementalConfigForDomain'](arg1, arg2, arg3);
 }

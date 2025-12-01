@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { StartCrawl, GetProjects, GetCrawls, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlStats, GetCrawlStats, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL, UpdateConfigForDomain, GetConfigForDomain, DetectJSRenderingNeed, SearchCrawlResultsPaginated, CheckSystemHealth, StartMCPServer, StopMCPServer, GetMCPServerStatus } from "../wailsjs/go/main/DesktopApp";
+import { StartCrawl, GetProjects, GetCrawls, DeleteCrawlByID, DeleteProjectByID, GetFaviconData, GetActiveCrawls, StopCrawl, GetActiveCrawlStats, GetCrawlStats, CheckForUpdate, DownloadAndInstallUpdate, GetVersion, GetPageLinksForURL, UpdateConfigForDomain, GetConfigForDomain, DetectJSRenderingNeed, SearchCrawlResultsPaginated, CheckSystemHealth, StartMCPServer, StopMCPServer, GetMCPServerStatus, GetQueueStatus, ResumeCrawl } from "../wailsjs/go/main/DesktopApp";
 import { EventsOn, BrowserOpenURL } from "../wailsjs/runtime/runtime";
 import logo from './assets/images/bluesnake-logo.png';
 import Config from './Config';
@@ -141,6 +141,18 @@ interface CrawlInfo {
   crawlDateTime: number;
   crawlDuration: number;
   pagesCrawled: number;
+  state: string;  // in_progress, paused, completed, failed
+}
+
+interface QueueStatus {
+  projectId: number;
+  hasQueue: boolean;
+  visited: number;
+  pending: number;
+  total: number;
+  canResume: boolean;
+  lastCrawlId: number;
+  lastState: string;
 }
 
 interface CrawlProgress {
@@ -295,6 +307,8 @@ function App() {
   const [isMcpServerRunning, setIsMcpServerRunning] = useState(false);
   const [isStartingMcpServer, setIsStartingMcpServer] = useState(false);
   const [isStartingCrawl, setIsStartingCrawl] = useState(false);
+  const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null);
+  const [isResuming, setIsResuming] = useState(false);
 
   // Error dialog state
   const [showErrorDialog, setShowErrorDialog] = useState(false);
@@ -521,6 +535,14 @@ function App() {
             newSet.delete(currentProject.id);
             return newSet;
           });
+
+          // Refresh queue status when crawl completes (might be paused with pending URLs)
+          try {
+            const status = await GetQueueStatus(currentProject.id);
+            setQueueStatus(status);
+          } catch (err) {
+            console.log('Failed to refresh queue status:', err);
+          }
         }
       } catch (error) {
         console.error('Failed to poll crawl data:', error);
@@ -747,6 +769,7 @@ function App() {
     setSearchQuery('');
     setDebouncedSearchQuery('');
     setIsCrawlDropdownOpen(false);
+    setQueueStatus(null);
 
     // Reload projects to show any newly created ones
     await loadProjects();
@@ -853,6 +876,9 @@ function App() {
       // Override isCrawling since we just started a crawl
       // (handleProjectClick checks activeCrawls map which won't have this crawl yet)
       setIsCrawling(true);
+
+      // Clear queue status as we're starting a fresh crawl
+      setQueueStatus(null);
     } catch (error) {
       console.error('Failed to start crawl:', error);
       setIsCrawling(false);
@@ -906,10 +932,51 @@ function App() {
         }
       }
 
+      // Load queue status for incremental crawling
+      try {
+        const status = await GetQueueStatus(project.id);
+        setQueueStatus(status);
+      } catch (err) {
+        console.log('Failed to load queue status:', err);
+        setQueueStatus(null);
+      }
+
       setDashboardSection('crawl-results');
       setView('dashboard');
     } catch (error) {
       console.error('Failed to load project crawls:', error);
+    }
+  };
+
+  // Handle resume crawl for incremental crawling
+  const handleResumeCrawl = async () => {
+    if (!currentProject || isResuming) return;
+
+    setIsResuming(true);
+    try {
+      const projectInfo = await ResumeCrawl(currentProject.id);
+
+      // Reload crawls to get the new/resumed crawl
+      const crawls = await GetCrawls(currentProject.id);
+      setAvailableCrawls(crawls);
+
+      // Set the current crawl ID
+      if (projectInfo.latestCrawlId) {
+        setCurrentCrawlId(projectInfo.latestCrawlId);
+        const selectedCrawlInfo = crawls.find(c => c.id === projectInfo.latestCrawlId);
+        if (selectedCrawlInfo) {
+          setSelectedCrawl(selectedCrawlInfo);
+        }
+      }
+
+      setIsCrawling(true);
+
+      // Clear queue status as we're now crawling
+      setQueueStatus(null);
+    } catch (error) {
+      console.error('Failed to resume crawl:', error);
+    } finally {
+      setIsResuming(false);
     }
   };
 
@@ -1548,8 +1615,18 @@ function App() {
                   {stoppingProjects.has(currentProject.id) ? 'Stopping...' : 'Stop Crawl'}
                 </button>
               )}
-              <button className="new-crawl-button" onClick={handleNewCrawl} disabled={isCrawling} title="Start full website crawl">
-                New Crawl
+              {!isCrawling && queueStatus?.canResume && (
+                <button
+                  className="resume-crawl-button"
+                  onClick={handleResumeCrawl}
+                  disabled={isResuming}
+                  title="Resume paused crawl"
+                >
+                  {isResuming ? 'Resuming...' : 'Resume Crawl'}
+                </button>
+              )}
+              <button className="new-crawl-button" onClick={handleNewCrawl} disabled={isCrawling || isResuming} title="Start full website crawl">
+                {queueStatus?.canResume ? 'Start Fresh' : 'New Crawl'}
               </button>
             </div>
           )}
@@ -1737,7 +1814,13 @@ function App() {
                   <span className="status-text">Crawling...</span>
                 </div>
               )}
-              {!isCrawling && (
+              {!isCrawling && queueStatus?.canResume && (
+                <div className="status-indicator paused">
+                  <span className="status-badge paused-badge">Paused</span>
+                  <span className="status-text">{queueStatus.pending.toLocaleString()} URLs pending</span>
+                </div>
+              )}
+              {!isCrawling && !queueStatus?.canResume && (
                 <div className="status-indicator completed">
                   <span className="status-text">Completed</span>
                 </div>

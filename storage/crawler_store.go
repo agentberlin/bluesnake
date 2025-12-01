@@ -58,6 +58,21 @@ func (s *CrawlerStore) VisitIfNotVisited(hash uint64) (bool, error) {
 	return false, nil // Newly visited
 }
 
+// PreMarkVisited marks a URL hash as visited without checking first.
+// Used for pre-populating the visited set when resuming a crawl.
+func (s *CrawlerStore) PreMarkVisited(hash uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.visited[hash] = true
+}
+
+// CountVisited returns the number of URLs marked as visited.
+func (s *CrawlerStore) CountVisited() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.visited)
+}
+
 // IsVisited checks if a URL hash has been visited (read-only check)
 func (s *CrawlerStore) IsVisited(hash uint64) (bool, error) {
 	s.mu.RLock()

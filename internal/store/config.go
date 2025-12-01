@@ -100,3 +100,22 @@ func (s *Store) UpdateConfig(projectID uint, jsRendering bool, initialWaitMs, sc
 
 	return s.db.Save(&config).Error
 }
+
+// UpdateIncrementalConfig updates only the incremental crawling settings for a project
+func (s *Store) UpdateIncrementalConfig(projectID uint, enabled bool, budget int) error {
+	return s.db.Model(&Config{}).
+		Where("project_id = ?", projectID).
+		Updates(map[string]interface{}{
+			"incremental_crawling_enabled": enabled,
+			"crawl_budget":                 budget,
+		}).Error
+}
+
+// GetIncrementalConfig retrieves just the incremental crawling settings for a project
+func (s *Store) GetIncrementalConfig(projectID uint) (enabled bool, budget int, err error) {
+	var config Config
+	if err := s.db.Where("project_id = ?", projectID).First(&config).Error; err != nil {
+		return false, 0, err
+	}
+	return config.IncrementalCrawlingEnabled, config.CrawlBudget, nil
+}

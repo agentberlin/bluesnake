@@ -44,22 +44,24 @@ func (a *App) GetConfigForDomain(urlStr string) (*types.ConfigResponse, error) {
 
 	// Convert to response struct with deserialized arrays
 	return &types.ConfigResponse{
-		Domain:                   config.Domain,
-		JSRenderingEnabled:       config.JSRenderingEnabled,
-		InitialWaitMs:            config.InitialWaitMs,
-		ScrollWaitMs:             config.ScrollWaitMs,
-		FinalWaitMs:              config.FinalWaitMs,
-		Parallelism:              config.Parallelism,
-		UserAgent:                config.UserAgent,
-		IncludeSubdomains:        config.IncludeSubdomains,
-		DiscoveryMechanisms:      config.GetDiscoveryMechanismsArray(),
-		SitemapURLs:              config.GetSitemapURLsArray(),
-		CheckExternalResources:   config.CheckExternalResources,
-		RobotsTxtMode:            config.RobotsTxtMode,
-		FollowInternalNofollow:   config.FollowInternalNofollow,
-		FollowExternalNofollow:   config.FollowExternalNofollow,
-		RespectMetaRobotsNoindex: config.RespectMetaRobotsNoindex,
-		RespectNoindex:           config.RespectNoindex,
+		Domain:                     config.Domain,
+		JSRenderingEnabled:         config.JSRenderingEnabled,
+		InitialWaitMs:              config.InitialWaitMs,
+		ScrollWaitMs:               config.ScrollWaitMs,
+		FinalWaitMs:                config.FinalWaitMs,
+		Parallelism:                config.Parallelism,
+		UserAgent:                  config.UserAgent,
+		IncludeSubdomains:          config.IncludeSubdomains,
+		DiscoveryMechanisms:        config.GetDiscoveryMechanismsArray(),
+		SitemapURLs:                config.GetSitemapURLsArray(),
+		CheckExternalResources:     config.CheckExternalResources,
+		RobotsTxtMode:              config.RobotsTxtMode,
+		FollowInternalNofollow:     config.FollowInternalNofollow,
+		FollowExternalNofollow:     config.FollowExternalNofollow,
+		RespectMetaRobotsNoindex:   config.RespectMetaRobotsNoindex,
+		RespectNoindex:             config.RespectNoindex,
+		IncrementalCrawlingEnabled: config.IncrementalCrawlingEnabled,
+		CrawlBudget:                config.CrawlBudget,
 	}, nil
 }
 
@@ -110,5 +112,69 @@ func (a *App) UpdateConfigForDomain(
 		mechanisms = []string{"spider"}
 	}
 
+	// Get current config to check if incremental crawling is enabled
+	currentConfig, err := a.store.GetOrCreateConfig(project.ID, domain)
+	if err != nil {
+		return fmt.Errorf("failed to get current config: %v", err)
+	}
+
+	// If incremental crawling is enabled and there's a queue, validate that certain settings haven't changed
+	if currentConfig.IncrementalCrawlingEnabled {
+		hasPending, _ := a.store.HasPendingURLs(project.ID)
+		if hasPending {
+			// Check for changes to settings that would invalidate the queue
+			if currentConfig.IncludeSubdomains != includeSubdomains {
+				return fmt.Errorf("cannot change 'Include Subdomains' while incremental crawling is enabled and there are pending URLs. Clear the queue first or disable incremental crawling")
+			}
+			currentMechs := currentConfig.GetDiscoveryMechanismsArray()
+			if !stringSliceEqual(currentMechs, mechanisms) {
+				return fmt.Errorf("cannot change 'Discovery Mechanisms' while incremental crawling is enabled and there are pending URLs. Clear the queue first or disable incremental crawling")
+			}
+			if currentConfig.RobotsTxtMode != robotsTxtMode {
+				return fmt.Errorf("cannot change 'Robots.txt Mode' while incremental crawling is enabled and there are pending URLs. Clear the queue first or disable incremental crawling")
+			}
+		}
+	}
+
 	return a.store.UpdateConfig(project.ID, jsRendering, initialWaitMs, scrollWaitMs, finalWaitMs, parallelism, userAgent, includeSubdomains, mechanisms, sitemapURLs, checkExternalResources, robotsTxtMode, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex)
+}
+
+// stringSliceEqual checks if two string slices are equal
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// UpdateIncrementalConfigForDomain updates the incremental crawling settings for a domain
+func (a *App) UpdateIncrementalConfigForDomain(urlStr string, enabled bool, budget int) error {
+	// Resolve redirects to get canonical URL
+	resolvedURL := resolveURL(urlStr)
+
+	// Normalize the resolved URL to extract domain
+	normalizedURL, domain, err := normalizeURL(resolvedURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %v", err)
+	}
+
+	// Get or create the project using the canonical domain
+	project, err := a.store.GetOrCreateProject(normalizedURL, domain)
+	if err != nil {
+		return fmt.Errorf("failed to get project: %v", err)
+	}
+
+	// If disabling incremental crawling, also clear the queue
+	if !enabled {
+		if err := a.store.ClearQueue(project.ID); err != nil {
+			return fmt.Errorf("failed to clear queue: %v", err)
+		}
+	}
+
+	return a.store.UpdateIncrementalConfig(project.ID, enabled, budget)
 }

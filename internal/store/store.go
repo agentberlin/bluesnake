@@ -91,13 +91,18 @@ func newStoreWithPath(dbPath string) (*Store, error) {
 	sqlDB.SetConnMaxIdleTime(0)       // Idle connections never expire
 
 	// Auto migrate the schema
-	if err := database.AutoMigrate(&Config{}, &Project{}, &Crawl{}, &DiscoveredUrl{}, &PageLink{}, &DomainFramework{}); err != nil {
+	if err := database.AutoMigrate(&Config{}, &Project{}, &Crawl{}, &DiscoveredUrl{}, &PageLink{}, &DomainFramework{}, &CrawlQueueItem{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %v", err)
 	}
 
 	// Add unique constraint on (ProjectID, Domain) for domain_frameworks
 	if err := database.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_project_domain_unique ON domain_frameworks(project_id, domain)").Error; err != nil {
 		return nil, fmt.Errorf("failed to create unique index: %v", err)
+	}
+
+	// Add unique constraint on (ProjectID, URL) for crawl_queue_items
+	if err := database.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_project_url ON crawl_queue_items(project_id, url)").Error; err != nil {
+		return nil, fmt.Errorf("failed to create crawl queue unique index: %v", err)
 	}
 
 	return &Store{db: database}, nil

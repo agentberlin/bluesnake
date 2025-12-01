@@ -291,3 +291,27 @@ func (d *DesktopApp) GetMCPServerStatus() map[string]interface{} {
 		"url":     d.mcpServerURL,
 	}
 }
+
+// ===============================
+// Incremental Crawling Methods
+// ===============================
+
+// ResumeCrawl continues a paused crawl for a project
+func (d *DesktopApp) ResumeCrawl(projectID uint) (*types.ProjectInfo, error) {
+	return d.app.ResumeCrawl(projectID)
+}
+
+// GetQueueStatus returns the status of the crawl queue for a project
+func (d *DesktopApp) GetQueueStatus(projectID uint) (*types.QueueStatus, error) {
+	return d.app.GetQueueStatus(projectID)
+}
+
+// ClearCrawlQueue removes all URLs from the crawl queue for a project
+func (d *DesktopApp) ClearCrawlQueue(projectID uint) error {
+	return d.app.ClearCrawlQueue(projectID)
+}
+
+// UpdateIncrementalConfigForDomain updates the incremental crawling settings for a domain
+func (d *DesktopApp) UpdateIncrementalConfigForDomain(url string, enabled bool, budget int) error {
+	return d.app.UpdateIncrementalConfigForDomain(url, enabled, budget)
+}

@@ -27,6 +27,24 @@ func (s *Store) CreateCrawl(projectID uint, crawlDateTime int64, crawlDuration i
 		CrawlDateTime: crawlDateTime,
 		CrawlDuration: crawlDuration,
 		PagesCrawled:  pagesCrawled,
+		State:         CrawlStateInProgress,
+	}
+
+	if err := s.db.Create(&crawl).Error; err != nil {
+		return nil, fmt.Errorf("failed to create crawl: %v", err)
+	}
+
+	return &crawl, nil
+}
+
+// CreateCrawlWithState creates a new crawl for a project with a specified initial state
+func (s *Store) CreateCrawlWithState(projectID uint, crawlDateTime int64, crawlDuration int64, pagesCrawled int, state string) (*Crawl, error) {
+	crawl := Crawl{
+		ProjectID:     projectID,
+		CrawlDateTime: crawlDateTime,
+		CrawlDuration: crawlDuration,
+		PagesCrawled:  pagesCrawled,
+		State:         state,
 	}
 
 	if err := s.db.Create(&crawl).Error; err != nil {
@@ -42,6 +60,46 @@ func (s *Store) UpdateCrawlStats(crawlID uint, crawlDuration int64, pagesCrawled
 		"crawl_duration": crawlDuration,
 		"pages_crawled":  pagesCrawled,
 	}).Error
+}
+
+// UpdateCrawlState updates the state of a crawl
+func (s *Store) UpdateCrawlState(crawlID uint, state string) error {
+	return s.db.Model(&Crawl{}).Where("id = ?", crawlID).Update("state", state).Error
+}
+
+// UpdateCrawlStatsAndState updates crawl statistics and state in one operation
+func (s *Store) UpdateCrawlStatsAndState(crawlID uint, crawlDuration int64, pagesCrawled int, state string) error {
+	return s.db.Model(&Crawl{}).Where("id = ?", crawlID).Updates(map[string]interface{}{
+		"crawl_duration": crawlDuration,
+		"pages_crawled":  pagesCrawled,
+		"state":          state,
+	}).Error
+}
+
+// GetLastPausedCrawl returns the most recent paused crawl for a project, if any
+func (s *Store) GetLastPausedCrawl(projectID uint) (*Crawl, error) {
+	var crawl Crawl
+	result := s.db.Where("project_id = ? AND state = ?", projectID, CrawlStatePaused).
+		Order("crawl_date_time DESC").First(&crawl)
+	if result.Error != nil {
+		if result.Error == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get paused crawl: %v", result.Error)
+	}
+	return &crawl, nil
+}
+
+// HasPausedCrawl checks if a project has any paused crawls
+func (s *Store) HasPausedCrawl(projectID uint) (bool, error) {
+	var count int64
+	if err := s.db.Model(&Crawl{}).
+		Where("project_id = ? AND state = ?", projectID, CrawlStatePaused).
+		Limit(1).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // GetCrawlByID gets a crawl by ID

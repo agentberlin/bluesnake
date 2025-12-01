@@ -732,6 +732,28 @@
   cursor: not-allowed;
 }
 
+.resume-crawl-button {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 400;
+  background: #2196f3;
+  color: #fff;
+  border: 1px solid #2196f3;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.resume-crawl-button:hover:not(:disabled) {
+  background: #1976d2;
+  border-color: #1976d2;
+}
+
+.resume-crawl-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .status-indicator {
   display: flex;
   align-items: center;
@@ -743,6 +765,26 @@
 
 .status-indicator.completed .status-text {
   color: #4caf50;
+}
+
+.status-indicator.paused {
+  gap: 10px;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.paused-badge {
+  background: #fff3e0;
+  color: #f57c00;
+  border: 1px solid #ffcc80;
 }
 
 .pulse {

@@ -72,6 +72,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/crawls/", s.handleCrawls)
 	s.mux.HandleFunc("/api/v1/crawl", s.handleStartCrawl)
 	s.mux.HandleFunc("/api/v1/stop-crawl/", s.handleStopCrawl)
+	s.mux.HandleFunc("/api/v1/resume-crawl/", s.handleResumeCrawl)
 	s.mux.HandleFunc("/api/v1/active-crawls", s.handleActiveCrawls)
 	s.mux.HandleFunc("/api/v1/config", s.handleConfig)
 	s.mux.HandleFunc("/api/v1/search/", s.handleSearch)
@@ -320,6 +321,33 @@ func (s *Server) handleStopCrawl(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleResumeCrawl handles POST /api/v1/resume-crawl/{projectID}
+func (s *Server) handleResumeCrawl(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/resume-crawl/")
+	projectID, err := strconv.ParseUint(path, 10, 32)
+	if err != nil {
+		http.Error(w, "Invalid project ID", http.StatusBadRequest)
+		return
+	}
+
+	projectInfo, err := s.app.ResumeCrawl(uint(projectID))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "Crawl resumed",
+		"project": projectInfo,
+	})
+}
+
 // handleActiveCrawls handles GET /api/v1/active-crawls
 func (s *Server) handleActiveCrawls(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
@@ -353,23 +381,25 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 	case "PUT":
 		var req struct {
-			URL                      string   `json:"url"`
-			JSRendering              bool     `json:"jsRendering"`
-			InitialWaitMs            int      `json:"initialWaitMs"`
-			ScrollWaitMs             int      `json:"scrollWaitMs"`
-			FinalWaitMs              int      `json:"finalWaitMs"`
-			Parallelism              int      `json:"parallelism"`
-			UserAgent                string   `json:"userAgent"`
-			IncludeSubdomains        bool     `json:"includeSubdomains"`
-			SpiderEnabled            bool     `json:"spiderEnabled"`
-			SitemapEnabled           bool     `json:"sitemapEnabled"`
-			SitemapURLs              []string `json:"sitemapURLs"`
-			CheckExternalResources   *bool    `json:"checkExternalResources,omitempty"` // Pointer to distinguish between false and not-provided
-			RobotsTxtMode            *string  `json:"robotsTxtMode,omitempty"`            // Pointer to distinguish between empty and not-provided
-			FollowInternalNofollow   *bool    `json:"followInternalNofollow,omitempty"`   // Pointer to distinguish between false and not-provided
-			FollowExternalNofollow   *bool    `json:"followExternalNofollow,omitempty"`   // Pointer to distinguish between false and not-provided
-			RespectMetaRobotsNoindex *bool    `json:"respectMetaRobotsNoindex,omitempty"` // Pointer to distinguish between false and not-provided
-			RespectNoindex           *bool    `json:"respectNoindex,omitempty"`           // Pointer to distinguish between false and not-provided
+			URL                        string   `json:"url"`
+			JSRendering                bool     `json:"jsRendering"`
+			InitialWaitMs              int      `json:"initialWaitMs"`
+			ScrollWaitMs               int      `json:"scrollWaitMs"`
+			FinalWaitMs                int      `json:"finalWaitMs"`
+			Parallelism                int      `json:"parallelism"`
+			UserAgent                  string   `json:"userAgent"`
+			IncludeSubdomains          bool     `json:"includeSubdomains"`
+			SpiderEnabled              bool     `json:"spiderEnabled"`
+			SitemapEnabled             bool     `json:"sitemapEnabled"`
+			SitemapURLs                []string `json:"sitemapURLs"`
+			CheckExternalResources     *bool    `json:"checkExternalResources,omitempty"`     // Pointer to distinguish between false and not-provided
+			RobotsTxtMode              *string  `json:"robotsTxtMode,omitempty"`              // Pointer to distinguish between empty and not-provided
+			FollowInternalNofollow     *bool    `json:"followInternalNofollow,omitempty"`     // Pointer to distinguish between false and not-provided
+			FollowExternalNofollow     *bool    `json:"followExternalNofollow,omitempty"`     // Pointer to distinguish between false and not-provided
+			RespectMetaRobotsNoindex   *bool    `json:"respectMetaRobotsNoindex,omitempty"`   // Pointer to distinguish between false and not-provided
+			RespectNoindex             *bool    `json:"respectNoindex,omitempty"`             // Pointer to distinguish between false and not-provided
+			IncrementalCrawlingEnabled *bool    `json:"incrementalCrawlingEnabled,omitempty"` // Pointer to distinguish between false and not-provided
+			CrawlBudget                *int     `json:"crawlBudget,omitempty"`                // Pointer to distinguish between 0 and not-provided
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -430,6 +460,31 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+
+		// Update incremental crawling config if provided
+		if req.IncrementalCrawlingEnabled != nil || req.CrawlBudget != nil {
+			// Get current config to use as defaults for non-provided fields
+			currentConfig, err := s.app.GetConfigForDomain(req.URL)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			enabled := currentConfig.IncrementalCrawlingEnabled
+			if req.IncrementalCrawlingEnabled != nil {
+				enabled = *req.IncrementalCrawlingEnabled
+			}
+
+			budget := currentConfig.CrawlBudget
+			if req.CrawlBudget != nil {
+				budget = *req.CrawlBudget
+			}
+
+			if err := s.app.UpdateIncrementalConfigForDomain(req.URL, enabled, budget); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 
 		w.WriteHeader(http.StatusOK)

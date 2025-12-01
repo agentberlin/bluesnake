@@ -7,6 +7,8 @@ export function CheckForUpdate():Promise<types.UpdateInfo>;
 
 export function CheckSystemHealth():Promise<types.SystemHealthCheck>;
 
+export function ClearCrawlQueue(arg1:number):Promise<void>;
+
 export function DeleteCrawlByID(arg1:number):Promise<void>;
 
 export function DeleteProjectByID(arg1:number):Promise<void>;
@@ -39,7 +41,11 @@ export function GetPageLinksForURL(arg1:number,arg2:string):Promise<types.PageLi
 
 export function GetProjects():Promise<Array<types.ProjectInfo>>;
 
+export function GetQueueStatus(arg1:number):Promise<types.QueueStatus>;
+
 export function GetVersion():Promise<string>;
+
+export function ResumeCrawl(arg1:number):Promise<types.ProjectInfo>;
 
 export function RunAICrawlerChecks(arg1:string):Promise<void>;
 
@@ -58,3 +64,5 @@ export function StopCrawl(arg1:number):Promise<void>;
 export function StopMCPServer():Promise<void>;
 
 export function UpdateConfigForDomain(arg1:string,arg2:boolean,arg3:number,arg4:number,arg5:number,arg6:number,arg7:string,arg8:boolean,arg9:boolean,arg10:boolean,arg11:Array<string>,arg12:boolean,arg13:string,arg14:boolean,arg15:boolean,arg16:boolean,arg17:boolean):Promise<void>;
+
+export function UpdateIncrementalConfigForDomain(arg1:string,arg2:boolean,arg3:number):Promise<void>;

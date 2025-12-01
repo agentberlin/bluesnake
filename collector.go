@@ -220,6 +220,18 @@ type CrawlerConfig struct {
 
 	// HTTP contains HTTP client configuration for the underlying Collector
 	HTTP *HTTPConfig
+
+	// Incremental crawling support
+	// MaxURLsToVisit limits the number of URLs to visit before pausing.
+	// Set to 0 for unlimited (default). When the limit is reached, the crawl
+	// pauses and OnCrawlPaused callback is called with pending URLs.
+	MaxURLsToVisit int
+	// PreVisitedHashes contains URL hashes that should be considered already visited.
+	// Used when resuming a paused crawl to avoid re-crawling URLs.
+	PreVisitedHashes []uint64
+	// SeedURLs contains URLs to queue at the start of the crawl (in addition to the initial URL).
+	// Used when resuming a paused crawl with pending URLs from the previous session.
+	SeedURLs []URLDiscoveryRequest
 }
 
 // Collector provides the scraper instance for a scraping job

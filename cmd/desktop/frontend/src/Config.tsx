@@ -13,12 +13,12 @@
 // limitations under the License.
 
 import { useState, useEffect } from 'react';
-import { GetConfigForDomain, UpdateConfigForDomain } from "../wailsjs/go/main/DesktopApp";
+import { GetConfigForDomain, UpdateConfigForDomain, UpdateIncrementalConfigForDomain, GetQueueStatus, ClearCrawlQueue } from "../wailsjs/go/main/DesktopApp";
 import { Combobox } from './design-system/components/Combobox';
 import { USER_AGENTS } from './constants/userAgents';
 import './Config.css';
 
-type ConfigTab = 'scope' | 'rendering' | 'performance' | 'advanced';
+type ConfigTab = 'scope' | 'rendering' | 'performance' | 'budget' | 'advanced';
 
 interface ConfigProps {
   url: string;
@@ -41,6 +41,19 @@ interface ConfigData {
   followExternalNofollow?: boolean;
   respectMetaRobotsNoindex?: boolean;
   respectNoindex?: boolean;
+  incrementalCrawlingEnabled?: boolean;
+  crawlBudget?: number;
+}
+
+interface QueueStatusData {
+  projectId: number;
+  hasQueue: boolean;
+  visited: number;
+  pending: number;
+  total: number;
+  canResume: boolean;
+  lastCrawlId: number;
+  lastState: string;
 }
 
 function Config({ url, onClose }: ConfigProps) {
@@ -65,6 +78,14 @@ function Config({ url, onClose }: ConfigProps) {
   const [respectExternalNofollow, setRespectExternalNofollow] = useState(true);
   const [respectMetaRobotsNoindex, setRespectMetaRobotsNoindex] = useState(true);
   const [respectNoindex, setRespectNoindex] = useState(true);
+
+  // Incremental crawling settings
+  const [incrementalCrawlingEnabled, setIncrementalCrawlingEnabled] = useState(false);
+  const [crawlBudget, setCrawlBudget] = useState(1000);
+  const [queueStatus, setQueueStatus] = useState<QueueStatusData | null>(null);
+  const [showClearQueueModal, setShowClearQueueModal] = useState(false);
+  const [isClearingQueue, setIsClearingQueue] = useState(false);
+  const [projectId, setProjectId] = useState<number | null>(null);
 
   useEffect(() => {
     if (url) {
@@ -97,6 +118,10 @@ function Config({ url, onClose }: ConfigProps) {
       setRespectExternalNofollow(!config.followExternalNofollow);
       setRespectMetaRobotsNoindex(config.respectMetaRobotsNoindex !== undefined ? config.respectMetaRobotsNoindex : true);
       setRespectNoindex(config.respectNoindex !== undefined ? config.respectNoindex : true);
+
+      // Load incremental crawling settings
+      setIncrementalCrawlingEnabled(config.incrementalCrawlingEnabled || false);
+      setCrawlBudget(config.crawlBudget || 1000);
     } catch (err) {
       // Project doesn't exist yet - use defaults and extract domain from URL
       console.log('Project not found, using default configuration');
@@ -127,8 +152,41 @@ function Config({ url, onClose }: ConfigProps) {
       setRespectExternalNofollow(true);
       setRespectMetaRobotsNoindex(true);
       setRespectNoindex(true);
+
+      // Set incremental crawling defaults
+      setIncrementalCrawlingEnabled(false);
+      setCrawlBudget(1000);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Load queue status when project ID is available
+  const loadQueueStatus = async (pid: number) => {
+    try {
+      const status = await GetQueueStatus(pid);
+      setQueueStatus(status);
+      setProjectId(pid);
+    } catch (err) {
+      console.log('Failed to load queue status:', err);
+      setQueueStatus(null);
+    }
+  };
+
+  // Handle clearing the queue
+  const handleClearQueue = async () => {
+    if (!projectId) return;
+
+    setIsClearingQueue(true);
+    try {
+      await ClearCrawlQueue(projectId);
+      // Reload queue status
+      await loadQueueStatus(projectId);
+      setShowClearQueueModal(false);
+    } catch (err) {
+      console.error('Failed to clear queue:', err);
+    } finally {
+      setIsClearingQueue(false);
     }
   };
 
@@ -137,6 +195,7 @@ function Config({ url, onClose }: ConfigProps) {
     setError('');
 
     try {
+      // Save main config
       await UpdateConfigForDomain(
         url,
         jsRendering,
@@ -156,6 +215,14 @@ function Config({ url, onClose }: ConfigProps) {
         respectMetaRobotsNoindex,
         respectNoindex
       );
+
+      // Save incremental crawling settings
+      await UpdateIncrementalConfigForDomain(
+        url,
+        incrementalCrawlingEnabled,
+        incrementalCrawlingEnabled ? crawlBudget : 0
+      );
+
       onClose();
     } catch (err) {
       setError('Failed to save configuration');
@@ -210,6 +277,12 @@ function Config({ url, onClose }: ConfigProps) {
                 onClick={() => setActiveTab('performance')}
               >
                 Performance
+              </button>
+              <button
+                className={`config-tab ${activeTab === 'budget' ? 'active' : ''}`}
+                onClick={() => setActiveTab('budget')}
+              >
+                Budget
               </button>
               <button
                 className={`config-tab ${activeTab === 'advanced' ? 'active' : ''}`}
@@ -395,6 +468,96 @@ function Config({ url, onClose }: ConfigProps) {
                   </div>
                 )}
 
+                {activeTab === 'budget' && (
+                  <div className="config-tab-panel">
+                    <div className="config-field">
+                      <label className="config-label">
+                        <input
+                          type="checkbox"
+                          checked={incrementalCrawlingEnabled}
+                          onChange={(e) => setIncrementalCrawlingEnabled(e.target.checked)}
+                          className="config-checkbox"
+                        />
+                        <div>
+                          <span className="checkbox-label">Enable Incremental Crawling</span>
+                          <p className="config-hint">
+                            Crawl websites in chunks with pause/resume capability. Set a budget for maximum URLs per session.
+                          </p>
+                        </div>
+                      </label>
+                    </div>
+
+                    {incrementalCrawlingEnabled && (
+                      <div className="config-field">
+                        <label className="config-label-text">
+                          URLs per Session
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="100"
+                          value={crawlBudget}
+                          onChange={(e) => setCrawlBudget(parseInt(e.target.value) || 0)}
+                          className="config-number-input"
+                        />
+                        <p className="config-hint">
+                          Maximum number of URLs to crawl per session. Set to 0 for unlimited. The crawler will pause when the limit is reached.
+                        </p>
+                      </div>
+                    )}
+
+                    {incrementalCrawlingEnabled && queueStatus && queueStatus.hasQueue && (
+                      <div className="config-field queue-status-section">
+                        <label className="config-label-text">Queue Status</label>
+                        <div className="queue-status-grid">
+                          <div className="queue-status-item">
+                            <span className="queue-status-value">{queueStatus.visited}</span>
+                            <span className="queue-status-label">Visited</span>
+                          </div>
+                          <div className="queue-status-item">
+                            <span className="queue-status-value">{queueStatus.pending}</span>
+                            <span className="queue-status-label">Pending</span>
+                          </div>
+                          <div className="queue-status-item">
+                            <span className="queue-status-value">{queueStatus.total}</span>
+                            <span className="queue-status-label">Total</span>
+                          </div>
+                        </div>
+                        {queueStatus.pending > 0 && (
+                          <button
+                            className="clear-queue-button"
+                            onClick={() => setShowClearQueueModal(true)}
+                            type="button"
+                          >
+                            Clear Queue
+                          </button>
+                        )}
+                        <p className="config-hint queue-hint">
+                          {queueStatus.canResume
+                            ? `Last crawl was paused. You can resume from the dashboard.`
+                            : queueStatus.pending > 0
+                              ? `Queue has pending URLs from previous crawl.`
+                              : `Queue is empty.`}
+                        </p>
+                      </div>
+                    )}
+
+                    {incrementalCrawlingEnabled && (
+                      <div className="config-info-box">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <circle cx="12" cy="12" r="10"></circle>
+                          <line x1="12" y1="16" x2="12" y2="12"></line>
+                          <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                        </svg>
+                        <div>
+                          <strong>How it works:</strong>
+                          <p>When enabled, the crawler will stop after reaching the URL budget. You can resume crawling from the dashboard to continue where you left off.</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {activeTab === 'advanced' && (
                   <div className="config-tab-panel">
                     <div className="config-field">
@@ -511,6 +674,28 @@ function Config({ url, onClose }: ConfigProps) {
               </div>
             </div>
           </>
+        )}
+
+        {/* Clear Queue Confirmation Modal */}
+        {showClearQueueModal && (
+          <div className="modal-overlay" onClick={() => setShowClearQueueModal(false)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <h3>Clear Crawl Queue</h3>
+              <p>Are you sure you want to clear the crawl queue? This will reset all pending URLs and the next crawl will start fresh.</p>
+              <div className="modal-actions">
+                <button className="modal-button cancel" onClick={() => setShowClearQueueModal(false)}>
+                  Cancel
+                </button>
+                <button
+                  className="modal-button delete"
+                  onClick={handleClearQueue}
+                  disabled={isClearingQueue}
+                >
+                  {isClearingQueue ? 'Clearing...' : 'Clear Queue'}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>

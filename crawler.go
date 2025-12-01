@@ -125,6 +125,13 @@ type OnResourceVisitFunc func(*ResourceResult)
 //   - totalDiscovered: total number of unique URLs discovered during the crawl
 type OnCrawlCompleteFunc func(wasStopped bool, totalPages int, totalDiscovered int)
 
+// OnCrawlPausedFunc is called when the crawl pauses due to reaching MaxURLsToVisit limit.
+// This callback is used for incremental crawling to persist state for later resume.
+// Parameters:
+//   - urlsVisited: number of URLs visited in this session
+//   - pendingURLs: URLs in the queue that weren't visited (for persistence)
+type OnCrawlPausedFunc func(urlsVisited int, pendingURLs []URLDiscoveryRequest)
+
 // URLAction represents the action to take when a URL is discovered during crawling
 type URLAction string
 
@@ -171,6 +178,7 @@ type Crawler struct {
 	onResourceVisit OnResourceVisitFunc
 	onCrawlComplete OnCrawlCompleteFunc
 	onURLDiscovered OnURLDiscoveredFunc
+	onCrawlPaused   OnCrawlPausedFunc // Called when crawl pauses due to MaxURLsToVisit limit
 
 	// Internal state tracking
 	store        *storage.CrawlerStore // Crawler's own storage (visit tracking, URL actions, page metadata)
@@ -211,6 +219,11 @@ type Crawler struct {
 	respectMetaRobotsNoindex   bool                      // Respect meta robots noindex
 	respectNoindex             bool                      // Respect X-Robots-Tag noindex
 	robotsMap                  map[string]*robotstxt.RobotsData // robots.txt cache
+
+	// Incremental crawling support
+	maxURLsToVisit int64             // Max URLs to visit before pausing (0 = unlimited)
+	visitedCount   int64             // Atomic counter for URLs visited in this session
+	seedURLs       []URLDiscoveryRequest // URLs to queue at start (for resume)
 }
 
 // NewCrawler creates a high-level crawler with the specified context and crawler configuration.
@@ -232,9 +245,14 @@ func NewCrawler(ctx context.Context, config *CrawlerConfig) *Crawler {
 	}
 
 	// Determine channel sizes with defaults
+	// Use larger buffer for incremental crawling to avoid dropping URLs
 	discoveryChannelSize := config.DiscoveryChannelSize
 	if discoveryChannelSize == 0 {
-		discoveryChannelSize = 50000 // Default: 50k URLs
+		if config.MaxURLsToVisit > 0 {
+			discoveryChannelSize = 500000 // Default: 500k URLs for incremental crawling
+		} else {
+			discoveryChannelSize = 50000 // Default: 50k URLs for regular crawling
+		}
 	}
 
 	workQueueSize := config.WorkQueueSize
@@ -273,6 +291,17 @@ func NewCrawler(ctx context.Context, config *CrawlerConfig) *Crawler {
 		robotsMap:                make(map[string]*robotstxt.RobotsData),
 		// Debug configuration
 		debugURLs: config.DebugURLs,
+		// Incremental crawling configuration
+		maxURLsToVisit: int64(config.MaxURLsToVisit),
+		visitedCount:   0,
+		seedURLs:       config.SeedURLs,
+	}
+
+	// Pre-populate visited set for resume (skip URLs already crawled in previous sessions)
+	if len(config.PreVisitedHashes) > 0 {
+		for _, hash := range config.PreVisitedHashes {
+			crawler.store.PreMarkVisited(hash)
+		}
 	}
 
 	// Set IgnoreRobotsTxt on Collector based on RobotsTxtMode
@@ -470,6 +499,16 @@ func (cr *Crawler) SetOnURLDiscovered(f OnURLDiscoveredFunc) {
 	cr.onURLDiscovered = f
 }
 
+// SetOnCrawlPaused registers a callback function that will be called when the crawl pauses
+// due to reaching the MaxURLsToVisit limit. This callback receives the count of URLs visited
+// in this session and the list of pending URLs that were not visited.
+// Used for incremental crawling to persist state for later resume.
+func (cr *Crawler) SetOnCrawlPaused(f OnCrawlPausedFunc) {
+	cr.mutex.Lock()
+	defer cr.mutex.Unlock()
+	cr.onCrawlPaused = f
+}
+
 // queueURL sends a URL to the discovery channel for processing.
 // This is called by all discovery mechanisms (initial, sitemap, spider, network, resources).
 // Uses non-blocking sends to prevent deadlocks.
@@ -622,6 +661,27 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
 		log.Printf("[DEBUG-PROCESS] MARKED_VISITED: url=%s (first time)", req.URL)
 	}
 
+	// Step 4.5: Check MaxURLsToVisit limit (incremental crawling)
+	// Only count URLs we're actually going to crawl (not record-only)
+	if action == URLActionCrawl && cr.maxURLsToVisit > 0 {
+		newCount := atomic.AddInt64(&cr.visitedCount, 1)
+		if newCount > cr.maxURLsToVisit {
+			// We've exceeded the limit - this URL won't be crawled
+			// Decrement the counter since we won't actually visit it
+			atomic.AddInt64(&cr.visitedCount, -1)
+			if debugThis {
+				log.Printf("[DEBUG-PROCESS] LIMIT_REACHED: url=%s (visited=%d, limit=%d)",
+					req.URL, newCount-1, cr.maxURLsToVisit)
+			}
+			cr.wg.Done() // Work item complete (limit reached)
+			return
+		}
+		if debugThis {
+			log.Printf("[DEBUG-PROCESS] VISIT_COUNT: url=%s (count=%d, limit=%d)",
+				req.URL, newCount, cr.maxURLsToVisit)
+		}
+	}
+
 	// Step 5: URL is now marked as visited - we own it
 	// Only crawl if action is "crawl" (not "record")
 	if action != URLActionCrawl {
@@ -702,6 +762,12 @@ func (cr *Crawler) Start(url string) error {
 	// Start the URL processor goroutine
 	go cr.runURLProcessor()
 
+	// Queue seed URLs for resume (before the initial URL to maintain queue order)
+	// These are URLs from a previous paused crawl that need to be re-processed
+	for _, seed := range cr.seedURLs {
+		cr.queueURL(seed)
+	}
+
 	// Queue the initial URL
 	cr.queueURL(URLDiscoveryRequest{
 		URL:    url,
@@ -733,6 +799,7 @@ func (cr *Crawler) Start(url string) error {
 
 // Wait blocks until all crawling operations complete.
 // The crawl naturally completes when all work is done (no more pending URLs, all workers idle).
+// For incremental crawling, the crawl may pause when MaxURLsToVisit is reached.
 func (cr *Crawler) Wait() {
 	// Step 1: Wait for ALL pending work items to complete
 	// This includes: queued URLs + URLs being processed by workers
@@ -742,19 +809,25 @@ func (cr *Crawler) Wait() {
 	// - No future URLs will be queued (all callbacks finished)
 	cr.wg.Wait()
 
-	// Step 2: Close discovery channel (safe now - no more URLs will be queued)
+	// Step 2: Collect pending URLs BEFORE closing the channel
+	// These are URLs that were queued but not processed (for incremental crawling)
+	pendingURLs := cr.drainPendingURLs()
+
+	// Step 3: Close discovery channel (safe now - no more URLs will be queued)
 	close(cr.discoveryChannel)
 
-	// Step 3: Wait for the processor to finish draining the discovery channel
+	// Step 4: Wait for the processor to finish draining the discovery channel
 	<-cr.processorDone
 
-	// Step 4: Close the worker pool (should already be idle)
+	// Step 5: Close the worker pool (should already be idle)
 	cr.workerPool.Close()
 
 	// Calculate totals
 	totalDiscovered := cr.store.CountActions()
+	visitedThisSession := int(atomic.LoadInt64(&cr.visitedCount))
 
-	// Check if context was cancelled
+	// Determine crawl outcome: paused (hit limit), stopped (cancelled), or completed
+	wasPaused := cr.maxURLsToVisit > 0 && visitedThisSession >= int(cr.maxURLsToVisit)
 	wasStopped := false
 	select {
 	case <-cr.ctx.Done():
@@ -765,12 +838,44 @@ func (cr *Crawler) Wait() {
 	cr.mutex.RLock()
 	totalPages := cr.crawledPages
 	onComplete := cr.onCrawlComplete
+	onPaused := cr.onCrawlPaused
 	cr.mutex.RUnlock()
 
-	// Call completion callback if set
+	// Call the appropriate callback
+	if wasPaused && onPaused != nil {
+		// Crawl paused due to MaxURLsToVisit limit
+		onPaused(visitedThisSession, pendingURLs)
+	}
+
+	// Always call completion callback (even if paused)
 	if onComplete != nil {
 		onComplete(wasStopped, totalPages, totalDiscovered)
 	}
+}
+
+// drainPendingURLs collects all URLs remaining in the discovery channel.
+// Called before closing the channel to preserve pending URLs for incremental crawling.
+func (cr *Crawler) drainPendingURLs() []URLDiscoveryRequest {
+	var pending []URLDiscoveryRequest
+	for {
+		select {
+		case req, ok := <-cr.discoveryChannel:
+			if !ok {
+				return pending
+			}
+			pending = append(pending, req)
+			cr.wg.Done() // These were counted, need to decrement
+		default:
+			return pending
+		}
+	}
+}
+
+// URLHash computes the hash for a URL string.
+// This is the same hash used internally for visit tracking.
+// Exported for use by the application layer when persisting/restoring crawl state.
+func URLHash(urlStr string) uint64 {
+	return requestHash(urlStr, nil)
 }
 
 // setupCallbacks configures the internal collector callbacks to aggregate page data

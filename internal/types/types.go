@@ -54,31 +54,34 @@ type ProjectInfo struct {
 
 // CrawlInfo represents crawl information for the frontend
 type CrawlInfo struct {
-	ID            uint  `json:"id"`
-	ProjectID     uint  `json:"projectId"`
-	CrawlDateTime int64 `json:"crawlDateTime"`
-	CrawlDuration int64 `json:"crawlDuration"`
-	PagesCrawled  int   `json:"pagesCrawled"`
+	ID            uint   `json:"id"`
+	ProjectID     uint   `json:"projectId"`
+	CrawlDateTime int64  `json:"crawlDateTime"`
+	CrawlDuration int64  `json:"crawlDuration"`
+	PagesCrawled  int    `json:"pagesCrawled"`
+	State         string `json:"state"` // in_progress, paused, completed, failed
 }
 
 // ConfigResponse represents the configuration response for the frontend
 type ConfigResponse struct {
-	Domain                   string   `json:"domain"`
-	JSRenderingEnabled       bool     `json:"jsRenderingEnabled"`
-	InitialWaitMs            int      `json:"initialWaitMs"`
-	ScrollWaitMs             int      `json:"scrollWaitMs"`
-	FinalWaitMs              int      `json:"finalWaitMs"`
-	Parallelism              int      `json:"parallelism"`
-	UserAgent                string   `json:"userAgent"`
-	IncludeSubdomains        bool     `json:"includeSubdomains"`
-	DiscoveryMechanisms      []string `json:"discoveryMechanisms"`
-	SitemapURLs              []string `json:"sitemapURLs"`
-	CheckExternalResources   bool     `json:"checkExternalResources"`
-	RobotsTxtMode            string   `json:"robotsTxtMode"`            // "respect", "ignore", or "ignore-report"
-	FollowInternalNofollow   bool     `json:"followInternalNofollow"`   // Follow internal links with rel="nofollow"
-	FollowExternalNofollow   bool     `json:"followExternalNofollow"`   // Follow external links with rel="nofollow"
-	RespectMetaRobotsNoindex bool     `json:"respectMetaRobotsNoindex"` // Respect <meta name="robots" content="noindex">
-	RespectNoindex           bool     `json:"respectNoindex"`           // Respect X-Robots-Tag: noindex headers
+	Domain                     string   `json:"domain"`
+	JSRenderingEnabled         bool     `json:"jsRenderingEnabled"`
+	InitialWaitMs              int      `json:"initialWaitMs"`
+	ScrollWaitMs               int      `json:"scrollWaitMs"`
+	FinalWaitMs                int      `json:"finalWaitMs"`
+	Parallelism                int      `json:"parallelism"`
+	UserAgent                  string   `json:"userAgent"`
+	IncludeSubdomains          bool     `json:"includeSubdomains"`
+	DiscoveryMechanisms        []string `json:"discoveryMechanisms"`
+	SitemapURLs                []string `json:"sitemapURLs"`
+	CheckExternalResources     bool     `json:"checkExternalResources"`
+	RobotsTxtMode              string   `json:"robotsTxtMode"`            // "respect", "ignore", or "ignore-report"
+	FollowInternalNofollow     bool     `json:"followInternalNofollow"`   // Follow internal links with rel="nofollow"
+	FollowExternalNofollow     bool     `json:"followExternalNofollow"`   // Follow external links with rel="nofollow"
+	RespectMetaRobotsNoindex   bool     `json:"respectMetaRobotsNoindex"` // Respect <meta name="robots" content="noindex">
+	RespectNoindex             bool     `json:"respectNoindex"`           // Respect X-Robots-Tag: noindex headers
+	IncrementalCrawlingEnabled bool     `json:"incrementalCrawlingEnabled"` // Enable incremental/chunked crawling
+	CrawlBudget                int      `json:"crawlBudget"`                // Max URLs to crawl per session (0 = unlimited)
 }
 
 // VersionRule represents a version-specific rule (warning or block)
@@ -187,4 +190,16 @@ type SystemHealthCheck struct {
 	ErrorTitle  string `json:"errorTitle"`  // Error title if not healthy
 	ErrorMsg    string `json:"errorMsg"`    // Detailed error message
 	Suggestion  string `json:"suggestion"`  // Suggestion to fix the issue
+}
+
+// QueueStatus represents the status of the crawl queue for incremental crawling
+type QueueStatus struct {
+	ProjectID    uint   `json:"projectId"`
+	HasQueue     bool   `json:"hasQueue"`     // Whether there are any URLs in the queue
+	Visited      int64  `json:"visited"`      // URLs that have been crawled
+	Pending      int64  `json:"pending"`      // URLs discovered but not yet crawled
+	Total        int64  `json:"total"`        // Total URLs in queue
+	CanResume    bool   `json:"canResume"`    // Whether a resume is possible (has paused crawl and pending URLs)
+	LastCrawlID  uint   `json:"lastCrawlId"`  // ID of the last crawl (paused or otherwise)
+	LastState    string `json:"lastState"`    // State of the last crawl
 }

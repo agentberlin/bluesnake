@@ -154,6 +154,8 @@ export namespace types {
 	    followExternalNofollow: boolean;
 	    respectMetaRobotsNoindex: boolean;
 	    respectNoindex: boolean;
+	    incrementalCrawlingEnabled: boolean;
+	    crawlBudget: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigResponse(source);
@@ -177,6 +179,8 @@ export namespace types {
 	        this.followExternalNofollow = source["followExternalNofollow"];
 	        this.respectMetaRobotsNoindex = source["respectMetaRobotsNoindex"];
 	        this.respectNoindex = source["respectNoindex"];
+	        this.incrementalCrawlingEnabled = source["incrementalCrawlingEnabled"];
+	        this.crawlBudget = source["crawlBudget"];
 	    }
 	}
 	
@@ -186,6 +190,7 @@ export namespace types {
 	    crawlDateTime: number;
 	    crawlDuration: number;
 	    pagesCrawled: number;
+	    state: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new CrawlInfo(source);
@@ -198,6 +203,7 @@ export namespace types {
 	        this.crawlDateTime = source["crawlDateTime"];
 	        this.crawlDuration = source["crawlDuration"];
 	        this.pagesCrawled = source["pagesCrawled"];
+	        this.state = source["state"];
 	    }
 	}
 	export class CrawlProgress {
@@ -376,6 +382,32 @@ export namespace types {
 	        this.pagesCrawled = source["pagesCrawled"];
 	        this.totalUrls = source["totalUrls"];
 	        this.latestCrawlId = source["latestCrawlId"];
+	    }
+	}
+	export class QueueStatus {
+	    projectId: number;
+	    hasQueue: boolean;
+	    visited: number;
+	    pending: number;
+	    total: number;
+	    canResume: boolean;
+	    lastCrawlId: number;
+	    lastState: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new QueueStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.projectId = source["projectId"];
+	        this.hasQueue = source["hasQueue"];
+	        this.visited = source["visited"];
+	        this.pending = source["pending"];
+	        this.total = source["total"];
+	        this.canResume = source["canResume"];
+	        this.lastCrawlId = source["lastCrawlId"];
+	        this.lastState = source["lastState"];
 	    }
 	}
 	export class SystemHealthCheck {

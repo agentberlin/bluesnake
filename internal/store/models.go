@@ -37,6 +37,9 @@ type Config struct {
 	FollowExternalNofollow   bool   `gorm:"default:false"`      // When true, follow links with rel="nofollow" on external domains
 	RespectMetaRobotsNoindex bool   `gorm:"default:true"`       // When true, respect <meta name="robots" content="noindex">
 	RespectNoindex           bool   `gorm:"default:true"`       // When true, respect X-Robots-Tag: noindex headers
+	// Incremental crawling configuration
+	IncrementalCrawlingEnabled bool `gorm:"default:false"`      // When true, crawl in chunks and allow resume
+	CrawlBudget                int  `gorm:"default:0"`          // Max URLs to crawl per session (0 = unlimited)
 	Project                  *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
 	CreatedAt                int64  `gorm:"autoCreateTime"`
 	UpdatedAt                int64  `gorm:"autoUpdateTime"`
@@ -109,6 +112,14 @@ type Project struct {
 	UpdatedAt      int64   `gorm:"autoUpdateTime"`
 }
 
+// Crawl state constants
+const (
+	CrawlStateInProgress = "in_progress"
+	CrawlStatePaused     = "paused"
+	CrawlStateCompleted  = "completed"
+	CrawlStateFailed     = "failed"
+)
+
 // Crawl represents a single crawl session for a project
 type Crawl struct {
 	ID             uint            `gorm:"primaryKey"`
@@ -116,6 +127,7 @@ type Crawl struct {
 	CrawlDateTime  int64           `gorm:"not null"` // Unix timestamp
 	CrawlDuration  int64           `gorm:"not null"` // Duration in milliseconds
 	PagesCrawled   int             `gorm:"not null"`
+	State          string          `gorm:"not null;default:'completed'"` // in_progress, paused, completed, failed
 	DiscoveredUrls []DiscoveredUrl `gorm:"foreignKey:CrawlID;constraint:OnDelete:CASCADE"`
 	CreatedAt      int64           `gorm:"autoCreateTime"`
 	UpdatedAt      int64           `gorm:"autoUpdateTime"`
@@ -187,4 +199,24 @@ type DomainFramework struct {
 // Unique constraint on (ProjectID, Domain)
 func (DomainFramework) TableName() string {
 	return "domain_frameworks"
+}
+
+// CrawlQueueItem stores URLs discovered for a project across crawl sessions.
+// This is the persistent queue that survives between crawl sessions for incremental crawling.
+type CrawlQueueItem struct {
+	ID        uint     `gorm:"primaryKey"`
+	ProjectID uint     `gorm:"not null;index:idx_queue_project_visited"`
+	URL       string   `gorm:"not null"`
+	URLHash   int64    `gorm:"not null;index:idx_queue_hash"` // Stored as int64 for SQLite compatibility
+	Source    string   `gorm:"not null"` // initial, spider, sitemap, network, resource
+	Depth     int      `gorm:"not null;default:0"`
+	Visited   bool     `gorm:"not null;default:false;index:idx_queue_project_visited"`
+	Project   *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
+	CreatedAt int64    `gorm:"autoCreateTime"`
+	UpdatedAt int64    `gorm:"autoUpdateTime"`
+}
+
+// TableName returns the table name for CrawlQueueItem
+func (CrawlQueueItem) TableName() string {
+	return "crawl_queue_items"
 }

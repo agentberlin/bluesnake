@@ -488,3 +488,182 @@
 .framework-dropdown-menu::-webkit-scrollbar-thumb:hover {
   background: #ccc;
 }
+
+/* Queue Status Section */
+.queue-status-section {
+  background: #fafafa;
+  border: 1px solid #e8e8e8;
+  border-radius: 4px;
+  padding: 20px;
+}
+
+.queue-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.queue-status-item {
+  text-align: center;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 4px;
+}
+
+.queue-status-value {
+  display: block;
+  font-size: 24px;
+  font-weight: 500;
+  color: #333;
+  margin-bottom: 4px;
+}
+
+.queue-status-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 300;
+  color: #999;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.queue-hint {
+  margin-top: 16px;
+}
+
+.clear-queue-button {
+  margin-top: 16px;
+  padding: 8px 16px;
+  background: transparent;
+  border: 1px solid #dc3545;
+  color: #dc3545;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.clear-queue-button:hover {
+  background: #dc3545;
+  color: #fff;
+}
+
+/* Config Info Box */
+.config-info-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(51, 51, 51, 0.04);
+  border: 1px solid rgba(51, 51, 51, 0.1);
+  border-radius: 4px;
+  margin-top: 24px;
+}
+
+.config-info-box svg {
+  flex-shrink: 0;
+  color: #666;
+  margin-top: 2px;
+}
+
+.config-info-box div {
+  flex: 1;
+}
+
+.config-info-box strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: #333;
+  margin-bottom: 4px;
+}
+
+.config-info-box p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #666;
+  font-weight: 300;
+}
+
+/* Modal Overlay (used for Clear Queue Modal) */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  background: #fff;
+  padding: 24px;
+  border-radius: 8px;
+  max-width: 400px;
+  width: 90%;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+.modal h3 {
+  margin: 0 0 16px;
+  font-size: 18px;
+  font-weight: 500;
+  color: #333;
+}
+
+.modal p {
+  margin: 0 0 24px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #666;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.modal-button {
+  padding: 10px 20px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 400;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 1px solid transparent;
+}
+
+.modal-button.cancel {
+  background: #f5f5f5;
+  color: #666;
+  border-color: #e0e0e0;
+}
+
+.modal-button.cancel:hover {
+  background: #eee;
+}
+
+.modal-button.delete {
+  background: #dc3545;
+  color: #fff;
+  border-color: #dc3545;
+}
+
+.modal-button.delete:hover:not(:disabled) {
+  background: #c82333;
+  border-color: #c82333;
+}
+
+.modal-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
