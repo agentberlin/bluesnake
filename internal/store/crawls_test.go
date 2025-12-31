@@ -143,6 +143,125 @@ func TestCreateCrawl(t *testing.T) {
 	})
 }
 
+func TestCrawlStateManagement(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	store, err := newStoreWithPath(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	project, err := store.GetOrCreateProject("https://example.com", "example.com")
+	if err != nil {
+		t.Fatalf("Failed to create project: %v", err)
+	}
+
+	t.Run("NewCrawl_HasInProgressState", func(t *testing.T) {
+		crawl, err := store.CreateCrawl(project.ID, time.Now().Unix(), 0, 0)
+		if err != nil {
+			t.Fatalf("CreateCrawl() failed: %v", err)
+		}
+
+		if crawl.State != CrawlStateInProgress {
+			t.Errorf("Expected new crawl state = %q, got %q", CrawlStateInProgress, crawl.State)
+		}
+	})
+
+	t.Run("UpdateCrawlState_Works", func(t *testing.T) {
+		crawl, err := store.CreateCrawl(project.ID, time.Now().Unix(), 0, 0)
+		if err != nil {
+			t.Fatalf("CreateCrawl() failed: %v", err)
+		}
+
+		// Update to paused
+		err = store.UpdateCrawlState(crawl.ID, CrawlStatePaused)
+		if err != nil {
+			t.Fatalf("UpdateCrawlState() failed: %v", err)
+		}
+
+		// Verify
+		updated, err := store.GetCrawlByID(crawl.ID)
+		if err != nil {
+			t.Fatalf("GetCrawlByID() failed: %v", err)
+		}
+
+		if updated.State != CrawlStatePaused {
+			t.Errorf("Expected state = %q, got %q", CrawlStatePaused, updated.State)
+		}
+	})
+
+	t.Run("GetLastPausedCrawl_ReturnsPausedCrawl", func(t *testing.T) {
+		// Create a new project for isolation
+		proj, _ := store.GetOrCreateProject("https://paused-test.com", "paused-test.com")
+
+		// Create crawl and set to paused
+		crawl, _ := store.CreateCrawl(proj.ID, time.Now().Unix(), 0, 0)
+		store.UpdateCrawlState(crawl.ID, CrawlStatePaused)
+
+		// Should find the paused crawl
+		paused, err := store.GetLastPausedCrawl(proj.ID)
+		if err != nil {
+			t.Fatalf("GetLastPausedCrawl() failed: %v", err)
+		}
+
+		if paused == nil {
+			t.Fatal("Expected to find paused crawl, got nil")
+		}
+
+		if paused.ID != crawl.ID {
+			t.Errorf("Expected crawl ID %d, got %d", crawl.ID, paused.ID)
+		}
+	})
+
+	t.Run("GetLastPausedCrawl_ReturnsNilWhenNoPausedCrawls", func(t *testing.T) {
+		// Create a new project for isolation
+		proj, _ := store.GetOrCreateProject("https://no-paused.com", "no-paused.com")
+
+		// Create crawl but leave as in_progress
+		store.CreateCrawl(proj.ID, time.Now().Unix(), 0, 0)
+
+		// Should not find any paused crawl
+		paused, err := store.GetLastPausedCrawl(proj.ID)
+		if err != nil {
+			t.Fatalf("GetLastPausedCrawl() failed: %v", err)
+		}
+
+		if paused != nil {
+			t.Errorf("Expected nil (no paused crawl), got crawl ID %d", paused.ID)
+		}
+	})
+
+	t.Run("GetLastPausedCrawl_IgnoresCompletedCrawls", func(t *testing.T) {
+		// Simulates the fix: when resuming, old paused crawl is marked completed
+		proj, _ := store.GetOrCreateProject("https://resume-test.com", "resume-test.com")
+
+		// Create first crawl, set to paused, then completed (simulating resume)
+		crawl1, _ := store.CreateCrawl(proj.ID, time.Now().Unix(), 0, 0)
+		store.UpdateCrawlState(crawl1.ID, CrawlStatePaused)
+		store.UpdateCrawlState(crawl1.ID, CrawlStateCompleted) // Marked completed when resumed
+
+		// Create second crawl (the resume), set to paused
+		time.Sleep(10 * time.Millisecond)
+		crawl2, _ := store.CreateCrawl(proj.ID, time.Now().Unix(), 0, 0)
+		store.UpdateCrawlState(crawl2.ID, CrawlStatePaused)
+
+		// GetLastPausedCrawl should return crawl2, not crawl1
+		paused, err := store.GetLastPausedCrawl(proj.ID)
+		if err != nil {
+			t.Fatalf("GetLastPausedCrawl() failed: %v", err)
+		}
+
+		if paused == nil {
+			t.Fatal("Expected to find paused crawl, got nil")
+		}
+
+		if paused.ID != crawl2.ID {
+			t.Errorf("Expected latest paused crawl ID %d, got %d", crawl2.ID, paused.ID)
+		}
+	})
+}
+
 func TestGetProjectCrawls(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")

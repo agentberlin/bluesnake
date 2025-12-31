@@ -396,6 +396,13 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 			stats.totalURLsCrawled++
 		}
 
+		// For incremental crawling, add resource URL to queue and mark as visited
+		if config.IncrementalCrawlingEnabled {
+			if err := a.store.AddAndMarkVisited(projectID, result.URL, int64(bluesnake.URLHash(result.URL)), "resource"); err != nil {
+				log.Printf("Failed to add/mark resource URL visited in queue: %v", err)
+			}
+		}
+
 		// Note: Resources are NOT counted toward pagesCrawled stat
 		// They're tracked separately for resource validation purposes
 	})
@@ -431,10 +438,11 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 			log.Printf("Failed to save crawled URL: %v", err)
 		}
 
-		// For incremental crawling, mark this URL as visited and add discovered URLs to queue
+		// For incremental crawling, add URL to queue and mark as visited, then add discovered URLs
+		// Using AddAndMarkVisited ensures ALL crawled URLs are tracked (sitemap, redirects, etc.)
 		if config.IncrementalCrawlingEnabled {
-			if err := a.store.MarkURLVisitedByHash(projectID, int64(bluesnake.URLHash(result.URL))); err != nil {
-				log.Printf("Failed to mark URL visited in queue: %v", err)
+			if err := a.store.AddAndMarkVisited(projectID, result.URL, int64(bluesnake.URLHash(result.URL)), "crawled"); err != nil {
+				log.Printf("Failed to add/mark URL visited in queue: %v", err)
 			}
 
 			// Add discovered URLs to queue
@@ -593,15 +601,26 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 			currentState = store.CrawlStateFailed // User-stopped is treated as failed for simplicity
 		}
 
-		// Only update state if not already paused (paused callback handles its own state)
+		// Update crawl state based on how it finished
 		if !config.IncrementalCrawlingEnabled || config.CrawlBudget == 0 {
+			// No incremental crawling - set final state
 			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, currentState); err != nil {
 				log.Printf("Failed to update crawl stats: %v", err)
 			}
 		} else {
-			// Just update stats, state was already set by pause callback or we need to check
-			if err := a.store.UpdateCrawlStats(stats.crawlID, crawlDuration, stats.pagesCrawled); err != nil {
-				log.Printf("Failed to update crawl stats: %v", err)
+			// Incremental crawling enabled with budget
+			// If we hit budget, pause callback already set state to "paused"
+			// If we finished before budget, we need to set state to "completed"
+			if stats.totalURLsCrawled >= config.CrawlBudget {
+				// Budget was hit - pause callback handled state, just update stats
+				if err := a.store.UpdateCrawlStats(stats.crawlID, crawlDuration, stats.pagesCrawled); err != nil {
+					log.Printf("Failed to update crawl stats: %v", err)
+				}
+			} else {
+				// Finished before hitting budget - set to completed
+				if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, store.CrawlStateCompleted); err != nil {
+					log.Printf("Failed to update crawl stats: %v", err)
+				}
 			}
 		}
 
@@ -716,6 +735,11 @@ func (a *App) ResumeCrawl(projectID uint) (*types.ProjectInfo, error) {
 		return nil, fmt.Errorf("failed to parse project URL: %v", err)
 	}
 
+	// Mark the old paused crawl as completed (it's being superseded by this resume)
+	if err := a.store.UpdateCrawlState(pausedCrawl.ID, store.CrawlStateCompleted); err != nil {
+		log.Printf("Failed to mark previous crawl as completed: %v", err)
+	}
+
 	// Create a new crawl record for this session
 	crawl, err := a.store.CreateCrawl(projectID, time.Now().Unix(), 0, 0)
 	if err != nil {
@@ -793,10 +817,11 @@ func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context
 			stats.totalURLsCrawled++
 		}
 
-		// For incremental crawling, mark this URL as visited in the queue
+		// For incremental crawling, add URL to queue and mark as visited
+		// Using AddAndMarkVisited ensures ALL crawled URLs are tracked (including resources)
 		if config.IncrementalCrawlingEnabled {
-			if err := a.store.MarkURLVisitedByHash(projectID, int64(bluesnake.URLHash(result.URL))); err != nil {
-				log.Printf("Failed to mark resource URL visited in queue: %v", err)
+			if err := a.store.AddAndMarkVisited(projectID, result.URL, int64(bluesnake.URLHash(result.URL)), "resource"); err != nil {
+				log.Printf("Failed to add/mark resource URL visited in queue: %v", err)
 			}
 		}
 	})
@@ -826,10 +851,11 @@ func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context
 			log.Printf("Failed to save crawled URL: %v", err)
 		}
 
-		// For incremental crawling, mark this URL as visited and add discovered URLs to queue
+		// For incremental crawling, add URL to queue and mark as visited, then add discovered URLs
+		// Using AddAndMarkVisited ensures ALL crawled URLs are tracked (sitemap, redirects, etc.)
 		if config.IncrementalCrawlingEnabled {
-			if err := a.store.MarkURLVisitedByHash(projectID, int64(bluesnake.URLHash(result.URL))); err != nil {
-				log.Printf("Failed to mark URL visited in queue: %v", err)
+			if err := a.store.AddAndMarkVisited(projectID, result.URL, int64(bluesnake.URLHash(result.URL)), "crawled"); err != nil {
+				log.Printf("Failed to add/mark URL visited in queue: %v", err)
 			}
 
 			// Add discovered URLs to queue
@@ -969,13 +995,26 @@ func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context
 			currentState = store.CrawlStateFailed
 		}
 
+		// Update crawl state based on how it finished
 		if !config.IncrementalCrawlingEnabled || config.CrawlBudget == 0 {
+			// No incremental crawling - set final state
 			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, currentState); err != nil {
 				log.Printf("Failed to update crawl stats: %v", err)
 			}
 		} else {
-			if err := a.store.UpdateCrawlStats(stats.crawlID, crawlDuration, stats.pagesCrawled); err != nil {
-				log.Printf("Failed to update crawl stats: %v", err)
+			// Incremental crawling enabled with budget
+			// If we hit budget, pause callback already set state to "paused"
+			// If we finished before budget, we need to set state to "completed"
+			if stats.totalURLsCrawled >= config.CrawlBudget {
+				// Budget was hit - pause callback handled state, just update stats
+				if err := a.store.UpdateCrawlStats(stats.crawlID, crawlDuration, stats.pagesCrawled); err != nil {
+					log.Printf("Failed to update crawl stats: %v", err)
+				}
+			} else {
+				// Finished before hitting budget - set to completed
+				if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, store.CrawlStateCompleted); err != nil {
+					log.Printf("Failed to update crawl stats: %v", err)
+				}
 			}
 		}
 

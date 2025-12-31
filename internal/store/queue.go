@@ -55,16 +55,29 @@ func (s *Store) MarkURLsVisited(projectID uint, urls []string) error {
 		Update("visited", true).Error
 }
 
-// MarkURLVisitedByHash marks a single URL as visited by its hash.
-// Used for efficient updates during crawling.
-func (s *Store) MarkURLVisitedByHash(projectID uint, urlHash int64) error {
-	return s.db.Model(&CrawlQueueItem{}).
-		Where("project_id = ? AND url_hash = ?", projectID, urlHash).
-		Update("visited", true).Error
+// AddAndMarkVisited adds a URL to the queue and marks it as visited in one operation.
+// Uses upsert: if URL exists, marks it visited; if not, creates it with visited=true.
+// This ensures ALL crawled URLs are tracked in the queue, regardless of discovery source
+// (spider, sitemap, redirects, etc.).
+func (s *Store) AddAndMarkVisited(projectID uint, url string, urlHash int64, source string) error {
+	item := CrawlQueueItem{
+		ProjectID: projectID,
+		URL:       url,
+		URLHash:   urlHash,
+		Source:    source,
+		Depth:     0,
+		Visited:   true,
+	}
+
+	return s.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "project_id"}, {Name: "url"}},
+		DoUpdates: clause.AssignmentColumns([]string{"visited", "updated_at"}),
+	}).Create(&item).Error
 }
 
 // AddToQueue adds URLs to the crawl queue for a project.
 // Uses upsert to handle duplicates - existing URLs are not modified.
+// Batches inserts to avoid SQLite "too many SQL variables" error.
 func (s *Store) AddToQueue(projectID uint, items []CrawlQueueItem) error {
 	if len(items) == 0 {
 		return nil
@@ -75,11 +88,26 @@ func (s *Store) AddToQueue(projectID uint, items []CrawlQueueItem) error {
 		items[i].ProjectID = projectID
 	}
 
-	// Use upsert with ON CONFLICT DO NOTHING to handle duplicates
-	return s.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "project_id"}, {Name: "url"}},
-		DoNothing: true,
-	}).Create(&items).Error
+	// SQLite has a limit on SQL variables (typically 999).
+	// CrawlQueueItem has ~9 columns, so batch size of 100 is safe.
+	const batchSize = 100
+
+	for i := 0; i < len(items); i += batchSize {
+		end := i + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		batch := items[i:end]
+
+		if err := s.db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "project_id"}, {Name: "url"}},
+			DoNothing: true,
+		}).Create(&batch).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // AddSingleToQueue adds a single URL to the crawl queue.
