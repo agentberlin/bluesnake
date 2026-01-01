@@ -20,22 +20,25 @@ import (
 	"github.com/agentberlin/bluesnake/internal/types"
 )
 
-// GetCrawls returns all crawls for a project
+// GetCrawls returns deduplicated crawl history for a project.
+// For incremental crawling, runs are aggregated into single entries.
+// For standalone crawls, each crawl is returned as-is.
 func (a *App) GetCrawls(projectID uint) ([]types.CrawlInfo, error) {
-	crawls, err := a.store.GetProjectCrawls(projectID)
+	entries, err := a.store.GetCrawlHistory(projectID)
 	if err != nil {
 		return nil, err
 	}
 
 	// Convert to CrawlInfo for frontend
-	crawlInfos := make([]types.CrawlInfo, len(crawls))
-	for i, c := range crawls {
+	crawlInfos := make([]types.CrawlInfo, len(entries))
+	for i, e := range entries {
 		crawlInfos[i] = types.CrawlInfo{
-			ID:            c.ID,
-			ProjectID:     c.ProjectID,
-			CrawlDateTime: c.CrawlDateTime,
-			CrawlDuration: c.CrawlDuration,
-			PagesCrawled:  c.PagesCrawled,
+			ID:            e.ID,
+			ProjectID:     e.ProjectID,
+			CrawlDateTime: e.CrawlDateTime,
+			CrawlDuration: e.CrawlDuration,
+			PagesCrawled:  e.PagesCrawled,
+			State:         e.State,
 		}
 	}
 
@@ -47,10 +50,11 @@ func (a *App) DeleteCrawlByID(crawlID uint) error {
 	return a.store.DeleteCrawl(crawlID)
 }
 
-// GetCrawlWithResultsPaginated returns a specific crawl with paginated results
+// GetCrawlWithResultsPaginated returns a specific crawl with paginated results.
+// For incremental crawling, results are aggregated across all crawls in the run.
 func (a *App) GetCrawlWithResultsPaginated(crawlID uint, limit int, cursor uint, contentTypeFilter string) (*types.CrawlResultPaginated, error) {
-	// Get paginated URLs from store
-	urls, nextCursor, hasMore, err := a.store.GetCrawlResultsPaginated(crawlID, limit, cursor, contentTypeFilter)
+	// Get paginated URLs from store (aggregated if part of a run)
+	urls, nextCursor, hasMore, err := a.store.GetCrawlResultsPaginatedAggregated(crawlID, limit, cursor, contentTypeFilter)
 	if err != nil {
 		return nil, err
 	}
@@ -83,13 +87,14 @@ func (a *App) GetCrawlWithResultsPaginated(crawlID uint, limit int, cursor uint,
 	}, nil
 }
 
-// SearchCrawlResultsPaginated searches and filters crawl results with pagination
+// SearchCrawlResultsPaginated searches and filters crawl results with pagination.
+// For incremental crawling, results are aggregated across all crawls in the run.
 func (a *App) SearchCrawlResultsPaginated(crawlID uint, query string, contentTypeFilter string, limit int, cursor uint) (*types.CrawlResultPaginated, error) {
 	log.Printf("=== DEBUG: SearchCrawlResultsPaginated START - crawlID=%d, query='%s', filter='%s', limit=%d, cursor=%d ===",
 		crawlID, query, contentTypeFilter, limit, cursor)
 
-	// Get paginated filtered URLs from store
-	urls, nextCursor, hasMore, err := a.store.SearchCrawlResultsPaginated(crawlID, query, contentTypeFilter, limit, cursor)
+	// Get paginated filtered URLs from store (aggregated if part of a run)
+	urls, nextCursor, hasMore, err := a.store.SearchCrawlResultsPaginatedAggregated(crawlID, query, contentTypeFilter, limit, cursor)
 	if err != nil {
 		log.Printf("=== DEBUG: SearchCrawlResultsPaginated ERROR - error=%v ===", err)
 		return nil, err
@@ -128,11 +133,11 @@ func (a *App) SearchCrawlResultsPaginated(crawlID uint, query string, contentTyp
 	}, nil
 }
 
-// GetCrawlStats returns statistics for any crawl (active or completed)
-// This works by querying the database directly, regardless of crawl status
+// GetCrawlStats returns statistics for any crawl (active or completed).
+// For incremental crawling, stats are aggregated across all crawls in the run.
 func (a *App) GetCrawlStats(crawlID uint) (*types.ActiveCrawlStats, error) {
-	// Get stats from store (efficient COUNT queries)
-	stats, err := a.store.GetActiveCrawlStats(crawlID)
+	// Get stats from store (aggregated if part of a run)
+	stats, err := a.store.GetActiveCrawlStatsAggregated(crawlID)
 	if err != nil {
 		return nil, err
 	}

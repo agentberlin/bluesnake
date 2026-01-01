@@ -15,7 +15,11 @@
 package app
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
+
+	"github.com/agentberlin/bluesnake/internal/store"
 )
 
 // TestBuildDomainFilter tests the domain filter regex generation
@@ -122,4 +126,123 @@ func TestBuildDomainFilter(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGetQueueStatus_CanResume tests that GetQueueStatus returns canResume=true
+// when there's a paused run with pending URLs in the queue
+func TestGetQueueStatus_CanResume(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	st, err := store.NewStoreForTesting(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	emitter := &NoOpEmitter{}
+	app := NewApp(st, emitter)
+	app.Startup(context.Background())
+
+	t.Run("CanResume_TrueWhenPausedRunWithPendingURLs", func(t *testing.T) {
+		// Create project
+		project, err := st.GetOrCreateProject("https://resume-test.com", "resume-test.com")
+		if err != nil {
+			t.Fatalf("Failed to create project: %v", err)
+		}
+
+		// Create a run and set it to paused
+		run, err := st.CreateIncrementalRun(project.ID)
+		if err != nil {
+			t.Fatalf("Failed to create run: %v", err)
+		}
+		if err := st.UpdateRunState(run.ID, store.RunStatePaused); err != nil {
+			t.Fatalf("Failed to update run state: %v", err)
+		}
+
+		// Add pending URLs to the queue
+		queueItems := []store.CrawlQueueItem{
+			{ProjectID: project.ID, URL: "https://resume-test.com/page1", URLHash: 12345, Visited: false},
+			{ProjectID: project.ID, URL: "https://resume-test.com/page2", URLHash: 67890, Visited: false},
+		}
+		if err := st.AddToQueue(project.ID, queueItems); err != nil {
+			t.Fatalf("Failed to add to queue: %v", err)
+		}
+
+		// Get queue status
+		status, err := app.GetQueueStatus(project.ID)
+		if err != nil {
+			t.Fatalf("GetQueueStatus() failed: %v", err)
+		}
+
+		// Verify canResume is true
+		if !status.CanResume {
+			t.Error("Expected CanResume to be true when paused run has pending URLs")
+		}
+		if status.Pending != 2 {
+			t.Errorf("Expected 2 pending URLs, got %d", status.Pending)
+		}
+	})
+
+	t.Run("CanResume_FalseWhenNoPausedRun", func(t *testing.T) {
+		// Create project with no paused run
+		project, err := st.GetOrCreateProject("https://no-pause-test.com", "no-pause-test.com")
+		if err != nil {
+			t.Fatalf("Failed to create project: %v", err)
+		}
+
+		// Create a run but leave it in_progress (not paused)
+		_, err = st.CreateIncrementalRun(project.ID)
+		if err != nil {
+			t.Fatalf("Failed to create run: %v", err)
+		}
+
+		// Add pending URLs to the queue
+		queueItems := []store.CrawlQueueItem{
+			{ProjectID: project.ID, URL: "https://no-pause-test.com/page1", URLHash: 11111, Visited: false},
+		}
+		if err := st.AddToQueue(project.ID, queueItems); err != nil {
+			t.Fatalf("Failed to add to queue: %v", err)
+		}
+
+		// Get queue status
+		status, err := app.GetQueueStatus(project.ID)
+		if err != nil {
+			t.Fatalf("GetQueueStatus() failed: %v", err)
+		}
+
+		// Verify canResume is false (run is in_progress, not paused)
+		if status.CanResume {
+			t.Error("Expected CanResume to be false when run is in_progress (not paused)")
+		}
+	})
+
+	t.Run("CanResume_FalseWhenNoPendingURLs", func(t *testing.T) {
+		// Create project
+		project, err := st.GetOrCreateProject("https://no-pending-test.com", "no-pending-test.com")
+		if err != nil {
+			t.Fatalf("Failed to create project: %v", err)
+		}
+
+		// Create a run and set it to paused
+		run, err := st.CreateIncrementalRun(project.ID)
+		if err != nil {
+			t.Fatalf("Failed to create run: %v", err)
+		}
+		if err := st.UpdateRunState(run.ID, store.RunStatePaused); err != nil {
+			t.Fatalf("Failed to update run state: %v", err)
+		}
+
+		// Don't add any URLs to the queue
+
+		// Get queue status
+		status, err := app.GetQueueStatus(project.ID)
+		if err != nil {
+			t.Fatalf("GetQueueStatus() failed: %v", err)
+		}
+
+		// Verify canResume is false (no pending URLs)
+		if status.CanResume {
+			t.Error("Expected CanResume to be false when no pending URLs in queue")
+		}
+	})
 }

@@ -94,15 +94,63 @@ func (a *App) StartCrawl(urlStr string) (*types.ProjectInfo, error) {
 		return nil, fmt.Errorf("crawl already in progress for this project")
 	}
 
-	// Create a new crawl record BEFORE starting the goroutine
-	// This ensures the crawl ID is available to return to the frontend
-	crawl, err := a.store.CreateCrawl(project.ID, time.Now().Unix(), 0, 0)
+	// Get configuration to check if incremental crawling is enabled
+	config, err := a.store.GetOrCreateConfig(project.ID, domain)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create crawl: %v", err)
+		return nil, fmt.Errorf("failed to get config: %v", err)
 	}
 
-	// Run crawler in a goroutine to not block the UI
-	go a.runCrawler(parsedURL, normalizedURL, domain, project.ID, crawl.ID)
+	var crawl *store.Crawl
+	var runID *uint
+
+	if config.IncrementalCrawlingEnabled {
+		// Check for paused run to auto-resume
+		pausedRun, err := a.store.GetPausedRun(project.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check for paused run: %v", err)
+		}
+
+		if pausedRun != nil {
+			// Auto-resume: mark run as in_progress, create crawl under it
+			if err := a.store.UpdateRunState(pausedRun.ID, store.RunStateInProgress); err != nil {
+				return nil, fmt.Errorf("failed to update run state: %v", err)
+			}
+			crawl, err = a.store.CreateCrawlWithRun(project.ID, pausedRun.ID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create crawl: %v", err)
+			}
+			runID = &pausedRun.ID
+
+			// Run crawler with resume (uses existing queue)
+			go a.runCrawlerWithResume(parsedURL, normalizedURL, domain, project.ID, crawl.ID, runID)
+		} else {
+			// New run: clear queue, create run + crawl
+			if err := a.store.ClearQueue(project.ID); err != nil {
+				log.Printf("Failed to clear queue for fresh crawl: %v", err)
+			}
+			run, err := a.store.CreateIncrementalRun(project.ID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create run: %v", err)
+			}
+			crawl, err = a.store.CreateCrawlWithRun(project.ID, run.ID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create crawl: %v", err)
+			}
+			runID = &run.ID
+
+			// Run crawler fresh (clears queue first)
+			go a.runCrawler(parsedURL, normalizedURL, domain, project.ID, crawl.ID, runID)
+		}
+	} else {
+		// Non-incremental crawl: create crawl without run
+		crawl, err = a.store.CreateCrawl(project.ID, time.Now().Unix(), 0, 0)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create crawl: %v", err)
+		}
+
+		// Run crawler without run tracking
+		go a.runCrawler(parsedURL, normalizedURL, domain, project.ID, crawl.ID, nil)
+	}
 
 	// Return project info so frontend knows which project was created
 	// Include the crawl ID so frontend can immediately start tracking it
@@ -255,7 +303,7 @@ func saveContentToDisk(domain string, crawlID uint, pageURL string, content stri
 	return nil
 }
 
-func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string, projectID uint, crawlID uint) {
+func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string, projectID uint, crawlID uint, runID *uint) {
 	// Initialize crawl stats
 	stats := &crawlStats{
 		startTime:        time.Now(),
@@ -327,13 +375,9 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		return
 	}
 
-	// For incremental crawling, clear the queue on fresh crawl start
+	// For incremental crawling, add the initial URL to the queue
+	// Note: Queue clearing is handled in StartCrawl when starting a new run
 	if config.IncrementalCrawlingEnabled {
-		// Clear existing queue for fresh crawl
-		if err := a.store.ClearQueue(projectID); err != nil {
-			log.Printf("Failed to clear queue for fresh crawl: %v", err)
-		}
-		// Add the initial URL to the queue
 		if err := a.store.AddSingleToQueue(projectID, parsedURL.String(), int64(bluesnake.URLHash(parsedURL.String())), "initial", 0); err != nil {
 			log.Printf("Failed to add initial URL to queue: %v", err)
 		}
@@ -549,86 +593,77 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		}
 	})
 
-	// Set up callback for crawl paused (incremental crawling)
-	if config.IncrementalCrawlingEnabled && config.CrawlBudget > 0 {
-		crawler.SetOnCrawlPaused(func(urlsVisited int, pendingURLs []bluesnake.URLDiscoveryRequest) {
-			log.Printf("Crawl paused for project %d: visited=%d, pending=%d", projectID, urlsVisited, len(pendingURLs))
+	// Set up callback for crawl completion
+	// This is the single source of truth for all crawl/run state changes
+	crawler.SetOnCrawlComplete(func(result *bluesnake.CrawlResult) {
+		stats.totalDiscovered = result.TotalDiscovered
+		crawlDuration := time.Since(stats.startTime).Milliseconds()
 
-			// Save pending URLs to the queue for later resume
-			var queueItems []store.CrawlQueueItem
-			for _, pending := range pendingURLs {
-				queueItems = append(queueItems, store.CrawlQueueItem{
-					ProjectID: projectID,
-					URL:       pending.URL,
-					URLHash:   int64(bluesnake.URLHash(pending.URL)),
-					Source:    pending.Source,
-					Depth:     pending.Depth,
-					Visited:   false,
-				})
-			}
-			if len(queueItems) > 0 {
+		// Handle based on completion reason
+		switch result.Reason {
+		case bluesnake.CompletionReasonBudgetReached:
+			// Budget was hit - save pending URLs and pause run for resume
+			if len(result.PendingURLs) > 0 {
+				var queueItems []store.CrawlQueueItem
+				for _, pending := range result.PendingURLs {
+					queueItems = append(queueItems, store.CrawlQueueItem{
+						ProjectID: projectID,
+						URL:       pending.URL,
+						URLHash:   int64(bluesnake.URLHash(pending.URL)),
+						Source:    pending.Source,
+						Depth:     pending.Depth,
+						Visited:   false,
+					})
+				}
 				if err := a.store.AddToQueue(projectID, queueItems); err != nil {
 					log.Printf("Failed to save pending URLs to queue: %v", err)
 				}
 			}
 
-			// Calculate crawl duration
-			crawlDuration := time.Since(stats.startTime).Milliseconds()
-
-			// Update crawl state to paused
-			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, store.CrawlStatePaused); err != nil {
-				log.Printf("Failed to update crawl state to paused: %v", err)
-			}
-
-			a.emitter.Emit(EventCrawlStopped, nil)
-			log.Printf("Crawl paused for project %d (incremental crawling)", projectID)
-		})
-	}
-
-	// Set up callback for crawl completion
-	crawler.SetOnCrawlComplete(func(wasStopped bool, totalPages int, totalDiscovered int) {
-		// Store the total discovered count from bluesnake
-		stats.totalDiscovered = totalDiscovered
-
-		// Calculate crawl duration
-		crawlDuration := time.Since(stats.startTime).Milliseconds()
-
-		// Determine final state based on whether incremental crawling paused it
-		// If paused callback was called, state is already set to "paused"
-		// Otherwise set to completed or stopped based on wasStopped
-		currentState := store.CrawlStateCompleted
-		if wasStopped {
-			currentState = store.CrawlStateFailed // User-stopped is treated as failed for simplicity
-		}
-
-		// Update crawl state based on how it finished
-		if !config.IncrementalCrawlingEnabled || config.CrawlBudget == 0 {
-			// No incremental crawling - set final state
-			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, currentState); err != nil {
+			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, store.CrawlStateCompleted); err != nil {
 				log.Printf("Failed to update crawl stats: %v", err)
 			}
-		} else {
-			// Incremental crawling enabled with budget
-			// If we hit budget, pause callback already set state to "paused"
-			// If we finished before budget, we need to set state to "completed"
-			if stats.totalURLsCrawled >= config.CrawlBudget {
-				// Budget was hit - pause callback handled state, just update stats
-				if err := a.store.UpdateCrawlStats(stats.crawlID, crawlDuration, stats.pagesCrawled); err != nil {
-					log.Printf("Failed to update crawl stats: %v", err)
-				}
-			} else {
-				// Finished before hitting budget - set to completed
-				if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, store.CrawlStateCompleted); err != nil {
-					log.Printf("Failed to update crawl stats: %v", err)
+			if runID != nil {
+				if err := a.store.UpdateRunState(*runID, store.RunStatePaused); err != nil {
+					log.Printf("Failed to update run state to paused: %v", err)
 				}
 			}
-		}
-
-		// Send appropriate completion event (indicational only, no payload)
-		if wasStopped {
 			a.emitter.Emit(EventCrawlStopped, nil)
-			log.Printf("Crawl stopped for project %d", projectID)
-		} else {
+			log.Printf("Crawl completed (budget hit) for project %d, run paused", projectID)
+
+		case bluesnake.CompletionReasonCancelled:
+			// Manually stopped - crawl failed, run paused if pending URLs exist
+			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, store.CrawlStateFailed); err != nil {
+				log.Printf("Failed to update crawl stats: %v", err)
+			}
+			if runID != nil {
+				queueStats, err := a.store.GetQueueStats(projectID)
+				if err == nil && queueStats.Pending > 0 {
+					if err := a.store.UpdateRunState(*runID, store.RunStatePaused); err != nil {
+						log.Printf("Failed to update run state to paused: %v", err)
+					}
+					log.Printf("Crawl stopped for project %d, run paused (pending URLs exist)", projectID)
+				} else {
+					if err := a.store.UpdateRunState(*runID, store.RunStateCompleted); err != nil {
+						log.Printf("Failed to update run state to completed: %v", err)
+					}
+					log.Printf("Crawl stopped for project %d, run completed (no pending URLs)", projectID)
+				}
+			} else {
+				log.Printf("Crawl stopped for project %d", projectID)
+			}
+			a.emitter.Emit(EventCrawlStopped, nil)
+
+		case bluesnake.CompletionReasonExhausted:
+			// Normal completion - all URLs crawled, both crawl and run completed
+			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, store.CrawlStateCompleted); err != nil {
+				log.Printf("Failed to update crawl stats: %v", err)
+			}
+			if runID != nil {
+				if err := a.store.UpdateRunState(*runID, store.RunStateCompleted); err != nil {
+					log.Printf("Failed to update run state to completed: %v", err)
+				}
+			}
 			a.emitter.Emit(EventCrawlCompleted, nil)
 			log.Printf("Crawl completed normally for project %d", projectID)
 		}
@@ -694,7 +729,7 @@ func (a *App) setupURLDiscoveryHandler(crawler *bluesnake.Crawler) {
 	})
 }
 
-// ResumeCrawl continues a paused crawl for a project
+// ResumeCrawl continues a paused run for a project
 func (a *App) ResumeCrawl(projectID uint) (*types.ProjectInfo, error) {
 	// Get the project
 	project, err := a.store.GetProjectByID(projectID)
@@ -702,13 +737,13 @@ func (a *App) ResumeCrawl(projectID uint) (*types.ProjectInfo, error) {
 		return nil, fmt.Errorf("project not found: %v", err)
 	}
 
-	// Check if there's a paused crawl
-	pausedCrawl, err := a.store.GetLastPausedCrawl(projectID)
+	// Check if there's a paused run
+	pausedRun, err := a.store.GetPausedRun(projectID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check for paused crawl: %v", err)
+		return nil, fmt.Errorf("failed to check for paused run: %v", err)
 	}
-	if pausedCrawl == nil {
-		return nil, fmt.Errorf("no paused crawl to resume for this project")
+	if pausedRun == nil {
+		return nil, fmt.Errorf("no paused run to resume for this project")
 	}
 
 	// Check if there are pending URLs in the queue
@@ -735,19 +770,20 @@ func (a *App) ResumeCrawl(projectID uint) (*types.ProjectInfo, error) {
 		return nil, fmt.Errorf("failed to parse project URL: %v", err)
 	}
 
-	// Mark the old paused crawl as completed (it's being superseded by this resume)
-	if err := a.store.UpdateCrawlState(pausedCrawl.ID, store.CrawlStateCompleted); err != nil {
-		log.Printf("Failed to mark previous crawl as completed: %v", err)
+	// Mark run as in_progress
+	if err := a.store.UpdateRunState(pausedRun.ID, store.RunStateInProgress); err != nil {
+		return nil, fmt.Errorf("failed to update run state: %v", err)
 	}
 
-	// Create a new crawl record for this session
-	crawl, err := a.store.CreateCrawl(projectID, time.Now().Unix(), 0, 0)
+	// Create a new crawl record under this run
+	crawl, err := a.store.CreateCrawlWithRun(projectID, pausedRun.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create crawl: %v", err)
 	}
 
-	// Run the crawler with resume flag
-	go a.runCrawlerWithResume(parsedURL, project.URL, project.Domain, projectID, crawl.ID)
+	// Run the crawler with resume
+	runID := pausedRun.ID
+	go a.runCrawlerWithResume(parsedURL, project.URL, project.Domain, projectID, crawl.ID, &runID)
 
 	return &types.ProjectInfo{
 		ID:            project.ID,
@@ -778,18 +814,41 @@ func (a *App) GetQueueStatus(projectID uint) (*types.QueueStatus, error) {
 		lastState = lastCrawl.State
 	}
 
-	// Can resume if there's a paused crawl and pending URLs
-	canResume := lastState == store.CrawlStatePaused && stats.Pending > 0
+	// Check for paused run (run-based resume logic)
+	pausedRun, err := a.store.GetPausedRun(projectID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check for paused run: %v", err)
+	}
+
+	// Can resume if there's a paused run and pending URLs
+	canResume := pausedRun != nil && stats.Pending > 0
+
+	// Get run state if there's an active/paused run
+	var runState string
+	var currentRunID *uint
+	if pausedRun != nil {
+		runState = pausedRun.State
+		currentRunID = &pausedRun.ID
+	} else {
+		// Check for in-progress run
+		inProgressRun, _ := a.store.GetInProgressRun(projectID)
+		if inProgressRun != nil {
+			runState = inProgressRun.State
+			currentRunID = &inProgressRun.ID
+		}
+	}
 
 	return &types.QueueStatus{
-		ProjectID:   projectID,
-		HasQueue:    stats.Total > 0,
-		Visited:     stats.Visited,
-		Pending:     stats.Pending,
-		Total:       stats.Total,
-		CanResume:   canResume,
-		LastCrawlID: lastCrawlID,
-		LastState:   lastState,
+		ProjectID:    projectID,
+		HasQueue:     stats.Total > 0,
+		Visited:      stats.Visited,
+		Pending:      stats.Pending,
+		Total:        stats.Total,
+		CanResume:    canResume,
+		LastCrawlID:  lastCrawlID,
+		LastState:    lastState,
+		CurrentRunID: currentRunID,
+		RunState:     runState,
 	}, nil
 }
 
@@ -799,7 +858,7 @@ func (a *App) ClearCrawlQueue(projectID uint) error {
 }
 
 // setupCrawlerCallbacks sets up all the crawler callbacks for both fresh and resume crawls
-func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context.Context, stats *crawlStats, config *store.Config, domain string, projectID uint, crawlID uint) {
+func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context.Context, stats *crawlStats, config *store.Config, domain string, projectID uint, crawlID uint, runID *uint) {
 	// Set up callback for resource visits
 	crawler.SetOnResourceVisit(func(result *bluesnake.ResourceResult) {
 		select {
@@ -954,74 +1013,77 @@ func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context
 		}
 	})
 
-	// Set up callback for crawl paused (incremental crawling)
-	if config.IncrementalCrawlingEnabled && config.CrawlBudget > 0 {
-		crawler.SetOnCrawlPaused(func(urlsVisited int, pendingURLs []bluesnake.URLDiscoveryRequest) {
-			log.Printf("Crawl paused for project %d: visited=%d, pending=%d", projectID, urlsVisited, len(pendingURLs))
+	// Set up callback for crawl completion
+	// This is the single source of truth for all crawl/run state changes
+	crawler.SetOnCrawlComplete(func(result *bluesnake.CrawlResult) {
+		stats.totalDiscovered = result.TotalDiscovered
+		crawlDuration := time.Since(stats.startTime).Milliseconds()
 
-			var queueItems []store.CrawlQueueItem
-			for _, pending := range pendingURLs {
-				queueItems = append(queueItems, store.CrawlQueueItem{
-					ProjectID: projectID,
-					URL:       pending.URL,
-					URLHash:   int64(bluesnake.URLHash(pending.URL)),
-					Source:    pending.Source,
-					Depth:     pending.Depth,
-					Visited:   false,
-				})
-			}
-			if len(queueItems) > 0 {
+		// Handle based on completion reason
+		switch result.Reason {
+		case bluesnake.CompletionReasonBudgetReached:
+			// Budget was hit - save pending URLs and pause run for resume
+			if len(result.PendingURLs) > 0 {
+				var queueItems []store.CrawlQueueItem
+				for _, pending := range result.PendingURLs {
+					queueItems = append(queueItems, store.CrawlQueueItem{
+						ProjectID: projectID,
+						URL:       pending.URL,
+						URLHash:   int64(bluesnake.URLHash(pending.URL)),
+						Source:    pending.Source,
+						Depth:     pending.Depth,
+						Visited:   false,
+					})
+				}
 				if err := a.store.AddToQueue(projectID, queueItems); err != nil {
 					log.Printf("Failed to save pending URLs to queue: %v", err)
 				}
 			}
 
-			crawlDuration := time.Since(stats.startTime).Milliseconds()
-			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, store.CrawlStatePaused); err != nil {
-				log.Printf("Failed to update crawl state to paused: %v", err)
-			}
-
-			a.emitter.Emit(EventCrawlStopped, nil)
-		})
-	}
-
-	// Set up callback for crawl completion
-	crawler.SetOnCrawlComplete(func(wasStopped bool, totalPages int, totalDiscovered int) {
-		stats.totalDiscovered = totalDiscovered
-		crawlDuration := time.Since(stats.startTime).Milliseconds()
-
-		currentState := store.CrawlStateCompleted
-		if wasStopped {
-			currentState = store.CrawlStateFailed
-		}
-
-		// Update crawl state based on how it finished
-		if !config.IncrementalCrawlingEnabled || config.CrawlBudget == 0 {
-			// No incremental crawling - set final state
-			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, currentState); err != nil {
+			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, store.CrawlStateCompleted); err != nil {
 				log.Printf("Failed to update crawl stats: %v", err)
 			}
-		} else {
-			// Incremental crawling enabled with budget
-			// If we hit budget, pause callback already set state to "paused"
-			// If we finished before budget, we need to set state to "completed"
-			if stats.totalURLsCrawled >= config.CrawlBudget {
-				// Budget was hit - pause callback handled state, just update stats
-				if err := a.store.UpdateCrawlStats(stats.crawlID, crawlDuration, stats.pagesCrawled); err != nil {
-					log.Printf("Failed to update crawl stats: %v", err)
-				}
-			} else {
-				// Finished before hitting budget - set to completed
-				if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, store.CrawlStateCompleted); err != nil {
-					log.Printf("Failed to update crawl stats: %v", err)
+			if runID != nil {
+				if err := a.store.UpdateRunState(*runID, store.RunStatePaused); err != nil {
+					log.Printf("Failed to update run state to paused: %v", err)
 				}
 			}
-		}
-
-		if wasStopped {
 			a.emitter.Emit(EventCrawlStopped, nil)
-			log.Printf("Crawl stopped for project %d", projectID)
-		} else {
+			log.Printf("Crawl completed (budget hit) for project %d, run paused", projectID)
+
+		case bluesnake.CompletionReasonCancelled:
+			// Manually stopped - crawl failed, run paused if pending URLs exist
+			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, store.CrawlStateFailed); err != nil {
+				log.Printf("Failed to update crawl stats: %v", err)
+			}
+			if runID != nil {
+				queueStats, err := a.store.GetQueueStats(projectID)
+				if err == nil && queueStats.Pending > 0 {
+					if err := a.store.UpdateRunState(*runID, store.RunStatePaused); err != nil {
+						log.Printf("Failed to update run state to paused: %v", err)
+					}
+					log.Printf("Crawl stopped for project %d, run paused (pending URLs exist)", projectID)
+				} else {
+					if err := a.store.UpdateRunState(*runID, store.RunStateCompleted); err != nil {
+						log.Printf("Failed to update run state to completed: %v", err)
+					}
+					log.Printf("Crawl stopped for project %d, run completed (no pending URLs)", projectID)
+				}
+			} else {
+				log.Printf("Crawl stopped for project %d", projectID)
+			}
+			a.emitter.Emit(EventCrawlStopped, nil)
+
+		case bluesnake.CompletionReasonExhausted:
+			// Normal completion - all URLs crawled, both crawl and run completed
+			if err := a.store.UpdateCrawlStatsAndState(stats.crawlID, crawlDuration, stats.pagesCrawled, store.CrawlStateCompleted); err != nil {
+				log.Printf("Failed to update crawl stats: %v", err)
+			}
+			if runID != nil {
+				if err := a.store.UpdateRunState(*runID, store.RunStateCompleted); err != nil {
+					log.Printf("Failed to update run state to completed: %v", err)
+				}
+			}
 			a.emitter.Emit(EventCrawlCompleted, nil)
 			log.Printf("Crawl completed normally for project %d", projectID)
 		}
@@ -1029,7 +1091,7 @@ func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context
 }
 
 // runCrawlerWithResume runs the crawler in resume mode, loading state from the queue
-func (a *App) runCrawlerWithResume(parsedURL *url.URL, normalizedURL string, domain string, projectID uint, crawlID uint) {
+func (a *App) runCrawlerWithResume(parsedURL *url.URL, normalizedURL string, domain string, projectID uint, crawlID uint, runID *uint) {
 	stats := &crawlStats{
 		startTime:        time.Now(),
 		pagesCrawled:     0,
@@ -1144,7 +1206,7 @@ func (a *App) runCrawlerWithResume(parsedURL *url.URL, normalizedURL string, dom
 	}
 
 	a.setupURLDiscoveryHandler(crawler)
-	a.setupCrawlerCallbacks(crawler, crawlCtx, stats, config, domain, projectID, crawlID)
+	a.setupCrawlerCallbacks(crawler, crawlCtx, stats, config, domain, projectID, crawlID, runID)
 
 	a.emitter.Emit(EventCrawlStarted, nil)
 

@@ -483,10 +483,47 @@ crawler.SetOnResourceVisit(func(result *ResourceResult) {
 })
 
 // 4. OnCrawlComplete - Called once when crawl finishes
-crawler.SetOnCrawlComplete(func(wasStopped bool, totalPages int, totalDiscovered int) {
-    // Crawl finished
+crawler.SetOnCrawlComplete(func(result *bluesnake.CrawlResult) {
+    // Crawl finished - result contains comprehensive completion info
+    // result.Reason: exhausted, budget_reached, or cancelled
+    // result.TotalPages: count of HTML pages crawled
+    // result.TotalDiscovered: count of unique URLs discovered
+    // result.URLsVisited: count of URLs visited this session
+    // result.PendingURLs: URLs queued but not visited (for resume)
 })
 ```
+
+#### Crawl Completion System
+
+The crawler reports comprehensive completion information via `CrawlResult`:
+
+```go
+type CrawlCompletionReason string
+
+const (
+    // CompletionReasonExhausted - All discoverable URLs have been crawled
+    CompletionReasonExhausted CrawlCompletionReason = "exhausted"
+
+    // CompletionReasonBudgetReached - MaxURLsToVisit limit was reached
+    CompletionReasonBudgetReached CrawlCompletionReason = "budget_reached"
+
+    // CompletionReasonCancelled - Crawl was stopped via context cancellation
+    CompletionReasonCancelled CrawlCompletionReason = "cancelled"
+)
+
+type CrawlResult struct {
+    Reason          CrawlCompletionReason // Why the crawl completed
+    TotalPages      int                   // HTML pages crawled
+    TotalDiscovered int                   // Unique URLs discovered
+    URLsVisited     int                   // URLs visited this session
+    PendingURLs     []URLDiscoveryRequest // Queued but not visited (for resume)
+}
+```
+
+**Use cases:**
+- `CompletionReasonExhausted` - Normal completion, all URLs crawled
+- `CompletionReasonBudgetReached` - Incremental crawling hit budget, can resume
+- `CompletionReasonCancelled` - User stopped the crawl manually
 
 #### URL Action System
 
@@ -602,19 +639,38 @@ func (cr *Crawler) Wait() {
     // wg counts: queued URLs + URLs being processed by workers
     cr.wg.Wait()
 
-    // Step 2: Close discovery channel (safe - no more URLs will be queued)
+    // Step 2: Collect pending URLs for incremental crawling
+    pendingURLs := cr.drainPendingURLs()
+
+    // Step 3: Close discovery channel (safe - no more URLs will be queued)
     close(cr.discoveryChannel)
 
-    // Step 3: Wait for processor to finish draining
+    // Step 4: Wait for processor to finish draining
     <-cr.processorDone
 
-    // Step 4: Close worker pool
+    // Step 5: Close worker pool
     cr.workerPool.Close()
 
-    // Step 5: Call completion callback
+    // Step 6: Determine completion reason and build result
+    var reason CrawlCompletionReason
+    if cr.ctx.Err() != nil {
+        reason = CompletionReasonCancelled
+    } else if cr.maxURLsToVisit > 0 && visitedCount >= cr.maxURLsToVisit {
+        reason = CompletionReasonBudgetReached
+    } else {
+        reason = CompletionReasonExhausted
+    }
+
+    // Step 7: Call completion callback with full result
     if cr.onCrawlComplete != nil {
-        wasStopped := cr.ctx.Done()
-        cr.onCrawlComplete(wasStopped, cr.crawledPages, cr.store.CountActions())
+        result := &CrawlResult{
+            Reason:          reason,
+            TotalPages:      cr.crawledPages,
+            TotalDiscovered: cr.store.CountActions(),
+            URLsVisited:     visitedCount,
+            PendingURLs:     pendingURLs,
+        }
+        cr.onCrawlComplete(result)
     }
 }
 ```
@@ -659,9 +715,12 @@ crawler.SetOnPageCrawled(func(result *bluesnake.PageResult) {
 })
 
 // Set completion callback
-crawler.SetOnCrawlComplete(func(wasStopped bool, totalPages int, totalDiscovered int) {
-    fmt.Printf("Crawl complete: %d pages, %d URLs discovered\n",
-        totalPages, totalDiscovered)
+crawler.SetOnCrawlComplete(func(result *bluesnake.CrawlResult) {
+    fmt.Printf("Crawl complete (reason: %s): %d pages, %d URLs discovered\n",
+        result.Reason, result.TotalPages, result.TotalDiscovered)
+    if result.Reason == bluesnake.CompletionReasonBudgetReached {
+        fmt.Printf("  Pending URLs for resume: %d\n", len(result.PendingURLs))
+    }
 })
 
 // Start crawl

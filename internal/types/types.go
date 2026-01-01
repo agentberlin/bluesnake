@@ -195,11 +195,13 @@ type SystemHealthCheck struct {
 // QueueStatus represents the status of the crawl queue for incremental crawling
 type QueueStatus struct {
 	ProjectID    uint   `json:"projectId"`
-	HasQueue     bool   `json:"hasQueue"`     // Whether there are any URLs in the queue
-	Visited      int64  `json:"visited"`      // URLs that have been crawled
-	Pending      int64  `json:"pending"`      // URLs discovered but not yet crawled
-	Total        int64  `json:"total"`        // Total URLs in queue
-	CanResume    bool   `json:"canResume"`    // Whether a resume is possible (has paused crawl and pending URLs)
-	LastCrawlID  uint   `json:"lastCrawlId"`  // ID of the last crawl (paused or otherwise)
-	LastState    string `json:"lastState"`    // State of the last crawl
+	HasQueue     bool   `json:"hasQueue"`           // Whether there are any URLs in the queue
+	Visited      int64  `json:"visited"`            // URLs that have been crawled
+	Pending      int64  `json:"pending"`            // URLs discovered but not yet crawled
+	Total        int64  `json:"total"`              // Total URLs in queue
+	CanResume    bool   `json:"canResume"`          // Whether a resume is possible (has paused run and pending URLs)
+	LastCrawlID  uint   `json:"lastCrawlId"`        // ID of the last crawl
+	LastState    string `json:"lastState"`          // State of the last crawl
+	CurrentRunID *uint  `json:"currentRunId"`       // ID of the current run (nil if no active run)
+	RunState     string `json:"runState,omitempty"` // State of the current run: "", "in_progress", "paused", "completed"
 }

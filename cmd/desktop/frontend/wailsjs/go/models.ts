@@ -393,6 +393,8 @@ export namespace types {
 	    canResume: boolean;
 	    lastCrawlId: number;
 	    lastState: string;
+	    currentRunId?: number;
+	    runState?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new QueueStatus(source);
@@ -408,6 +410,8 @@ export namespace types {
 	        this.canResume = source["canResume"];
 	        this.lastCrawlId = source["lastCrawlId"];
 	        this.lastState = source["lastState"];
+	        this.currentRunId = source["currentRunId"];
+	        this.runState = source["runState"];
 	    }
 	}
 	export class SystemHealthCheck {

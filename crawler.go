@@ -118,19 +118,37 @@ type OnPageCrawledFunc func(*PageResult)
 // Use this for resource validation/checking without the overhead of PageResult.
 type OnResourceVisitFunc func(*ResourceResult)
 
-// OnCrawlCompleteFunc is called when the entire crawl finishes, either naturally or due to cancellation.
-// Parameters:
-//   - wasStopped: true if the crawl was stopped via context cancellation, false if it completed naturally
-//   - totalPages: total number of pages that were successfully crawled (excludes errors)
-//   - totalDiscovered: total number of unique URLs discovered during the crawl
-type OnCrawlCompleteFunc func(wasStopped bool, totalPages int, totalDiscovered int)
+// CrawlCompletionReason indicates why a crawl completed
+type CrawlCompletionReason string
 
-// OnCrawlPausedFunc is called when the crawl pauses due to reaching MaxURLsToVisit limit.
-// This callback is used for incremental crawling to persist state for later resume.
-// Parameters:
-//   - urlsVisited: number of URLs visited in this session
-//   - pendingURLs: URLs in the queue that weren't visited (for persistence)
-type OnCrawlPausedFunc func(urlsVisited int, pendingURLs []URLDiscoveryRequest)
+const (
+	// CompletionReasonExhausted means all discoverable URLs have been crawled
+	CompletionReasonExhausted CrawlCompletionReason = "exhausted"
+	// CompletionReasonBudgetReached means the MaxURLsToVisit limit was reached
+	CompletionReasonBudgetReached CrawlCompletionReason = "budget_reached"
+	// CompletionReasonCancelled means the crawl was stopped via context cancellation
+	CompletionReasonCancelled CrawlCompletionReason = "cancelled"
+)
+
+// CrawlResult contains comprehensive information about a completed crawl
+type CrawlResult struct {
+	// Reason indicates why the crawl completed
+	Reason CrawlCompletionReason
+	// TotalPages is the total number of HTML pages successfully crawled
+	TotalPages int
+	// TotalDiscovered is the total number of unique URLs discovered
+	TotalDiscovered int
+	// URLsVisited is the number of URLs visited in this session
+	URLsVisited int
+	// PendingURLs contains URLs that were queued but not visited (for resume)
+	PendingURLs []URLDiscoveryRequest
+}
+
+// OnCrawlCompleteFunc is called when the entire crawl finishes.
+// The CrawlResult contains comprehensive information about how and why the crawl completed,
+// including the completion reason (exhausted, budget_reached, or cancelled) and pending URLs
+// for incremental crawling support.
+type OnCrawlCompleteFunc func(result *CrawlResult)
 
 // URLAction represents the action to take when a URL is discovered during crawling
 type URLAction string
@@ -178,7 +196,6 @@ type Crawler struct {
 	onResourceVisit OnResourceVisitFunc
 	onCrawlComplete OnCrawlCompleteFunc
 	onURLDiscovered OnURLDiscoveredFunc
-	onCrawlPaused   OnCrawlPausedFunc // Called when crawl pauses due to MaxURLsToVisit limit
 
 	// Internal state tracking
 	store        *storage.CrawlerStore // Crawler's own storage (visit tracking, URL actions, page metadata)
@@ -499,15 +516,6 @@ func (cr *Crawler) SetOnURLDiscovered(f OnURLDiscoveredFunc) {
 	cr.onURLDiscovered = f
 }
 
-// SetOnCrawlPaused registers a callback function that will be called when the crawl pauses
-// due to reaching the MaxURLsToVisit limit. This callback receives the count of URLs visited
-// in this session and the list of pending URLs that were not visited.
-// Used for incremental crawling to persist state for later resume.
-func (cr *Crawler) SetOnCrawlPaused(f OnCrawlPausedFunc) {
-	cr.mutex.Lock()
-	defer cr.mutex.Unlock()
-	cr.onCrawlPaused = f
-}
 
 // queueURL sends a URL to the discovery channel for processing.
 // This is called by all discovery mechanisms (initial, sitemap, spider, network, resources).
@@ -799,7 +807,7 @@ func (cr *Crawler) Start(url string) error {
 
 // Wait blocks until all crawling operations complete.
 // The crawl naturally completes when all work is done (no more pending URLs, all workers idle).
-// For incremental crawling, the crawl may pause when MaxURLsToVisit is reached.
+// For incremental crawling, the crawl may complete when MaxURLsToVisit is reached.
 func (cr *Crawler) Wait() {
 	// Step 1: Wait for ALL pending work items to complete
 	// This includes: queued URLs + URLs being processed by workers
@@ -826,30 +834,39 @@ func (cr *Crawler) Wait() {
 	totalDiscovered := cr.store.CountActions()
 	visitedThisSession := int(atomic.LoadInt64(&cr.visitedCount))
 
-	// Determine crawl outcome: paused (hit limit), stopped (cancelled), or completed
-	wasPaused := cr.maxURLsToVisit > 0 && visitedThisSession >= int(cr.maxURLsToVisit)
-	wasStopped := false
+	// Determine completion reason
+	var reason CrawlCompletionReason
 	select {
 	case <-cr.ctx.Done():
-		wasStopped = true
+		// Context was cancelled (manual stop)
+		reason = CompletionReasonCancelled
 	default:
+		// Check if we hit the budget limit
+		if cr.maxURLsToVisit > 0 && visitedThisSession >= int(cr.maxURLsToVisit) {
+			reason = CompletionReasonBudgetReached
+		} else {
+			// All URLs were crawled naturally
+			reason = CompletionReasonExhausted
+		}
 	}
 
 	cr.mutex.RLock()
 	totalPages := cr.crawledPages
 	onComplete := cr.onCrawlComplete
-	onPaused := cr.onCrawlPaused
 	cr.mutex.RUnlock()
 
-	// Call the appropriate callback
-	if wasPaused && onPaused != nil {
-		// Crawl paused due to MaxURLsToVisit limit
-		onPaused(visitedThisSession, pendingURLs)
+	// Build the result
+	result := &CrawlResult{
+		Reason:          reason,
+		TotalPages:      totalPages,
+		TotalDiscovered: totalDiscovered,
+		URLsVisited:     visitedThisSession,
+		PendingURLs:     pendingURLs,
 	}
 
-	// Always call completion callback (even if paused)
+	// Call completion callback with full result
 	if onComplete != nil {
-		onComplete(wasStopped, totalPages, totalDiscovered)
+		onComplete(result)
 	}
 }
 

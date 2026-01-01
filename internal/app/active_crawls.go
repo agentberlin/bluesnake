@@ -68,7 +68,8 @@ func (a *App) GetActiveCrawls() []types.CrawlProgress {
 	return progress
 }
 
-// GetActiveCrawlStats returns statistics for an active crawl (no URL list, just counts)
+// GetActiveCrawlStats returns statistics for an active crawl (no URL list, just counts).
+// For incremental crawling, stats are aggregated across all crawls in the run.
 func (a *App) GetActiveCrawlStats(projectID uint) (*types.ActiveCrawlStats, error) {
 	a.crawlsMutex.RLock()
 	ac, exists := a.activeCrawls[projectID]
@@ -83,8 +84,8 @@ func (a *App) GetActiveCrawlStats(projectID uint) (*types.ActiveCrawlStats, erro
 	crawlID := ac.crawlID
 	ac.statusMutex.RUnlock()
 
-	// Get stats from store (efficient COUNT queries)
-	stats, err := a.store.GetActiveCrawlStats(crawlID)
+	// Get stats from store (aggregated if part of a run)
+	stats, err := a.store.GetActiveCrawlStatsAggregated(crawlID)
 	if err != nil {
 		return nil, err
 	}

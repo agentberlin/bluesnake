@@ -490,6 +490,13 @@ function App() {
   useEffect(() => {
     if (view !== 'dashboard' || !currentProject) return;
 
+    // Only poll when there's an active crawl or we're stopping
+    const isStoppingProject = stoppingProjects.has(currentProject.id);
+    if (!isCrawling && !isStoppingProject) {
+      // No active crawl and not stopping - no need to poll
+      return;
+    }
+
     const pollCrawlData = async () => {
       try {
         // Check if this project has an active crawl
@@ -517,20 +524,23 @@ function App() {
             setCurrentProject(updatedProject);
           }
         } else {
-          // No active crawl - just update the isCrawling state
-          // The pagination/search effect will handle loading the data
-          setIsCrawling(false);
+          // No active crawl - update state only if it changed
+          if (isCrawling) {
+            setIsCrawling(false);
+          }
           setActiveCrawlStats(null);
 
-          // Remove from activeCrawls map
+          // Remove from activeCrawls map only if it was there
           setActiveCrawls(prev => {
+            if (!prev.has(currentProject.id)) return prev;
             const newMap = new Map(prev);
             newMap.delete(currentProject.id);
             return newMap;
           });
 
-          // Clear from stopping projects if it was there
+          // Clear from stopping projects only if it was there
           setStoppingProjects(prev => {
+            if (!prev.has(currentProject.id)) return prev;
             const newSet = new Set(prev);
             newSet.delete(currentProject.id);
             return newSet;
@@ -553,12 +563,9 @@ function App() {
     pollCrawlData();
 
     // Poll at different intervals: 500ms when stopping, 2s when crawling
-    const isStoppingProject = currentProject && stoppingProjects.has(currentProject.id);
-    if (isCrawling || isStoppingProject) {
-      const pollInterval = isStoppingProject ? 500 : 2000;
-      const interval = setInterval(pollCrawlData, pollInterval);
-      return () => clearInterval(interval);
-    }
+    const pollInterval = isStoppingProject ? 500 : 2000;
+    const interval = setInterval(pollCrawlData, pollInterval);
+    return () => clearInterval(interval);
   }, [view, currentProject, isCrawling, stoppingProjects, currentCrawlId]);
 
   // Debounce search query

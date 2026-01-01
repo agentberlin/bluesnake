@@ -112,25 +112,48 @@ type Project struct {
 	UpdatedAt      int64   `gorm:"autoUpdateTime"`
 }
 
+// Run state constants for IncrementalCrawlRun
+const (
+	RunStateInProgress = "in_progress" // A crawl is currently running
+	RunStatePaused     = "paused"      // Budget hit, more URLs to crawl
+	RunStateCompleted  = "completed"   // All URLs crawled or manually completed
+)
+
+// IncrementalCrawlRun groups multiple crawls in a single incremental run.
+// When incremental crawling is enabled, each "run" can contain multiple crawl sessions
+// that together form a complete crawl of the site.
+type IncrementalCrawlRun struct {
+	ID        uint     `gorm:"primaryKey"`
+	ProjectID uint     `gorm:"not null;index"`
+	State     string   `gorm:"not null;default:'in_progress'"` // in_progress, paused, completed
+	Project   *Project `gorm:"foreignKey:ProjectID;constraint:OnDelete:CASCADE"`
+	Crawls    []Crawl  `gorm:"foreignKey:RunID"`
+	CreatedAt int64    `gorm:"autoCreateTime"`
+	UpdatedAt int64    `gorm:"autoUpdateTime"`
+}
+
 // Crawl state constants
+// Note: CrawlStatePaused is deprecated - paused state now lives at the run level
 const (
 	CrawlStateInProgress = "in_progress"
-	CrawlStatePaused     = "paused"
+	CrawlStatePaused     = "paused" // Deprecated: use RunStatePaused on IncrementalCrawlRun instead
 	CrawlStateCompleted  = "completed"
 	CrawlStateFailed     = "failed"
 )
 
 // Crawl represents a single crawl session for a project
 type Crawl struct {
-	ID             uint            `gorm:"primaryKey"`
-	ProjectID      uint            `gorm:"not null;index"`
-	CrawlDateTime  int64           `gorm:"not null"` // Unix timestamp
-	CrawlDuration  int64           `gorm:"not null"` // Duration in milliseconds
-	PagesCrawled   int             `gorm:"not null"`
-	State          string          `gorm:"not null;default:'completed'"` // in_progress, paused, completed, failed
-	DiscoveredUrls []DiscoveredUrl `gorm:"foreignKey:CrawlID;constraint:OnDelete:CASCADE"`
-	CreatedAt      int64           `gorm:"autoCreateTime"`
-	UpdatedAt      int64           `gorm:"autoUpdateTime"`
+	ID             uint                 `gorm:"primaryKey"`
+	ProjectID      uint                 `gorm:"not null;index"`
+	RunID          *uint                `gorm:"index"` // nullable FK to IncrementalCrawlRun (null for non-incremental crawls)
+	CrawlDateTime  int64                `gorm:"not null"`
+	CrawlDuration  int64                `gorm:"not null"`
+	PagesCrawled   int                  `gorm:"not null"`
+	State          string               `gorm:"not null;default:'completed'"` // in_progress, completed, failed
+	DiscoveredUrls []DiscoveredUrl      `gorm:"foreignKey:CrawlID;constraint:OnDelete:CASCADE"`
+	Run            *IncrementalCrawlRun `gorm:"foreignKey:RunID"`
+	CreatedAt      int64                `gorm:"autoCreateTime"`
+	UpdatedAt      int64                `gorm:"autoUpdateTime"`
 }
 
 // DiscoveredUrl represents a single URL that was discovered during crawling
