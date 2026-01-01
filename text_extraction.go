@@ -21,6 +21,17 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
+// Default filter chain for content extraction
+// Uses GoOse-inspired filters for noise removal
+var defaultContentFilters = NewFilterChain(
+	NewNoisePatternFilter(),
+	NewNavigationTextFilter(),
+	NewLinkDensityFilter(),
+)
+
+// Default stopwords scorer for content detection
+var defaultStopwordsScorer = NewStopwordsScorer()
+
 // extractAllText extracts all visible text from HTML, removing all tags.
 // This includes navigation, headers, footers, and all content areas.
 // Normalizes whitespace (collapses multiple spaces/newlines).
@@ -44,30 +55,43 @@ func extractAllText(htmlBody []byte) string {
 
 // extractMainContentText extracts text from the main content area only.
 // Excludes navigation, headers, footers, and sidebars.
-// Uses HTML5 semantic elements to identify content.
+//
+// Strategy:
+// 1. Remove script/style/noscript
+// 2. Apply GoOse-inspired filters (noise patterns, nav text, link density)
+// 3. Try HTML5 semantic elements (article, main, [role='main'])
+// 4. If no semantic elements, use stopwords-based scoring to find best content node
+// 5. Fall back to body if nothing else works
 func extractMainContentText(htmlBody []byte) string {
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(htmlBody))
 	if err != nil {
 		return ""
 	}
 
-	// Remove non-content elements
-	doc.Find("script, style, nav, header, footer, aside, .sidebar, .navigation").Remove()
+	// Step 1: Remove non-visible elements
+	doc.Find("script, style, noscript").Remove()
 
-	// Try to find semantic content elements in order of preference
+	// Step 2: Apply GoOse-inspired filters to clean noise
+	doc = defaultContentFilters.Apply(doc)
+
+	// Step 3: Try semantic elements first (most reliable when present)
 	var contentSelection *goquery.Selection
 
-	// 1. Look for <article> tag
 	if article := doc.Find("article").First(); article.Length() > 0 {
 		contentSelection = article
 	} else if main := doc.Find("main").First(); main.Length() > 0 {
-		// 2. Look for <main> tag
 		contentSelection = main
 	} else if roleMain := doc.Find("[role='main']").First(); roleMain.Length() > 0 {
-		// 3. Look for role="main" attribute
 		contentSelection = roleMain
-	} else {
-		// 4. Fallback: use body (with nav/header/footer already removed)
+	}
+
+	// Step 4: If no semantic elements, use stopwords-based scoring
+	if contentSelection == nil {
+		contentSelection = findBestContentNode(doc)
+	}
+
+	// Step 5: Fall back to body
+	if contentSelection == nil || contentSelection.Length() == 0 {
 		contentSelection = doc.Find("body")
 	}
 
@@ -77,6 +101,56 @@ func extractMainContentText(htmlBody []byte) string {
 
 	// Use extractTextWithSpacing for proper spacing between block elements
 	return extractTextWithSpacing(contentSelection)
+}
+
+// findBestContentNode finds the DOM node most likely to contain main content
+// using stopwords-based scoring (ported from GoOse's CalculateBestNode)
+func findBestContentNode(doc *goquery.Document) *goquery.Selection {
+	parentScores := make(map[*goquery.Selection]int)
+	linkDensityFilter := NewLinkDensityFilter()
+
+	// Score all paragraphs and propagate scores to parents
+	doc.Find("p, pre, td").Each(func(i int, s *goquery.Selection) {
+		text := s.Text()
+		stopwords := defaultStopwordsScorer.CountStopwords(text)
+
+		// Skip if not enough stopwords (not real content)
+		if stopwords < 2 {
+			return
+		}
+
+		// Skip if high link density (likely navigation)
+		if linkDensityFilter.isHighLinkDensity(s) {
+			return
+		}
+
+		// Calculate score based on stopwords + text length
+		score := defaultStopwordsScorer.ScoreText(text)
+
+		// Add score to parent (full score)
+		parent := s.Parent()
+		if parent.Length() > 0 {
+			parentScores[parent] += score
+		}
+
+		// Add score to grandparent (half score) - gravity scoring from GoOse
+		grandparent := parent.Parent()
+		if grandparent.Length() > 0 {
+			parentScores[grandparent] += score / 2
+		}
+	})
+
+	// Find the highest scoring node
+	var bestNode *goquery.Selection
+	bestScore := 0
+	for node, score := range parentScores {
+		if score > bestScore {
+			bestScore = score
+			bestNode = node
+		}
+	}
+
+	return bestNode
 }
 
 // normalizeWhitespace collapses multiple consecutive whitespace characters

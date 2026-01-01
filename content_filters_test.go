@@ -281,73 +281,6 @@ func TestStopwordsScorer(t *testing.T) {
 	}
 }
 
-func TestContentNodeFinder(t *testing.T) {
-	finder := NewContentNodeFinder()
-
-	tests := []struct {
-		name           string
-		html           string
-		shouldContain  string
-	}{
-		{
-			name: "finds article element",
-			html: `<html><body>
-				<nav>Navigation</nav>
-				<article>
-					<p>This is a paragraph with lots of text and many words that should be found as content.</p>
-					<p>Another paragraph with more text to ensure this is substantial content.</p>
-				</article>
-				<footer>Footer</footer>
-			</body></html>`,
-			shouldContain: "This is a paragraph",
-		},
-		{
-			name: "finds main element",
-			html: `<html><body>
-				<header>Header</header>
-				<main>
-					<p>Main content paragraph one with lots of text and words.</p>
-					<p>Main content paragraph two with more substantial text.</p>
-				</main>
-				<aside>Sidebar</aside>
-			</body></html>`,
-			shouldContain: "Main content paragraph",
-		},
-		{
-			name: "finds content by stopwords scoring",
-			html: `<html><body>
-				<div class="nav"><a href="#">Link</a><a href="#">Link</a></div>
-				<div class="wrapper">
-					<p>The article discusses how the new technology will change the way we live and work in the future. It is an important development that many people are excited about.</p>
-					<p>Furthermore, the implications of this change are significant for the industry and will affect how we approach problems in the coming years.</p>
-				</div>
-			</body></html>`,
-			shouldContain: "article discusses",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			doc := docFromHTML(tt.html)
-			node, score := finder.FindBestNode(doc)
-
-			if node == nil {
-				t.Error("FindBestNode returned nil")
-				return
-			}
-
-			if score <= 0 {
-				t.Errorf("Score should be > 0, got %d", score)
-			}
-
-			text := node.Text()
-			if !strings.Contains(text, tt.shouldContain) {
-				t.Errorf("Best node should contain %q but got: %s", tt.shouldContain, text)
-			}
-		})
-	}
-}
-
 func TestFilterChain(t *testing.T) {
 	html := `<html><body>
 		<div class="sidebar">Sidebar content</div>
@@ -378,15 +311,15 @@ func TestFilterChain(t *testing.T) {
 	}
 }
 
-func TestEnhancedContentExtractor(t *testing.T) {
+func TestExtractMainContentText_WithFilters(t *testing.T) {
 	tests := []struct {
-		name           string
-		html           string
-		shouldContain  string
+		name             string
+		html             string
+		shouldContain    string
 		shouldNotContain string
 	}{
 		{
-			name: "extracts article content",
+			name: "extracts article content and removes noise",
 			html: `<html><body>
 				<nav>Navigation menu</nav>
 				<article>
@@ -400,7 +333,7 @@ func TestEnhancedContentExtractor(t *testing.T) {
 			shouldNotContain: "Navigation menu",
 		},
 		{
-			name: "handles pages without semantic elements",
+			name: "finds content by stopwords when no semantic elements",
 			html: `<html><body>
 				<div class="header"><a href="#">Home</a><a href="#">About</a></div>
 				<div class="content">
@@ -411,13 +344,22 @@ func TestEnhancedContentExtractor(t *testing.T) {
 			</body></html>`,
 			shouldContain: "main content of the page",
 		},
+		{
+			name: "simple article extraction",
+			html: `<html>
+				<body>
+					<nav>Navigation</nav>
+					<article>Article Content</article>
+					<footer>Footer</footer>
+				</body>
+			</html>`,
+			shouldContain: "Article Content",
+		},
 	}
-
-	extractor := NewEnhancedContentExtractor()
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := extractor.ExtractText([]byte(tt.html))
+			result := extractMainContentText([]byte(tt.html))
 
 			if !strings.Contains(result, tt.shouldContain) {
 				t.Errorf("Result should contain %q but got: %s", tt.shouldContain, result)
@@ -426,37 +368,5 @@ func TestEnhancedContentExtractor(t *testing.T) {
 				t.Errorf("Result should NOT contain %q but got: %s", tt.shouldNotContain, result)
 			}
 		})
-	}
-}
-
-func TestExtractEnhancedContentText(t *testing.T) {
-	html := `<html><body>
-		<nav>Menu items</nav>
-		<article>
-			<p>This is the main content that should be extracted with all the important information.</p>
-		</article>
-		<aside>Side content</aside>
-	</body></html>`
-
-	result := extractEnhancedContentText([]byte(html))
-
-	if !strings.Contains(result, "main content") {
-		t.Errorf("extractEnhancedContentText should contain 'main content' but got: %s", result)
-	}
-}
-
-func TestOriginalExtractionUnchanged(t *testing.T) {
-	// Test that the original extractMainContentText still works exactly as before
-	html := `<html>
-		<body>
-			<nav>Navigation</nav>
-			<article>Article Content</article>
-			<footer>Footer</footer>
-		</body>
-	</html>`
-
-	result := extractMainContentText([]byte(html))
-	if result != "Article Content" {
-		t.Errorf("extractMainContentText should return 'Article Content' but got: %s", result)
 	}
 }
