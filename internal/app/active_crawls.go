@@ -31,12 +31,12 @@ func (a *App) GetActiveCrawls() []types.CrawlProgress {
 
 		// Get discovered URLs that haven't been crawled yet (from bluesnake callbacks)
 		discoveredURLs := []string{}
-		totalDiscovered := 0
+		mapDiscoveredCount := 0
 
 		if ac.stats.discoveredURLs != nil {
 			ac.stats.discoveredURLs.Range(func(key, value interface{}) bool {
 				urlStr := key.(string)
-				totalDiscovered++
+				mapDiscoveredCount++
 
 				// Check if this URL has been crawled
 				if ac.stats.crawledURLs != nil {
@@ -49,6 +49,13 @@ func (a *App) GetActiveCrawls() []types.CrawlProgress {
 				}
 				return true
 			})
+		}
+
+		// Use stats.totalDiscovered if set (for resumed crawls with queue offset),
+		// otherwise use the map count (for fresh crawls)
+		totalDiscovered := ac.stats.totalDiscovered
+		if mapDiscoveredCount > totalDiscovered {
+			totalDiscovered = mapDiscoveredCount
 		}
 
 		progress = append(progress, types.CrawlProgress{
@@ -85,9 +92,19 @@ func (a *App) GetActiveCrawlStats(projectID uint) (*types.ActiveCrawlStats, erro
 	ac.statusMutex.RUnlock()
 
 	// Get stats from store (aggregated if part of a run)
+	// This gives us content-type breakdowns from DiscoveredUrl table
 	stats, err := a.store.GetActiveCrawlStatsAggregated(crawlID)
 	if err != nil {
 		return nil, err
+	}
+
+	// For incremental crawling, use queue stats for accurate total/crawled/queued counts
+	// The DiscoveredUrl table only contains processed URLs, not pending ones
+	queueStats, err := a.store.GetQueueStats(projectID)
+	if err == nil && queueStats.Total > 0 {
+		stats["total"] = int(queueStats.Total)
+		stats["crawled"] = int(queueStats.Visited)
+		stats["queued"] = int(queueStats.Pending)
 	}
 
 	return &types.ActiveCrawlStats{

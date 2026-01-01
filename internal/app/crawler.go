@@ -1163,6 +1163,17 @@ func (a *App) runCrawlerWithResume(parsedURL *url.URL, normalizedURL string, dom
 			Source: item.Source,
 			Depth:  item.Depth,
 		})
+		// Pre-populate discoveredURLs with pending URLs so progress display is accurate
+		// Without this, totalDiscovered would only count newly discovered URLs during this session
+		stats.discoveredURLs.Store(item.URL, true)
+	}
+
+	// Initialize counts from queue stats so progress shows run totals, not just this session
+	// This ensures the progress bar starts from where the previous session left off
+	queueStats, err := a.store.GetQueueStats(projectID)
+	if err == nil {
+		stats.totalURLsCrawled = int(queueStats.Visited)
+		stats.totalDiscovered = int(queueStats.Total)
 	}
 
 	mechanisms := []bluesnake.DiscoveryMechanism{}
