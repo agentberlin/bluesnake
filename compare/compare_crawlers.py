@@ -21,10 +21,11 @@ import requests  # type: ignore
 
 
 class CrawlerComparison:
-    def __init__(self, domain: str, server_url: str = "http://localhost:8080", bluesnake_only: bool = False):
+    def __init__(self, domain: str, server_url: str = "http://localhost:8080", bluesnake_only: bool = False, js_rendering: bool = False):
         self.domain = domain
         self.server_url = server_url
         self.bluesnake_only = bluesnake_only
+        self.js_rendering = js_rendering
         self.sf_output_dir = Path("/tmp/crawlertest/sf")
         self.scream_executable = (
             "/Applications/Screaming Frog SEO Spider.app/Contents/MacOS/ScreamingFrogSEOSpiderLauncher"
@@ -177,7 +178,7 @@ class CrawlerComparison:
 
         config = {
             "url": crawl_url,
-            "jsRendering": True,
+            "jsRendering": self.js_rendering,
             "parallelism": 10,
             "userAgent": "Mozilla/5.0 (compatible; BlueSnake/1.0)",
             "includeSubdomains": True,
@@ -571,7 +572,7 @@ class CrawlerComparison:
         print(f"  • Domain: {self.domain}")
         print(f"  • Crawl ID: {crawl_id}")
         print(f"  • Mode: {'BlueSnake only (using existing ScreamingFrog data)' if self.bluesnake_only else 'Full comparison (both crawlers)'}")
-        print(f"  • BlueSnake config: JS rendering enabled, parallelism=10, check external resources")
+        print(f"  • BlueSnake config: JS rendering {'enabled' if self.js_rendering else 'disabled'}, parallelism=10, check external resources")
 
         # URL Coverage
         print("\nURL Coverage:")
@@ -641,10 +642,15 @@ def main():
         action="store_true",
         help="Run BlueSnake only and use existing ScreamingFrog data (useful for validating fixes)",
     )
+    parser.add_argument(
+        "--js-rendering",
+        action="store_true",
+        help="Enable JavaScript rendering in BlueSnake (default: disabled)",
+    )
 
     args = parser.parse_args()
 
-    comparison = CrawlerComparison(args.domain, args.server_url, args.bluesnake_only)
+    comparison = CrawlerComparison(args.domain, args.server_url, args.bluesnake_only, args.js_rendering)
     success = comparison.run()
 
     sys.exit(0 if success else 1)

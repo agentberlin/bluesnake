@@ -33,6 +33,10 @@ type CrawlResult struct {
 	Status          int    `json:"status"`
 	Title           string `json:"title"`
 	MetaDescription string `json:"metaDescription,omitempty"`
+	H1              string `json:"h1,omitempty"`
+	H2              string `json:"h2,omitempty"`
+	CanonicalURL    string `json:"canonicalUrl,omitempty"`
+	WordCount       int    `json:"wordCount,omitempty"`
 	ContentHash     string `json:"contentHash,omitempty"`
 	Indexable       string `json:"indexable"`
 	ContentType     string `json:"contentType,omitempty"` // MIME type: text/html, image/jpeg, text/css, application/javascript, etc.

@@ -166,6 +166,10 @@ type DiscoveredUrl struct {
 	Status          int    `gorm:"not null"`
 	Title           string `gorm:"type:text"`
 	MetaDescription string `gorm:"type:text"`
+	H1              string `gorm:"type:text"`
+	H2              string `gorm:"type:text"`
+	CanonicalURL    string `gorm:"type:text"`
+	WordCount       int    `gorm:"default:0"`
 	ContentHash     string `gorm:"type:text;index"`
 	Indexable       string `gorm:"not null"`
 	ContentType     string `gorm:"type:text"` // MIME type: text/html, image/jpeg, text/css, application/javascript, etc.

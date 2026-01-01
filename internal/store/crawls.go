@@ -112,7 +112,7 @@ func (s *Store) GetLatestCrawl(projectID uint) (*Crawl, error) {
 }
 
 // SaveDiscoveredUrl saves a discovered URL (whether visited or not)
-func (s *Store) SaveDiscoveredUrl(crawlID uint, url string, visited bool, status int, title string, metaDescription string, contentHash string, indexable string, contentType string, errorMsg string) error {
+func (s *Store) SaveDiscoveredUrl(crawlID uint, url string, visited bool, status int, title string, metaDescription string, h1 string, h2 string, canonicalURL string, wordCount int, contentHash string, indexable string, contentType string, errorMsg string) error {
 	discoveredUrl := DiscoveredUrl{
 		CrawlID:         crawlID,
 		URL:             url,
@@ -120,6 +120,10 @@ func (s *Store) SaveDiscoveredUrl(crawlID uint, url string, visited bool, status
 		Status:          status,
 		Title:           title,
 		MetaDescription: metaDescription,
+		H1:              h1,
+		H2:              h2,
+		CanonicalURL:    canonicalURL,
+		WordCount:       wordCount,
 		ContentHash:     contentHash,
 		Indexable:       indexable,
 		ContentType:     contentType,

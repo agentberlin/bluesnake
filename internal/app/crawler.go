@@ -431,7 +431,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		// Save resource to database (same table as pages, but won't count as "page crawled")
 		// Status 0 means error/unreachable
 		indexable := "-" // Resources are not indexable by search engines
-		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, "", "", "", indexable, result.ContentType, result.Error); err != nil {
+		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, "", "", "", "", "", 0, "", indexable, result.ContentType, result.Error); err != nil {
 			log.Printf("Failed to save resource URL: %v", err)
 		}
 
@@ -478,7 +478,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		}
 
 		// Save to database - all crawling logic handled by bluesnake
-		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, result.Title, result.MetaDescription, result.ContentHash, result.Indexable, result.ContentType, result.Error); err != nil {
+		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, result.Title, result.MetaDescription, result.H1, result.H2, result.CanonicalURL, result.WordCount, result.ContentHash, result.Indexable, result.ContentType, result.Error); err != nil {
 			log.Printf("Failed to save crawled URL: %v", err)
 		}
 
@@ -541,7 +541,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 				if link.Action == bluesnake.URLActionRecordOnly {
 					// Save to DiscoveredUrl with visited=false
 					indexable := "-" // Unvisited URLs don't have indexability info
-					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", indexable, link.ContentType, ""); err != nil {
+					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", "", "", 0, "", indexable, link.ContentType, ""); err != nil {
 						log.Printf("Failed to save unvisited URL: %v", err)
 					}
 				}
@@ -569,7 +569,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 				if link.Action == bluesnake.URLActionRecordOnly {
 					// Save to DiscoveredUrl with visited=false
 					indexable := "-" // Unvisited URLs don't have indexability info
-					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", indexable, link.ContentType, ""); err != nil {
+					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", "", "", 0, "", indexable, link.ContentType, ""); err != nil {
 						log.Printf("Failed to save unvisited URL: %v", err)
 					}
 				}
@@ -868,7 +868,7 @@ func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context
 		}
 
 		indexable := "-"
-		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, "", "", "", indexable, result.ContentType, result.Error); err != nil {
+		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, "", "", "", "", "", 0, "", indexable, result.ContentType, result.Error); err != nil {
 			log.Printf("Failed to save resource URL: %v", err)
 		}
 
@@ -906,7 +906,7 @@ func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context
 			stats.totalURLsCrawled++
 		}
 
-		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, result.Title, result.MetaDescription, result.ContentHash, result.Indexable, result.ContentType, result.Error); err != nil {
+		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, result.Title, result.MetaDescription, result.H1, result.H2, result.CanonicalURL, result.WordCount, result.ContentHash, result.Indexable, result.ContentType, result.Error); err != nil {
 			log.Printf("Failed to save crawled URL: %v", err)
 		}
 
@@ -965,7 +965,7 @@ func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context
 
 				if link.Action == bluesnake.URLActionRecordOnly {
 					indexable := "-"
-					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", indexable, link.ContentType, ""); err != nil {
+					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", "", "", 0, "", indexable, link.ContentType, ""); err != nil {
 						log.Printf("Failed to save unvisited URL: %v", err)
 					}
 				}
@@ -991,7 +991,7 @@ func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context
 
 				if link.Action == bluesnake.URLActionRecordOnly {
 					indexable := "-"
-					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", indexable, link.ContentType, ""); err != nil {
+					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", "", "", 0, "", indexable, link.ContentType, ""); err != nil {
 						log.Printf("Failed to save unvisited URL: %v", err)
 					}
 				}

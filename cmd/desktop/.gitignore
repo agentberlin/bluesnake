@@ -140,6 +140,6 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 
-build/bin
+build/
 node_modules
 frontend/dist

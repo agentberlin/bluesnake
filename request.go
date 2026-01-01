@@ -98,8 +98,10 @@ func (r *Request) IsAbort() bool {
 }
 
 // AbsoluteURL returns with the resolved absolute URL of an URL chunk.
-// AbsoluteURL returns empty string if the URL chunk is a fragment or
-// could not be parsed
+// AbsoluteURL returns empty string if the URL chunk is a fragment,
+// could not be parsed, or has a non-http(s) scheme (mailto:, tel:, etc.)
+// URL fragments are stripped as they represent anchors within a page,
+// not separate crawlable URLs.
 func (r *Request) AbsoluteURL(u string) string {
 	if strings.HasPrefix(u, "#") {
 		return ""
@@ -115,7 +117,17 @@ func (r *Request) AbsoluteURL(u string) string {
 	if err != nil {
 		return ""
 	}
-	return absURL.Href(false)
+
+	// Only allow http and https schemes - other schemes (mailto:, tel:,
+	// javascript:, etc.) are not crawlable URLs
+	scheme := absURL.Scheme()
+	if scheme != "http" && scheme != "https" {
+		return ""
+	}
+
+	// Exclude fragments - they represent anchors within a page, not separate URLs
+	// e.g., example.com/page#section is the same page as example.com/page
+	return absURL.Href(true)
 }
 
 // Visit continues Collector's collecting job by creating a

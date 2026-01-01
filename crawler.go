@@ -78,6 +78,14 @@ type PageResult struct {
 	Title string
 	// MetaDescription is the content of the <meta name="description"> tag
 	MetaDescription string
+	// H1 is the text of the first <h1> tag on the page
+	H1 string
+	// H2 is the text of the first <h2> tag on the page
+	H2 string
+	// CanonicalURL is the canonical URL specified in <link rel="canonical">
+	CanonicalURL string
+	// WordCount is the approximate word count of visible text on the page
+	WordCount int
 	// Indexable indicates if search engines can index this page
 	// Values: "Yes", "No", or "-" for non-HTML resources
 	Indexable string
@@ -1030,7 +1038,7 @@ func (cr *Crawler) setupCallbacks() {
 		}
 	})
 
-	// Capture page metadata (title, meta description, indexability)
+	// Capture page metadata (title, meta description, headings, canonical, indexability)
 	cr.Collector.OnHTML("html", func(e *HTMLElement) {
 		// Store title in context for OnScraped to use
 		title := e.ChildText("title")
@@ -1039,6 +1047,47 @@ func (cr *Crawler) setupCallbacks() {
 		// Extract meta description
 		metaDesc := e.ChildAttr("meta[name='description']", "content")
 		e.Request.Ctx.Put("metaDescription", metaDesc)
+
+		// Extract first H1 heading (only the first one, not concatenated)
+		var h1 string
+		e.ForEach("h1", func(i int, elem *HTMLElement) {
+			if i == 0 {
+				h1 = strings.TrimSpace(elem.Text)
+			}
+		})
+		e.Request.Ctx.Put("h1", h1)
+
+		// Extract first H2 heading (only the first one, not concatenated)
+		var h2 string
+		e.ForEach("h2", func(i int, elem *HTMLElement) {
+			if i == 0 {
+				h2 = strings.TrimSpace(elem.Text)
+			}
+		})
+		e.Request.Ctx.Put("h2", h2)
+
+		// Extract canonical URL
+		canonical := e.ChildAttr("link[rel='canonical']", "href")
+		if canonical != "" {
+			// Resolve to absolute URL
+			canonical = e.Request.AbsoluteURL(canonical)
+		}
+		e.Request.Ctx.Put("canonicalURL", canonical)
+
+		// Calculate word count from visible text (excluding scripts and styles)
+		// Clone the DOM and remove non-visible elements before counting
+		// This matches ScreamingFrog's approach of counting only visible text
+		wordCount := 0
+		if bodySelection := e.DOM.Find("body"); bodySelection.Length() > 0 {
+			// Clone to avoid modifying the original DOM
+			bodyClone := bodySelection.Clone()
+			// Remove script and style elements (not visible text)
+			bodyClone.Find("script, style, noscript").Remove()
+			// Get text and count words
+			bodyText := bodyClone.Text()
+			wordCount = len(strings.Fields(bodyText))
+		}
+		e.Request.Ctx.Put("wordCount", fmt.Sprintf("%d", wordCount))
 
 		// Check for meta robots noindex
 		metaRobots := e.ChildAttr("meta[name='robots']", "content")
@@ -1080,6 +1129,15 @@ func (cr *Crawler) setupCallbacks() {
 		// Get meta description from context (set by OnHTML)
 		metaDescription := r.Ctx.Get("metaDescription")
 
+		// Get H1, H2, canonical URL, and word count from context (set by OnHTML)
+		h1 := r.Ctx.Get("h1")
+		h2 := r.Ctx.Get("h2")
+		canonicalURL := r.Ctx.Get("canonicalURL")
+		wordCount := 0
+		if wc := r.Ctx.Get("wordCount"); wc != "" {
+			fmt.Sscanf(wc, "%d", &wordCount)
+		}
+
 		// Get indexability from context (set by OnResponse)
 		isIndexable := r.Ctx.Get("isIndexable")
 		if isIndexable == "" {
@@ -1116,6 +1174,10 @@ func (cr *Crawler) setupCallbacks() {
 			Status:             status,
 			Title:              title,
 			MetaDescription:    metaDescription,
+			H1:                 h1,
+			H2:                 h2,
+			CanonicalURL:       canonicalURL,
+			WordCount:          wordCount,
 			Indexable:          isIndexable,
 			ContentType:        contentType,
 			Error:              "",
