@@ -85,7 +85,7 @@ func hasOnlyInlineContent(selection *goquery.Selection) bool {
 }
 
 // extractTextWithSpacing extracts text from a selection with proper spacing between elements.
-// Adds spacing between block elements to ensure readability.
+// Preserves paragraph structure with newlines between block elements.
 func extractTextWithSpacing(selection *goquery.Selection) string {
 	var textParts []string
 
@@ -117,9 +117,9 @@ func extractTextWithSpacing(selection *goquery.Selection) string {
 			if child.Length() > 0 {
 				extractRecursive(child)
 
-				// Add spacing after block elements
+				// Add newline after block elements for paragraph separation
 				if isBlockElement(nodeName) {
-					textParts = append(textParts, " ")
+					textParts = append(textParts, "\n")
 				}
 			}
 		})
@@ -127,9 +127,86 @@ func extractTextWithSpacing(selection *goquery.Selection) string {
 
 	extractRecursive(cloned)
 
-	// Join and normalize whitespace
-	text := strings.Join(textParts, " ")
-	return normalizeWhitespace(text)
+	// Join parts with smart spacing (handles punctuation)
+	return joinTextPartsWithSpacing(textParts)
+}
+
+// joinTextPartsWithSpacing joins text parts intelligently:
+// - Adds space between words
+// - No space before punctuation
+// - Preserves newlines for paragraph breaks
+// - Collapses multiple newlines into double newlines (paragraph break)
+func joinTextPartsWithSpacing(parts []string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+
+	var result strings.Builder
+	punctuation := map[rune]bool{
+		'.': true, ',': true, '!': true, '?': true,
+		':': true, ';': true, ')': true, ']': true,
+		'}': true, '"': true, '\'': true,
+		0x201D: true, // " right double quote
+		0x2019: true, // ' right single quote
+		0x2026: true, // … ellipsis
+	}
+
+	prevWasNewline := false
+	for i, part := range parts {
+		if part == "\n" {
+			// Handle newlines - convert to paragraph break
+			if !prevWasNewline && result.Len() > 0 {
+				result.WriteString("\n\n")
+			}
+			prevWasNewline = true
+			continue
+		}
+
+		if result.Len() > 0 && !prevWasNewline {
+			// Check if this part starts with punctuation
+			firstRune := []rune(part)[0]
+			if !punctuation[firstRune] {
+				result.WriteString(" ")
+			}
+		}
+
+		// Check if previous non-newline content ended with opening punctuation
+		if i > 0 && !prevWasNewline {
+			lastContent := result.String()
+			if len(lastContent) > 0 {
+				lastRune := []rune(lastContent)[len([]rune(lastContent))-1]
+				// Opening punctuation: ( [ { " ' and their curly variants
+				if lastRune == '(' || lastRune == '[' || lastRune == '{' || lastRune == '"' || lastRune == '\'' || lastRune == 0x201C || lastRune == 0x2018 {
+					// Trim the space we might have added
+					current := result.String()
+					if strings.HasSuffix(current, " ") {
+						result.Reset()
+						result.WriteString(strings.TrimSuffix(current, " "))
+					}
+				}
+			}
+		}
+
+		result.WriteString(part)
+		prevWasNewline = false
+	}
+
+	// Final cleanup: normalize multiple spaces within lines
+	text := result.String()
+
+	// Split by newlines, normalize each line, rejoin
+	lines := strings.Split(text, "\n")
+	var cleanLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			// Collapse multiple spaces within the line
+			words := strings.Fields(trimmed)
+			cleanLines = append(cleanLines, strings.Join(words, " "))
+		}
+	}
+
+	return strings.Join(cleanLines, "\n\n")
 }
 
 // isBlockElement checks if an HTML element is a block-level element.

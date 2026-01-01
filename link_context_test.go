@@ -279,7 +279,7 @@ func TestExtractTextWithSpacing(t *testing.T) {
 		{
 			name:     "text with block elements",
 			html:     `<div><p>First paragraph</p><p>Second paragraph</p></div>`,
-			expected: "First paragraph Second paragraph",
+			expected: "First paragraph\n\nSecond paragraph",
 		},
 		{
 			name:     "removes extra whitespace",

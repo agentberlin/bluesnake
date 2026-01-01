@@ -14,6 +14,8 @@ uv run compare/compare_crawlers.py <domain>
 
 Ask for the domain if not provided.
 
+**Important**: Do NOT use the `--js-rendering` flag unless explicitly requested. The ScreamingFrog config (`rendering.seospiderconfig`) does not have JS rendering enabled, so BlueSnake should also run without JS rendering to ensure a fair comparison.
+
 ### Fast Validation (Skip ScreamingFrog)
 
 When validating fixes without re-running ScreamingFrog (uses existing SF data):

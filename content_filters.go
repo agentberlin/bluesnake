@@ -15,6 +15,12 @@
 // content_filters.go provides modular content extraction filters inspired by GoOse.
 // These filters are used by extractMainContentText to clean noise from HTML before
 // extracting main content.
+//
+// Note: These filters intentionally remove promotional content, navigation elements,
+// and other non-article content (e.g., "50% off" banners, cookie notices, social
+// sharing widgets). This is by design - the goal is to extract the main article/page
+// content, not every visible element. If you need all visible text including promos
+// and navigation, use extractAllText() instead.
 
 package bluesnake
 
@@ -119,7 +125,7 @@ var noisePatterns = regexp.MustCompile(`(?i)` +
 	`account|` +
 	`settings`)
 
-// keepPatterns protects elements that should not be removed
+// keepPatterns protects elements that should not be removed (by class/id)
 var keepPatterns = regexp.MustCompile(`(?i)` +
 	`\barticle\b|` +
 	`\bcontent\b|` +
@@ -128,6 +134,14 @@ var keepPatterns = regexp.MustCompile(`(?i)` +
 	`\bentry\b|` +
 	`\bmain\b|` +
 	`\bbody\b`)
+
+// semanticElements are HTML5 semantic elements that should never be removed
+var semanticElements = map[string]bool{
+	"article": true,
+	"main":    true,
+	"section": true,
+	"aside":   true,
+}
 
 // NoisePatternFilter removes elements that match known non-content patterns
 type NoisePatternFilter struct{}
@@ -146,10 +160,21 @@ func (f *NoisePatternFilter) Name() string {
 func (f *NoisePatternFilter) Filter(doc *goquery.Document) *goquery.Document {
 	// Remove elements by noise patterns in class and id attributes
 	doc.Find("*").Each(func(i int, s *goquery.Selection) {
+		// Never remove semantic HTML5 elements
+		nodeName := goquery.NodeName(s)
+		if semanticElements[nodeName] {
+			return
+		}
+
+		// Never remove elements that contain semantic children
+		if f.containsSemanticElement(s) {
+			return
+		}
+
 		class, hasClass := s.Attr("class")
 		id, hasID := s.Attr("id")
 
-		// Check if element should be kept
+		// Check if element should be kept by class/id patterns
 		if hasClass && keepPatterns.MatchString(class) {
 			return
 		}
@@ -169,6 +194,15 @@ func (f *NoisePatternFilter) Filter(doc *goquery.Document) *goquery.Document {
 	})
 
 	return doc
+}
+
+// containsSemanticElement checks if the selection contains any semantic HTML5 elements
+func (f *NoisePatternFilter) containsSemanticElement(s *goquery.Selection) bool {
+	found := false
+	s.Find("article, main, section").Each(func(i int, child *goquery.Selection) {
+		found = true
+	})
+	return found
 }
 
 // =============================================================================
