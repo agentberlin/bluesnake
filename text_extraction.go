@@ -75,12 +75,8 @@ func extractMainContentText(htmlBody []byte) string {
 		return ""
 	}
 
-	text := contentSelection.Text()
-
-	// Normalize whitespace
-	text = normalizeWhitespace(text)
-
-	return strings.TrimSpace(text)
+	// Use extractTextWithSpacing for proper spacing between block elements
+	return extractTextWithSpacing(contentSelection)
 }
 
 // normalizeWhitespace collapses multiple consecutive whitespace characters

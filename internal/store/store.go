@@ -68,6 +68,16 @@ func newStoreWithPath(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("database directory does not exist: %s, error: %v", dbDir, err)
 	}
 
+	// Clean up orphaned WAL/SHM files if the main database doesn't exist
+	// This can happen if user deletes the .db file but leaves the journal files
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		// Main DB doesn't exist, remove orphaned journal files
+		walPath := dbPath + "-wal"
+		shmPath := dbPath + "-shm"
+		os.Remove(walPath) // Ignore errors - files may not exist
+		os.Remove(shmPath)
+	}
+
 	// Configure SQLite with pragmas for better concurrency
 	// WAL mode enables concurrent reads and writes
 	// busy_timeout prevents immediate "database is locked" errors

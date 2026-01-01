@@ -239,6 +239,10 @@ export namespace types {
 	    status: number;
 	    title: string;
 	    metaDescription?: string;
+	    h1?: string;
+	    h2?: string;
+	    canonicalUrl?: string;
+	    wordCount?: number;
 	    contentHash?: string;
 	    indexable: string;
 	    contentType?: string;
@@ -254,6 +258,10 @@ export namespace types {
 	        this.status = source["status"];
 	        this.title = source["title"];
 	        this.metaDescription = source["metaDescription"];
+	        this.h1 = source["h1"];
+	        this.h2 = source["h2"];
+	        this.canonicalUrl = source["canonicalUrl"];
+	        this.wordCount = source["wordCount"];
 	        this.contentHash = source["contentHash"];
 	        this.indexable = source["indexable"];
 	        this.contentType = source["contentType"];
