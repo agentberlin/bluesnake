@@ -86,32 +86,34 @@ func (a *App) GetActiveCrawlStats(projectID uint) (*types.ActiveCrawlStats, erro
 		return nil, fmt.Errorf("no active crawl found for project %d", projectID)
 	}
 
-	// Get the crawl ID
+	// Get total/crawled/queued from in-memory state (accurate for both incremental and non-incremental)
 	ac.statusMutex.RLock()
 	crawlID := ac.crawlID
+	mapDiscoveredCount := 0
+	if ac.stats.discoveredURLs != nil {
+		ac.stats.discoveredURLs.Range(func(_, _ interface{}) bool {
+			mapDiscoveredCount++
+			return true
+		})
+	}
+	totalDiscovered := ac.stats.totalDiscovered
+	if mapDiscoveredCount > totalDiscovered {
+		totalDiscovered = mapDiscoveredCount
+	}
+	totalCrawled := ac.stats.totalURLsCrawled
 	ac.statusMutex.RUnlock()
 
-	// Get stats from store (aggregated if part of a run)
-	// This gives us content-type breakdowns from DiscoveredUrl table
+	// Get content-type breakdowns from database
 	stats, err := a.store.GetActiveCrawlStatsAggregated(crawlID)
 	if err != nil {
 		return nil, err
 	}
 
-	// For incremental crawling, use queue stats for accurate total/crawled/queued counts
-	// The DiscoveredUrl table only contains processed URLs, not pending ones
-	queueStats, err := a.store.GetQueueStats(projectID)
-	if err == nil && queueStats.Total > 0 {
-		stats["total"] = int(queueStats.Total)
-		stats["crawled"] = int(queueStats.Visited)
-		stats["queued"] = int(queueStats.Pending)
-	}
-
 	return &types.ActiveCrawlStats{
 		CrawlID:    crawlID,
-		Total:      stats["total"],
-		Crawled:    stats["crawled"],
-		Queued:     stats["queued"],
+		Total:      totalDiscovered,
+		Crawled:    totalCrawled,
+		Queued:     totalDiscovered - totalCrawled,
 		HTML:       stats["html"],
 		JavaScript: stats["javascript"],
 		CSS:        stats["css"],
