@@ -84,7 +84,7 @@ func TestDeleteCrawl(t *testing.T) {
 		}
 
 		// Add a discovered URL to the crawl
-		err = store.SaveDiscoveredUrl(crawl.ID, "https://example.com/page1", true, 200, "Page 1", "Description", "H1 Heading", "H2 Heading", "https://example.com/page1", 100, "hash123", "yes", "text/html", "")
+		err = store.SaveDiscoveredUrl(crawl.ID, "https://example.com/page1", true, 200, "Page 1", "Description", "H1 Heading", "H2 Heading", "https://example.com/page1", 100, "hash123", "yes", "text/html", "", 0)
 		if err != nil {
 			t.Fatalf("Failed to save discovered URL: %v", err)
 		}

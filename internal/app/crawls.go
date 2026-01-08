@@ -81,6 +81,7 @@ func (a *App) GetCrawlWithResultsPaginated(crawlID uint, limit int, cursor uint,
 			Indexable:       u.Indexable,
 			ContentType:     u.ContentType,
 			Error:           u.Error,
+			Depth:           u.Depth,
 		}
 	}
 
@@ -128,6 +129,7 @@ func (a *App) SearchCrawlResultsPaginated(crawlID uint, query string, contentTyp
 			Indexable:       u.Indexable,
 			ContentType:     u.ContentType,
 			Error:           u.Error,
+			Depth:           u.Depth,
 		}
 	}
 

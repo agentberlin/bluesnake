@@ -77,7 +77,23 @@ This file contains the structured differences between both crawlers. Use this as
       "only_in_sf": ["https://example.com/link1", ...],
       "only_in_bs": ["https://example.com/link2", ...]
     }
-  ]
+  ],
+  "page_attribute_diffs": {
+    "depth": [{"url": "...", "sf": 1, "bs": 2}],
+    "title": [{"url": "...", "sf": "Title A", "bs": "Title B"}],
+    "h1": [{"url": "...", "sf": "H1 A", "bs": "H1 B"}],
+    "word_count": [{"url": "...", "sf": 500, "bs": 450, "diff_pct": 10.0}],
+    "indexable": [{"url": "...", "sf": "Indexable", "bs": "No, Noindex"}],
+    "canonical": [{"url": "...", "sf": "https://...", "bs": "https://..."}]
+  },
+  "link_attribute_diffs": {
+    "follow": [{"source": "...", "dest": "...", "sf": true, "bs": false}],
+    "target": [{"source": "...", "dest": "...", "sf": "_blank", "bs": ""}],
+    "rel": [{"source": "...", "dest": "...", "sf": "nofollow", "bs": ""}],
+    "path_type": [{"source": "...", "dest": "...", "sf": "Absolute", "bs": "Root-Relative"}],
+    "position": [{"source": "...", "dest": "...", "sf": "Navigation", "bs": "content"}],
+    "link_type": [{"source": "...", "dest": "...", "sf": "Hyperlink", "bs": "anchor"}]
+  }
 }
 ```
 
@@ -106,14 +122,17 @@ Use the `bluesnake_crawl_id` to query the API directly:
 **Key Files**:
 
 1. **`internal_all.csv`** - All crawled URLs with metadata
-   - Columns: `Address`, `Status Code`, `Content Type`, `Title`, `Indexability`, `Indexability Status`
-   - Use to understand why SF found certain URLs
+   - Key columns: `Address`, `Status Code`, `Content Type`, `Title 1`, `Meta Description 1`, `H1-1`, `H2-1`, `Canonical Link Element 1`, `Word Count`, `Indexability`, `Crawl Depth`
+   - Use to understand why SF found certain URLs and compare page attributes
+   - Note: BlueSnake compares depth, title, H1, word count, indexability, and canonical
 
 2. **`all_outlinks.csv`** - Link relationships between pages
-   - Columns: `Source`, `Destination`, `Anchor Text`, `Type`, `Follow`, `Target`, `Alt Text`
+   - Key columns: `Source`, `Destination`, `Anchor`, `Type`, `Follow`, `Target`, `Rel`, `Path Type`, `Link Position`
    - Shows which page links to which (Source → Destination)
    - `Type`: "Hyperlink", "JavaScript", "Image", etc.
-   - Use to debug missing links in BlueSnake
+   - `Follow`: true/false (based on rel="nofollow", sponsored, ugc)
+   - `Path Type`: "Absolute", "Root-Relative", "Relative"
+   - Use to debug missing links and compare link attributes in BlueSnake
 
 3. **`all_page_text.csv`** - Extracted text content from pages
    - Use if you need to analyze page content

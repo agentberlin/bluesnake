@@ -58,6 +58,15 @@ type Link struct {
 	// Action indicates how this URL should be handled
 	// Values: "crawl" (normal), "record" (framework-specific, don't crawl), "skip" (ignored)
 	Action URLAction `json:"action,omitempty"`
+	// Follow indicates if search engines should follow this link
+	// true if no nofollow/sponsored/ugc in rel attribute
+	Follow bool `json:"follow"`
+	// Rel is the full rel attribute value (e.g., "nofollow", "noopener noreferrer")
+	Rel string `json:"rel,omitempty"`
+	// Target is the target attribute value (_blank, _self, etc.)
+	Target string `json:"target,omitempty"`
+	// PathType indicates the URL format: "Absolute", "Root-Relative", or "Relative"
+	PathType string `json:"pathType,omitempty"`
 }
 
 // Links contains outbound links from a page
@@ -99,6 +108,8 @@ type PageResult struct {
 	ContentHash string
 	// IsDuplicateContent indicates if this content hash has been seen before on a different URL
 	IsDuplicateContent bool
+	// Depth is the crawl depth (0 = start URL, 1 = discovered from start, etc.)
+	Depth int
 
 	// response stores the Response object for lazy content extraction via getter methods
 	response *Response
@@ -114,6 +125,8 @@ type ResourceResult struct {
 	ContentType string
 	// Error contains any error message if the visit failed, empty otherwise
 	Error string
+	// Depth is the crawl depth (0 = start URL, 1 = discovered from start, etc.)
+	Depth int
 }
 
 // OnPageCrawledFunc is called after each HTML page is successfully crawled or encounters an error.
@@ -469,6 +482,7 @@ func (cr *Crawler) setupRedirectHandler() {
 					Links:              &Links{Internal: []Link{}, External: []Link{}}, // No links for redirects
 					ContentHash:        "",
 					IsDuplicateContent: false,
+					Depth:              r.Request.Depth,
 					response:           nil,
 				}
 				cr.callOnPageCrawled(result)
@@ -479,6 +493,7 @@ func (cr *Crawler) setupRedirectHandler() {
 					Status:      redirectResp.StatusCode,
 					ContentType: redirectContentType,
 					Error:       "",
+					Depth:       r.Request.Depth,
 				}
 				cr.callOnResourceVisit(result)
 			}
@@ -1184,6 +1199,7 @@ func (cr *Crawler) setupCallbacks() {
 			Links:              pageLinks,
 			ContentHash:        contentHash,
 			IsDuplicateContent: isDuplicate,
+			Depth:              r.Request.Depth,
 			response:           r,
 		}
 
@@ -1236,6 +1252,7 @@ func (cr *Crawler) setupCallbacks() {
 				Status:      r.StatusCode,
 				ContentType: contentType,
 				Error:       "",
+				Depth:       r.Request.Depth,
 			}
 
 			// Call OnResourceVisit callback if set
@@ -1338,6 +1355,7 @@ func (cr *Crawler) setupCallbacks() {
 				Status:      0, // 0 indicates network/request error
 				ContentType: contentType,
 				Error:       err.Error(),
+				Depth:       r.Request.Depth,
 			}
 			cr.callOnResourceVisit(result)
 		} else {
@@ -1355,6 +1373,7 @@ func (cr *Crawler) setupCallbacks() {
 				Links:              pageLinks,
 				ContentHash:        "",
 				IsDuplicateContent: false,
+				Depth:              r.Request.Depth,
 				response:           r,
 			}
 			cr.callOnPageCrawled(result)
@@ -1647,20 +1666,49 @@ func (cr *Crawler) buildPageLinks(pageURL string, pageOutboundLinks *sync.Map) *
 	}
 }
 
+// determinePathType classifies the href format as Absolute, Root-Relative, or Relative
+func determinePathType(href string) string {
+	if href == "" {
+		return ""
+	}
+	// Absolute: starts with http://, https://, or protocol-relative //
+	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") || strings.HasPrefix(href, "//") {
+		return "Absolute"
+	}
+	// Root-Relative: starts with /
+	if strings.HasPrefix(href, "/") {
+		return "Root-Relative"
+	}
+	// Relative: everything else (including ./path, ../path, path)
+	return "Relative"
+}
+
+// containsNoFollow checks if rel attribute contains nofollow, sponsored, or ugc
+func containsNoFollow(rel string) bool {
+	relLower := strings.ToLower(rel)
+	return strings.Contains(relLower, "nofollow") ||
+		strings.Contains(relLower, "sponsored") ||
+		strings.Contains(relLower, "ugc")
+}
+
 // extractAllLinks extracts all links from an HTML element.
 // Returns a list of links with their types, text, and internal/external classification.
 func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 	var links []Link
 
 	// Helper function to add a link to the list
-	addLink := func(url, linkType, text, context string, elem *HTMLElement) {
-		absoluteURL := e.Request.AbsoluteURL(url)
+	// follow: true if link should be followed (no nofollow/sponsored/ugc)
+	// rel: full rel attribute value
+	// target: target attribute value
+	// pathType: "Absolute", "Root-Relative", or "Relative"
+	addLink := func(rawHref, linkType, text, context string, elem *HTMLElement, follow bool, rel, target, pathType string) {
+		absoluteURL := e.Request.AbsoluteURL(rawHref)
 		if absoluteURL == "" {
 			return
 		}
 
 		// Skip fragment-only links
-		if strings.HasPrefix(url, "#") {
+		if strings.HasPrefix(rawHref, "#") {
 			return
 		}
 
@@ -1699,6 +1747,10 @@ func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 			Position:    position,
 			DOMPath:     domPath,
 			Action:      action,
+			Follow:      follow,
+			Rel:         rel,
+			Target:      target,
+			PathType:    pathType,
 		})
 	}
 
@@ -1708,39 +1760,43 @@ func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 		text := strings.TrimSpace(elem.Text)
 		context := extractLinkContext(elem)
 
-		// Check for nofollow, sponsored, or ugc (all treated as nofollow)
-		rel := strings.ToLower(elem.Attr("rel"))
-		if strings.Contains(rel, "nofollow") || strings.Contains(rel, "sponsored") || strings.Contains(rel, "ugc") {
-			// Prepend "nofollow:" to context so the crawler can filter it
+		// Extract link attributes
+		rel := elem.Attr("rel")
+		target := elem.Attr("target")
+		pathType := determinePathType(href)
+		follow := !containsNoFollow(rel)
+
+		// Keep nofollow prefix in context for backwards compatibility with crawler filtering
+		if !follow {
 			context = "nofollow:" + context
 		}
 
-		addLink(href, "anchor", text, context, elem)
+		addLink(href, "anchor", text, context, elem, follow, rel, target, pathType)
 	})
 
 	// Extract image links <img src="">
 	e.ForEach("img[src]", func(_ int, elem *HTMLElement) {
 		src := elem.Attr("src")
 		alt := elem.Attr("alt")
-		addLink(src, "image", alt, "", elem)
+		addLink(src, "image", alt, "", elem, true, "", "", determinePathType(src))
 	})
 
 	// Extract script links <script src="">
 	e.ForEach("script[src]", func(_ int, elem *HTMLElement) {
 		src := elem.Attr("src")
-		addLink(src, "script", "", "", elem)
+		addLink(src, "script", "", "", elem, true, "", "", determinePathType(src))
 	})
 
 	// Extract stylesheet links <link rel="stylesheet" href="">
 	e.ForEach("link[rel='stylesheet'][href]", func(_ int, elem *HTMLElement) {
 		href := elem.Attr("href")
-		addLink(href, "stylesheet", "", "", elem)
+		addLink(href, "stylesheet", "", "", elem, true, "", "", determinePathType(href))
 	})
 
 	// Extract canonical links <link rel="canonical" href="">
 	e.ForEach("link[rel='canonical'][href]", func(_ int, elem *HTMLElement) {
 		href := elem.Attr("href")
-		addLink(href, "canonical", "", "", elem)
+		addLink(href, "canonical", "", "", elem, true, "", "", determinePathType(href))
 	})
 
 	// Extract preload hints <link rel="preload" href="">
@@ -1766,14 +1822,14 @@ func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 			linkType = "audio"
 		}
 
-		addLink(href, linkType, "", "", elem)
+		addLink(href, linkType, "", "", elem, true, "", "", determinePathType(href))
 	})
 
 	// Extract modulepreload hints <link rel="modulepreload" href="">
 	// Used for ES modules that should be preloaded
 	e.ForEach("link[rel='modulepreload'][href]", func(_ int, elem *HTMLElement) {
 		href := elem.Attr("href")
-		addLink(href, "script", "", "", elem)
+		addLink(href, "script", "", "", elem, true, "", "", determinePathType(href))
 	})
 
 	// Extract prefetch hints <link rel="prefetch" href="">
@@ -1795,33 +1851,33 @@ func (cr *Crawler) extractAllLinks(e *HTMLElement) []Link {
 			linkType = "anchor" // Prefetched HTML pages
 		}
 
-		addLink(href, linkType, "", "", elem)
+		addLink(href, linkType, "", "", elem, true, "", "", determinePathType(href))
 	})
 
 	// Extract iframe links <iframe src="">
 	e.ForEach("iframe[src]", func(_ int, elem *HTMLElement) {
 		src := elem.Attr("src")
-		addLink(src, "iframe", "", "", elem)
+		addLink(src, "iframe", "", "", elem, true, "", "", determinePathType(src))
 	})
 
 	// Extract video sources <video src=""> and <source src="">
 	e.ForEach("video[src]", func(_ int, elem *HTMLElement) {
 		src := elem.Attr("src")
-		addLink(src, "video", "", "", elem)
+		addLink(src, "video", "", "", elem, true, "", "", determinePathType(src))
 	})
 	e.ForEach("video source[src]", func(_ int, elem *HTMLElement) {
 		src := elem.Attr("src")
-		addLink(src, "video", "", "", elem)
+		addLink(src, "video", "", "", elem, true, "", "", determinePathType(src))
 	})
 
 	// Extract audio sources <audio src=""> and <source src="">
 	e.ForEach("audio[src]", func(_ int, elem *HTMLElement) {
 		src := elem.Attr("src")
-		addLink(src, "audio", "", "", elem)
+		addLink(src, "audio", "", "", elem, true, "", "", determinePathType(src))
 	})
 	e.ForEach("audio source[src]", func(_ int, elem *HTMLElement) {
 		src := elem.Attr("src")
-		addLink(src, "audio", "", "", elem)
+		addLink(src, "audio", "", "", elem, true, "", "", determinePathType(src))
 	})
 
 	return links

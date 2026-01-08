@@ -42,6 +42,10 @@ func (a *App) GetPageLinksForURL(crawlID uint, pageURL string) (*types.PageLinks
 			Position:   link.Position,
 			DOMPath:    link.DOMPath,
 			URLAction:  link.URLAction,
+			Follow:     link.Follow,
+			Rel:        link.Rel,
+			Target:     link.Target,
+			PathType:   link.PathType,
 		})
 	}
 
@@ -61,6 +65,10 @@ func (a *App) GetPageLinksForURL(crawlID uint, pageURL string) (*types.PageLinks
 			Position:   link.Position,
 			DOMPath:    link.DOMPath,
 			URLAction:  link.URLAction,
+			Follow:     link.Follow,
+			Rel:        link.Rel,
+			Target:     link.Target,
+			PathType:   link.PathType,
 		})
 	}
 

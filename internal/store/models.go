@@ -174,6 +174,7 @@ type DiscoveredUrl struct {
 	Indexable       string `gorm:"not null"`
 	ContentType     string `gorm:"type:text"` // MIME type: text/html, image/jpeg, text/css, application/javascript, etc.
 	Error           string `gorm:"type:text"`
+	Depth           int    `gorm:"default:0"` // Crawl depth (0 = start URL, 1 = discovered from start, etc.)
 	CreatedAt       int64  `gorm:"autoCreateTime"`
 }
 
@@ -193,6 +194,10 @@ type PageLink struct {
 	Position    string `gorm:"type:text"`                       // Position: "content", "navigation", "header", "footer", "sidebar", "breadcrumbs", "pagination", "unknown"
 	DOMPath     string `gorm:"type:text"`                       // Simplified DOM path showing link's location in HTML structure
 	URLAction   string `gorm:"type:text;index"`                 // Action: "crawl" (normal), "record" (framework-specific), "skip" (ignored)
+	Follow      bool   `gorm:"not null"`                        // true if no nofollow/sponsored/ugc in rel attribute
+	Rel         string `gorm:"type:text"`                       // Full rel attribute value (e.g., "nofollow", "noopener noreferrer")
+	Target      string `gorm:"type:text"`                       // Target attribute (_blank, _self, etc.)
+	PathType    string `gorm:"type:text"`                       // Path type: "Absolute", "Root-Relative", or "Relative"
 	CreatedAt   int64  `gorm:"autoCreateTime"`
 }
 
@@ -209,6 +214,10 @@ type PageLinkData struct {
 	Position    string
 	DOMPath     string
 	URLAction   string
+	Follow      bool
+	Rel         string
+	Target      string
+	PathType    string
 }
 
 // DomainFramework represents the detected web framework for a specific domain

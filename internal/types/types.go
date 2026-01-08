@@ -41,6 +41,7 @@ type CrawlResult struct {
 	Indexable       string `json:"indexable"`
 	ContentType     string `json:"contentType,omitempty"` // MIME type: text/html, image/jpeg, text/css, application/javascript, etc.
 	Error           string `json:"error,omitempty"`
+	Depth           int    `json:"depth"` // Crawl depth (0 = start URL)
 }
 
 // ProjectInfo represents project information for the frontend
@@ -127,6 +128,10 @@ type LinkInfo struct {
 	Position   string `json:"position,omitempty"` // Position in page: "content", "navigation", "header", "footer", "sidebar", "breadcrumbs", "pagination", "unknown"
 	DOMPath    string `json:"domPath,omitempty"`  // Simplified DOM path showing link's location in HTML structure
 	URLAction  string `json:"urlAction"`          // Action: "crawl" (normal), "record" (framework-specific), "skip" (ignored)
+	Follow     bool   `json:"follow"`             // true if no nofollow/sponsored/ugc in rel attribute
+	Rel        string `json:"rel,omitempty"`      // Full rel attribute value
+	Target     string `json:"target,omitempty"`   // Target attribute (_blank, _self, etc.)
+	PathType   string `json:"pathType,omitempty"` // Path type: "Absolute", "Root-Relative", or "Relative"
 }
 
 // PageLinksResponse represents the response for page links

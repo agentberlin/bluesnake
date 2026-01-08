@@ -47,6 +47,8 @@ class CrawlerComparison:
             "url_diffs": {},
             "status_diffs": {},
             "outlink_diffs": {},
+            "page_attribute_diffs": {},
+            "link_attribute_diffs": {},
         }
 
     def should_filter_url(self, url: str) -> bool:
@@ -319,16 +321,30 @@ class CrawlerComparison:
                         filtered_count += 1
                         continue
 
+                    # Parse depth as int
+                    depth_str = row.get("Crawl Depth", "0")
+                    depth = int(depth_str) if depth_str and depth_str.isdigit() else 0
+
+                    # Parse word count as int
+                    word_count_str = row.get("Word Count", "0")
+                    word_count = int(word_count_str) if word_count_str and word_count_str.isdigit() else 0
+
                     urls[url] = {
                         "status": int(row.get("Status Code", 0)) if row.get("Status Code") else 0,
                         "content_type": row.get("Content Type", ""),
-                        "title": row.get("Title", ""),
+                        "title": row.get("Title 1", ""),
+                        "meta_description": row.get("Meta Description 1", ""),
+                        "h1": row.get("H1-1", ""),
+                        "h2": row.get("H2-1", ""),
+                        "canonical": row.get("Canonical Link Element 1", ""),
+                        "word_count": word_count,
                         "indexable": row.get("Indexability", ""),
+                        "depth": depth,
                     }
 
         return urls
 
-    def parse_screamingfrog_outlinks(self) -> Dict[str, List[Dict[str, str]]]:
+    def parse_screamingfrog_outlinks(self) -> Dict[str, List[Dict[str, Any]]]:
         """Parse ScreamingFrog All Outlinks export"""
         outlinks_file = self.sf_output_dir / "all_outlinks.csv"
         if not outlinks_file.exists():
@@ -348,9 +364,20 @@ class CrawlerComparison:
                         filtered_outlinks += 1
                         continue
 
-                    outlinks[source].append(
-                        {"to": target, "anchor": row.get("Anchor Text", ""), "type": row.get("Type", "")}
-                    )
+                    # Parse follow as boolean (SF uses "true"/"false" strings)
+                    follow_str = row.get("Follow", "true").lower()
+                    follow = follow_str == "true"
+
+                    outlinks[source].append({
+                        "to": target,
+                        "anchor": row.get("Anchor", "") or row.get("Alt Text", ""),
+                        "type": row.get("Type", ""),
+                        "follow": follow,
+                        "target": row.get("Target", ""),
+                        "rel": row.get("Rel", ""),
+                        "path_type": row.get("Path Type", ""),
+                        "position": row.get("Link Position", ""),
+                    })
 
         return outlinks
 
@@ -499,6 +526,260 @@ class CrawlerComparison:
             "diff_count": len(outlink_diffs),
         }
 
+    def compare_page_attributes(
+        self, sf_urls: Dict[str, Dict[str, Any]], bs_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Compare page attributes (depth, title, h1, h2, wordCount, indexable, canonical)"""
+        bs_results = bs_data.get("results", [])
+
+        # Build BS lookup map
+        bs_map = {}
+        for result in bs_results:
+            norm_url = self.normalize_url(result["url"])
+            bs_map[norm_url] = result
+
+        attribute_diffs = {
+            "depth": [],
+            "title": [],
+            "h1": [],
+            "word_count": [],
+            "indexable": [],
+            "canonical": [],
+        }
+
+        for url, sf_info in sf_urls.items():
+            norm_url = self.normalize_url(url)
+            if norm_url not in bs_map:
+                continue
+
+            bs_info = bs_map[norm_url]
+
+            # Compare depth
+            sf_depth = sf_info.get("depth", 0)
+            bs_depth = bs_info.get("depth", 0)
+            if sf_depth != bs_depth:
+                attribute_diffs["depth"].append({
+                    "url": url,
+                    "sf": sf_depth,
+                    "bs": bs_depth,
+                })
+
+            # Compare title (normalize whitespace)
+            sf_title = (sf_info.get("title") or "").strip()
+            bs_title = (bs_info.get("title") or "").strip()
+            if sf_title != bs_title:
+                attribute_diffs["title"].append({
+                    "url": url,
+                    "sf": sf_title[:100],
+                    "bs": bs_title[:100],
+                })
+
+            # Compare H1
+            sf_h1 = (sf_info.get("h1") or "").strip()
+            bs_h1 = (bs_info.get("h1") or "").strip()
+            if sf_h1 != bs_h1:
+                attribute_diffs["h1"].append({
+                    "url": url,
+                    "sf": sf_h1[:100],
+                    "bs": bs_h1[:100],
+                })
+
+            # Compare word count (allow 10% tolerance for minor differences)
+            sf_wc = sf_info.get("word_count", 0)
+            bs_wc = bs_info.get("wordCount", 0)
+            if sf_wc > 0 or bs_wc > 0:
+                diff_pct = abs(sf_wc - bs_wc) / max(sf_wc, bs_wc, 1) * 100
+                if diff_pct > 10:  # More than 10% difference
+                    attribute_diffs["word_count"].append({
+                        "url": url,
+                        "sf": sf_wc,
+                        "bs": bs_wc,
+                        "diff_pct": round(diff_pct, 1),
+                    })
+
+            # Compare indexable (normalize values)
+            sf_idx = (sf_info.get("indexable") or "").strip().lower()
+            bs_idx = (bs_info.get("indexable") or "").strip().lower()
+            # Normalize: SF uses "Indexable"/"Non-Indexable", BS uses "Yes"/"No, ..."
+            # For non-HTML resources, BS uses "-" which should match SF's "Indexable"
+            content_type = sf_info.get("content_type", "").lower()
+            is_html = "text/html" in content_type
+
+            if not is_html:
+                # Non-HTML resources: skip comparison (indexability doesn't apply)
+                pass
+            else:
+                sf_is_indexable = sf_idx == "indexable"
+                bs_is_indexable = bs_idx == "yes"
+                if sf_is_indexable != bs_is_indexable:
+                    attribute_diffs["indexable"].append({
+                        "url": url,
+                        "sf": sf_info.get("indexable", ""),
+                        "bs": bs_info.get("indexable", ""),
+                    })
+
+            # Compare canonical
+            sf_can = self.normalize_url(sf_info.get("canonical") or "")
+            bs_can = self.normalize_url(bs_info.get("canonicalUrl") or "")
+            if sf_can and bs_can and sf_can != bs_can:
+                attribute_diffs["canonical"].append({
+                    "url": url,
+                    "sf": sf_can,
+                    "bs": bs_can,
+                })
+
+        # Store in detailed diff
+        self.detailed_diff["page_attribute_diffs"] = attribute_diffs
+
+        return {
+            "depth_diffs": len(attribute_diffs["depth"]),
+            "title_diffs": len(attribute_diffs["title"]),
+            "h1_diffs": len(attribute_diffs["h1"]),
+            "word_count_diffs": len(attribute_diffs["word_count"]),
+            "indexable_diffs": len(attribute_diffs["indexable"]),
+            "canonical_diffs": len(attribute_diffs["canonical"]),
+        }
+
+    def compare_link_attributes(
+        self, crawl_id: int, sf_outlinks: Dict[str, List[Dict[str, Any]]], bs_results: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Compare link attributes (follow, rel, target, pathType, position, linkType)"""
+        attribute_diffs = {
+            "follow": [],
+            "rel": [],
+            "target": [],
+            "path_type": [],
+            "position": [],
+            "link_type": [],
+        }
+        checked_links = 0
+
+        for result in bs_results:
+            url = result["url"]
+            norm_url = self.normalize_url(url)
+
+            # Get BlueSnake outlinks
+            bs_links_data = self.fetch_bluesnake_links(crawl_id, url)
+            if not bs_links_data:
+                continue
+
+            bs_outlinks = bs_links_data.get("outlinks", [])
+            sf_outlinks_for_page = sf_outlinks.get(norm_url, [])
+
+            # Build lookup maps by destination URL
+            bs_links_map = {}
+            for link in bs_outlinks:
+                dest = self.normalize_url(link.get("url", ""))
+                bs_links_map[dest] = link
+
+            sf_links_map = {}
+            for link in sf_outlinks_for_page:
+                dest = self.normalize_url(link.get("to", ""))
+                sf_links_map[dest] = link
+
+            # Compare common links
+            common_dests = set(bs_links_map.keys()) & set(sf_links_map.keys())
+            checked_links += len(common_dests)
+
+            for dest in common_dests:
+                sf_link = sf_links_map[dest]
+                bs_link = bs_links_map[dest]
+
+                # Get link type early for use in normalization
+                sf_type = sf_link.get("type", "").lower()
+
+                # Compare follow
+                sf_follow = sf_link.get("follow", True)
+                bs_follow = bs_link.get("follow", True)
+                if sf_follow != bs_follow:
+                    attribute_diffs["follow"].append({
+                        "source": url,
+                        "dest": dest,
+                        "sf": sf_follow,
+                        "bs": bs_follow,
+                    })
+
+                # Compare target
+                sf_target = sf_link.get("target", "")
+                bs_target = bs_link.get("target", "")
+                if sf_target != bs_target:
+                    attribute_diffs["target"].append({
+                        "source": url,
+                        "dest": dest,
+                        "sf": sf_target,
+                        "bs": bs_target,
+                    })
+
+                # Compare rel
+                sf_rel = sf_link.get("rel", "")
+                bs_rel = bs_link.get("rel", "")
+                if sf_rel != bs_rel:
+                    attribute_diffs["rel"].append({
+                        "source": url,
+                        "dest": dest,
+                        "sf": sf_rel,
+                        "bs": bs_rel,
+                    })
+
+                # Compare path type
+                sf_path_type = sf_link.get("path_type", "")
+                bs_path_type = bs_link.get("pathType", "")
+                if sf_path_type != bs_path_type:
+                    attribute_diffs["path_type"].append({
+                        "source": url,
+                        "dest": dest,
+                        "sf": sf_path_type,
+                        "bs": bs_path_type,
+                    })
+
+                # Compare position (normalize values)
+                sf_pos = sf_link.get("position", "").lower()
+                bs_pos = bs_link.get("position", "").lower()
+                # Normalize: For non-anchor elements (scripts, stylesheets, images),
+                # SF uses "Head"/"Content" but BS uses "unknown"
+                sf_pos_norm = sf_pos
+                if sf_type in ("javascript", "css", "image") and sf_pos in ("head", "content"):
+                    sf_pos_norm = "unknown"
+                # Normalize case for common positions
+                if sf_pos_norm != bs_pos:
+                    attribute_diffs["position"].append({
+                        "source": url,
+                        "dest": dest,
+                        "sf": sf_link.get("position", ""),
+                        "bs": bs_link.get("position", ""),
+                    })
+
+                # Compare link type (normalize naming conventions)
+                bs_type = bs_link.get("linkType", "").lower()
+                # Normalize: SF uses different names than BS
+                sf_type_norm = sf_type
+                if sf_type == "hyperlink":
+                    sf_type_norm = "anchor"
+                elif sf_type == "javascript":
+                    sf_type_norm = "script"
+                elif sf_type == "css":
+                    sf_type_norm = "stylesheet"
+                if sf_type_norm != bs_type:
+                    attribute_diffs["link_type"].append({
+                        "source": url,
+                        "dest": dest,
+                        "sf": sf_link.get("type", ""),
+                        "bs": bs_link.get("linkType", ""),
+                    })
+
+        # Store in detailed diff
+        self.detailed_diff["link_attribute_diffs"] = attribute_diffs
+
+        return {
+            "checked_links": checked_links,
+            "follow_diffs": len(attribute_diffs["follow"]),
+            "target_diffs": len(attribute_diffs["target"]),
+            "rel_diffs": len(attribute_diffs["rel"]),
+            "path_type_diffs": len(attribute_diffs["path_type"]),
+            "position_diffs": len(attribute_diffs["position"]),
+            "link_type_diffs": len(attribute_diffs["link_type"]),
+        }
+
     def write_detailed_diff(self) -> Tuple[str, int]:
         """Write detailed diff to JSON file"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -559,7 +840,13 @@ class CrawlerComparison:
         # Step 7: Compare outlinks
         outlink_comparison = self.compare_outlinks(crawl_id, sf_outlinks, bs_data.get("results", []))
 
-        # Step 8: Write detailed diff
+        # Step 8: Compare page attributes
+        page_attr_comparison = self.compare_page_attributes(sf_urls, bs_data)
+
+        # Step 9: Compare link attributes
+        link_attr_comparison = self.compare_link_attributes(crawl_id, sf_outlinks, bs_data.get("results", []))
+
+        # Step 10: Write detailed diff
         diff_file, diff_size = self.write_detailed_diff()
 
         # Print concise summary for LLM consumption
@@ -615,6 +902,47 @@ class CrawlerComparison:
             print(f"    - BlueSnake outlinks: {example['bs_count']}")
             print(f"    - Only in ScreamingFrog: {len(example['only_in_sf'])}")
             print(f"    - Only in BlueSnake: {len(example['only_in_bs'])}")
+
+        # Page Attribute Differences
+        print("\nPage Attribute Differences:")
+        total_page_diffs = sum([
+            page_attr_comparison['depth_diffs'],
+            page_attr_comparison['title_diffs'],
+            page_attr_comparison['h1_diffs'],
+            page_attr_comparison['word_count_diffs'],
+            page_attr_comparison['indexable_diffs'],
+            page_attr_comparison['canonical_diffs'],
+        ])
+        if total_page_diffs == 0:
+            print("  • All page attributes match!")
+        else:
+            print(f"  • Depth differences: {page_attr_comparison['depth_diffs']}")
+            print(f"  • Title differences: {page_attr_comparison['title_diffs']}")
+            print(f"  • H1 differences: {page_attr_comparison['h1_diffs']}")
+            print(f"  • Word count differences (>10%): {page_attr_comparison['word_count_diffs']}")
+            print(f"  • Indexability differences: {page_attr_comparison['indexable_diffs']}")
+            print(f"  • Canonical differences: {page_attr_comparison['canonical_diffs']}")
+
+        # Link Attribute Differences
+        print("\nLink Attribute Differences:")
+        print(f"  • Links checked: {link_attr_comparison['checked_links']}")
+        total_link_diffs = sum([
+            link_attr_comparison['follow_diffs'],
+            link_attr_comparison['target_diffs'],
+            link_attr_comparison['rel_diffs'],
+            link_attr_comparison['path_type_diffs'],
+            link_attr_comparison['position_diffs'],
+            link_attr_comparison['link_type_diffs'],
+        ])
+        if total_link_diffs == 0:
+            print("  • All link attributes match!")
+        else:
+            print(f"  • Follow differences: {link_attr_comparison['follow_diffs']}")
+            print(f"  • Target differences: {link_attr_comparison['target_diffs']}")
+            print(f"  • Rel differences: {link_attr_comparison['rel_diffs']}")
+            print(f"  • Path type differences: {link_attr_comparison['path_type_diffs']}")
+            print(f"  • Position differences: {link_attr_comparison['position_diffs']}")
+            print(f"  • Link type differences: {link_attr_comparison['link_type_diffs']}")
 
         # Detailed output files
         print("\nDetailed Analysis Files:")
