@@ -27,6 +27,9 @@ tmp/
 # Desktop app (not needed for server)
 cmd/desktop/
 
+# Python comparison scripts
+compare/
+
 # Test files
 *_test.go
 coverage.*

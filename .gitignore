@@ -33,6 +33,9 @@ go.work.sum
 
 .claude
 
+# Python
+__pycache__/
+
 # Cloudflared binaries (downloaded by CI for embedding)
 cmd/desktop/binaries/
 tmp/
