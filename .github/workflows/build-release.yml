@@ -1,64 +1,33 @@
 name: Build and Release
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - 'v*'
-  workflow_dispatch:
+  release:
+    types: [published]
 
 jobs:
   version:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.increment.outputs.version }}
+      version: ${{ steps.get-version.outputs.version }}
 
     steps:
+      - name: Get version from release tag
+        id: get-version
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
       - name: Configure AWS CLI for R2
         run: |
           aws configure set aws_access_key_id ${{ secrets.R2_ACCESS_KEY_ID }}
           aws configure set aws_secret_access_key ${{ secrets.R2_SECRET_ACCESS_KEY }}
           aws configure set default.region auto
 
-      - name: Download or create version file
-        id: get-version
+      - name: Update version file in R2
         run: |
-          # Try to download existing version file
-          aws s3 cp \
-            s3://${{ secrets.R2_BUCKET_NAME }}/bluesnake/version.json \
-            version.json \
-            --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com || echo '{"latestVersion":"v0.0.0"}' > version.json
-
-          CURRENT_VERSION=$(jq -r '.latestVersion' version.json)
-          echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-
-      - name: Increment version
-        id: increment
-        run: |
-          CURRENT_VERSION="${{ steps.get-version.outputs.current }}"
-
-          # Remove 'v' prefix for parsing
-          VERSION_NUM="${CURRENT_VERSION#v}"
-
-          # Parse version
-          IFS='.' read -r -a parts <<< "$VERSION_NUM"
-          MAJOR="${parts[0]}"
-          MINOR="${parts[1]}"
-          PATCH="${parts[2]}"
-
-          # Increment patch version
-          PATCH=$((PATCH + 1))
-
-          NEW_VERSION="v$MAJOR.$MINOR.$PATCH"
-          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "New version: $NEW_VERSION"
-
-          # Save to file as JSON
-          echo "{\"latestVersion\":\"$NEW_VERSION\"}" > version.json
-
-      - name: Upload new version to R2
-        run: |
+          VERSION="${{ steps.get-version.outputs.version }}"
+          echo "{\"latestVersion\":\"$VERSION\"}" > version.json
           aws s3 cp version.json \
             s3://${{ secrets.R2_BUCKET_NAME }}/bluesnake/version.json \
             --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com \

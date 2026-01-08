@@ -26,7 +26,6 @@ tmp/
 
 # Desktop app (not needed for server)
 cmd/desktop/
-debug/
 
 # Test files
 *_test.go
