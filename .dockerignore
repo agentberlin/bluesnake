@@ -1,0 +1,47 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+!go.mod
+LICENSE
+
+# IDE and editor files
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+bin/
+tmp/
+
+# Desktop app (not needed for server)
+cmd/desktop/
+debug/
+
+# Test files
+*_test.go
+coverage.*
+*.coverprofile
+profile.cov
+
+# CI/CD
+.github/
+
+# Environment files
+.env
+.env.*
+
+# Docker files (prevent recursive inclusion)
+Dockerfile
+.dockerignore
+docker-compose*.yml
