@@ -32,14 +32,15 @@ import (
 
 // Exporter handles exporting crawl data
 type Exporter struct {
-	app         *app.App
-	store       *store.Store
-	crawlID     uint
-	projectID   uint
-	domain      string
-	outputDir   string
-	format      string
-	exportLinks bool
+	app           *app.App
+	store         *store.Store
+	crawlID       uint
+	projectID     uint
+	domain        string
+	outputDir     string
+	format        string
+	exportLinks   bool
+	exportContent bool
 }
 
 // Export exports crawl results to the specified format
@@ -58,6 +59,13 @@ func (e *Exporter) Export() error {
 	if e.exportLinks {
 		if err := e.exportOutlinks(); err != nil {
 			return fmt.Errorf("failed to export outlinks: %v", err)
+		}
+	}
+
+	// Export content if requested
+	if e.exportContent {
+		if err := e.exportTextContent(); err != nil {
+			return fmt.Errorf("failed to export text content: %v", err)
 		}
 	}
 
@@ -293,6 +301,59 @@ func (e *Exporter) exportOutlinksCSV(links []PageLinkExport) error {
 	return nil
 }
 
+// exportTextContent exports the text content of HTML pages
+func (e *Exporter) exportTextContent() error {
+	// Create content directory
+	contentDir := filepath.Join(e.outputDir, "content")
+	if err := os.MkdirAll(contentDir, 0755); err != nil {
+		return fmt.Errorf("failed to create content directory: %v", err)
+	}
+
+	// Get home directory for source files
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get user home directory: %v", err)
+	}
+
+	// Source directory where content is stored
+	sourceDir := filepath.Join(homeDir, ".bluesnake", e.domain, fmt.Sprintf("%d", e.crawlID))
+
+	// Check if source directory exists
+	if _, err := os.Stat(sourceDir); os.IsNotExist(err) {
+		// No content files exist, skip silently
+		return nil
+	}
+
+	// Read all .txt files from source directory
+	entries, err := os.ReadDir(sourceDir)
+	if err != nil {
+		return fmt.Errorf("failed to read content directory: %v", err)
+	}
+
+	// Copy each .txt file to the export content directory
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".txt" {
+			continue
+		}
+
+		sourcePath := filepath.Join(sourceDir, entry.Name())
+		destPath := filepath.Join(contentDir, entry.Name())
+
+		content, err := os.ReadFile(sourcePath)
+		if err != nil {
+			// Log warning but continue with other files
+			fmt.Printf("Warning: failed to read %s: %v\n", entry.Name(), err)
+			continue
+		}
+
+		if err := os.WriteFile(destPath, content, 0644); err != nil {
+			return fmt.Errorf("failed to write %s: %v", entry.Name(), err)
+		}
+	}
+
+	return nil
+}
+
 // exportSummary exports crawl summary/metadata
 func (e *Exporter) exportSummary() error {
 	stats, err := e.app.GetCrawlStats(e.crawlID)
@@ -346,6 +407,7 @@ func runExport(args []string) error {
 	var output string
 	var format string
 	var exportLinks bool
+	var exportContent bool
 	var contentType string
 
 	fs.UintVar(&crawlID, "crawl-id", 0, "Crawl ID to export (required)")
@@ -355,6 +417,7 @@ func runExport(args []string) error {
 	fs.StringVar(&format, "format", "json", "Output format: json, csv")
 	fs.StringVar(&format, "f", "json", "Output format (shorthand)")
 	fs.BoolVar(&exportLinks, "export-links", false, "Export outlinks")
+	fs.BoolVar(&exportContent, "export-content", false, "Export text content of HTML pages")
 	fs.StringVar(&contentType, "type", "all", "Content type filter: all, html, images, css, js")
 	fs.StringVar(&contentType, "t", "all", "Content type filter (shorthand)")
 
@@ -411,14 +474,15 @@ Examples:
 	}
 
 	exporter := &Exporter{
-		app:         coreApp,
-		store:       st,
-		crawlID:     crawlID,
-		projectID:   crawlInfo.ProjectID,
-		domain:      projectInfo.Domain,
-		outputDir:   output,
-		format:      format,
-		exportLinks: exportLinks,
+		app:           coreApp,
+		store:         st,
+		crawlID:       crawlID,
+		projectID:     crawlInfo.ProjectID,
+		domain:        projectInfo.Domain,
+		outputDir:     output,
+		format:        format,
+		exportLinks:   exportLinks,
+		exportContent: exportContent,
 	}
 
 	fmt.Printf("Exporting crawl %d to %s...\n", crawlID, output)
