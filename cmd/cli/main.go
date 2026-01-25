@@ -23,7 +23,7 @@
 //
 // Commands:
 //
-//	crawl     Start a new crawl
+//	crawl     Start a new crawl (or resume with --resume flag)
 //	export    Export crawl results
 //	list      List projects or crawls
 //	version   Show version information
@@ -78,7 +78,7 @@ Usage:
   bluesnake <command> [flags]
 
 Commands:
-  crawl     Start a new crawl
+  crawl     Start a new crawl (or resume with --resume)
   export    Export crawl results to JSON or CSV
   list      List projects or crawls
   version   Show version information
@@ -88,8 +88,14 @@ Examples:
   # Crawl a website
   bluesnake crawl https://example.com
 
-  # Crawl with options
-  bluesnake crawl https://example.com -p 10 --js-rendering -o ./results
+  # Crawl with a URL limit (pauses when reached)
+  bluesnake crawl https://example.com --max-urls 100
+
+  # Resume a paused crawl
+  bluesnake crawl --resume --project-id 1
+
+  # Resume with additional URL budget
+  bluesnake crawl --resume --project-id 1 --max-urls 50
 
   # Export a completed crawl
   bluesnake export --crawl-id 123 --format csv -o ./export

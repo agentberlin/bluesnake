@@ -24,14 +24,28 @@ When validating fixes without re-running ScreamingFrog (uses existing SF data):
 uv run compare/compare_crawlers.py <domain> --bluesnake-only
 ```
 
-**Note**: The BlueSnake server automatically restarts when you make changes (running with `air`), so you can validate fixes quickly.
+**Note**: The comparison script runs BlueSnake via CLI (`go run ./cmd/cli`), so no server needs to be running. Changes to the codebase are automatically picked up on each run.
+
+## How It Works
+
+The comparison script:
+1. Runs ScreamingFrog CLI to crawl the domain (unless `--bluesnake-only`)
+2. Runs BlueSnake CLI via `go run ./cmd/cli crawl <url> [flags]`
+3. Loads results from both crawlers' output files
+4. Compares URLs, status codes, outlinks, page attributes, and link attributes
+5. Generates a detailed JSON diff file
+
+**Key outputs:**
+- BlueSnake results: `/tmp/crawlertest/bs/` (JSON files)
+- ScreamingFrog results: `/tmp/crawlertest/sf/` (CSV files)
+- Comparison diff: `/tmp/crawler_diff_{domain}_{timestamp}.json`
 
 ## Analysis Approach
 
 ### Primary Analysis: JSON Diff File
 
 **Start here for all investigations.** The comparison script generates a JSON diff file that compares:
-- **BlueSnake data**: Retrieved via API from the running server
+- **BlueSnake data**: Loaded from CLI output files (`internal_all.json`, `all_outlinks.json`)
 - **ScreamingFrog data**: Parsed from exported CSV files
 
 **Location**: `/tmp/crawler_diff_{domain}_{timestamp}.json`
@@ -44,8 +58,8 @@ This file contains the structured differences between both crawlers. Use this as
   "metadata": {
     "domain": "example.com",
     "timestamp": "2025-10-14T10:30:00",
-    "bluesnake_crawl_id": "abc123",
-    "screamingfrog_log": "/tmp/screamingfrog_example.com_20251014.log"
+    "screamingfrog_log": "/tmp/screamingfrog_example.com_20251014.log",
+    "bluesnake_log": "/tmp/bluesnake_example.com_20251014.log"
   },
   "url_diffs": {
     "missing_in_bluesnake_by_type": {
@@ -101,19 +115,15 @@ This file contains the structured differences between both crawlers. Use this as
 
 **Only use these when the JSON diff doesn't provide enough context:**
 
-#### Option 1: BlueSnake API
+#### Option 1: BlueSnake Output Files
 
-Use the `bluesnake_crawl_id` to query the API directly:
+Check the BlueSnake CLI output directory:
 
-- **Get crawl results**:
-  ```
-  http://localhost:8080/api/v1/crawls/{crawl_id}
-  ```
-
-- **Get page links**:
-  ```
-  http://localhost:8080/api/v1/crawls/{crawl_id}/pages/{url_encoded}/links
-  ```
+- **Location**: `/tmp/crawlertest/bs/`
+- **Files**:
+  - `internal_all.json` - All crawled pages with metadata
+  - `all_outlinks.json` - All links between pages
+  - `crawl_summary.json` - Crawl metadata (project ID, crawl ID, stats)
 
 #### Option 2: ScreamingFrog Raw Files
 
@@ -144,6 +154,10 @@ Use the `bluesnake_crawl_id` to query the API directly:
    - Console output from ScreamingFrog execution
    - Useful for debugging SF crawl issues
 
+6. **BlueSnake Log**: `/tmp/bluesnake_{domain}_{timestamp}.log`
+   - Console output from BlueSnake CLI execution
+   - Useful for debugging BS crawl issues
+
 **Reading Tips**:
 - Read large CSV files in chunks using Read tool with `limit` and `offset` parameters
 - Focus on patterns rather than individual URLs
@@ -155,7 +169,7 @@ Use the `bluesnake_crawl_id` to query the API directly:
 2. **Analyze the JSON diff** to identify the most important discrepancy
 3. **Research if needed**: Check how ScreamingFrog handles the issue (internet search, documentation)
 4. **Investigate deeper** (only if JSON diff is insufficient):
-   - Query BlueSnake API for specific page/link details
+   - Examine BlueSnake output files in `/tmp/crawlertest/bs/`
    - Examine ScreamingFrog CSV files for link extraction patterns
 5. **Propose a fix**: If the fix changes a design decision or internal assumption, get approval first
 6. **Implement and validate**: Use `--bluesnake-only` flag for quick validation
@@ -168,3 +182,4 @@ Use the `bluesnake_crawl_id` to query the API directly:
 - **Pick one** most important issue to fix at a time
 - **Be smart** about reading large files - use chunks, focus on patterns
 - Do whatever it takes to get to the fix
+- **No server required**: The script uses CLI directly via `go run ./cmd/cli`

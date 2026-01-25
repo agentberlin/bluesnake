@@ -26,10 +26,15 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/app"
 	"github.com/agentberlin/bluesnake/internal/store"
+	"github.com/agentberlin/bluesnake/internal/types"
 )
 
 // crawlFlags holds all the flags for the crawl command
 type crawlFlags struct {
+	// Resume mode
+	resume    bool
+	projectID uint
+
 	// Core options
 	parallelism       int
 	userAgent         string
@@ -56,16 +61,23 @@ type crawlFlags struct {
 	respectMetaNoindex     bool
 
 	// Output
-	output      string
-	format      string
-	exportLinks bool
-	quiet       bool
+	output        string
+	format        string
+	export        bool
+	exportLinks   bool
+	exportContent bool
+	quiet         bool
 }
 
 func runCrawl(args []string) error {
 	fs := flag.NewFlagSet("crawl", flag.ExitOnError)
 
 	var flags crawlFlags
+
+	// Resume mode
+	fs.BoolVar(&flags.resume, "resume", false, "Resume a paused crawl instead of starting new")
+	fs.BoolVar(&flags.resume, "r", false, "Resume a paused crawl (shorthand)")
+	fs.UintVar(&flags.projectID, "project-id", 0, "Project ID to resume (required with --resume)")
 
 	// Core options
 	fs.IntVar(&flags.parallelism, "parallelism", 5, "Number of concurrent requests")
@@ -100,14 +112,18 @@ func runCrawl(args []string) error {
 	fs.StringVar(&flags.output, "o", ".", "Output directory (shorthand)")
 	fs.StringVar(&flags.format, "format", "json", "Output format: json, csv")
 	fs.StringVar(&flags.format, "f", "json", "Output format (shorthand)")
+	fs.BoolVar(&flags.export, "export", true, "Export results to files after crawl")
+	fs.BoolVar(&flags.export, "e", true, "Export results (shorthand)")
 	fs.BoolVar(&flags.exportLinks, "export-links", false, "Export outlinks")
+	fs.BoolVar(&flags.exportContent, "export-content", false, "Export text content of HTML pages")
 	fs.BoolVar(&flags.quiet, "quiet", false, "Suppress progress output")
 	fs.BoolVar(&flags.quiet, "q", false, "Suppress progress output (shorthand)")
 
 	fs.Usage = func() {
 		fmt.Println(`Usage: bluesnake crawl <url> [flags]
+       bluesnake crawl --resume --project-id <id> [flags]
 
-Start a new crawl for the specified URL.
+Start a new crawl for the specified URL, or resume a paused crawl.
 
 Flags:`)
 		fs.PrintDefaults()
@@ -116,8 +132,14 @@ Examples:
   # Basic crawl
   bluesnake crawl https://example.com
 
-  # Crawl with custom parallelism and output
-  bluesnake crawl https://example.com -p 10 -o ./results
+  # Crawl with a URL limit (pauses when reached)
+  bluesnake crawl https://example.com --max-urls 100
+
+  # Resume a paused crawl
+  bluesnake crawl --resume --project-id 1
+
+  # Resume with additional URL budget
+  bluesnake crawl --resume --project-id 1 --max-urls 50
 
   # Crawl with JavaScript rendering
   bluesnake crawl https://example.com --js-rendering
@@ -135,27 +157,9 @@ Examples:
 		return err
 	}
 
-	// Check for URL argument
-	if fs.NArg() < 1 {
-		fs.Usage()
-		return fmt.Errorf("URL argument is required")
-	}
-
-	urlStr := fs.Arg(0)
-
-	// Validate URL
-	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
-		urlStr = "https://" + urlStr
-	}
-
 	// Validate format
 	if flags.format != "json" && flags.format != "csv" {
 		return fmt.Errorf("invalid format: %s (must be json or csv)", flags.format)
-	}
-
-	// Validate robots-txt mode
-	if flags.robotsTxt != "respect" && flags.robotsTxt != "ignore" && flags.robotsTxt != "ignore-report" {
-		return fmt.Errorf("invalid robots-txt mode: %s (must be respect, ignore, or ignore-report)", flags.robotsTxt)
 	}
 
 	// Initialize store and app
@@ -169,43 +173,121 @@ Examples:
 	coreApp := app.NewApp(st, emitter)
 	coreApp.Startup(context.Background())
 
-	// Build sitemap URLs array
-	var sitemapURLs []string
-	if flags.sitemapURL != "" {
-		sitemapURLs = []string{flags.sitemapURL}
-	}
+	var projectInfo *types.ProjectInfo
 
-	// Update configuration for the domain
-	if err := coreApp.UpdateConfigForDomain(
-		urlStr,
-		flags.jsRendering,
-		flags.initialWait,
-		flags.scrollWait,
-		flags.finalWait,
-		flags.parallelism,
-		flags.userAgent,
-		flags.includeSubdomains,
-		flags.spider,
-		flags.sitemap,
-		sitemapURLs,
-		flags.checkExternal,
-		flags.robotsTxt,
-		flags.followNofollowInternal,
-		flags.followNofollowExternal,
-		flags.respectMetaNoindex,
-		flags.respectNoindex,
-	); err != nil {
-		return fmt.Errorf("failed to configure crawl: %v", err)
-	}
+	if flags.resume {
+		// Resume mode: require project-id
+		if flags.projectID == 0 {
+			fs.Usage()
+			return fmt.Errorf("--project-id is required when using --resume")
+		}
 
-	// Start the crawl
-	if !flags.quiet {
-		fmt.Printf("Starting crawl for %s...\n", urlStr)
-	}
+		// Check queue status before resuming
+		queueStatus, err := coreApp.GetQueueStatus(flags.projectID)
+		if err != nil {
+			return fmt.Errorf("failed to get queue status: %v", err)
+		}
 
-	projectInfo, err := coreApp.StartCrawl(urlStr)
-	if err != nil {
-		return fmt.Errorf("failed to start crawl: %v", err)
+		if !queueStatus.CanResume {
+			return fmt.Errorf("project %d cannot be resumed (no paused crawl with pending URLs)", flags.projectID)
+		}
+
+		if !flags.quiet {
+			fmt.Printf("Resuming crawl for project %d\n", flags.projectID)
+			fmt.Printf("  Pending URLs: %d\n", queueStatus.Pending)
+			fmt.Printf("  Previously crawled: %d\n", queueStatus.Visited)
+		}
+
+		// Update budget if specified
+		if flags.maxURLs > 0 {
+			project, err := st.GetProjectByID(flags.projectID)
+			if err != nil {
+				return fmt.Errorf("failed to get project: %v", err)
+			}
+			if err := coreApp.UpdateIncrementalConfigForDomain("https://"+project.Domain, true, flags.maxURLs); err != nil {
+				return fmt.Errorf("failed to set crawl budget: %v", err)
+			}
+			if !flags.quiet {
+				fmt.Printf("  Crawl budget: %d URLs\n", flags.maxURLs)
+			}
+		}
+
+		if !flags.quiet {
+			fmt.Println()
+		}
+
+		// Resume the crawl
+		projectInfo, err = coreApp.ResumeCrawl(flags.projectID)
+		if err != nil {
+			return fmt.Errorf("failed to resume crawl: %v", err)
+		}
+	} else {
+		// New crawl mode: require URL
+		if fs.NArg() < 1 {
+			fs.Usage()
+			return fmt.Errorf("URL argument is required")
+		}
+
+		urlStr := fs.Arg(0)
+
+		// Validate URL
+		if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
+			urlStr = "https://" + urlStr
+		}
+
+		// Validate robots-txt mode
+		if flags.robotsTxt != "respect" && flags.robotsTxt != "ignore" && flags.robotsTxt != "ignore-report" {
+			return fmt.Errorf("invalid robots-txt mode: %s (must be respect, ignore, or ignore-report)", flags.robotsTxt)
+		}
+
+		// Build sitemap URLs array
+		var sitemapURLs []string
+		if flags.sitemapURL != "" {
+			sitemapURLs = []string{flags.sitemapURL}
+		}
+
+		// Update configuration for the domain
+		if err := coreApp.UpdateConfigForDomain(
+			urlStr,
+			flags.jsRendering,
+			flags.initialWait,
+			flags.scrollWait,
+			flags.finalWait,
+			flags.parallelism,
+			flags.userAgent,
+			flags.includeSubdomains,
+			flags.spider,
+			flags.sitemap,
+			sitemapURLs,
+			flags.checkExternal,
+			flags.robotsTxt,
+			flags.followNofollowInternal,
+			flags.followNofollowExternal,
+			flags.respectMetaNoindex,
+			flags.respectNoindex,
+		); err != nil {
+			return fmt.Errorf("failed to configure crawl: %v", err)
+		}
+
+		// If max-urls is set, enable incremental crawling with the budget
+		if flags.maxURLs > 0 {
+			if err := coreApp.UpdateIncrementalConfigForDomain(urlStr, true, flags.maxURLs); err != nil {
+				return fmt.Errorf("failed to set crawl budget: %v", err)
+			}
+			if !flags.quiet {
+				fmt.Printf("Crawl budget set to %d URLs\n", flags.maxURLs)
+			}
+		}
+
+		// Start the crawl
+		if !flags.quiet {
+			fmt.Printf("Starting crawl for %s...\n", urlStr)
+		}
+
+		projectInfo, err = coreApp.StartCrawl(urlStr)
+		if err != nil {
+			return fmt.Errorf("failed to start crawl: %v", err)
+		}
 	}
 
 	if !flags.quiet {
@@ -245,8 +327,16 @@ Examples:
 		return fmt.Errorf("failed to get crawl stats: %v", err)
 	}
 
+	// Check queue status for resume information
+	queueStatus, _ := coreApp.GetQueueStatus(projectInfo.ID)
+
 	if !flags.quiet {
-		fmt.Printf("\n\nCrawl completed!\n")
+		fmt.Printf("\n\n")
+		if queueStatus != nil && queueStatus.CanResume {
+			fmt.Printf("Crawl paused (budget reached)\n")
+		} else {
+			fmt.Printf("Crawl completed!\n")
+		}
 		fmt.Printf("  Total URLs: %d\n", stats.Total)
 		fmt.Printf("  HTML pages: %d\n", stats.HTML)
 		fmt.Printf("  Images: %d\n", stats.Images)
@@ -254,30 +344,38 @@ Examples:
 		fmt.Printf("  CSS: %d\n", stats.CSS)
 		fmt.Printf("  Fonts: %d\n", stats.Fonts)
 		fmt.Printf("  Other: %d\n", stats.Others)
+
+		if queueStatus != nil && queueStatus.CanResume {
+			fmt.Printf("\n  Pending URLs: %d\n", queueStatus.Pending)
+			fmt.Printf("  Resume with: bluesnake crawl --resume --project-id %d\n", projectInfo.ID)
+		}
 	}
 
-	// Export results
-	if !flags.quiet {
-		fmt.Printf("\nExporting results to %s...\n", flags.output)
-	}
+	// Export results if requested
+	if flags.export {
+		if !flags.quiet {
+			fmt.Printf("\nExporting results to %s...\n", flags.output)
+		}
 
-	exporter := &Exporter{
-		app:         coreApp,
-		store:       st,
-		crawlID:     projectInfo.LatestCrawlID,
-		projectID:   projectInfo.ID,
-		domain:      projectInfo.Domain,
-		outputDir:   flags.output,
-		format:      flags.format,
-		exportLinks: flags.exportLinks,
-	}
+		exporter := &Exporter{
+			app:           coreApp,
+			store:         st,
+			crawlID:       projectInfo.LatestCrawlID,
+			projectID:     projectInfo.ID,
+			domain:        projectInfo.Domain,
+			outputDir:     flags.output,
+			format:        flags.format,
+			exportLinks:   flags.exportLinks,
+			exportContent: flags.exportContent,
+		}
 
-	if err := exporter.Export(); err != nil {
-		return fmt.Errorf("failed to export results: %v", err)
-	}
+		if err := exporter.Export(); err != nil {
+			return fmt.Errorf("failed to export results: %v", err)
+		}
 
-	if !flags.quiet {
-		fmt.Println("Done!")
+		if !flags.quiet {
+			fmt.Println("Done!")
+		}
 	}
 
 	return nil
