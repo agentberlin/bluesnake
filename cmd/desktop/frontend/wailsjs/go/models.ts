@@ -247,6 +247,7 @@ export namespace types {
 	    indexable: string;
 	    contentType?: string;
 	    error?: string;
+	    depth: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new CrawlResult(source);
@@ -266,6 +267,7 @@ export namespace types {
 	        this.indexable = source["indexable"];
 	        this.contentType = source["contentType"];
 	        this.error = source["error"];
+	        this.depth = source["depth"];
 	    }
 	}
 	export class CrawlResultPaginated {
@@ -312,6 +314,10 @@ export namespace types {
 	    position?: string;
 	    domPath?: string;
 	    urlAction: string;
+	    follow: boolean;
+	    rel?: string;
+	    target?: string;
+	    pathType?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new LinkInfo(source);
@@ -328,6 +334,10 @@ export namespace types {
 	        this.position = source["position"];
 	        this.domPath = source["domPath"];
 	        this.urlAction = source["urlAction"];
+	        this.follow = source["follow"];
+	        this.rel = source["rel"];
+	        this.target = source["target"];
+	        this.pathType = source["pathType"];
 	    }
 	}
 	export class PageLinksResponse {
