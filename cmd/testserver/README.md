@@ -1,17 +1,25 @@
-# Test Server
+# Test Server (Development Only)
 
-This is a minimal HTTP server wrapper used for testing and development purposes.
+This is a development server used for testing with hot-reload support via [air](https://github.com/air-verse/air).
 
-## Purpose
+**For production use, see [cmd/server/](../server/README.md).**
 
-- Used by `compare/compare_crawlers.py` for comparing BlueSnake with ScreamingFrog
-- Provides HTTP API access to BlueSnake crawling functionality
-- For development and testing only (not for end-user distribution)
-
-## Usage
+## Usage with Air (Recommended)
 
 ```bash
-# Run with default settings (localhost:8080)
+# Install air (Go live reload)
+go install github.com/air-verse/air@latest
+
+# Run from project root with hot-reload
+air
+```
+
+Air watches for file changes and automatically rebuilds/restarts the server. Configuration is in `.air.toml`.
+
+## Manual Usage
+
+```bash
+# Run directly
 go run ./cmd/testserver
 
 # Run on custom port
@@ -21,11 +29,17 @@ go run ./cmd/testserver -port 9090
 go run ./cmd/testserver -host 127.0.0.1 -port 9090
 ```
 
+## Purpose
+
+- Development with hot-reload via `air`
+- Used by `compare/compare_crawlers.py` for comparing BlueSnake with ScreamingFrog
+- Quick iteration during development
+
 ## Implementation Note
 
-The actual server implementation lives in `internal/server/` and can be imported by:
-- This test server
-- Future CLI tools (when implemented)
-- The desktop app (if needed for MCP or local API access)
+Both `cmd/testserver` and `cmd/server` use the same `internal/server/` implementation. The test server is simply a lightweight wrapper for development convenience.
 
-This wrapper just bootstraps the server for standalone HTTP access during testing.
+## Related
+
+- [Production Server](../server/README.md) - For production deployments
+- [API Documentation](../../API.md) - Complete REST API reference

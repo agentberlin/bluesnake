@@ -4,6 +4,22 @@ BlueSnake provides a REST API for programmatic access to web crawling and SEO an
 
 **Base URL:** `http://localhost:8080/api/v1`
 
+## Running the Server
+
+```bash
+# Run the server
+go run ./cmd/server
+
+# Run on custom port
+go run ./cmd/server -port 9090
+
+# Build and run
+go build -o bluesnake-server ./cmd/server
+./bluesnake-server -port 8080
+```
+
+See [cmd/server/README.md](cmd/server/README.md) for deployment options.
+
 ## Authentication
 
 Currently, the API does not require authentication. CORS is enabled for all origins.

@@ -8,7 +8,7 @@ BlueSnake is a production-grade web crawler with multiple interfaces. It consist
 2. **Internal Packages** - Shared business logic and data layers (internal/ directory)
 3. **Desktop Application** - Wails-based GUI application with embedded MCP server (cmd/desktop/ directory)
 4. **MCP Server** - Model Context Protocol server for AI/LLM integration (internal/mcp/ directory)
-5. **HTTP Server** - REST API server (internal/server/ directory - not shipped standalone)
+5. **HTTP Server** - REST API server for programmatic access (cmd/server/ directory)
 
 ## Project Structure
 
@@ -72,7 +72,9 @@ bluesnake/
     │       └── src/
     │           ├── App.tsx       # Main UI component
     │           └── Config.tsx    # Configuration UI
-    └── testserver/           # Test HTTP server (development only)
+    ├── server/               # Production HTTP server
+    │   └── main.go           # Server entry point
+    └── testserver/           # Test HTTP server (development only, with hot-reload via air)
         └── main.go           # Standalone server for testing
 ```
 
@@ -1380,15 +1382,27 @@ Frontend (React)          Backend (Go)           Crawler              Database
 
 ---
 
-## HTTP Server (internal/server/)
+## HTTP Server (cmd/server/)
 
-**Note:** The HTTP server is an internal package and is NOT shipped as a standalone binary. It is used for development and testing purposes only. The primary shipping targets are:
-- Desktop application (with optional embedded MCP server)
-- MCP server (standalone mode for AI/LLM integration)
+The HTTP server provides a REST API for programmatic access to BlueSnake's crawling capabilities.
+
+### Running the Server
+
+```bash
+# Run with default settings (0.0.0.0:8080)
+go run ./cmd/server
+
+# Run on custom port
+go run ./cmd/server -port 9090
+
+# Build and run
+go build -o bluesnake-server ./cmd/server
+./bluesnake-server -port 8080
+```
 
 ### Implementation
 
-The HTTP server is located at `internal/server/` and provides a REST API for testing and development:
+The HTTP server implementation is located at `internal/server/` and is used by `cmd/server/`:
 
 ```go
 // internal/server/server.go
@@ -1896,7 +1910,13 @@ BlueSnake ships the following components:
 - **Platforms:** macOS, Windows, Linux
 - **Distribution:** Native binaries via GitHub releases
 
-**2. MCP Server (AI/LLM Integration)**
+**2. HTTP Server (Programmatic Access)**
+- **Location:** `cmd/server/`
+- **Purpose:** REST API for programmatic access and integrations
+- **Use cases:** CI/CD pipelines, custom integrations, headless deployments
+- **Documentation:** See [API.md](API.md) for complete API reference
+
+**3. MCP Server (AI/LLM Integration)**
 - **Location:** `internal/mcp/`
 - **Modes:**
   - Embedded in desktop app (default)
@@ -1904,49 +1924,41 @@ BlueSnake ships the following components:
 - **Purpose:** Enable AI tools to control crawler
 - **Protocol:** Model Context Protocol (HTTP+SSE)
 
-### Non-Shipped Components
+### Development Components
 
-**1. HTTP REST API Server**
-- **Location:** `internal/server/`
-- **Status:** Internal package, NOT shipped as standalone binary
-- **Purpose:** Development and testing only
-- **Reason:** Desktop app (with MCP) is the primary interface; standalone HTTP server is redundant
-
-**2. Test Server**
+**1. Test Server**
 - **Location:** `cmd/testserver/`
 - **Status:** Development only
-- **Purpose:** Testing HTTP server functionality in isolation
+- **Purpose:** Testing with hot-reload via `air`
 
-### Why MCP Instead of HTTP?
+### Why Multiple Interfaces?
 
-BlueSnake shifted focus from standalone HTTP server to MCP server for the following reasons:
+BlueSnake provides multiple interfaces for different use cases:
 
-1. **AI-First Design** - MCP enables direct integration with AI tools (Claude, GPT, etc.)
-2. **Standardized Protocol** - MCP provides consistent tool interface for LLMs
-3. **Desktop Integration** - Embedded MCP server provides best of both worlds
-4. **Future Flexibility** - MCP can be run standalone if needed
-5. **Reduced Complexity** - One primary interface (desktop) instead of multiple binaries
+1. **Desktop App** - Best for interactive use with visual feedback
+2. **HTTP Server** - Best for programmatic access, CI/CD, and custom integrations
+3. **MCP Server** - Best for AI/LLM integration (Claude, GPT, etc.)
 
 ### Deployment Scenarios
 
-**Scenario 1: Individual User (Default)**
+**Scenario 1: Individual User (Desktop)**
 ```
 User installs desktop app → Uses GUI for crawling → Optionally enables MCP for AI integration
 ```
 
-**Scenario 2: AI/LLM Integration**
+**Scenario 2: Programmatic Access (HTTP Server)**
+```
+Deploy HTTP server → Applications connect via REST API → Automated crawling pipelines
+```
+
+**Scenario 3: AI/LLM Integration (MCP)**
 ```
 User starts desktop app → Enables MCP server → AI tool (Claude Desktop) connects → AI controls crawler
 ```
 
-**Scenario 3: Standalone MCP (Future)**
+**Scenario 4: Development (Test Server)**
 ```
-Deploy MCP server on cloud/server → Multiple AI agents connect remotely → Shared crawler instance
-```
-
-**Scenario 4: Development/Testing**
-```
-Use cmd/testserver for HTTP API testing → Not for production deployment
+Run `air` for hot-reload development → Test server restarts on code changes
 ```
 
 ---
