@@ -94,8 +94,19 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
+## Development
+
+For development with hot-reload, use [air](https://github.com/air-verse/air):
+
+```bash
+# Install air
+go install github.com/air-verse/air@latest
+
+# Run with hot-reload from project root
+air
+```
+
 ## Related
 
 - [API Documentation](../../API.md) - Complete REST API reference
 - [Architecture](../../ARCHITECTURE.md) - System architecture overview
-- [Test Server](../testserver/README.md) - Development server with hot-reload

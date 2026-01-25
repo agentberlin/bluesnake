@@ -72,10 +72,8 @@ bluesnake/
     │       └── src/
     │           ├── App.tsx       # Main UI component
     │           └── Config.tsx    # Configuration UI
-    ├── server/               # Production HTTP server
-    │   └── main.go           # Server entry point
-    └── testserver/           # Test HTTP server (development only, with hot-reload via air)
-        └── main.go           # Standalone server for testing
+    └── server/               # HTTP server (use `air` for hot-reload during development)
+        └── main.go           # Server entry point
 ```
 
 ---
@@ -1924,12 +1922,15 @@ BlueSnake ships the following components:
 - **Purpose:** Enable AI tools to control crawler
 - **Protocol:** Model Context Protocol (HTTP+SSE)
 
-### Development Components
+### Development
 
-**1. Test Server**
-- **Location:** `cmd/testserver/`
-- **Status:** Development only
-- **Purpose:** Testing with hot-reload via `air`
+For development with hot-reload, use [air](https://github.com/air-verse/air):
+
+```bash
+air
+```
+
+This rebuilds and restarts `cmd/server` on code changes. Configuration is in `.air.toml`.
 
 ### Why Multiple Interfaces?
 
@@ -1956,9 +1957,9 @@ Deploy HTTP server → Applications connect via REST API → Automated crawling 
 User starts desktop app → Enables MCP server → AI tool (Claude Desktop) connects → AI controls crawler
 ```
 
-**Scenario 4: Development (Test Server)**
+**Scenario 4: Development**
 ```
-Run `air` for hot-reload development → Test server restarts on code changes
+Run `air` for hot-reload development → Server restarts on code changes
 ```
 
 ---

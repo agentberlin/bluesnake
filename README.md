@@ -35,7 +35,7 @@ go install github.com/air-verse/air@latest
 air
 ```
 
-This runs the test server (`cmd/testserver`) with automatic rebuilds on code changes.
+Air automatically rebuilds and restarts the server on code changes. Configuration is in `.air.toml`.
 
 ## Documentation
 
