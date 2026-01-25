@@ -17,7 +17,7 @@ RUN go mod download
 COPY . .
 
 # Build the server binary with CGO enabled (required for SQLite)
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o bluesnake-server ./cmd/testserver
+RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o bluesnake-server ./cmd/server
 
 # Runtime stage - use a minimal image with Chrome for JS rendering
 FROM debian:bookworm-slim
