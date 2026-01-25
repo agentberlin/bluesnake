@@ -64,3 +64,12 @@ func (s *Store) GetPageLinks(crawlID uint, pageURL string) (inlinks []PageLink, 
 
 	return inlinks, outlinks, nil
 }
+
+// GetAllLinksForCrawl retrieves all links for a crawl (for export)
+func (s *Store) GetAllLinksForCrawl(crawlID uint) ([]PageLink, error) {
+	var links []PageLink
+	if err := s.db.Where("crawl_id = ?", crawlID).Find(&links).Error; err != nil {
+		return nil, fmt.Errorf("failed to get all links: %v", err)
+	}
+	return links, nil
+}

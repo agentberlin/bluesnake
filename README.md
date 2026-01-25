@@ -7,7 +7,28 @@ A production-grade web crawler with multiple interfaces for SEO analysis and web
 - [Windows](https://storage.agentberlin.ai/bluesnake/BlueSnake-Windows-x64.exe)
 - [macOS](https://storage.agentberlin.ai/bluesnake/BlueSnake-macOS-Universal.dmg)
 
-## Run the HTTP Server
+## Command-Line Interface (CLI)
+
+```bash
+# Build the CLI
+go build -o bluesnake ./cmd/cli
+
+# Crawl a website
+./bluesnake crawl https://example.com
+
+# Crawl with options
+./bluesnake crawl https://example.com -p 10 --js-rendering -o ./results
+
+# Export results
+./bluesnake export --crawl-id 1 --format csv -o ./export
+
+# List projects
+./bluesnake list projects
+```
+
+See [cmd/cli/README.md](cmd/cli/README.md) for complete CLI documentation.
+
+## HTTP Server
 
 ```bash
 # Run with default settings (0.0.0.0:8080)
@@ -41,4 +62,5 @@ Air automatically rebuilds and restarts the server on code changes. Configuratio
 
 - [API.md](API.md) - REST API reference
 - [ARCHITECTURE.md](ARCHITECTURE.md) - System architecture
+- [cmd/cli/README.md](cmd/cli/README.md) - CLI documentation
 - [cmd/server/README.md](cmd/server/README.md) - Server deployment guide

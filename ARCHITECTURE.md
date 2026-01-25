@@ -9,6 +9,7 @@ BlueSnake is a production-grade web crawler with multiple interfaces. It consist
 3. **Desktop Application** - Wails-based GUI application with embedded MCP server (cmd/desktop/ directory)
 4. **MCP Server** - Model Context Protocol server for AI/LLM integration (internal/mcp/ directory)
 5. **HTTP Server** - REST API server for programmatic access (cmd/server/ directory)
+6. **CLI** - Command-line interface for scripted crawling and automation (cmd/cli/ directory)
 
 ## Project Structure
 
@@ -65,6 +66,12 @@ bluesnake/
 │   └── server/               # HTTP REST API server (internal package)
 │       └── server.go         # HTTP handlers and routing
 └── cmd/                      # Application executables
+    ├── cli/                  # Command-line interface
+    │   ├── main.go           # CLI entry point
+    │   ├── crawl.go          # Crawl command
+    │   ├── export.go         # Export command
+    │   ├── list.go           # List command
+    │   └── progress.go       # Progress display
     ├── desktop/              # Wails desktop application
     │   ├── main.go           # Application entry point
     │   ├── adapter.go        # Wails adapter (WailsEmitter, DesktopApp, MCP integration)
@@ -1914,7 +1921,13 @@ BlueSnake ships the following components:
 - **Use cases:** CI/CD pipelines, custom integrations, headless deployments
 - **Documentation:** See [API.md](API.md) for complete API reference
 
-**3. MCP Server (AI/LLM Integration)**
+**3. CLI (Command-Line Interface)**
+- **Location:** `cmd/cli/`
+- **Purpose:** Scripted crawling and automation
+- **Use cases:** Shell scripts, CI/CD pipelines, batch processing
+- **Documentation:** See [cmd/cli/README.md](cmd/cli/README.md) for complete reference
+
+**4. MCP Server (AI/LLM Integration)**
 - **Location:** `internal/mcp/`
 - **Modes:**
   - Embedded in desktop app (default)
@@ -1937,8 +1950,9 @@ This rebuilds and restarts `cmd/server` on code changes. Configuration is in `.a
 BlueSnake provides multiple interfaces for different use cases:
 
 1. **Desktop App** - Best for interactive use with visual feedback
-2. **HTTP Server** - Best for programmatic access, CI/CD, and custom integrations
-3. **MCP Server** - Best for AI/LLM integration (Claude, GPT, etc.)
+2. **CLI** - Best for scripted crawling, shell pipelines, and automation
+3. **HTTP Server** - Best for programmatic access, CI/CD, and custom integrations
+4. **MCP Server** - Best for AI/LLM integration (Claude, GPT, etc.)
 
 ### Deployment Scenarios
 
@@ -1947,17 +1961,22 @@ BlueSnake provides multiple interfaces for different use cases:
 User installs desktop app → Uses GUI for crawling → Optionally enables MCP for AI integration
 ```
 
-**Scenario 2: Programmatic Access (HTTP Server)**
+**Scenario 2: Command-Line Scripting (CLI)**
+```
+Build CLI binary → Run `bluesnake crawl <url>` → Results exported to files
+```
+
+**Scenario 3: Programmatic Access (HTTP Server)**
 ```
 Deploy HTTP server → Applications connect via REST API → Automated crawling pipelines
 ```
 
-**Scenario 3: AI/LLM Integration (MCP)**
+**Scenario 4: AI/LLM Integration (MCP)**
 ```
 User starts desktop app → Enables MCP server → AI tool (Claude Desktop) connects → AI controls crawler
 ```
 
-**Scenario 4: Development**
+**Scenario 5: Development**
 ```
 Run `air` for hot-reload development → Server restarts on code changes
 ```
@@ -1971,7 +1990,7 @@ BlueSnake demonstrates a clean layered architecture:
 1. **Crawler Package** - Channel-based crawling with race-free visit tracking
 2. **Store Layer** - Data persistence
 3. **Business Logic** - Transport-agnostic orchestration
-4. **Transport Layers** - Desktop (Wails), MCP (AI integration), HTTP (testing only)
+4. **Transport Layers** - Desktop (Wails), CLI, HTTP Server, MCP (AI integration)
 
 ### Key Benefits
 
