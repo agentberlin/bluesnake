@@ -247,6 +247,28 @@ Examples:
 			return fmt.Errorf("invalid robots-txt mode: %s (must be respect, ignore, or ignore-report)", flags.robotsTxt)
 		}
 
+		// WARNING: --include-subdomains has a known bug
+		if flags.includeSubdomains {
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "╔════════════════════════════════════════════════════════════════════════════════╗")
+			fmt.Fprintln(os.Stderr, "║                              ⚠️  WARNING ⚠️                                    ║")
+			fmt.Fprintln(os.Stderr, "║                                                                                ║")
+			fmt.Fprintln(os.Stderr, "║  --include-subdomains flag has a KNOWN BUG that prevents static resources     ║")
+			fmt.Fprintln(os.Stderr, "║  (images, JS, CSS, fonts) from being crawled.                                 ║")
+			fmt.Fprintln(os.Stderr, "║                                                                                ║")
+			fmt.Fprintln(os.Stderr, "║  BUG DETAILS:                                                                  ║")
+			fmt.Fprintln(os.Stderr, "║  - Without flag: 118 URLs crawled (26 images, 25 JS, 5 CSS, 15 fonts)         ║")
+			fmt.Fprintln(os.Stderr, "║  - With flag:    26 URLs crawled (0 images, 0 JS, 0 CSS, 0 fonts)             ║")
+			fmt.Fprintln(os.Stderr, "║                                                                                ║")
+			fmt.Fprintln(os.Stderr, "║  ROOT CAUSE: Unknown - URL filter patterns work correctly in tests.           ║")
+			fmt.Fprintln(os.Stderr, "║  The bug is somewhere in the resource discovery/validation code path          ║")
+			fmt.Fprintln(os.Stderr, "║  when IncludeSubdomains=true. Needs investigation.                            ║")
+			fmt.Fprintln(os.Stderr, "║                                                                                ║")
+			fmt.Fprintln(os.Stderr, "║  WORKAROUND: Remove --include-subdomains flag until this is fixed.            ║")
+			fmt.Fprintln(os.Stderr, "╚════════════════════════════════════════════════════════════════════════════════╝")
+			fmt.Fprintln(os.Stderr, "")
+		}
+
 		// Build sitemap URLs array
 		var sitemapURLs []string
 		if flags.sitemapURL != "" {

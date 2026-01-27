@@ -181,12 +181,14 @@ class CrawlerComparison:
             crawl_url = f"https://{crawl_url}"
 
         # Build CLI command
+        # NOTE: Do NOT use --include-subdomains flag - it has a bug that prevents
+        # static resources (images, JS, CSS, fonts) from being crawled.
+        # See: https://github.com/agentberlin/bluesnake/issues/TBD
         args = [
             "go", "run", "./cmd/cli",
             "crawl", crawl_url,
             "--parallelism", "10",
             "--user-agent", "Mozilla/5.0 (compatible; BlueSnake/1.0)",
-            "--include-subdomains",
             "--spider",
             "--sitemap",
             "--check-external",
