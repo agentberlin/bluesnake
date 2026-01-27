@@ -206,6 +206,25 @@ func (h *httpBackend) Do(request *http.Request, bodySize int, checkRequestHeader
 	for redirectCount := 0; redirectCount < maxRedirects; redirectCount++ {
 		res, err := h.Client.Do(currentRequest)
 		if err != nil {
+			// When CheckRedirect returns an error (other than ErrUseLastResponse),
+			// Client.Do returns both the previous response (the redirect) AND the error.
+			// Check if we got a redirect response with the error (blocked redirect case)
+			if res != nil && res.StatusCode >= 300 && res.StatusCode < 400 {
+				// Store the redirect info in the chain
+				redirectChain = append(redirectChain, &RedirectResponse{
+					URL:        currentRequest.URL.String(),
+					StatusCode: res.StatusCode,
+					Headers:    &res.Header,
+					Location:   res.Header.Get("Location"),
+				})
+				res.Body.Close()
+				// Return a Response with the redirect status and chain, along with the error
+				return &Response{
+					StatusCode:    res.StatusCode,
+					Headers:       &res.Header,
+					RedirectChain: redirectChain,
+				}, err
+			}
 			return nil, err
 		}
 
@@ -225,6 +244,15 @@ func (h *httpBackend) Do(request *http.Request, bodySize int, checkRequestHeader
 			// Build the via chain for the callback
 			via = append(via, currentRequest)
 
+			// Store the redirect info in the chain BEFORE checking if it's blocked
+			// This ensures we have the redirect status even if the destination is filtered
+			redirectChain = append(redirectChain, &RedirectResponse{
+				URL:        currentRequest.URL.String(),
+				StatusCode: res.StatusCode,
+				Headers:    &res.Header,
+				Location:   location,
+			})
+
 			// Create a temporary request for the redirect destination
 			tempReq, err := http.NewRequest("GET", redirectURL.String(), nil)
 			if err != nil {
@@ -238,17 +266,15 @@ func (h *httpBackend) Do(request *http.Request, bodySize int, checkRequestHeader
 				// If CheckRedirect returns an error OTHER than ErrUseLastResponse, stop the redirect
 				if err != nil && err != http.ErrUseLastResponse {
 					res.Body.Close()
-					// Return the error to indicate redirect was blocked
-					return nil, err
+					// Return a Response with the redirect status and chain, along with the error
+					// This allows the caller to know about the redirect even though it was blocked
+					return &Response{
+						StatusCode:    res.StatusCode,
+						Headers:       &res.Header,
+						RedirectChain: redirectChain,
+					}, err
 				}
 			}
-			// This is an intermediate redirect - store it in the chain
-			redirectChain = append(redirectChain, &RedirectResponse{
-				URL:        currentRequest.URL.String(),
-				StatusCode: res.StatusCode,
-				Headers:    &res.Header,
-				Location:   location,
-			})
 
 			// Close the current response body (we don't need it for redirects)
 			res.Body.Close()

@@ -1383,12 +1383,24 @@ func (cr *Crawler) setupCallbacks() {
 			isResource = cr.isLikelyResource(pageURL)
 		}
 
+		// Determine the status code to report
+		// If we have a redirect chain (from a blocked redirect), use the redirect status
+		// Otherwise, use 0 to indicate a network/request error
+		statusCode := 0
+		if r != nil && len(r.RedirectChain) > 0 {
+			// Use the last redirect's status code (the one that was blocked)
+			statusCode = r.RedirectChain[len(r.RedirectChain)-1].StatusCode
+		} else if r != nil && r.StatusCode > 0 {
+			// Use the response status code if available
+			statusCode = r.StatusCode
+		}
+
 		// Route to appropriate callback
 		if isResource {
 			// Resource error - send to OnResourceVisit
 			result := &ResourceResult{
 				URL:         pageURL,
-				Status:      0, // 0 indicates network/request error
+				Status:      statusCode,
 				ContentType: contentType,
 				Error:       err.Error(),
 				Depth:       r.Request.Depth,
@@ -1400,7 +1412,7 @@ func (cr *Crawler) setupCallbacks() {
 
 			result := &PageResult{
 				URL:                pageURL,
-				Status:             0,
+				Status:             statusCode,
 				Title:              "",
 				MetaDescription:    "",
 				Indexable:          "No",
