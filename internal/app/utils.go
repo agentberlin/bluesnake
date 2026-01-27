@@ -111,6 +111,24 @@ func normalizeURL(input string) (string, string, error) {
 	return normalizedURL, hostname, nil
 }
 
+// normalizeURLPath strips trailing slashes from URL paths for consistent storage.
+// This ensures URLs like "http://example.com/" and "http://example.com" are treated as the same.
+func normalizeURLPath(urlStr string) string {
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		return urlStr
+	}
+	// Remove trailing slash from path (but preserve "/" if that's the entire path)
+	if parsed.Path != "/" && strings.HasSuffix(parsed.Path, "/") {
+		parsed.Path = strings.TrimSuffix(parsed.Path, "/")
+	}
+	// For root path, standardize to empty path (http://example.com not http://example.com/)
+	if parsed.Path == "/" {
+		parsed.Path = ""
+	}
+	return parsed.String()
+}
+
 // resolveURL follows redirects and returns the final destination URL.
 // This is used to resolve cases like amahahealth.com -> www.amahahealth.com
 // so that the project is created with the canonical domain.

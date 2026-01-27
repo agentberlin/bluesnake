@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -440,8 +441,9 @@ func TestRedirectDestinationCrawled(t *testing.T) {
 	}
 
 	// Verify that all expected pages were crawled
+	// Note: URLs are normalized (trailing slashes removed) for consistent storage
 	expectedURLs := map[string]bool{
-		testServer.URL + "/":                  false, // Main page
+		testServer.URL:                        false, // Main page (normalized, no trailing slash)
 		testServer.URL + "/final-destination": false, // Redirect destination (CRITICAL)
 		testServer.URL + "/important-page":    false, // Linked from redirect destination (CRITICAL)
 	}
@@ -602,8 +604,9 @@ func TestRedirectChainWithStatusCodes(t *testing.T) {
 	}
 
 	// Verify that ALL URLs in the redirect chain were crawled and have correct status codes
+	// Note: URLs are normalized (trailing slashes removed) for consistent storage
 	expectedURLs := map[string]int{
-		testServer.URL + "/":           200, // Main page (200 OK)
+		testServer.URL:                 200, // Main page (normalized, no trailing slash)
 		testServer.URL + "/redirect-1": 301, // First redirect (301 Moved Permanently)
 		testServer.URL + "/redirect-2": 302, // Second redirect (302 Found)
 		testServer.URL + "/final":      200, // Final destination (200 OK)
@@ -648,5 +651,246 @@ func TestRedirectChainWithStatusCodes(t *testing.T) {
 	}
 
 	t.Log("✓ Redirect chain integration test passed! All intermediate redirects reported with correct status codes.")
+}
+
+// TestSitemapURLsTrackedInDatabase verifies that URLs discovered from sitemap
+// are immediately persisted to the database as "queued" (visited=false).
+//
+// This is a regression test for the bug where sitemap URLs were only stored
+// in an in-memory queue but not in the database, causing:
+// 1. stats.Queued to incorrectly show 0 while sitemap URLs are pending
+// 2. Premature crawl completion detection (CLI thought crawl was done)
+//
+// The fix ensures sitemap URLs are persisted to DiscoveredUrl table with
+// visited=false when discovered, making stats.Queued accurate.
+func TestSitemapURLsTrackedInDatabase(t *testing.T) {
+	// Track when sitemap was fetched and when pages are requested
+	sitemapFetched := make(chan struct{})
+	pageRequestStarted := make(chan struct{}, 10)
+
+	mux := http.NewServeMux()
+
+	// Home page - responds quickly
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<!DOCTYPE html><html><head><title>Home</title></head><body><h1>Home</h1></body></html>`)
+	})
+
+	// Sitemap with 5 URLs - responds quickly
+	mux.HandleFunc("/sitemap.xml", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+	<url><loc>SERVERURL/sitemap-page-1</loc></url>
+	<url><loc>SERVERURL/sitemap-page-2</loc></url>
+	<url><loc>SERVERURL/sitemap-page-3</loc></url>
+	<url><loc>SERVERURL/sitemap-page-4</loc></url>
+	<url><loc>SERVERURL/sitemap-page-5</loc></url>
+</urlset>`)
+		close(sitemapFetched)
+	})
+
+	// Sitemap pages - respond SLOWLY to create a window for checking stats
+	for i := 1; i <= 5; i++ {
+		path := fmt.Sprintf("/sitemap-page-%d", i)
+		pageNum := i
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case pageRequestStarted <- struct{}{}:
+			default:
+			}
+			// Slow response to ensure we have time to check stats
+			time.Sleep(500 * time.Millisecond)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Sitemap Page %d</title></head><body><h1>Page %d</h1></body></html>`, pageNum, pageNum)
+		})
+	}
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	// Replace SERVERURL placeholder in sitemap handler
+	originalHandler := mux
+	wrappedMux := http.NewServeMux()
+	wrappedMux.HandleFunc("/sitemap.xml", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		sitemap := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+	<url><loc>%s/sitemap-page-1</loc></url>
+	<url><loc>%s/sitemap-page-2</loc></url>
+	<url><loc>%s/sitemap-page-3</loc></url>
+	<url><loc>%s/sitemap-page-4</loc></url>
+	<url><loc>%s/sitemap-page-5</loc></url>
+</urlset>`, server.URL, server.URL, server.URL, server.URL, server.URL)
+		fmt.Fprint(w, sitemap)
+		close(sitemapFetched)
+	})
+	wrappedMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		originalHandler.ServeHTTP(w, r)
+	})
+
+	// Recreate server with proper sitemap URLs
+	server.Close()
+	sitemapFetched = make(chan struct{}) // Reset channel
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sitemap.xml" {
+			w.Header().Set("Content-Type", "application/xml")
+			sitemap := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+	<url><loc>%s/sitemap-page-1</loc></url>
+	<url><loc>%s/sitemap-page-2</loc></url>
+	<url><loc>%s/sitemap-page-3</loc></url>
+	<url><loc>%s/sitemap-page-4</loc></url>
+	<url><loc>%s/sitemap-page-5</loc></url>
+</urlset>`, server.URL, server.URL, server.URL, server.URL, server.URL)
+			fmt.Fprint(w, sitemap)
+			select {
+			case <-sitemapFetched:
+			default:
+				close(sitemapFetched)
+			}
+			return
+		}
+		if r.URL.Path == "/" || r.URL.Path == "" {
+			// Initial URL - normalizeURL may strip the trailing slash
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, `<!DOCTYPE html><html><head><title>Home</title></head><body><h1>Home</h1></body></html>`)
+			return
+		}
+		// Sitemap pages - only signal for actual sitemap page requests
+		if strings.HasPrefix(r.URL.Path, "/sitemap-page") {
+			select {
+			case pageRequestStarted <- struct{}{}:
+			default:
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>%s</title></head><body><h1>Content</h1></body></html>`, r.URL.Path)
+	}))
+	defer server.Close()
+
+	t.Logf("Test server started at: %s", server.URL)
+
+	// Create temporary database
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/test.db"
+
+	st, err := store.NewStoreForTesting(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to initialize store: %v", err)
+	}
+
+	emitter := &testEmitter{events: make(map[string]int)}
+	coreApp := app.NewApp(st, emitter)
+	coreApp.Startup(context.Background())
+
+	// Configure to use sitemap discovery (sitemapEnabled=true includes both spider and sitemap)
+	err = coreApp.UpdateConfigForDomain(
+		server.URL,
+		false,          // jsRendering
+		0, 0, 0,        // initialWaitMs, scrollWaitMs, finalWaitMs
+		5,              // parallelism
+		20,             // requestTimeoutSecs
+		"test-crawler", // userAgent
+		false,          // includeSubdomains
+		false,          // spiderEnabled (false so we only get sitemap URLs, not spider)
+		true,           // sitemapEnabled
+		nil,            // sitemapURLs (use default /sitemap.xml)
+		false,          // checkExternalResources
+		"standard",     // robotsTxtMode
+		false,          // followInternalNofollow
+		false,          // followExternalNofollow
+		false,          // respectMetaRobotsNoindex
+		false,          // respectNoindex
+	)
+	if err != nil {
+		t.Fatalf("Failed to configure crawl settings: %v", err)
+	}
+
+	// Start the crawl
+	projectInfo, err := coreApp.StartCrawl(server.URL + "/")
+	if err != nil {
+		t.Fatalf("Failed to start crawl: %v", err)
+	}
+
+	t.Logf("Crawl started: Project ID=%d, Crawl ID=%d", projectInfo.ID, projectInfo.LatestCrawlID)
+
+	// Wait for sitemap to be fetched
+	select {
+	case <-sitemapFetched:
+		t.Log("Sitemap was fetched")
+	case <-time.After(10 * time.Second):
+		t.Fatal("Timeout waiting for sitemap to be fetched")
+	}
+
+	// Wait a moment for sitemap URLs to be queued
+	time.Sleep(200 * time.Millisecond)
+
+	// Wait for at least one page request to start (proves URLs are being processed)
+	select {
+	case <-pageRequestStarted:
+		t.Log("At least one sitemap page request started")
+	case <-time.After(5 * time.Second):
+		t.Log("Warning: No sitemap page requests started yet")
+	}
+
+	// Small delay to ensure database writes complete
+	// The OnURLQueued callback writes to DB before worker submission,
+	// but we need to wait for the write to complete before checking stats
+	time.Sleep(100 * time.Millisecond)
+
+	// THIS IS THE KEY ASSERTION:
+	// Check stats while crawl is still in progress
+	// If sitemap URLs are properly tracked, stats.Queued should be > 0
+	// (some sitemap URLs should be pending while others are being crawled)
+	stats, err := coreApp.GetCrawlStats(projectInfo.LatestCrawlID)
+	if err != nil {
+		t.Fatalf("Failed to get crawl stats: %v", err)
+	}
+
+	t.Logf("Stats during crawl: Total=%d, Crawled=%d, Queued=%d", stats.Total, stats.Crawled, stats.Queued)
+
+	// The bug: stats.Queued is 0 even though sitemap URLs are pending
+	// After the fix: stats.Queued should reflect pending sitemap URLs
+	//
+	// We check that Total > Crawled OR Queued > 0, which indicates
+	// that the system knows about URLs that haven't been crawled yet
+	if stats.Total <= stats.Crawled && stats.Queued == 0 {
+		t.Errorf("BUG: Database doesn't know about pending sitemap URLs!\n"+
+			"  Total=%d, Crawled=%d, Queued=%d\n"+
+			"  Expected: Either Total > Crawled OR Queued > 0\n"+
+			"  This means sitemap URLs are only in memory, not persisted to database.",
+			stats.Total, stats.Crawled, stats.Queued)
+	} else {
+		t.Logf("✓ Sitemap URLs are properly tracked in database (Total=%d, Crawled=%d, Queued=%d)",
+			stats.Total, stats.Crawled, stats.Queued)
+	}
+
+	// Wait for crawl to complete
+	maxWait := 30 * time.Second
+	checkInterval := 100 * time.Millisecond
+	deadline := time.Now().Add(maxWait)
+
+	for time.Now().Before(deadline) {
+		activeCrawls := coreApp.GetActiveCrawls()
+		if len(activeCrawls) == 0 {
+			break
+		}
+		time.Sleep(checkInterval)
+	}
+
+	// Verify all sitemap pages were eventually crawled
+	finalStats, err := coreApp.GetCrawlStats(projectInfo.LatestCrawlID)
+	if err != nil {
+		t.Fatalf("Failed to get final stats: %v", err)
+	}
+
+	t.Logf("Final stats: Total=%d, Crawled=%d, HTML=%d", finalStats.Total, finalStats.Crawled, finalStats.HTML)
+
+	// Should have crawled at least 6 pages (home + 5 sitemap pages)
+	if finalStats.HTML < 6 {
+		t.Errorf("Expected at least 6 HTML pages crawled, got %d", finalStats.HTML)
+	}
 }
 

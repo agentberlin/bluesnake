@@ -101,7 +101,7 @@ func (h *httpBackend) Init(jar http.CookieJar) {
 	rand.Seed(time.Now().UnixNano())
 	h.Client = &http.Client{
 		Jar:     jar,
-		Timeout: 10 * time.Second,
+		Timeout: 20 * time.Second, // Match ScreamingFrog's default timeout
 	}
 	h.lock = &sync.RWMutex{}
 }

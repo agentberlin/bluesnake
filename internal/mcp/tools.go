@@ -181,6 +181,7 @@ func (s *MCPServer) applyConfig(urlStr string, config *CrawlConfigArgs) error {
 		configResp.ScrollWaitMs,
 		configResp.FinalWaitMs,
 		configResp.Parallelism,
+		configResp.RequestTimeoutSecs,
 		configResp.UserAgent,
 		configResp.IncludeSubdomains,
 		spiderEnabled,

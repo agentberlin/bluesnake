@@ -75,6 +75,7 @@ type ConfigResponse struct {
 	ScrollWaitMs               int      `json:"scrollWaitMs"`
 	FinalWaitMs                int      `json:"finalWaitMs"`
 	Parallelism                int      `json:"parallelism"`
+	RequestTimeoutSecs         int      `json:"requestTimeoutSecs"` // HTTP request timeout in seconds
 	UserAgent                  string   `json:"userAgent"`
 	IncludeSubdomains          bool     `json:"includeSubdomains"`
 	DiscoveryMechanisms        []string `json:"discoveryMechanisms"`

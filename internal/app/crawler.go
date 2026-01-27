@@ -397,6 +397,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		HTTP: &bluesnake.HTTPConfig{
 			UserAgent:       config.UserAgent,
 			EnableRendering: config.JSRenderingEnabled,
+			RequestTimeout:  time.Duration(config.RequestTimeoutSecs) * time.Second,
 		},
 		// Incremental crawling settings
 		MaxURLsToVisit: config.CrawlBudget,
@@ -416,6 +417,20 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 	// Set up URL discovery handler for categorization
 	a.setupURLDiscoveryHandler(crawler)
 
+	// Set up callback for when URLs are queued for crawling
+	// This fires AFTER all filters pass and BEFORE worker submission
+	// Persisting URLs immediately makes database the single source of truth for progress
+	crawler.SetOnURLQueued(func(url string, source string, depth int) {
+		// Normalize URL to ensure consistent storage (strip trailing slashes)
+		normalizedURL := normalizeURLPath(url)
+		// Save URL to database immediately with visited=false
+		// This ensures stats.Queued is accurate for completion detection
+		indexable := "-" // Not yet crawled, indexability unknown
+		if err := a.store.SaveOrUpdateDiscoveredUrl(stats.crawlID, normalizedURL, false, 0, "", "", "", "", "", 0, "", indexable, "", "", depth); err != nil {
+			log.Printf("Failed to save queued URL %s: %v", normalizedURL, err)
+		}
+	})
+
 	// Add the starting URL to discovered URLs so it shows up in the UI immediately
 	stats.discoveredURLs.Store(parsedURL.String(), true)
 
@@ -428,10 +443,13 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		default:
 		}
 
+		// Normalize URL to ensure consistent storage (strip trailing slashes)
+		normalizedURL := normalizeURLPath(result.URL)
+
 		// Save resource to database (same table as pages, but won't count as "page crawled")
-		// Status 0 means error/unreachable
+		// Use SaveOrUpdateDiscoveredUrl since URL may have been pre-saved by OnURLQueued
 		indexable := "-" // Resources are not indexable by search engines
-		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, "", "", "", "", "", 0, "", indexable, result.ContentType, result.Error, result.Depth); err != nil {
+		if err := a.store.SaveOrUpdateDiscoveredUrl(stats.crawlID, normalizedURL, true, result.Status, "", "", "", "", "", 0, "", indexable, result.ContentType, result.Error, result.Depth); err != nil {
 			log.Printf("Failed to save resource URL: %v", err)
 		}
 
@@ -460,14 +478,17 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 		default:
 		}
 
+		// Normalize URL to ensure consistent storage (strip trailing slashes)
+		normalizedURL := normalizeURLPath(result.URL)
+
 		// Mark this URL as crawled (for UI tracking)
-		stats.crawledURLs.Store(result.URL, true)
+		stats.crawledURLs.Store(normalizedURL, true)
 
 		// Track all discovered URLs from this page
 		// Add internal links (these are the crawlable URLs we discover)
 		if result.Links != nil {
 			for _, link := range result.Links.Internal {
-				stats.discoveredURLs.Store(link.URL, true)
+				stats.discoveredURLs.Store(normalizeURLPath(link.URL), true)
 			}
 		}
 
@@ -477,15 +498,15 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 			stats.totalURLsCrawled++ // All URLs including pages
 		}
 
-		// Save to database - all crawling logic handled by bluesnake
-		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, result.Title, result.MetaDescription, result.H1, result.H2, result.CanonicalURL, result.WordCount, result.ContentHash, result.Indexable, result.ContentType, result.Error, result.Depth); err != nil {
+		// Save to database - use SaveOrUpdateDiscoveredUrl since URL may have been pre-saved by OnURLQueued
+		if err := a.store.SaveOrUpdateDiscoveredUrl(stats.crawlID, normalizedURL, true, result.Status, result.Title, result.MetaDescription, result.H1, result.H2, result.CanonicalURL, result.WordCount, result.ContentHash, result.Indexable, result.ContentType, result.Error, result.Depth); err != nil {
 			log.Printf("Failed to save crawled URL: %v", err)
 		}
 
 		// For incremental crawling, add URL to queue and mark as visited, then add discovered URLs
 		// Using AddAndMarkVisited ensures ALL crawled URLs are tracked (sitemap, redirects, etc.)
 		if config.IncrementalCrawlingEnabled {
-			if err := a.store.AddAndMarkVisited(projectID, result.URL, int64(bluesnake.URLHash(result.URL)), "crawled"); err != nil {
+			if err := a.store.AddAndMarkVisited(projectID, normalizedURL, int64(bluesnake.URLHash(normalizedURL)), "crawled"); err != nil {
 				log.Printf("Failed to add/mark URL visited in queue: %v", err)
 			}
 
@@ -494,10 +515,11 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 				var queueItems []store.CrawlQueueItem
 				for _, link := range result.Links.Internal {
 					if link.Action == bluesnake.URLActionCrawl {
+						linkURL := normalizeURLPath(link.URL)
 						queueItems = append(queueItems, store.CrawlQueueItem{
 							ProjectID: projectID,
-							URL:       link.URL,
-							URLHash:   int64(bluesnake.URLHash(link.URL)),
+							URL:       linkURL,
+							URLHash:   int64(bluesnake.URLHash(linkURL)),
 							Source:    "spider",
 							Depth:     0,
 							Visited:   false,
@@ -545,7 +567,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 				if link.Action == bluesnake.URLActionRecordOnly {
 					// Save to DiscoveredUrl with visited=false
 					indexable := "-" // Unvisited URLs don't have indexability info
-					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", "", "", 0, "", indexable, link.ContentType, "", result.Depth+1); err != nil {
+					if err := a.store.SaveOrUpdateDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", "", "", 0, "", indexable, link.ContentType, "", result.Depth+1); err != nil {
 						log.Printf("Failed to save unvisited URL: %v", err)
 					}
 				}
@@ -577,7 +599,7 @@ func (a *App) runCrawler(parsedURL *url.URL, normalizedURL string, domain string
 				if link.Action == bluesnake.URLActionRecordOnly {
 					// Save to DiscoveredUrl with visited=false
 					indexable := "-" // Unvisited URLs don't have indexability info
-					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", "", "", 0, "", indexable, link.ContentType, "", result.Depth+1); err != nil {
+					if err := a.store.SaveOrUpdateDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", "", "", 0, "", indexable, link.ContentType, "", result.Depth+1); err != nil {
 						log.Printf("Failed to save unvisited URL: %v", err)
 					}
 				}
@@ -867,6 +889,20 @@ func (a *App) ClearCrawlQueue(projectID uint) error {
 
 // setupCrawlerCallbacks sets up all the crawler callbacks for both fresh and resume crawls
 func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context.Context, stats *crawlStats, config *store.Config, domain string, projectID uint, crawlID uint, runID *uint) {
+	// Set up callback for when URLs are queued for crawling
+	// This fires AFTER all filters pass and BEFORE worker submission
+	// Persisting URLs immediately makes database the single source of truth for progress
+	crawler.SetOnURLQueued(func(url string, source string, depth int) {
+		// Normalize URL to ensure consistent storage (strip trailing slashes)
+		normalizedURL := normalizeURLPath(url)
+		// Save URL to database immediately with visited=false
+		// This ensures stats.Queued is accurate for completion detection
+		indexable := "-" // Not yet crawled, indexability unknown
+		if err := a.store.SaveOrUpdateDiscoveredUrl(stats.crawlID, normalizedURL, false, 0, "", "", "", "", "", 0, "", indexable, "", "", depth); err != nil {
+			log.Printf("Failed to save queued URL %s: %v", normalizedURL, err)
+		}
+	})
+
 	// Set up callback for resource visits
 	crawler.SetOnResourceVisit(func(result *bluesnake.ResourceResult) {
 		select {
@@ -875,8 +911,11 @@ func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context
 		default:
 		}
 
+		// Normalize URL to ensure consistent storage (strip trailing slashes)
+		normalizedURL := normalizeURLPath(result.URL)
+
 		indexable := "-"
-		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, "", "", "", "", "", 0, "", indexable, result.ContentType, result.Error, result.Depth); err != nil {
+		if err := a.store.SaveOrUpdateDiscoveredUrl(stats.crawlID, normalizedURL, true, result.Status, "", "", "", "", "", 0, "", indexable, result.ContentType, result.Error, result.Depth); err != nil {
 			log.Printf("Failed to save resource URL: %v", err)
 		}
 
@@ -901,11 +940,14 @@ func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context
 		default:
 		}
 
-		stats.crawledURLs.Store(result.URL, true)
+		// Normalize URL to ensure consistent storage (strip trailing slashes)
+		normalizedURL := normalizeURLPath(result.URL)
+
+		stats.crawledURLs.Store(normalizedURL, true)
 
 		if result.Links != nil {
 			for _, link := range result.Links.Internal {
-				stats.discoveredURLs.Store(link.URL, true)
+				stats.discoveredURLs.Store(normalizeURLPath(link.URL), true)
 			}
 		}
 
@@ -914,14 +956,15 @@ func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context
 			stats.totalURLsCrawled++
 		}
 
-		if err := a.store.SaveDiscoveredUrl(stats.crawlID, result.URL, true, result.Status, result.Title, result.MetaDescription, result.H1, result.H2, result.CanonicalURL, result.WordCount, result.ContentHash, result.Indexable, result.ContentType, result.Error, result.Depth); err != nil {
+		// Use SaveOrUpdateDiscoveredUrl since URL may have been pre-saved by OnURLQueued
+		if err := a.store.SaveOrUpdateDiscoveredUrl(stats.crawlID, normalizedURL, true, result.Status, result.Title, result.MetaDescription, result.H1, result.H2, result.CanonicalURL, result.WordCount, result.ContentHash, result.Indexable, result.ContentType, result.Error, result.Depth); err != nil {
 			log.Printf("Failed to save crawled URL: %v", err)
 		}
 
 		// For incremental crawling, add URL to queue and mark as visited, then add discovered URLs
 		// Using AddAndMarkVisited ensures ALL crawled URLs are tracked (sitemap, redirects, etc.)
 		if config.IncrementalCrawlingEnabled {
-			if err := a.store.AddAndMarkVisited(projectID, result.URL, int64(bluesnake.URLHash(result.URL)), "crawled"); err != nil {
+			if err := a.store.AddAndMarkVisited(projectID, normalizedURL, int64(bluesnake.URLHash(normalizedURL)), "crawled"); err != nil {
 				log.Printf("Failed to add/mark URL visited in queue: %v", err)
 			}
 
@@ -930,10 +973,11 @@ func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context
 				var queueItems []store.CrawlQueueItem
 				for _, link := range result.Links.Internal {
 					if link.Action == bluesnake.URLActionCrawl {
+						linkURL := normalizeURLPath(link.URL)
 						queueItems = append(queueItems, store.CrawlQueueItem{
 							ProjectID: projectID,
-							URL:       link.URL,
-							URLHash:   int64(bluesnake.URLHash(link.URL)),
+							URL:       linkURL,
+							URLHash:   int64(bluesnake.URLHash(linkURL)),
 							Source:    "spider",
 							Depth:     0,
 							Visited:   false,
@@ -977,7 +1021,7 @@ func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context
 
 				if link.Action == bluesnake.URLActionRecordOnly {
 					indexable := "-"
-					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", "", "", 0, "", indexable, link.ContentType, "", result.Depth+1); err != nil {
+					if err := a.store.SaveOrUpdateDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", "", "", 0, "", indexable, link.ContentType, "", result.Depth+1); err != nil {
 						log.Printf("Failed to save unvisited URL: %v", err)
 					}
 				}
@@ -1007,7 +1051,7 @@ func (a *App) setupCrawlerCallbacks(crawler *bluesnake.Crawler, crawlCtx context
 
 				if link.Action == bluesnake.URLActionRecordOnly {
 					indexable := "-"
-					if err := a.store.SaveDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", "", "", 0, "", indexable, link.ContentType, "", result.Depth+1); err != nil {
+					if err := a.store.SaveOrUpdateDiscoveredUrl(stats.crawlID, link.URL, false, status, link.Title, "", "", "", "", 0, "", indexable, link.ContentType, "", result.Depth+1); err != nil {
 						log.Printf("Failed to save unvisited URL: %v", err)
 					}
 				}
@@ -1217,6 +1261,7 @@ func (a *App) runCrawlerWithResume(parsedURL *url.URL, normalizedURL string, dom
 		HTTP: &bluesnake.HTTPConfig{
 			UserAgent:       config.UserAgent,
 			EnableRendering: config.JSRenderingEnabled,
+			RequestTimeout:  time.Duration(config.RequestTimeoutSecs) * time.Second,
 		},
 		MaxURLsToVisit:   config.CrawlBudget,
 		PreVisitedHashes: preVisitedHashes,

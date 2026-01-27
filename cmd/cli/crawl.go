@@ -37,6 +37,7 @@ type crawlFlags struct {
 
 	// Core options
 	parallelism       int
+	responseTimeout   int
 	userAgent         string
 	includeSubdomains bool
 	maxURLs           int
@@ -82,6 +83,8 @@ func runCrawl(args []string) error {
 	// Core options
 	fs.IntVar(&flags.parallelism, "parallelism", 5, "Number of concurrent requests")
 	fs.IntVar(&flags.parallelism, "p", 5, "Number of concurrent requests (shorthand)")
+	fs.IntVar(&flags.responseTimeout, "response-timeout", 20, "Timeout in seconds waiting for server response")
+	fs.IntVar(&flags.responseTimeout, "T", 20, "Response timeout in seconds (shorthand)")
 	fs.StringVar(&flags.userAgent, "user-agent", "bluesnake/1.0 (+https://snake.blue)", "Custom User-Agent string")
 	fs.StringVar(&flags.userAgent, "A", "bluesnake/1.0 (+https://snake.blue)", "Custom User-Agent string (shorthand)")
 	fs.BoolVar(&flags.includeSubdomains, "include-subdomains", false, "Crawl all subdomains of the target domain")
@@ -153,7 +156,11 @@ Examples:
     --output ./results`)
 	}
 
-	if err := fs.Parse(args); err != nil {
+	// Reorder args: move positional arguments (URLs) to the end
+	// so that Go's flag package parses all flags first
+	reorderedArgs := reorderArgsForFlagParsing(args)
+
+	if err := fs.Parse(reorderedArgs); err != nil {
 		return err
 	}
 
@@ -254,6 +261,7 @@ Examples:
 			flags.scrollWait,
 			flags.finalWait,
 			flags.parallelism,
+			flags.responseTimeout,
 			flags.userAgent,
 			flags.includeSubdomains,
 			flags.spider,
@@ -379,6 +387,71 @@ Examples:
 	}
 
 	return nil
+}
+
+// reorderArgsForFlagParsing moves positional arguments to the end of the args slice
+// so that Go's flag package can parse all flags correctly.
+// Go's flag package stops parsing at the first non-flag argument, so we need to
+// ensure flags come before positional arguments.
+func reorderArgsForFlagParsing(args []string) []string {
+	var flags []string
+	var positional []string
+
+	i := 0
+	for i < len(args) {
+		arg := args[i]
+
+		// Check if this is a flag (starts with - or --)
+		if strings.HasPrefix(arg, "-") {
+			flags = append(flags, arg)
+
+			// Check if this flag takes a value
+			// Flags that use = syntax (--flag=value) are self-contained
+			if !strings.Contains(arg, "=") {
+				// Check if this is a boolean flag (no value needed)
+				// We need to peek at the next arg to see if it's a value
+				isBoolFlag := isBooleanFlag(arg)
+				if !isBoolFlag && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					// This flag takes a value, include the next arg
+					i++
+					flags = append(flags, args[i])
+				}
+			}
+		} else {
+			// This is a positional argument (e.g., URL)
+			positional = append(positional, arg)
+		}
+		i++
+	}
+
+	// Return flags first, then positional arguments
+	return append(flags, positional...)
+}
+
+// isBooleanFlag checks if a flag name corresponds to a boolean flag
+func isBooleanFlag(flag string) bool {
+	// Remove leading dashes
+	name := strings.TrimLeft(flag, "-")
+
+	// List of known boolean flags
+	boolFlags := map[string]bool{
+		"resume": true, "r": true,
+		"include-subdomains": true,
+		"js-rendering":       true, "j": true,
+		"spider":                   true,
+		"sitemap":                  true,
+		"check-external":           true,
+		"follow-nofollow-internal": true,
+		"follow-nofollow-external": true,
+		"respect-noindex":          true,
+		"respect-meta-noindex":     true,
+		"export":                   true, "e": true,
+		"export-links":   true,
+		"export-content": true,
+		"quiet":          true, "q": true,
+	}
+
+	return boolFlags[name]
 }
 
 // waitForCrawlCompletion polls for crawl completion and displays progress

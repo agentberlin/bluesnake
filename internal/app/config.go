@@ -50,6 +50,7 @@ func (a *App) GetConfigForDomain(urlStr string) (*types.ConfigResponse, error) {
 		ScrollWaitMs:               config.ScrollWaitMs,
 		FinalWaitMs:                config.FinalWaitMs,
 		Parallelism:                config.Parallelism,
+		RequestTimeoutSecs:         config.RequestTimeoutSecs,
 		UserAgent:                  config.UserAgent,
 		IncludeSubdomains:          config.IncludeSubdomains,
 		DiscoveryMechanisms:        config.GetDiscoveryMechanismsArray(),
@@ -71,6 +72,7 @@ func (a *App) UpdateConfigForDomain(
 	jsRendering bool,
 	initialWaitMs, scrollWaitMs, finalWaitMs int,
 	parallelism int,
+	requestTimeoutSecs int,
 	userAgent string,
 	includeSubdomains bool,
 	spiderEnabled bool,
@@ -136,7 +138,7 @@ func (a *App) UpdateConfigForDomain(
 		}
 	}
 
-	return a.store.UpdateConfig(project.ID, jsRendering, initialWaitMs, scrollWaitMs, finalWaitMs, parallelism, userAgent, includeSubdomains, mechanisms, sitemapURLs, checkExternalResources, robotsTxtMode, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex)
+	return a.store.UpdateConfig(project.ID, jsRendering, initialWaitMs, scrollWaitMs, finalWaitMs, parallelism, requestTimeoutSecs, userAgent, includeSubdomains, mechanisms, sitemapURLs, checkExternalResources, robotsTxtMode, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex)
 }
 
 // stringSliceEqual checks if two string slices are equal

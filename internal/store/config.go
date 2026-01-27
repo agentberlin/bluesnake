@@ -64,7 +64,7 @@ func (s *Store) GetOrCreateConfig(projectID uint, domain string) (*Config, error
 }
 
 // UpdateConfig updates the configuration for a project
-func (s *Store) UpdateConfig(projectID uint, jsRendering bool, initialWaitMs, scrollWaitMs, finalWaitMs int, parallelism int, userAgent string, includeSubdomains bool, discoveryMechanisms []string, sitemapURLs []string, checkExternalResources bool, robotsTxtMode string, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex bool) error {
+func (s *Store) UpdateConfig(projectID uint, jsRendering bool, initialWaitMs, scrollWaitMs, finalWaitMs int, parallelism int, requestTimeoutSecs int, userAgent string, includeSubdomains bool, discoveryMechanisms []string, sitemapURLs []string, checkExternalResources bool, robotsTxtMode string, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex bool) error {
 	var config Config
 
 	result := s.db.Where("project_id = ?", projectID).First(&config)
@@ -79,6 +79,7 @@ func (s *Store) UpdateConfig(projectID uint, jsRendering bool, initialWaitMs, sc
 	config.ScrollWaitMs = scrollWaitMs
 	config.FinalWaitMs = finalWaitMs
 	config.Parallelism = parallelism
+	config.RequestTimeoutSecs = requestTimeoutSecs
 	config.UserAgent = userAgent
 	config.IncludeSubdomains = includeSubdomains
 	config.CheckExternalResources = checkExternalResources

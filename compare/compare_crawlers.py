@@ -8,21 +8,25 @@ import argparse
 import csv
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.parse
 from collections import defaultdict
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 class CrawlerComparison:
-    def __init__(self, domain: str, bluesnake_only: bool = False, js_rendering: bool = False):
+    def __init__(self, domain: str, bluesnake_only: bool = False, js_rendering: bool = False, skip_outlinks: bool = False):
         self.domain = domain
         self.bluesnake_only = bluesnake_only
         self.js_rendering = js_rendering
+        self.skip_outlinks = skip_outlinks
         self.sf_output_dir = Path("/tmp/crawlertest/sf")
         self.bs_output_dir = Path("/tmp/crawlertest/bs")
         self.scream_executable = (
@@ -49,6 +53,7 @@ class CrawlerComparison:
             "outlink_diffs": {},
             "page_attribute_diffs": {},
             "link_attribute_diffs": {},
+            "content_diffs": {},
         }
 
     def should_filter_url(self, url: str) -> bool:
@@ -187,6 +192,7 @@ class CrawlerComparison:
             "--check-external",
             "--format", "json",
             "--export-links",
+            "--export-content",
             "--output", str(self.bs_output_dir),
         ]
 
@@ -247,10 +253,18 @@ class CrawlerComparison:
 
         try:
             with open(internal_file, "r") as f:
-                pages = json.load(f)
+                data = json.load(f)
 
-            # Convert to the format expected by comparison methods
-            return {"results": pages}
+            # The CLI outputs {"crawlId": ..., "results": [...]}
+            # Extract the results array for comparison
+            if isinstance(data, dict) and "results" in data:
+                return {"results": data["results"]}
+            # Fallback for raw list format
+            elif isinstance(data, list):
+                return {"results": data}
+            else:
+                print(f"ERROR: Unexpected BlueSnake data format")
+                return None
         except Exception as e:
             print(f"ERROR: Loading BlueSnake data: {e}")
             return None
@@ -264,16 +278,27 @@ class CrawlerComparison:
 
         try:
             with open(outlinks_file, "r") as f:
-                links = json.load(f)
+                data = json.load(f)
+
+            # Handle CLI format: {"crawlId": ..., "links": [...]}
+            if isinstance(data, dict) and "links" in data:
+                links = data["links"]
+            elif isinstance(data, list):
+                links = data
+            else:
+                print(f"WARNING: Unexpected outlinks format")
+                return {}
 
             # Group by source URL
+            # CLI uses sourceUrl/targetUrl, older format uses from/to
             outlinks_by_source: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
             for link in links:
-                source = link.get("from", "")
+                # Support both field naming conventions
+                source = link.get("sourceUrl") or link.get("from", "")
                 if source:
                     outlinks_by_source[source].append({
-                        "url": link.get("to", ""),
-                        "anchor": link.get("anchor", ""),
+                        "url": link.get("targetUrl") or link.get("to", ""),
+                        "anchor": link.get("linkText") or link.get("anchor", ""),
                         "linkType": link.get("linkType", ""),
                         "follow": link.get("follow", True),
                         "target": link.get("target", ""),
@@ -765,6 +790,355 @@ class CrawlerComparison:
             "link_type_diffs": len(attribute_diffs["link_type"]),
         }
 
+    def normalize_text(self, text: str) -> str:
+        """
+        Normalize text for comparison.
+        Handles whitespace, unicode, case, and common extraction differences.
+        """
+        if not text:
+            return ""
+
+        # Unicode normalization (NFC form)
+        text = unicodedata.normalize("NFC", text)
+
+        # Convert to lowercase
+        text = text.lower()
+
+        # Replace common unicode variants
+        replacements = {
+            "\u2018": "'",  # Left single quote
+            "\u2019": "'",  # Right single quote
+            "\u201c": '"',  # Left double quote
+            "\u201d": '"',  # Right double quote
+            "\u2013": "-",  # En dash
+            "\u2014": "-",  # Em dash
+            "\u2026": "...",  # Ellipsis
+            "\u00a0": " ",  # Non-breaking space
+            "\u00ad": "",   # Soft hyphen
+            "\t": " ",      # Tab to space
+            "\r": " ",      # Carriage return
+            "\n": " ",      # Newline to space
+        }
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+
+        # Collapse multiple spaces to single space
+        text = re.sub(r"\s+", " ", text)
+
+        # Remove leading/trailing whitespace
+        text = text.strip()
+
+        return text
+
+    def tokenize(self, text: str) -> List[str]:
+        """
+        Tokenize text into words.
+        Handles punctuation and common edge cases.
+        """
+        if not text:
+            return []
+
+        # Split on whitespace and punctuation (but keep hyphenated words)
+        # This regex splits on spaces and most punctuation but keeps hyphens within words
+        tokens = re.findall(r"\b[\w'-]+\b", text, re.UNICODE)
+
+        # Filter out empty tokens and single punctuation
+        tokens = [t for t in tokens if len(t) > 0 and not t in ("'", "-")]
+
+        return tokens
+
+    def url_to_sf_filename(self, url: str, domain: str) -> str:
+        """
+        Convert URL to ScreamingFrog page_text filename.
+        Pattern: original_https_<domain>_<path>.txt
+        """
+        # Parse URL
+        parsed = urllib.parse.urlparse(url)
+
+        # Build the filename parts
+        scheme = parsed.scheme or "https"
+        host = parsed.netloc or domain
+
+        # Get path, removing leading slash
+        path = parsed.path.lstrip("/")
+
+        # Combine all parts
+        if path:
+            filename = f"original_{scheme}_{host}_{path}.txt"
+        else:
+            filename = f"original_{scheme}_{host}_.txt"
+
+        # Replace path separators
+        filename = filename.replace("/", "_")
+
+        return filename
+
+    def url_to_bs_filename(self, url: str) -> str:
+        """
+        Convert URL to BlueSnake content filename.
+        Pattern: <path_with_underscores>.txt
+        """
+        parsed = urllib.parse.urlparse(url)
+
+        path = parsed.path
+        query = parsed.query
+
+        # Combine path and query
+        full_path = path
+        if query:
+            full_path = f"{path}?{query}"
+
+        # Handle root path
+        if full_path == "" or full_path == "/":
+            return "index.txt"
+
+        # Remove leading slash
+        full_path = full_path.lstrip("/")
+
+        # Replace non-disk-friendly characters
+        replacements = [
+            ("/", "_"),
+            ("?", "_"),
+            ("=", "_"),
+            ("&", "_"),
+            ("#", "_"),
+            (":", "_"),
+            ("*", "_"),
+            ('"', "_"),
+            ("<", "_"),
+            (">", "_"),
+            ("|", "_"),
+            (" ", "_"),
+        ]
+        for old, new in replacements:
+            full_path = full_path.replace(old, new)
+
+        # Add .txt extension if not present
+        if not full_path.endswith(".txt"):
+            full_path = full_path + ".txt"
+
+        return full_path
+
+    def load_content_files(self) -> Tuple[Dict[str, str], Dict[str, str]]:
+        """
+        Load content files from both crawlers.
+        Returns: (sf_content, bs_content) - dicts mapping URL to text content
+        """
+        sf_content: Dict[str, str] = {}
+        bs_content: Dict[str, str] = {}
+
+        # Load ScreamingFrog page text
+        sf_page_text_dir = self.sf_output_dir / "page_text"
+        if sf_page_text_dir.exists():
+            for txt_file in sf_page_text_dir.glob("*.txt"):
+                try:
+                    content = txt_file.read_text(encoding="utf-8", errors="replace")
+                    # Extract URL from filename
+                    # Pattern: original_https_domain_path.txt
+                    filename = txt_file.name
+                    if filename.startswith("original_"):
+                        # Remove "original_" prefix and ".txt" suffix
+                        url_part = filename[9:-4]  # Remove "original_" and ".txt"
+                        # Split on first underscore to get scheme
+                        parts = url_part.split("_", 1)
+                        if len(parts) >= 2:
+                            scheme = parts[0]
+                            rest = parts[1]
+                            # The domain is everything up to the first path segment
+                            # This is tricky because domain can have dots
+                            # We'll reconstruct the URL
+                            # Replace underscores with slashes for path
+                            # The domain ends where the path starts
+                            # For now, store with filename as key and try to match later
+                            url = f"{scheme}://{rest.replace('_', '/')}"
+                            sf_content[url] = content
+                except Exception as e:
+                    print(f"Warning: Failed to load SF content file {txt_file.name}: {e}")
+
+        # Load BlueSnake content
+        bs_content_dir = self.bs_output_dir / "content"
+        if bs_content_dir.exists():
+            for txt_file in bs_content_dir.glob("*.txt"):
+                try:
+                    content = txt_file.read_text(encoding="utf-8", errors="replace")
+                    # Store with filename as key for matching
+                    bs_content[txt_file.name] = content
+                except Exception as e:
+                    print(f"Warning: Failed to load BS content file {txt_file.name}: {e}")
+
+        return sf_content, bs_content
+
+    def compute_content_metrics(self, text_a: str, text_b: str) -> Dict[str, Any]:
+        """
+        Compute multiple similarity metrics between two texts.
+        """
+        # Normalize both texts
+        norm_a = self.normalize_text(text_a)
+        norm_b = self.normalize_text(text_b)
+
+        # Tokenize
+        tokens_a = set(self.tokenize(norm_a))
+        tokens_b = set(self.tokenize(norm_b))
+
+        # Handle empty cases
+        if not tokens_a and not tokens_b:
+            return {
+                "jaccard": 1.0,
+                "overlap": 1.0,
+                "dice": 1.0,
+                "sequence_ratio": 1.0,
+                "word_count_a": 0,
+                "word_count_b": 0,
+                "common_words": 0,
+                "unique_to_a": 0,
+                "unique_to_b": 0,
+            }
+
+        if not tokens_a or not tokens_b:
+            return {
+                "jaccard": 0.0,
+                "overlap": 0.0,
+                "dice": 0.0,
+                "sequence_ratio": 0.0,
+                "word_count_a": len(tokens_a),
+                "word_count_b": len(tokens_b),
+                "common_words": 0,
+                "unique_to_a": len(tokens_a),
+                "unique_to_b": len(tokens_b),
+            }
+
+        # Set operations
+        intersection = tokens_a & tokens_b
+        union = tokens_a | tokens_b
+
+        # Compute metrics
+        jaccard = len(intersection) / len(union) if union else 1.0
+        overlap = len(intersection) / min(len(tokens_a), len(tokens_b))
+        dice = 2 * len(intersection) / (len(tokens_a) + len(tokens_b))
+
+        # Sequence ratio (more expensive, use normalized text)
+        # Limit length to avoid very slow comparisons
+        max_len = 50000
+        seq_a = norm_a[:max_len]
+        seq_b = norm_b[:max_len]
+        sequence_ratio = SequenceMatcher(None, seq_a, seq_b).ratio()
+
+        return {
+            "jaccard": round(jaccard, 4),
+            "overlap": round(overlap, 4),
+            "dice": round(dice, 4),
+            "sequence_ratio": round(sequence_ratio, 4),
+            "word_count_a": len(tokens_a),
+            "word_count_b": len(tokens_b),
+            "common_words": len(intersection),
+            "unique_to_a": len(tokens_a - tokens_b),
+            "unique_to_b": len(tokens_b - tokens_a),
+        }
+
+    def compare_content(
+        self, sf_urls: Dict[str, Dict[str, Any]], bs_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Compare text content between ScreamingFrog and BlueSnake.
+        """
+        bs_results = bs_data.get("results", [])
+
+        # Load content files
+        sf_content_raw, bs_content_raw = self.load_content_files()
+
+        # Build URL to content mappings
+        # For BS: map URL to content using filename conversion
+        bs_url_to_content: Dict[str, str] = {}
+        for result in bs_results:
+            url = result["url"]
+            bs_filename = self.url_to_bs_filename(url)
+            if bs_filename in bs_content_raw:
+                bs_url_to_content[url] = bs_content_raw[bs_filename]
+
+        # For SF: we need to match URLs more flexibly
+        # The sf_content_raw keys are reconstructed URLs that may not match exactly
+        sf_url_to_content: Dict[str, str] = {}
+        sf_page_text_dir = self.sf_output_dir / "page_text"
+
+        if sf_page_text_dir.exists():
+            for url in sf_urls.keys():
+                # Try to find matching SF file
+                sf_filename = self.url_to_sf_filename(url, self.domain.replace("https://", "").replace("http://", ""))
+                sf_filepath = sf_page_text_dir / sf_filename
+                if sf_filepath.exists():
+                    try:
+                        sf_url_to_content[url] = sf_filepath.read_text(encoding="utf-8", errors="replace")
+                    except Exception:
+                        pass
+
+        # Find common URLs with content
+        sf_urls_with_content = set(sf_url_to_content.keys())
+        bs_urls_with_content = set(bs_url_to_content.keys())
+
+        # Normalize URLs for comparison
+        sf_norm_to_orig: Dict[str, str] = {self.normalize_url(u): u for u in sf_urls_with_content}
+        bs_norm_to_orig: Dict[str, str] = {self.normalize_url(u): u for u in bs_urls_with_content}
+
+        common_norm_urls = set(sf_norm_to_orig.keys()) & set(bs_norm_to_orig.keys())
+
+        # Compare content for common URLs
+        content_comparisons: List[Dict[str, Any]] = []
+        total_jaccard = 0.0
+        total_overlap = 0.0
+        total_dice = 0.0
+        total_sequence = 0.0
+
+        for norm_url in common_norm_urls:
+            sf_url = sf_norm_to_orig[norm_url]
+            bs_url = bs_norm_to_orig[norm_url]
+
+            sf_text = sf_url_to_content.get(sf_url, "")
+            bs_text = bs_url_to_content.get(bs_url, "")
+
+            metrics = self.compute_content_metrics(sf_text, bs_text)
+            metrics["url"] = sf_url
+
+            content_comparisons.append(metrics)
+
+            total_jaccard += metrics["jaccard"]
+            total_overlap += metrics["overlap"]
+            total_dice += metrics["dice"]
+            total_sequence += metrics["sequence_ratio"]
+
+        # Calculate averages
+        n = len(content_comparisons) if content_comparisons else 1
+        avg_jaccard = total_jaccard / n
+        avg_overlap = total_overlap / n
+        avg_dice = total_dice / n
+        avg_sequence = total_sequence / n
+
+        # Find pages with low similarity (potential issues)
+        low_similarity_pages = [
+            c for c in content_comparisons
+            if c["jaccard"] < 0.7  # Less than 70% token overlap
+        ]
+
+        # Sort by jaccard (lowest first)
+        low_similarity_pages.sort(key=lambda x: x["jaccard"])
+
+        # Store detailed comparison in diff
+        self.detailed_diff["content_diffs"] = {
+            "comparisons": content_comparisons,
+            "low_similarity_pages": low_similarity_pages[:20],  # Top 20 worst
+        }
+
+        return {
+            "sf_pages_with_content": len(sf_urls_with_content),
+            "bs_pages_with_content": len(bs_urls_with_content),
+            "common_pages_compared": len(content_comparisons),
+            "avg_jaccard": round(avg_jaccard, 4),
+            "avg_overlap": round(avg_overlap, 4),
+            "avg_dice": round(avg_dice, 4),
+            "avg_sequence_ratio": round(avg_sequence, 4),
+            "low_similarity_count": len(low_similarity_pages),
+            "low_similarity_pages": low_similarity_pages[:5],  # Top 5 for summary
+        }
+
     def write_detailed_diff(self) -> Tuple[str, int]:
         """Write detailed diff to JSON file"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -815,14 +1189,22 @@ class CrawlerComparison:
             print("ERROR: Failed to load BlueSnake data")
             return False
 
-        bs_outlinks = self.load_bluesnake_links()
-        print(f"Loaded {len(bs_data.get('results', []))} pages and links from {len(bs_outlinks)} sources")
+        if not self.skip_outlinks:
+            bs_outlinks = self.load_bluesnake_links()
+            print(f"Loaded {len(bs_data.get('results', []))} pages and links from {len(bs_outlinks)} sources")
+        else:
+            bs_outlinks = {}
+            print(f"Loaded {len(bs_data.get('results', []))} pages (skipping outlinks)")
 
         # Step 4: Parse ScreamingFrog data
         print("\n[4/5] Parsing ScreamingFrog data...")
         sf_urls = self.parse_screamingfrog_internal()
-        sf_outlinks = self.parse_screamingfrog_outlinks()
-        print(f"Parsed {len(sf_urls)} URLs and links from {len(sf_outlinks)} sources")
+        if not self.skip_outlinks:
+            sf_outlinks = self.parse_screamingfrog_outlinks()
+            print(f"Parsed {len(sf_urls)} URLs and links from {len(sf_outlinks)} sources")
+        else:
+            sf_outlinks = {}
+            print(f"Parsed {len(sf_urls)} URLs (skipping outlinks)")
 
         # Step 5: Compare
         print("\n[5/5] Comparing results...")
@@ -841,6 +1223,9 @@ class CrawlerComparison:
 
         # Compare link attributes
         link_attr_comparison = self.compare_link_attributes(sf_outlinks, bs_outlinks, bs_data.get("results", []))
+
+        # Compare text content
+        content_comparison = self.compare_content(sf_urls, bs_data)
 
         # Write detailed diff
         diff_file, diff_size = self.write_detailed_diff()
@@ -939,6 +1324,26 @@ class CrawlerComparison:
             print(f"  - Path type differences: {link_attr_comparison['path_type_diffs']}")
             print(f"  - Position differences: {link_attr_comparison['position_diffs']}")
             print(f"  - Link type differences: {link_attr_comparison['link_type_diffs']}")
+
+        # Text Content Comparison
+        print("\nText Content Comparison:")
+        print(f"  - ScreamingFrog pages with content: {content_comparison['sf_pages_with_content']}")
+        print(f"  - BlueSnake pages with content: {content_comparison['bs_pages_with_content']}")
+        print(f"  - Common pages compared: {content_comparison['common_pages_compared']}")
+        if content_comparison['common_pages_compared'] > 0:
+            print(f"\n  Average Similarity Metrics:")
+            print(f"    - Jaccard (token overlap):     {content_comparison['avg_jaccard']:.1%}")
+            print(f"    - Overlap coefficient:         {content_comparison['avg_overlap']:.1%}")
+            print(f"    - Dice coefficient:            {content_comparison['avg_dice']:.1%}")
+            print(f"    - Sequence ratio (order-aware):{content_comparison['avg_sequence_ratio']:.1%}")
+            print(f"\n  Pages with low similarity (<70% Jaccard): {content_comparison['low_similarity_count']}")
+
+            if content_comparison['low_similarity_pages']:
+                print(f"\n  Lowest similarity pages:")
+                for page in content_comparison['low_similarity_pages'][:5]:
+                    print(f"    - {page['url'][:60]}...")
+                    print(f"      Jaccard: {page['jaccard']:.1%}, SF words: {page['word_count_a']}, BS words: {page['word_count_b']}")
+                    print(f"      Common: {page['common_words']}, Only SF: {page['unique_to_a']}, Only BS: {page['unique_to_b']}")
 
         # Detailed output files
         print("\nDetailed Analysis Files:")

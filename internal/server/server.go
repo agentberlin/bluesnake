@@ -387,6 +387,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			ScrollWaitMs               int      `json:"scrollWaitMs"`
 			FinalWaitMs                int      `json:"finalWaitMs"`
 			Parallelism                int      `json:"parallelism"`
+			RequestTimeoutSecs         *int     `json:"requestTimeoutSecs,omitempty"`         // Pointer to distinguish between 0 and not-provided
 			UserAgent                  string   `json:"userAgent"`
 			IncludeSubdomains          bool     `json:"includeSubdomains"`
 			SpiderEnabled              bool     `json:"spiderEnabled"`
@@ -439,6 +440,11 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			respectNoindex = *req.RespectNoindex
 		}
 
+		requestTimeoutSecs := 20 // Default matches ScreamingFrog
+		if req.RequestTimeoutSecs != nil {
+			requestTimeoutSecs = *req.RequestTimeoutSecs
+		}
+
 		if err := s.app.UpdateConfigForDomain(
 			req.URL,
 			req.JSRendering,
@@ -446,6 +452,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			req.ScrollWaitMs,
 			req.FinalWaitMs,
 			req.Parallelism,
+			requestTimeoutSecs,
 			req.UserAgent,
 			req.IncludeSubdomains,
 			req.SpiderEnabled,

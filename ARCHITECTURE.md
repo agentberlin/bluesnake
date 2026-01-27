@@ -498,6 +498,15 @@ crawler.SetOnCrawlComplete(func(result *bluesnake.CrawlResult) {
     // result.URLsVisited: count of URLs visited this session
     // result.PendingURLs: URLs queued but not visited (for resume)
 })
+
+// 5. OnURLQueued - Called when URL is accepted for crawling
+crawler.SetOnURLQueued(func(url string, source string, depth int) {
+    // URL has passed all filters and is about to be submitted to worker pool
+    // This fires AFTER: action check, depth check, domain filter, robots.txt
+    // This fires BEFORE: worker pool submission
+    // source: "initial", "sitemap", "spider", "network", "resource"
+    // Use case: Persist URLs to database immediately for accurate progress tracking
+})
 ```
 
 #### Crawl Completion System
@@ -571,16 +580,21 @@ const (
    ↓
 6. Processor: VisitIfNotVisited() - Mark as visited (ATOMIC)
    ↓
-7. Processor: workerPool.Submit() - Add to work queue (BLOCKS if full)
+7. Processor: OnURLQueued callback - Persist URL to DB (visited=false)
+   ↓  ★ NEW: Enables accurate progress tracking in database
    ↓
-8. Worker: Receives work from queue
+8. Processor: workerPool.Submit() - Add to work queue (BLOCKS if full)
+   ↓
+9. Worker: Receives work from queue
    ↓  (wg.Add(1) in Submit, defer wg.Done() in worker function)
    ↓
-9. Worker: FetchURL() - Fetch HTTP
+10. Worker: FetchURL() - Fetch HTTP
    ↓
-10. Worker: OnResponse → OnHTML → OnScraped callbacks
+11. Worker: OnResponse → OnHTML → OnScraped callbacks
    ↓
-11. Worker: Links extracted → back to step 1 (discovery)
+12. Worker: OnPageCrawled callback - Update URL in DB (visited=true)
+   ↓
+13. Worker: Links extracted → back to step 1 (discovery)
 ```
 
 ### Discovery Sources

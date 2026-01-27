@@ -38,6 +38,7 @@ bluesnake crawl --resume --project-id <id> [flags]
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--parallelism` | `-p` | 5 | Number of concurrent requests |
+| `--response-timeout` | `-T` | 20 | Timeout in seconds waiting for server response |
 | `--user-agent` | `-A` | bluesnake/1.0 | Custom User-Agent string |
 | `--include-subdomains` | | false | Crawl all subdomains |
 | `--max-urls` | | 0 | Maximum URLs to crawl (0 = unlimited, pauses when reached) |
@@ -106,6 +107,9 @@ bluesnake crawl https://example.com \
 
 # Crawl ignoring robots.txt
 bluesnake crawl https://example.com --robots-txt ignore
+
+# Crawl slow site with longer response timeout
+bluesnake crawl https://slow-site.com --response-timeout 60
 
 # Quiet mode (no progress output)
 bluesnake crawl https://example.com -q -o ./results
@@ -426,6 +430,7 @@ The CLI uses the same SQLite database as the Desktop app and HTTP server:
 | `--bulk-export` | `--export-links` | Modular export |
 | `--output-folder` | `--output` | Same purpose |
 | `--config <file>` | Individual flags | More granular |
+| Response Timeout (20s) | `--response-timeout` (20s) | Same default |
 
 ## Related
 
