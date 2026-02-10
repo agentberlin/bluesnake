@@ -130,6 +130,9 @@ type HTTPConfig struct {
 	CheckHead bool
 	// TraceHTTP enables capturing and reporting request performance.
 	TraceHTTP bool
+	// RequestTimeout sets the timeout for HTTP requests.
+	// If 0, the default of 20 seconds is used.
+	RequestTimeout time.Duration
 	// MaxRequests limit the number of requests done by the instance.
 	// Set it to 0 for infinite requests (default).
 	MaxRequests uint32
@@ -550,6 +553,9 @@ func NewCollector(ctx context.Context, config *HTTPConfig) *Collector {
 		if config.TraceHTTP {
 			defaultHTTP.TraceHTTP = true
 		}
+		if config.RequestTimeout != 0 {
+			defaultHTTP.RequestTimeout = config.RequestTimeout
+		}
 		if config.MaxRequests != 0 {
 			defaultHTTP.MaxRequests = config.MaxRequests
 		}
@@ -576,6 +582,11 @@ func NewCollector(ctx context.Context, config *HTTPConfig) *Collector {
 
 	c := &Collector{}
 	c.Init()
+
+	// Apply request timeout if configured
+	if config.RequestTimeout > 0 {
+		c.SetRequestTimeout(config.RequestTimeout)
+	}
 
 	// Apply HTTP configuration
 	c.UserAgent = config.UserAgent
@@ -1154,7 +1165,7 @@ func (c *Collector) SetCookieJar(j http.CookieJar) {
 	c.backend.Client.Jar = j
 }
 
-// SetRequestTimeout overrides the default timeout (10 seconds) for this collector
+// SetRequestTimeout overrides the default timeout (20 seconds) for this collector
 func (c *Collector) SetRequestTimeout(timeout time.Duration) {
 	c.backend.Client.Timeout = timeout
 }

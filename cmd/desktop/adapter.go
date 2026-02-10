@@ -127,7 +127,9 @@ func (d *DesktopApp) UpdateConfigForDomain(
 	respectMetaRobotsNoindex bool,
 	respectNoindex bool,
 ) error {
-	return d.app.UpdateConfigForDomain(url, jsRendering, initialWaitMs, scrollWaitMs, finalWaitMs, parallelism, userAgent, includeSubdomains, spiderEnabled, sitemapEnabled, sitemapURLs, checkExternalResources, robotsTxtMode, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex)
+	// Use default timeout of 20 seconds (matches ScreamingFrog default)
+	requestTimeoutSecs := 20
+	return d.app.UpdateConfigForDomain(url, jsRendering, initialWaitMs, scrollWaitMs, finalWaitMs, parallelism, requestTimeoutSecs, userAgent, includeSubdomains, spiderEnabled, sitemapEnabled, sitemapURLs, checkExternalResources, robotsTxtMode, followInternalNofollow, followExternalNofollow, respectMetaRobotsNoindex, respectNoindex)
 }
 
 // GetPageLinksForURL wraps app.GetPageLinksForURL

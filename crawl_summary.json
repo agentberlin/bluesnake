@@ -1,0 +1,13 @@
+{
+  "crawlId": 1,
+  "projectId": 1,
+  "domain": "localportal.io",
+  "exportedAt": "2026-01-27T12:24:46+05:30",
+  "totalUrls": 26,
+  "htmlPages": 25,
+  "images": 0,
+  "javascript": 0,
+  "css": 0,
+  "fonts": 0,
+  "others": 1
+}

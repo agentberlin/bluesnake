@@ -628,6 +628,7 @@ func TestUpdateDomainConfigTool(t *testing.T) {
 			3000,  // Scroll wait
 			1500,  // Final wait
 			10,    // Parallelism
+			20,    // Request timeout (seconds)
 			"custom-agent",
 			false, // Include subdomains
 			true,  // Spider enabled
@@ -653,7 +654,7 @@ func TestUpdateDomainConfigTool(t *testing.T) {
 	t.Run("InvalidDomain_ReturnsError", func(t *testing.T) {
 		err := testApp.UpdateConfigForDomain(
 			"not-a-valid-url",
-			false, 1500, 2000, 1000, 5, "agent", false,
+			false, 1500, 2000, 1000, 5, 20, "agent", false,
 			true, false, []string{}, false, "respect",
 			false, false, false, false,
 		)

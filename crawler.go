@@ -192,6 +192,22 @@ const (
 //   - Return URLActionSkip for analytics/tracking URLs that should be ignored completely
 type OnURLDiscoveredFunc func(url string) URLAction
 
+// OnURLQueuedFunc is called when a URL is accepted for crawling and queued for processing.
+// This callback fires AFTER a URL has passed all filters (domain, robots.txt, depth, etc.)
+// and is about to be submitted to the worker pool. The URL is guaranteed to be crawled
+// (barring context cancellation or worker pool shutdown).
+//
+// Use cases:
+//   - Persist URLs to database immediately when queued (for accurate progress tracking)
+//   - Track all pending URLs for crawl completion detection
+//   - Log/monitor URL processing pipeline
+//
+// Parameters:
+//   - url: The URL that will be crawled
+//   - source: Discovery source ("initial", "sitemap", "spider", "network", "resource")
+//   - depth: Crawl depth (0 = start URL, 1 = discovered from start, etc.)
+type OnURLQueuedFunc func(url string, source string, depth int)
+
 // PageMetadata stores cached metadata for crawled pages
 type PageMetadata struct {
 	Status      int
@@ -217,6 +233,7 @@ type Crawler struct {
 	onResourceVisit OnResourceVisitFunc
 	onCrawlComplete OnCrawlCompleteFunc
 	onURLDiscovered OnURLDiscoveredFunc
+	onURLQueued     OnURLQueuedFunc
 
 	// Internal state tracking
 	store        *storage.CrawlerStore // Crawler's own storage (visit tracking, URL actions, page metadata)
@@ -539,6 +556,15 @@ func (cr *Crawler) SetOnURLDiscovered(f OnURLDiscoveredFunc) {
 	cr.onURLDiscovered = f
 }
 
+// SetOnURLQueued registers a callback function that will be called when a URL is queued for crawling.
+// This callback fires after a URL has passed all filters and is about to be submitted to the worker pool.
+// Use this to persist URLs to database immediately for accurate progress tracking.
+func (cr *Crawler) SetOnURLQueued(f OnURLQueuedFunc) {
+	cr.mutex.Lock()
+	defer cr.mutex.Unlock()
+	cr.onURLQueued = f
+}
+
 
 // queueURL sends a URL to the discovery channel for processing.
 // This is called by all discovery mechanisms (initial, sitemap, spider, network, resources).
@@ -634,7 +660,7 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
 	}
 	if action == URLActionSkip {
 		if debugThis {
-			log.Printf("[DEBUG-PROCESS] SKIP: url=%s (action=skip)", req.URL)
+			log.Printf("[DEBUG-PROCESS] SKIP: url=%s (action=skip, source=%s)", req.URL, req.Source)
 		}
 		cr.wg.Done() // Work item complete (skipped)
 		return
@@ -721,6 +747,16 @@ func (cr *Crawler) processDiscoveredURL(req URLDiscoveryRequest) {
 		}
 		cr.wg.Done() // Work item complete (record-only)
 		return
+	}
+
+	// Step 5.5: URL is accepted for crawling - notify callback
+	// This fires AFTER all filters pass and BEFORE worker submission
+	// Used by app layer to persist URLs to database immediately
+	cr.mutex.RLock()
+	onQueued := cr.onURLQueued
+	cr.mutex.RUnlock()
+	if onQueued != nil {
+		onQueued(req.URL, req.Source, req.Depth)
 	}
 
 	// Step 6: Submit to worker pool for actual fetching
@@ -1347,12 +1383,24 @@ func (cr *Crawler) setupCallbacks() {
 			isResource = cr.isLikelyResource(pageURL)
 		}
 
+		// Determine the status code to report
+		// If we have a redirect chain (from a blocked redirect), use the redirect status
+		// Otherwise, use 0 to indicate a network/request error
+		statusCode := 0
+		if r != nil && len(r.RedirectChain) > 0 {
+			// Use the last redirect's status code (the one that was blocked)
+			statusCode = r.RedirectChain[len(r.RedirectChain)-1].StatusCode
+		} else if r != nil && r.StatusCode > 0 {
+			// Use the response status code if available
+			statusCode = r.StatusCode
+		}
+
 		// Route to appropriate callback
 		if isResource {
 			// Resource error - send to OnResourceVisit
 			result := &ResourceResult{
 				URL:         pageURL,
-				Status:      0, // 0 indicates network/request error
+				Status:      statusCode,
 				ContentType: contentType,
 				Error:       err.Error(),
 				Depth:       r.Request.Depth,
@@ -1364,7 +1412,7 @@ func (cr *Crawler) setupCallbacks() {
 
 			result := &PageResult{
 				URL:                pageURL,
-				Status:             0,
+				Status:             statusCode,
 				Title:              "",
 				MetaDescription:    "",
 				Indexable:          "No",

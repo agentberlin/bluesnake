@@ -134,6 +134,60 @@ func (s *Store) SaveDiscoveredUrl(crawlID uint, url string, visited bool, status
 	return s.db.Create(&discoveredUrl).Error
 }
 
+// SaveOrUpdateDiscoveredUrl inserts a new URL or updates an existing one (upsert).
+// This is used when URLs are tracked in two phases:
+// 1. OnURLQueued: INSERT with visited=false (URL accepted for crawling)
+// 2. OnPageCrawled: UPDATE with visited=true and full metadata
+// If the URL doesn't exist, it will be inserted. If it exists, it will be updated.
+func (s *Store) SaveOrUpdateDiscoveredUrl(crawlID uint, url string, visited bool, status int, title string, metaDescription string, h1 string, h2 string, canonicalURL string, wordCount int, contentHash string, indexable string, contentType string, errorMsg string, depth int) error {
+	// Check if URL already exists for this crawl
+	var existing DiscoveredUrl
+	result := s.db.Where("crawl_id = ? AND url = ?", crawlID, url).First(&existing)
+
+	if result.Error == gorm.ErrRecordNotFound {
+		// URL doesn't exist - INSERT new record
+		discoveredUrl := DiscoveredUrl{
+			CrawlID:         crawlID,
+			URL:             url,
+			Visited:         visited,
+			Status:          status,
+			Title:           title,
+			MetaDescription: metaDescription,
+			H1:              h1,
+			H2:              h2,
+			CanonicalURL:    canonicalURL,
+			WordCount:       wordCount,
+			ContentHash:     contentHash,
+			Indexable:       indexable,
+			ContentType:     contentType,
+			Error:           errorMsg,
+			Depth:           depth,
+		}
+		return s.db.Create(&discoveredUrl).Error
+	}
+
+	if result.Error != nil {
+		return result.Error
+	}
+
+	// URL exists - UPDATE with new data
+	return s.db.Model(&existing).Updates(map[string]interface{}{
+		"visited":          visited,
+		"status":           status,
+		"title":            title,
+		"meta_description": metaDescription,
+		"h1":               h1,
+		"h2":               h2,
+		"canonical_url":    canonicalURL,
+		"word_count":       wordCount,
+		"content_hash":     contentHash,
+		"indexable":        indexable,
+		"content_type":     contentType,
+		"error":            errorMsg,
+		"depth":            depth,
+	}).Error
+}
+
 // DeleteCrawl deletes a crawl and all its crawled URLs (cascade)
 func (s *Store) DeleteCrawl(crawlID uint) error {
 	result := s.db.Delete(&Crawl{}, crawlID)

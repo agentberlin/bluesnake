@@ -24,7 +24,7 @@ When validating fixes without re-running ScreamingFrog (uses existing SF data):
 uv run compare/compare_crawlers.py <domain> --bluesnake-only
 ```
 
-**Note**: The comparison script runs BlueSnake via CLI (`go run ./cmd/cli`), so no server needs to be running. Changes to the codebase are automatically picked up on each run.
+**Note**: The comparison script runs BlueSnake via CLI (`go run ./cmd/cli`). Changes to the codebase are automatically picked up on each run.
 
 ## How It Works
 
@@ -117,7 +117,7 @@ This file contains the structured differences between both crawlers. Use this as
 
 #### Option 1: BlueSnake Output Files
 
-Check the BlueSnake CLI output directory:
+Check the BlueSnake CLI output directory (or use bluesnake export command to export to custom location):
 
 - **Location**: `/tmp/crawlertest/bs/`
 - **Files**:

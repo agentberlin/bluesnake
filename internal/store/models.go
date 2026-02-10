@@ -26,6 +26,7 @@ type Config struct {
 	ScrollWaitMs           int      `gorm:"default:2000"` // Wait after scrolling to bottom for lazy-loaded content (in milliseconds)
 	FinalWaitMs            int      `gorm:"default:1000"` // Final wait before capturing HTML (in milliseconds)
 	Parallelism            int      `gorm:"default:5"`
+	RequestTimeoutSecs     int      `gorm:"default:20"` // HTTP request timeout in seconds (matches ScreamingFrog default)
 	UserAgent              string   `gorm:"type:text;default:'bluesnake/1.0 (+https://snake.blue)'"`
 	IncludeSubdomains      bool     `gorm:"default:false"`                                // When true, crawl all subdomains of the project domain
 	DiscoveryMechanisms    string   `gorm:"type:text;default:'[\"spider\",\"sitemap\"]'"` // JSON array
