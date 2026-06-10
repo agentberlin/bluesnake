@@ -3,10 +3,17 @@ PKGS := ./...
 COVER_PKGS := ./internal/...
 COVER_MIN := 85
 
-.PHONY: build test unit acceptance cover lint clean
+.PHONY: build test unit acceptance cover lint clean desktop desktop-dev
 
 build:
 	$(GO) build -o bin/acrawler ./cmd/acrawler
+
+# desktop app (Wails) — requires the wails CLI: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+desktop:
+	cd desktop && wails build
+
+desktop-dev:
+	cd desktop && wails dev
 
 test: unit acceptance
 

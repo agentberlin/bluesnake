@@ -2,3 +2,9 @@ bin/
 coverage.out
 *.db
 .DS_Store
+desktop/build/
+desktop/frontend/node_modules/
+desktop/frontend/dist/*
+!desktop/frontend/dist/.gitkeep
+desktop/frontend/wailsjs/
+desktop/frontend/package.json.md5
