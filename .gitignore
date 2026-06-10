@@ -1,0 +1,4 @@
+bin/
+coverage.out
+*.db
+.DS_Store
