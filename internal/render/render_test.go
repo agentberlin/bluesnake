@@ -139,3 +139,95 @@ func TestRenderReturnsEarlyWhenPageSettles(t *testing.T) {
 		t.Error("early-settled DOM missing JS-injected content")
 	}
 }
+
+// Mirror of the real-world pathology that motivated settle detection: a
+// widget iframe whose response never completes and a fetch() stream that
+// stays open forever. Neither must hold the snapshot hostage — the load
+// event never fires here, and the network never goes idle.
+func TestRenderSettlesDespiteStuckStreams(t *testing.T) {
+	cfg := requireChrome(t)
+	cfg.Rendering.AjaxTimeoutSec = 10
+
+	mux := http.NewServeMux()
+	hang := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "<html><body>widget")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done() // never finishes until the tab closes
+	}
+	mux.HandleFunc("/widget", hang)
+	mux.HandleFunc("/stream", hang)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><head><script>
+			window.addEventListener('DOMContentLoaded', function() {
+				var p = document.createElement('p');
+				p.textContent = 'settled content';
+				document.body.appendChild(p);
+				fetch('/stream'); // long-lived request, never completes
+			});
+		</script></head><body><iframe src="/widget"></iframe></body></html>`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	r, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	start := time.Now()
+	res, err := r.Render(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed >= 6*time.Second {
+		t.Errorf("render took %s with permanently-open requests — should settle in ~2s, cap is 10s", elapsed)
+	}
+	if !strings.Contains(res.HTML, "settled content") {
+		t.Error("settled DOM missing JS-injected content")
+	}
+}
+
+// Analytics-style chatter: a ping every 300ms keeps the wire from ever being
+// quiet, but the DOM is static — the DOM-stability probe must settle the page.
+func TestRenderSettlesDespiteNetworkChatter(t *testing.T) {
+	cfg := requireChrome(t)
+	cfg.Rendering.AjaxTimeoutSec = 10
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(204)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><head><script>
+			window.addEventListener('DOMContentLoaded', function() {
+				var p = document.createElement('p');
+				p.textContent = 'settled content';
+				document.body.appendChild(p);
+				setInterval(function(){ fetch('/ping'); }, 300);
+			});
+		</script></head><body><h1>x</h1></body></html>`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	r, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	start := time.Now()
+	res, err := r.Render(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed >= 6*time.Second {
+		t.Errorf("render took %s under constant beacon chatter — DOM stability should settle it in ~2s", elapsed)
+	}
+	if !strings.Contains(res.HTML, "settled content") {
+		t.Error("settled DOM missing JS-injected content")
+	}
+}

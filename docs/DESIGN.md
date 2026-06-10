@@ -466,7 +466,14 @@ Each analyzer reads SQLite, writes back columns/tables; all are idempotent and r
 
 ### 5.8 Rendering (phase 2)
 
-`chromedp` pool (size = min(threads, 4)); per-page: navigate, wait network-idle + AJAX timeout, snapshot rendered DOM, optional screenshot, console log capture, custom JS execution (action snippets then extraction snippets). Parse pipeline runs twice (raw + rendered) and diffs element sets → JavaScript tab data (`origin` on link edges, `*_rendered` facts). Resource blocking by robots reported as Blocked Resource.
+`chromedp` pool (size = min(threads, cores-scaled cap: 2/4/8 tabs); per-page: navigate, wait until the page **settles**, snapshot rendered DOM, optional screenshot, console log capture, custom JS execution (action snippets then extraction snippets). Parse pipeline runs twice (raw + rendered) and diffs element sets → JavaScript tab data (`origin` on link edges, `*_rendered` facts). Resource blocking by robots reported as Blocked Resource.
+
+**Settle detection** (`internal/render`): navigation does **not** wait for the browser `load` event (background media can hold it open for many seconds after the DOM is done); the anchor is `DOMContentLoaded`. After DCL, a page is settled when any of:
+1. the countable network is fully idle for 500ms — media, websockets, EventSource, ping/beacon, prefetch and `blob:`/`data:` requests are excluded from the in-flight set (they routinely stay open forever);
+2. the DOM node count holds steady across two 500ms probes with no script/stylesheet/XHR/fetch in flight (absorbs third-party widgets and analytics that chatter indefinitely);
+3. the wire is completely silent for 1.5s (only permanently-open requests remain).
+
+`rendering.ajax_timeout_sec` is the **hard cap** on the settle phase after DCL (not a fixed sleep); `advanced.response_timeout_sec` caps the wait for DCL itself. Worst case therefore equals the old fixed-wait behaviour. Regression tests cover early settle, permanently-open streams/iframes, and beacon chatter.
 
 ---
 
@@ -517,6 +524,16 @@ Definition of done per milestone: feature file(s) green, unit coverage ≥ 85% f
 - Spelling/grammar: candidate libs need evaluation; schema already reserves columns.
 - Distributed crawling: out of scope; single-process concurrency is the design point.
 - Windows support: nothing platform-specific except Chrome discovery; CI matrix later.
+- **Renderer wait strategy knob** (`rendering.wait_strategy: adaptive | fixed`): adaptive settle
+  detection (§5.8) trades snapshot determinism for speed — two crawls of the same page may
+  snapshot at slightly different moments, which can surface as phantom diffs in `compare` on
+  pages with flaky widgets. A `fixed` mode (old behaviour: load event + full AJAX sleep) should
+  be offered for compare-stable auditing. Not yet implemented; today only adaptive exists.
+- **Settle thresholds are code constants, not config**: 500ms network-idle window, 1.5s
+  wire-silence window, 2×500ms DOM-stability probes (`internal/render`). Decide whether to
+  expose them under `rendering.` or document them as fixed. If pages ever settle wrongly, the
+  precision upgrade is a `MutationObserver` injected at document start ("ms since last DOM
+  mutation") instead of polling node counts.
 
 ## 9. Implementation status & deltas (2026-06-10)
 
