@@ -62,7 +62,7 @@ const SECTIONS = [
   ]},
   { id: "rendering", label: "Rendering (JavaScript)", icon: "chrome", fields: [
     ch("rendering.mode", "Rendering mode", ["text", "javascript"], "JavaScript mode loads each page in headless Chrome. Requires Chrome installed."),
-    num("rendering.ajax_timeout_sec", "AJAX timeout", "How long scripts run before snapshot.", "s"),
+    num("rendering.ajax_timeout_sec", "AJAX timeout", "Max wait for scripts/XHR to settle. Pages that go network-idle sooner snapshot immediately.", "s"),
     tg("rendering.screenshots", "Capture screenshots", null, true),
     tg("rendering.js_error_reporting", "Report JavaScript console errors", null, true),
     txt("rendering.chrome_path", "Chrome path", "Manual override when Chrome isn't found.", true),

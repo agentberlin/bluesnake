@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hhsecond/acrawler/internal/config"
 )
@@ -106,5 +107,35 @@ func TestChromePathOverride(t *testing.T) {
 	cfg.Rendering.ChromePath = "/custom/chrome"
 	if ChromePath(cfg) != "/custom/chrome" {
 		t.Error("config chrome_path must win")
+	}
+}
+
+// A page that settles immediately must release the tab long before the AJAX
+// timeout — the timeout is a cap, not a fixed wait.
+func TestRenderReturnsEarlyWhenPageSettles(t *testing.T) {
+	cfg := requireChrome(t)
+	cfg.Rendering.AjaxTimeoutSec = 10
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, jsPage)
+	}))
+	defer srv.Close()
+
+	r, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	start := time.Now()
+	res, err := r.Render(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(start)
+	if elapsed >= 10*time.Second {
+		t.Errorf("render took %s — waited out the full AJAX timeout instead of settling early", elapsed)
+	}
+	if !strings.Contains(res.HTML, "content injected by javascript") {
+		t.Error("early-settled DOM missing JS-injected content")
 	}
 }

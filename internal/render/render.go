@@ -1,8 +1,8 @@
 // Package render drives headless Chrome (via the DevTools protocol) for
-// JavaScript rendering mode: it loads a page, waits the configured AJAX
-// timeout for scripts to settle, and returns the rendered DOM, console
-// errors and an optional screenshot. The crawler parses raw and rendered
-// HTML separately and diffs them (the JavaScript tab data).
+// JavaScript rendering mode: it loads a page, waits for the network to go
+// idle (capped by the configured AJAX timeout), and returns the rendered
+// DOM, console errors and an optional screenshot. The crawler parses raw
+// and rendered HTML separately and diffs them (the JavaScript tab data).
 package render
 
 import (
@@ -14,10 +14,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chromedp/cdproto/network"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 	"github.com/hhsecond/acrawler/internal/config"
 )
+
+// networkIdleWindow is how long the wire must stay quiet (no in-flight
+// requests) after page load before the DOM is considered settled.
+const networkIdleWindow = 500 * time.Millisecond
 
 // Result is one rendered page.
 type Result struct {
@@ -95,7 +100,67 @@ func maxTabs() int {
 
 func (r *Renderer) Close() { r.allocCancel() }
 
-// Render loads the URL, waits the AJAX timeout, and snapshots the DOM.
+// idleTracker counts in-flight network requests on a tab so Render can
+// snapshot as soon as the page settles instead of always sleeping the full
+// AJAX timeout.
+type idleTracker struct {
+	mu       sync.Mutex
+	inflight map[network.RequestID]struct{}
+	last     time.Time // when the in-flight set last changed
+}
+
+func trackIdle(tabCtx context.Context) *idleTracker {
+	tr := &idleTracker{inflight: map[network.RequestID]struct{}{}, last: time.Now()}
+	chromedp.ListenTarget(tabCtx, func(ev any) {
+		tr.mu.Lock()
+		defer tr.mu.Unlock()
+		switch e := ev.(type) {
+		case *network.EventRequestWillBeSent:
+			tr.inflight[e.RequestID] = struct{}{}
+		case *network.EventLoadingFinished:
+			delete(tr.inflight, e.RequestID)
+		case *network.EventLoadingFailed:
+			delete(tr.inflight, e.RequestID)
+		case *network.EventRequestServedFromCache:
+			delete(tr.inflight, e.RequestID)
+		default:
+			return
+		}
+		tr.last = time.Now()
+	})
+	return tr
+}
+
+func (tr *idleTracker) quietFor(window time.Duration) bool {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return len(tr.inflight) == 0 && time.Since(tr.last) >= window
+}
+
+// wait blocks until the network has been idle for networkIdleWindow, maxWait
+// elapses, or ctx is cancelled. Long-polling/streaming requests that never
+// finish degrade to the old fixed-wait behaviour via the cap.
+func (tr *idleTracker) wait(ctx context.Context, maxWait time.Duration) error {
+	deadline := time.NewTimer(maxWait)
+	defer deadline.Stop()
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return nil // cap reached — snapshot whatever has rendered
+		case <-tick.C:
+			if tr.quietFor(networkIdleWindow) {
+				return nil
+			}
+		}
+	}
+}
+
+// Render loads the URL, waits for the network to settle (at most the AJAX
+// timeout), and snapshots the DOM.
 func (r *Renderer) Render(ctx context.Context, url string) (*Result, error) {
 	r.sem <- struct{}{}
 	defer func() { <-r.sem }()
@@ -127,9 +192,13 @@ func (r *Renderer) Render(ctx context.Context, url string) (*Result, error) {
 		})
 	}
 
+	idle := trackIdle(tabCtx)
 	actions := []chromedp.Action{
+		network.Enable(),
 		chromedp.Navigate(url),
-		chromedp.Sleep(time.Duration(r.cfg.Rendering.AjaxTimeoutSec) * time.Second),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			return idle.wait(ctx, time.Duration(r.cfg.Rendering.AjaxTimeoutSec)*time.Second)
+		}),
 		chromedp.OuterHTML("html", &res.HTML),
 	}
 	if r.cfg.Rendering.Screenshots {
