@@ -11,10 +11,12 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 	"github.com/hhsecond/acrawler/internal/config"
@@ -92,31 +94,61 @@ func New(cfg *config.Config) (*Renderer, error) {
 }
 
 func maxTabs() int {
-	if runtime.NumCPU() < 4 {
+	switch cores := runtime.NumCPU(); {
+	case cores < 4:
 		return 2
+	case cores < 8:
+		return 4
+	default:
+		return 8 // each tab costs ~100-300MB; plenty for modern desktops
 	}
-	return 4
 }
 
 func (r *Renderer) Close() { r.allocCancel() }
 
-// idleTracker counts in-flight network requests on a tab so Render can
-// snapshot as soon as the page settles instead of always sleeping the full
-// AJAX timeout.
-type idleTracker struct {
+// settleTracker watches page lifecycle + network events on a tab so Render
+// can snapshot as soon as the DOM settles instead of sleeping the full AJAX
+// timeout. "Settled" means DOMContentLoaded has fired and either (a) no
+// countable request is in flight for networkIdleWindow, or (b) nothing has
+// happened on the wire for stuckIdleWindow — which absorbs background video
+// streams, third-party widget iframes and other long-lived requests that
+// never finish.
+type settleTracker struct {
 	mu       sync.Mutex
-	inflight map[network.RequestID]struct{}
-	last     time.Time // when the in-flight set last changed
+	inflight map[network.RequestID]network.ResourceType
+	last     time.Time // last lifecycle or network state change
+	dcl      bool      // DOMContentLoaded observed
 }
 
-func trackIdle(tabCtx context.Context) *idleTracker {
-	tr := &idleTracker{inflight: map[network.RequestID]struct{}{}, last: time.Now()}
+// stuckIdleWindow is how long the wire must produce no events at all before
+// permanently-open requests (streams, widgets) are written off as settled.
+const stuckIdleWindow = 1500 * time.Millisecond
+
+// ignorableRequest filters request kinds that routinely stay open forever
+// and say nothing about whether the DOM is still changing.
+func ignorableRequest(t network.ResourceType, url string) bool {
+	switch t {
+	case network.ResourceTypeMedia, network.ResourceTypeWebSocket,
+		network.ResourceTypeEventSource, network.ResourceTypePing,
+		network.ResourceTypePrefetch:
+		return true
+	}
+	return strings.HasPrefix(url, "blob:") || strings.HasPrefix(url, "data:")
+}
+
+func trackSettle(tabCtx context.Context) *settleTracker {
+	tr := &settleTracker{inflight: map[network.RequestID]network.ResourceType{}, last: time.Now()}
 	chromedp.ListenTarget(tabCtx, func(ev any) {
 		tr.mu.Lock()
 		defer tr.mu.Unlock()
 		switch e := ev.(type) {
+		case *page.EventDomContentEventFired:
+			tr.dcl = true
 		case *network.EventRequestWillBeSent:
-			tr.inflight[e.RequestID] = struct{}{}
+			if ignorableRequest(e.Type, e.Request.URL) {
+				return
+			}
+			tr.inflight[e.RequestID] = e.Type
 		case *network.EventLoadingFinished:
 			delete(tr.inflight, e.RequestID)
 		case *network.EventLoadingFailed:
@@ -131,29 +163,77 @@ func trackIdle(tabCtx context.Context) *idleTracker {
 	return tr
 }
 
-func (tr *idleTracker) quietFor(window time.Duration) bool {
+// pendingDOMWork reports whether any in-flight request could still mutate
+// the DOM (scripts, stylesheets, XHR/fetch). Stuck widget iframes, beacons
+// and streams don't count.
+func (tr *settleTracker) pendingDOMWork() bool {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
-	return len(tr.inflight) == 0 && time.Since(tr.last) >= window
+	for _, t := range tr.inflight {
+		switch t {
+		case network.ResourceTypeXHR, network.ResourceTypeFetch,
+			network.ResourceTypeScript, network.ResourceTypeStylesheet:
+			return true
+		}
+	}
+	return false
 }
 
-// wait blocks until the network has been idle for networkIdleWindow, maxWait
-// elapses, or ctx is cancelled. Long-polling/streaming requests that never
-// finish degrade to the old fixed-wait behaviour via the cap.
-func (tr *idleTracker) wait(ctx context.Context, maxWait time.Duration) error {
-	deadline := time.NewTimer(maxWait)
-	defer deadline.Stop()
+// wait blocks until the page settles. dclWait caps the wait for
+// DOMContentLoaded; settleWait (the AJAX timeout) caps the quiet-down phase
+// after it. Settled means any of: the network goes fully idle, the DOM stops
+// growing while nothing DOM-affecting is in flight (third-party widgets and
+// analytics can chatter forever), or the wire goes completely silent. All
+// paths degrade to snapshotting whatever has rendered at the cap.
+func (tr *settleTracker) wait(ctx context.Context, dclWait, settleWait time.Duration) error {
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
+	dclDeadline := time.Now().Add(dclWait)
+	var settleDeadline time.Time
+	var lastPoll time.Time
+	var nodeCount, stablePolls int
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-deadline.C:
-			return nil // cap reached — snapshot whatever has rendered
 		case <-tick.C:
-			if tr.quietFor(networkIdleWindow) {
+			tr.mu.Lock()
+			dcl, inflight, last := tr.dcl, len(tr.inflight), tr.last
+			tr.mu.Unlock()
+			now := time.Now()
+			if !dcl {
+				if now.After(dclDeadline) {
+					return nil
+				}
+				continue
+			}
+			if settleDeadline.IsZero() {
+				settleDeadline = now.Add(settleWait)
+			}
+			quiet := now.Sub(last)
+			switch {
+			case inflight == 0 && quiet >= networkIdleWindow:
 				return nil
+			case quiet >= stuckIdleWindow:
+				return nil // only permanently-open requests remain
+			case now.After(settleDeadline):
+				return nil // cap reached — snapshot whatever has rendered
+			}
+			// DOM-stability probe every 500ms: two consecutive identical
+			// node counts with no DOM-affecting request pending = settled.
+			if now.Sub(lastPoll) >= 500*time.Millisecond {
+				lastPoll = now
+				var n int
+				if err := chromedp.Evaluate("document.getElementsByTagName('*').length", &n).Do(ctx); err == nil && n > 0 {
+					if n == nodeCount {
+						stablePolls++
+					} else {
+						nodeCount, stablePolls = n, 0
+					}
+					if stablePolls >= 2 && !tr.pendingDOMWork() {
+						return nil
+					}
+				}
 			}
 		}
 	}
@@ -192,12 +272,26 @@ func (r *Renderer) Render(ctx context.Context, url string) (*Result, error) {
 		})
 	}
 
-	idle := trackIdle(tabCtx)
+	settle := trackSettle(tabCtx)
 	actions := []chromedp.Action{
 		network.Enable(),
-		chromedp.Navigate(url),
+		// Navigate without waiting for the browser load event — heavy
+		// media can hold it open for many seconds after the DOM is done.
+		// settle.wait keys off DOMContentLoaded + network quiet instead.
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			return idle.wait(ctx, time.Duration(r.cfg.Rendering.AjaxTimeoutSec)*time.Second)
+			_, _, errText, _, err := page.Navigate(url).Do(ctx)
+			if err != nil {
+				return err
+			}
+			if errText != "" {
+				return fmt.Errorf("navigate %s: %s", url, errText)
+			}
+			return nil
+		}),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			return settle.wait(ctx,
+				time.Duration(r.cfg.Advanced.ResponseTimeoutSec)*time.Second,
+				time.Duration(r.cfg.Rendering.AjaxTimeoutSec)*time.Second)
 		}),
 		chromedp.OuterHTML("html", &res.HTML),
 	}
