@@ -275,7 +275,9 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 	for _, seed := range seeds {
 		spawn(frontier.Item{URL: seed, Depth: 0})
 	}
-	if c.cfg.Sitemaps.CrawlLinked {
+	// list mode audits exactly the supplied URLs — sitemaps are an input
+	// source there (--sitemap), never an extra discovery channel
+	if c.cfg.Sitemaps.CrawlLinked && c.cfg.Mode != "list" {
 		for _, item := range c.crawlSitemaps(ctx, seeds[0]) {
 			spawn(item)
 		}

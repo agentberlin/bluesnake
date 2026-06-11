@@ -65,6 +65,24 @@ func (m *robotsMgr) check(ctx context.Context, rawURL string) robots.Verdict {
 	return file.Verdict(m.cfg.HTTP.RobotsUserAgent, rawURL)
 }
 
+// sitemapsFor returns the Sitemap directives for the URL's host, honoring
+// the robots policy: nothing in ignore mode (robots.txt is never downloaded),
+// the custom file's directives when one overrides the host, and the cached
+// live file otherwise — shared with rule checking, never a second fetch.
+func (m *robotsMgr) sitemapsFor(ctx context.Context, rawURL string) []string {
+	if m.cfg.Robots.Mode == "ignore" {
+		return nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil
+	}
+	if custom, ok := m.custom[strings.ToLower(u.Hostname())]; ok {
+		return custom.Sitemaps
+	}
+	return m.fileFor(ctx, u).Sitemaps
+}
+
 // fileFor fetches and caches robots.txt per scheme+host. Non-2xx responses
 // (and network errors) yield an allow-all file, matching Google's 4xx rule.
 func (m *robotsMgr) fileFor(ctx context.Context, u *url.URL) *robots.File {

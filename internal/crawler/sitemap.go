@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
-	"net/url"
 
 	"github.com/hhsecond/acrawler/internal/config"
 	"github.com/hhsecond/acrawler/internal/fetch"
 	"github.com/hhsecond/acrawler/internal/frontier"
-	"github.com/hhsecond/acrawler/internal/robots"
 	"github.com/hhsecond/acrawler/internal/urlutil"
 )
 
@@ -77,12 +75,9 @@ type sitemapURLSet struct {
 func (c *Crawler) crawlSitemaps(ctx context.Context, seed string) []frontier.Item {
 	urls := append([]string{}, c.cfg.Sitemaps.URLs...)
 	if c.cfg.Sitemaps.AutoDiscoverViaRobots {
-		if u, err := url.Parse(seed); err == nil {
-			res := c.client.Fetch(ctx, u.Scheme+"://"+u.Host+"/robots.txt")
-			if res.FetchError == "" && res.StatusCode == 200 {
-				urls = append(urls, robots.Parse(res.Body).Sitemaps...)
-			}
-		}
+		// discovery goes through the robots manager: it honors ignore mode
+		// (no download), custom per-host overrides, and the rule-check cache
+		urls = append(urls, c.robots.sitemapsFor(ctx, seed)...)
 	}
 	var items []frontier.Item
 	seen := map[string]bool{}

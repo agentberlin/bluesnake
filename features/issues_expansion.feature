@@ -82,6 +82,7 @@ Feature: Issue detection — catalogue expansion
       <link rel="canonical" href="/moved-canon">
       </head><body><h1>h</h1><h2>sub</h2><a href="/self-canon">self canonical page</a></body></html>
       """
+    And the crawl config override "links.canonicals.crawl=true"
     And a test server route "/moved-canon" redirecting 301 to "/final-canon"
     And a site page "/final-canon" with body "<html lang='en'><head><title>The final canonical target page</title></head><body><h1>h</h1><h2>sub</h2></body></html>"
     And a site page "/self-canon" with body:

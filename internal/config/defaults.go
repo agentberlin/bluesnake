@@ -1,7 +1,12 @@
 package config
 
-// Default returns the full default configuration. Every value mirrors the
-// documented Screaming Frog default where one exists (see docs/research/01).
+// Default returns the full default configuration. Values mirror the
+// documented Screaming Frog default where one exists (see docs/research/01),
+// except where our house SF setup deliberately deviates — those follow the
+// scale.jobs parity audit baseline instead: resources (images/CSS/JS) and
+// external links are not fetched, canonical targets are recorded but not
+// crawled, XML sitemaps are auto-discovered and crawled, and the user agent
+// is the Safari string our SF profile crawls with.
 func Default() *Config {
 	return &Config{
 		Mode: "spider",
@@ -9,21 +14,25 @@ func Default() *Config {
 			CheckLinksOutsideStartFolder: true,
 		},
 		Resources: ResourcesConfig{
-			Images:     StoreCrawl{true, true},
-			Media:      StoreCrawl{true, true},
-			CSS:        StoreCrawl{true, true},
-			JavaScript: StoreCrawl{true, true},
-			SWF:        StoreCrawl{true, true},
+			Images:     StoreCrawl{false, false},
+			Media:      StoreCrawl{false, false},
+			CSS:        StoreCrawl{false, false},
+			JavaScript: StoreCrawl{false, false},
+			SWF:        StoreCrawl{false, false},
 		},
 		Links: LinksConfig{
 			Internal:    StoreCrawl{true, true},
-			External:    StoreCrawl{true, true},
-			Canonicals:  StoreCrawl{true, true},
+			External:    StoreCrawl{false, false},
+			Canonicals:  StoreCrawl{true, false},
 			Pagination:  StoreCrawl{false, false},
 			Hreflang:    StoreCrawl{true, false},
 			AMP:         StoreCrawl{false, false},
 			MetaRefresh: StoreCrawl{true, true},
 			IFrames:     StoreCrawl{true, true},
+		},
+		Sitemaps: SitemapsConfig{
+			CrawlLinked:           true,
+			AutoDiscoverViaRobots: true,
 		},
 		Extraction: ExtractionConfig{
 			PageDetails: PageDetailsConfig{
@@ -97,7 +106,7 @@ func Default() *Config {
 		},
 		Speed: SpeedConfig{MaxThreads: 5},
 		HTTP: HTTPConfig{
-			UserAgent:       "acrawler/1.0 (+https://github.com/hhsecond/acrawler)",
+			UserAgent:       "Mozilla/5.0 (Macintosh; Intel Mac OS X 12_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15",
 			RobotsUserAgent: "acrawler",
 		},
 		LinkPositions: []LinkPosition{

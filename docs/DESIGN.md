@@ -107,16 +107,16 @@ scope:
   include: []           # RE2 partial-match patterns vs URL-encoded address
   exclude: []
 
-resources:              # store/crawl pairs (SF Spider > Crawl)
-  images:        {store: true,  crawl: true}
-  media:         {store: true,  crawl: true}
-  css:           {store: true,  crawl: true}
-  javascript:    {store: true,  crawl: true}
-  swf:           {store: true,  crawl: true}
+resources:              # store/crawl pairs (SF Spider > Crawl); off by default,
+  images:        {store: false, crawl: false}   # matching our house SF profile
+  media:         {store: false, crawl: false}
+  css:           {store: false, crawl: false}
+  javascript:    {store: false, crawl: false}
+  swf:           {store: false, crawl: false}
 links:
   internal:      {store: true,  crawl: true}
-  external:      {store: true,  crawl: true}
-  canonicals:    {store: true,  crawl: true}
+  external:      {store: false, crawl: false}   # house SF profile: externals not checked
+  canonicals:    {store: true,  crawl: false}   # recorded but not fetched (house SF profile)
   pagination:    {store: false, crawl: false}
   hreflang:      {store: true,  crawl: false}
   amp:           {store: false, crawl: false}
@@ -126,8 +126,8 @@ links:
   uncrawlable:   {store: false}
 
 sitemaps:
-  crawl_linked: false
-  auto_discover_via_robots: false
+  crawl_linked: true             # house SF profile: sitemaps crawled,
+  auto_discover_via_robots: true # discovered via robots.txt Sitemap: lines
   urls: []
 
 extraction:
@@ -224,7 +224,7 @@ speed:
   max_urls_per_sec: 0    # 0 = unlimited
 
 http:
-  user_agent: "acrawler/1.0 (+https://github.com/hhsecond/acrawler)"
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 12_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15"  # house SF profile UA
   robots_user_agent: "acrawler"
   headers: {}            # name: value
   proxy: ""              # http://user:pass@host:port

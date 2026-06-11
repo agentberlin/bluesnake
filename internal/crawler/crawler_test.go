@@ -226,7 +226,9 @@ func TestExternalStatusCheckedNotFollowed(t *testing.T) {
 		"/": fmt.Sprintf(`<a href="%s/page">ext</a>`, ext.server.URL),
 	})
 
-	res := crawl(t, s, nil)
+	res := crawl(t, s, func(c *config.Config) {
+		c.Links.External = config.StoreCrawl{Store: true, Crawl: true}
+	})
 	extRec := res.Pages[ext.server.URL+"/page"]
 	if extRec == nil || extRec.Scope != "external" || extRec.StatusCode != 200 {
 		t.Fatalf("external record = %+v", extRec)
@@ -380,9 +382,15 @@ func TestResourceLinks(t *testing.T) {
 		"/f.html": "<p>frame</p>",
 	}
 
+	enableAll := func(c *config.Config) {
+		c.Resources.Images = config.StoreCrawl{Store: true, Crawl: true}
+		c.Resources.CSS = config.StoreCrawl{Store: true, Crawl: true}
+		c.Resources.JavaScript = config.StoreCrawl{Store: true, Crawl: true}
+	}
+
 	t.Run("all resource types are status-checked", func(t *testing.T) {
 		s := newSite(t, pages)
-		crawl(t, s, nil)
+		crawl(t, s, enableAll)
 		for _, path := range []string{"/s.css", "/a.js", "/i.png", "/f.html"} {
 			if s.hitCount(path) != 1 {
 				t.Errorf("%s fetched %d times, want 1", path, s.hitCount(path))
@@ -393,6 +401,7 @@ func TestResourceLinks(t *testing.T) {
 	t.Run("disabled types are not fetched", func(t *testing.T) {
 		s := newSite(t, pages)
 		crawl(t, s, func(c *config.Config) {
+			enableAll(c)
 			c.Resources.Images.Crawl = false
 			c.Resources.CSS.Crawl = false
 		})

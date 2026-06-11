@@ -18,6 +18,8 @@ Feature: Spider mode crawl
   Scenario: External links are status-checked but not followed
     Given a second test server page "/page" linking onward to "/onward"
     And a site page "/" linking to "<external>/page"
+    And the crawl config override "links.external.store=true"
+    And the crawl config override "links.external.crawl=true"
     When I crawl the site
     Then the external page "/page" has status code 200
     And the external page "/page" is not parsed
