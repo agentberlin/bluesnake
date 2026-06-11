@@ -2,7 +2,8 @@ bin/
 coverage.out
 *.db
 .DS_Store
-desktop/build/
+desktop/build/*
+!desktop/build/appicon.png
 desktop/frontend/node_modules/
 desktop/frontend/dist/*
 !desktop/frontend/dist/.gitkeep

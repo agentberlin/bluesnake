@@ -103,7 +103,7 @@ function App() {
           <IconBtn icon={collapsed ? "panel-left-open" : "panel-left-close"} title={collapsed ? "Show sidebar" : "Hide sidebar"} onClick={() => setCollapsed((c) => !c)} />
         </span>
         <div className="tb-title">
-          <Icon name="bug" size={15} style={{ color: "var(--ink-3)" }} />
+          <img src="/logo.png" alt="" width={16} height={16} draggable={false} style={{ display: "block", borderRadius: 3 }} />
           bluesnake
           <span className="dot" />
           <span style={{ color: "var(--ink-faint)", fontWeight: 500 }} className="mono">
