@@ -22,7 +22,11 @@ make build       # build ./bin/acrawler
 make lint        # gofmt + go vet
 ```
 
-Scenarios tagged `@pending` describe modules not yet implemented; they are skipped and reported. Removing the tag is part of each milestone's definition of done.
+Scenarios tagged `@pending` describe modules not yet implemented; they are skipped and reported. Removing the tag is part of each milestone's definition of done. Scenarios tagged `@chrome` need a local Chrome/Chromium and are excluded by default — run them with `ACRAWLER_FEATURE_TAGS="@chrome" go test ./test/`.
+
+A catalogue-coverage meta-test (`internal/analyze/coverage_test.go`) enforces DESIGN.md §6: every one of the 133 audit checks must have a triggering fixture, and a fully healthy fixture site must trigger none.
+
+Beyond crawling/auditing/exporting, the CLI can also serve everything over a read-only JSON API (`acrawler serve`), archive every fetched response as standard WARC (`extraction.store_warc: true`), execute custom JavaScript snippets during JS rendering (`custom_js`), and reconstruct each URL's discovery path (`acrawler report <id> crawl_paths`).
 
 ## Desktop app (Wails)
 

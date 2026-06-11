@@ -19,6 +19,7 @@ func (w *world) registerCrawlSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a site page "([^"]*)" linking to "([^"]*)"$`, w.sitePageLinking)
 	sc.Step(`^a site page "([^"]*)" with body:$`, w.sitePageBody)
 	sc.Step(`^a site page "([^"]*)" with body "([^"]*)"$`, w.sitePageBodyInline)
+	sc.Step(`^a site page "([^"]*)" with a script that injects a link to "([^"]*)"$`, w.sitePageInjectedLink)
 	sc.Step(`^a site page "([^"]*)" with (\d+) generated links$`, w.sitePageGenerated)
 	sc.Step(`^a site page "([^"]*)" with (\d+) generated links under "([^"]*)" and (\d+) under "([^"]*)"$`, w.sitePageGeneratedSplit)
 	sc.Step(`^a site page "([^"]*)" linking to a path of (\d+) characters$`, w.sitePageLongLink)
@@ -79,6 +80,19 @@ func (w *world) sitePageBodyInline(path, body string) error {
 	r := w.route(path)
 	r.status, r.body = 200, body
 	return nil
+}
+
+// sitePageInjectedLink serves a page whose only link to the target is
+// created by JavaScript on DOMContentLoaded (@chrome rendering scenarios).
+func (w *world) sitePageInjectedLink(path, target string) error {
+	return w.sitePageBodyInline(path, fmt.Sprintf(`<html><head><title>js page</title></head>
+<body><h1>js</h1><script>
+document.addEventListener('DOMContentLoaded', function () {
+  var a = document.createElement('a');
+  a.href = %q; a.textContent = 'js link';
+  document.body.appendChild(a);
+});
+</script></body></html>`, target))
 }
 
 func (w *world) sitePageGenerated(path string, n int) error {

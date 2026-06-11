@@ -255,6 +255,28 @@ func (a *App) Overview(id string) (*Overview, error) {
 	return o, nil
 }
 
+// discoveryPath walks discovered_from edges back to the seed (seed first,
+// url last). Cycle-safe and capped at 25 hops, like the crawl_paths report.
+func discoveryPath(pages map[string]*crawler.PageRecord, url string) []string {
+	chain := []string{url}
+	seen := map[string]bool{url: true}
+	current := url
+	for len(chain) <= 25 {
+		rec, ok := pages[current]
+		if !ok {
+			break
+		}
+		parent := rec.DiscoveredFrom
+		if parent == "" || seen[parent] {
+			break
+		}
+		seen[parent] = true
+		chain = append([]string{parent}, chain...)
+		current = parent
+	}
+	return chain
+}
+
 func seedOf(pages map[string]*crawler.PageRecord) string {
 	for u, p := range pages {
 		if p.Depth == 0 && p.Scope == "internal" {
@@ -322,6 +344,7 @@ type PageDetail struct {
 	Status            string            `json:"status"`
 	State             string            `json:"state"`
 	ContentType       string            `json:"contentType"`
+	HTTPVersion       string            `json:"httpVersion"`
 	Indexable         bool              `json:"indexable"`
 	IndexabilityState string            `json:"indexabilityStatus"`
 	Depth             int               `json:"depth"`
@@ -341,6 +364,7 @@ type PageDetail struct {
 	RobotsLine        int               `json:"robotsLine"`
 	Similarity        float64           `json:"similarity"`
 	DiscoveredFrom    string            `json:"discoveredFrom"`
+	DiscoveryPath     []string          `json:"discoveryPath"`
 	FetchError        string            `json:"fetchError"`
 	Headers           map[string]string `json:"headers"`
 	Issues            []IssueEntry      `json:"issues"`
@@ -359,14 +383,16 @@ func (a *App) PageDetail(id, pageURL string) (*PageDetail, error) {
 	}
 	d := &PageDetail{
 		URL: p.URL, StatusCode: p.StatusCode, Status: p.Status, State: p.State,
-		ContentType: p.ContentType, Indexable: p.Indexable, IndexabilityState: p.IndexabilityStatus,
+		ContentType: p.ContentType, HTTPVersion: p.HTTPVersion,
+		Indexable: p.Indexable, IndexabilityState: p.IndexabilityStatus,
 		Depth: p.Depth, ResponseTimeMs: p.ResponseTimeMs, SizeKB: p.Size / 1024,
 		LinkScore: p.LinkScore, Inlinks: p.Inlinks,
 		UniqueInlinks: p.UniqueInlinks, UniqueOutlinks: p.UniqueOutlinks,
 		RedirectURL: p.RedirectURL, RedirectType: p.RedirectType,
 		RobotsLine: p.MatchedRobotsLine, Similarity: p.ClosestSimilarity,
-		DiscoveredFrom: p.DiscoveredFrom, FetchError: p.FetchError,
-		Headers: p.Headers,
+		DiscoveredFrom: p.DiscoveredFrom, DiscoveryPath: discoveryPath(pages, p.URL),
+		FetchError: p.FetchError,
+		Headers:    p.Headers,
 	}
 	if p.Facts != nil {
 		f := p.Facts

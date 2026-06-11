@@ -19,10 +19,12 @@ import (
 	"github.com/hhsecond/acrawler/internal/analyze"
 	"github.com/hhsecond/acrawler/internal/config"
 	"github.com/hhsecond/acrawler/internal/crawler"
+	"github.com/hhsecond/acrawler/internal/fetch"
 	"github.com/hhsecond/acrawler/internal/frontier"
 	"github.com/hhsecond/acrawler/internal/issues"
 	"github.com/hhsecond/acrawler/internal/parse"
 	"github.com/hhsecond/acrawler/internal/structured"
+	"github.com/hhsecond/acrawler/internal/warc"
 	"gopkg.in/yaml.v3"
 	_ "modernc.org/sqlite"
 )
@@ -52,7 +54,7 @@ PRAGMA synchronous=NORMAL;
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS pages(
   url TEXT PRIMARY KEY, scope TEXT, state TEXT, depth INT,
-  status_code INT, status TEXT, content_type TEXT,
+  status_code INT, status TEXT, content_type TEXT, http_version TEXT,
   response_time_ms INT, size INT, fetch_error TEXT,
   redirect_url TEXT, redirect_type TEXT, matched_robots_line INT,
   indexable INT, indexability_status TEXT,
@@ -81,6 +83,11 @@ type Crawl struct {
 	ID  string
 	dir string
 	db  *sql.DB
+
+	// WARC archive (extraction.store_warc), created lazily on first Archive
+	archive     *warc.Writer
+	archiveFile *os.File
+	archivePath string
 }
 
 func registryDB(dir string) (*sql.DB, error) {
@@ -167,10 +174,54 @@ func openCrawlDB(dir, id string) (*Crawl, error) {
 		db.Close()
 		return nil, err
 	}
+	// migration for crawl DBs created before the column existed; the error
+	// ("duplicate column") is the normal case and deliberately ignored
+	db.Exec(`ALTER TABLE pages ADD COLUMN http_version TEXT`)
 	return &Crawl{ID: id, dir: dir, db: db}, nil
 }
 
-func (c *Crawl) Close() error { return c.db.Close() }
+func (c *Crawl) Close() error {
+	if c.archiveFile != nil {
+		c.archive.Close()
+		c.archiveFile.Close()
+		c.archiveFile = nil
+	}
+	return c.db.Close()
+}
+
+// Archive implements crawler.ArchiveSink: fetched responses stream into
+// <crawl-id>.assets/archive.warc.gz (one gzip member per record), created
+// lazily with a leading warcinfo record.
+func (c *Crawl) Archive(url string, res *fetch.Result) error {
+	if c.archive == nil {
+		dir := filepath.Join(c.dir, "crawls", c.ID+".assets")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		path := filepath.Join(dir, "archive.warc.gz")
+		f, err := os.Create(path)
+		if err != nil {
+			return err
+		}
+		c.archiveFile = f
+		c.archivePath = path
+		c.archive = warc.NewWriter(f)
+		if err := c.archive.WriteWarcinfo(map[string]string{
+			"software": "acrawler",
+			"format":   "WARC File Format 1.1",
+		}); err != nil {
+			return err
+		}
+	}
+	proto := res.HTTPVersion
+	if proto == "" {
+		proto = "HTTP/1.1"
+	}
+	return c.archive.WriteResponse(url, res.StatusCode, proto, res.Headers, res.Body)
+}
+
+// ArchivePath returns the WARC archive location ("" when nothing was archived).
+func (c *Crawl) ArchivePath() string { return c.archivePath }
 
 // DB exposes the underlying handle for the analyze/export/report layers.
 func (c *Crawl) DB() *sql.DB { return c.db }
@@ -221,13 +272,13 @@ func (c *Crawl) Page(rec *crawler.PageRecord) error {
 		}
 	}
 	_, err := c.db.Exec(`INSERT OR REPLACE INTO pages
-		(url, scope, state, depth, status_code, status, content_type,
+		(url, scope, state, depth, status_code, status, content_type, http_version,
 		 response_time_ms, size, fetch_error, redirect_url, redirect_type,
 		 matched_robots_line, indexable, indexability_status,
 		 discovered_from, outside_start_folder, headers, structured, jsdiff, facts)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rec.URL, rec.Scope, rec.State, rec.Depth, rec.StatusCode, rec.Status,
-		rec.ContentType, rec.ResponseTimeMs, rec.Size, rec.FetchError,
+		rec.ContentType, rec.HTTPVersion, rec.ResponseTimeMs, rec.Size, rec.FetchError,
 		rec.RedirectURL, rec.RedirectType, rec.MatchedRobotsLine,
 		boolInt(rec.Indexable), rec.IndexabilityStatus,
 		rec.DiscoveredFrom, boolInt(rec.OutsideStartFolder), headersJSON, structuredJSON, jsdiffJSON, factsJSON)
@@ -336,7 +387,7 @@ func (c *Crawl) UpdateInlinks(pages map[string]*crawler.PageRecord) error {
 // crawl database, keyed by URL.
 func (c *Crawl) LoadPages() (map[string]*crawler.PageRecord, error) {
 	rows, err := c.db.Query(`SELECT url, scope, state, depth, status_code, status,
-		content_type, response_time_ms, size, fetch_error, redirect_url,
+		content_type, COALESCE(http_version,''), response_time_ms, size, fetch_error, redirect_url,
 		redirect_type, matched_robots_line, indexable, indexability_status,
 		inlinks, COALESCE(discovered_from,''), outside_start_folder,
 		link_score, unique_inlinks, unique_outlinks, closest_similarity,
@@ -351,7 +402,7 @@ func (c *Crawl) LoadPages() (map[string]*crawler.PageRecord, error) {
 		var indexable, outside int
 		var headersJSON, structuredJSON, jsdiffJSON, factsJSON []byte
 		if err := rows.Scan(&rec.URL, &rec.Scope, &rec.State, &rec.Depth,
-			&rec.StatusCode, &rec.Status, &rec.ContentType, &rec.ResponseTimeMs,
+			&rec.StatusCode, &rec.Status, &rec.ContentType, &rec.HTTPVersion, &rec.ResponseTimeMs,
 			&rec.Size, &rec.FetchError, &rec.RedirectURL, &rec.RedirectType,
 			&rec.MatchedRobotsLine, &indexable, &rec.IndexabilityStatus,
 			&rec.Inlinks, &rec.DiscoveredFrom, &outside,

@@ -7,11 +7,11 @@ package analyze
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/hhsecond/acrawler/internal/config"
 	"github.com/hhsecond/acrawler/internal/crawler"
+	"github.com/hhsecond/acrawler/internal/isocodes"
 	"github.com/hhsecond/acrawler/internal/issues"
 	"github.com/hhsecond/acrawler/internal/parse"
 )
@@ -267,18 +267,23 @@ func (a *analyzer) nearDuplicates() {
 			exact[c.url] = rec.Facts.Hash
 		}
 	}
-	for i := range cands {
-		for j := i + 1; j < len(cands); j++ {
-			if exact[cands[i].url] == exact[cands[j].url] {
-				continue // exact duplicates are a separate check
-			}
-			sim := cands[i].sig.similarity(cands[j].sig) * 100
-			if sim < threshold {
-				continue
-			}
-			a.noteNearDup(cands[i].url, cands[j].url, sim)
-			a.noteNearDup(cands[j].url, cands[i].url, sim)
+	// LSH banding prunes the candidate space (vs all-pairs); every candidate
+	// pair is still verified with the exact signature similarity.
+	sigs := make([]signature, len(cands))
+	for i, c := range cands {
+		sigs[i] = c.sig
+	}
+	for _, p := range lshCandidates(sigs, lshRowsPerBand(threshold)) {
+		i, j := p[0], p[1]
+		if exact[cands[i].url] == exact[cands[j].url] {
+			continue // exact duplicates are a separate check
 		}
+		sim := cands[i].sig.similarity(cands[j].sig) * 100
+		if sim < threshold {
+			continue
+		}
+		a.noteNearDup(cands[i].url, cands[j].url, sim)
+		a.noteNearDup(cands[j].url, cands[i].url, sim)
 	}
 	for url, nd := range a.res.NearDups {
 		a.add(url, "content_near_duplicate",
@@ -296,10 +301,20 @@ func (a *analyzer) noteNearDup(url, other string, sim float64) {
 	a.res.NearDups[url] = nd
 }
 
-// hreflangCode validates the structural form of a code: ISO 639-1 language,
-// optional ISO 3166-1 alpha-2 region, or x-default. (Structural check only —
-// not the full ISO registry.)
-var hreflangCode = regexp.MustCompile(`^(?i)([a-z]{2,3}(-[a-z]{2})?|x-default)$`)
+// validHreflang checks a code against the embedded ISO registries: an
+// assigned ISO 639-1 language, optionally followed by an assigned ISO 3166-1
+// alpha-2 region, or the literal x-default. Well-formed but unassigned codes
+// ("zz", "en-ZZ") are invalid.
+func validHreflang(code string) bool {
+	if strings.EqualFold(code, "x-default") {
+		return true
+	}
+	lang, region, hasRegion := strings.Cut(code, "-")
+	if !isocodes.ValidLanguage(lang) {
+		return false
+	}
+	return !hasRegion || isocodes.ValidRegion(region)
+}
 
 func (a *analyzer) hreflang() {
 	for url, rec := range a.pages {
@@ -312,7 +327,7 @@ func (a *analyzer) hreflang() {
 		}
 		selfRef, xDefault := false, false
 		for _, h := range entries {
-			if !hreflangCode.MatchString(h.Lang) {
+			if !validHreflang(h.Lang) {
 				a.add(url, "hreflang_invalid_code", h.Lang)
 			}
 			if strings.EqualFold(h.Lang, "x-default") {

@@ -7,6 +7,7 @@ package render
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -31,6 +32,20 @@ type Result struct {
 	HTML          string
 	ConsoleErrors []string
 	Screenshot    []byte
+	JSResults     []JSResult // custom JS extraction snippet values
+}
+
+// JSResult is one custom JS extraction snippet's value for a page: JS strings
+// verbatim, anything else compact JSON, "error: ..." when the snippet threw.
+type JSResult struct {
+	Name  string
+	Value string
+}
+
+// snippet is one custom_js entry with its source loaded from disk.
+type snippet struct {
+	cfg    config.CustomJS
+	source string
 }
 
 // Renderer owns a headless Chrome allocator; each Render call runs in its
@@ -40,6 +55,7 @@ type Renderer struct {
 	allocCancel context.CancelFunc
 	cfg         *config.Config
 	sem         chan struct{}
+	snippets    []snippet
 }
 
 // ChromePath locates a Chrome/Chromium binary (config override first).
@@ -83,6 +99,16 @@ func New(cfg *config.Config) (*Renderer, error) {
 	} else {
 		opts = append(opts, chromedp.WindowSize(1024, 768)) // googlebot-desktop preset
 	}
+	// custom JS snippets load once, at construction: a missing file is a
+	// config error, not a per-page one
+	var snippets []snippet
+	for _, cj := range cfg.CustomJS {
+		src, err := os.ReadFile(cj.File)
+		if err != nil {
+			return nil, fmt.Errorf("custom_js %q: %w", cj.Name, err)
+		}
+		snippets = append(snippets, snippet{cfg: cj, source: string(src)})
+	}
 	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	concurrency := min(cfg.Speed.MaxThreads, maxTabs())
 	return &Renderer{
@@ -90,6 +116,7 @@ func New(cfg *config.Config) (*Renderer, error) {
 		allocCancel: cancel,
 		cfg:         cfg,
 		sem:         make(chan struct{}, concurrency),
+		snippets:    snippets,
 	}, nil
 }
 
@@ -118,6 +145,7 @@ type settleTracker struct {
 	inflight map[network.RequestID]network.ResourceType
 	last     time.Time // last lifecycle or network state change
 	dcl      bool      // DOMContentLoaded observed
+	loaded   bool      // load event observed (fixed wait strategy)
 }
 
 // stuckIdleWindow is how long the wire must produce no events at all before
@@ -144,6 +172,8 @@ func trackSettle(tabCtx context.Context) *settleTracker {
 		switch e := ev.(type) {
 		case *page.EventDomContentEventFired:
 			tr.dcl = true
+		case *page.EventLoadEventFired:
+			tr.loaded = true
 		case *network.EventRequestWillBeSent:
 			if ignorableRequest(e.Type, e.Request.URL) {
 				return
@@ -239,6 +269,79 @@ func (tr *settleTracker) wait(ctx context.Context, dclWait, settleWait time.Dura
 	}
 }
 
+// waitFixed implements rendering.wait_strategy=fixed (DESIGN.md §8): wait
+// for the browser load event (capped by loadWait), then sleep the FULL AJAX
+// timeout before snapshotting. Slower than adaptive settling but the
+// snapshot moment is deterministic, which keeps `compare` runs stable on
+// pages with flaky widgets.
+func (tr *settleTracker) waitFixed(ctx context.Context, loadWait, sleep time.Duration) error {
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	deadline := time.Now().Add(loadWait)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tick.C:
+		}
+		tr.mu.Lock()
+		loaded := tr.loaded
+		tr.mu.Unlock()
+		if loaded || time.Now().After(deadline) {
+			break
+		}
+	}
+	select {
+	case <-time.After(sleep):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// runCustomJS executes the loaded custom_js snippets after the page settled:
+// action snippets first (results discarded — they exist to mutate the page),
+// then extraction snippets, each bounded by its own timeout.
+func (r *Renderer) runCustomJS(ctx context.Context, res *Result) {
+	run := func(s snippet) (json.RawMessage, error) {
+		timeout := time.Duration(s.cfg.TimeoutSec) * time.Second
+		if timeout <= 0 {
+			timeout = 5 * time.Second
+		}
+		sctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		var raw json.RawMessage
+		err := chromedp.Evaluate(s.source, &raw).Do(sctx)
+		return raw, err
+	}
+	for _, s := range r.snippets {
+		if s.cfg.Type == "action" {
+			run(s) // best-effort: a broken action must not kill the render
+		}
+	}
+	for _, s := range r.snippets {
+		if s.cfg.Type != "extraction" {
+			continue
+		}
+		raw, err := run(s)
+		value := ""
+		switch {
+		case err != nil:
+			value = "error: " + err.Error()
+		case len(raw) > 0 && raw[0] == '"': // JS strings verbatim, not JSON-quoted
+			var str string
+			if json.Unmarshal(raw, &str) == nil {
+				value = str
+			} else {
+				value = string(raw)
+			}
+		default:
+			value = string(raw)
+		}
+		res.JSResults = append(res.JSResults, JSResult{Name: s.cfg.Name, Value: value})
+	}
+}
+
 // Render loads the URL, waits for the network to settle (at most the AJAX
 // timeout), and snapshots the DOM.
 func (r *Renderer) Render(ctx context.Context, url string) (*Result, error) {
@@ -289,9 +392,16 @@ func (r *Renderer) Render(ctx context.Context, url string) (*Result, error) {
 			return nil
 		}),
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			return settle.wait(ctx,
-				time.Duration(r.cfg.Advanced.ResponseTimeoutSec)*time.Second,
-				time.Duration(r.cfg.Rendering.AjaxTimeoutSec)*time.Second)
+			loadWait := time.Duration(r.cfg.Advanced.ResponseTimeoutSec) * time.Second
+			settleWait := time.Duration(r.cfg.Rendering.AjaxTimeoutSec) * time.Second
+			if r.cfg.Rendering.WaitStrategy == "fixed" {
+				return settle.waitFixed(ctx, loadWait, settleWait)
+			}
+			return settle.wait(ctx, loadWait, settleWait)
+		}),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			r.runCustomJS(ctx, res)
+			return nil
 		}),
 		chromedp.OuterHTML("html", &res.HTML),
 	}

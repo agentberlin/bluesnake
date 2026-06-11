@@ -136,6 +136,7 @@ func (c *Config) Validate() error {
 	oneOf("mode", c.Mode, "spider", "list")
 	oneOf("robots.mode", c.Robots.Mode, "respect", "ignore", "ignore-report")
 	oneOf("rendering.mode", c.Rendering.Mode, "text", "javascript")
+	oneOf("rendering.wait_strategy", c.Rendering.WaitStrategy, "adaptive", "fixed")
 	oneOf("advanced.cookie_storage", c.Advanced.CookieStorage, "session", "persistent", "none")
 	oneOf("advanced.percent_encoding", c.Advanced.PercentEncoding, "upper", "lower")
 

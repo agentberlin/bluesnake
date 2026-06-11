@@ -48,6 +48,7 @@ const SECTIONS = [
     tg("extraction.structured_data.microdata", "Microdata", null, true),
     tg("extraction.structured_data.rdfa", "RDFa", null, true),
     tg("extraction.store_html", "Store raw HTML", "Saves every page's source to disk for later viewing.", true),
+    tg("extraction.store_warc", "Archive responses as WARC", "Streams every fetched response into a standard .warc.gz archive next to the crawl database.", true),
   ]},
   { id: "limits", label: "Limits", icon: "gauge", fields: [
     num("limits.max_urls", "Max URLs to crawl", "Hard stop for the whole crawl."),
@@ -62,6 +63,7 @@ const SECTIONS = [
   ]},
   { id: "rendering", label: "Rendering (JavaScript)", icon: "chrome", fields: [
     ch("rendering.mode", "Rendering mode", ["text", "javascript"], "JavaScript mode loads each page in headless Chrome. Requires Chrome installed."),
+    ch("rendering.wait_strategy", "Wait strategy", ["adaptive", "fixed"], "Adaptive snapshots as soon as the page settles. Fixed waits the full AJAX timeout after load — slower but deterministic for crawl comparisons."),
     num("rendering.ajax_timeout_sec", "AJAX timeout", "Max wait for scripts/XHR to settle. Pages that go network-idle sooner snapshot immediately.", "s"),
     tg("rendering.screenshots", "Capture screenshots", null, true),
     tg("rendering.js_error_reporting", "Report JavaScript console errors", null, true),
@@ -70,8 +72,12 @@ const SECTIONS = [
   { id: "thresholds", label: "Thresholds", icon: "sliders-horizontal", fields: [
     num("thresholds.title.min_chars", "Page title min length", null, "chars"),
     num("thresholds.title.max_chars", "Page title max length", null, "chars"),
+    num("thresholds.title.min_px", "Page title min SERP width", "Measured with bundled Arial metrics at Google's title font size.", "px"),
+    num("thresholds.title.max_px", "Page title max SERP width", "Titles wider than this truncate on the results page.", "px"),
     num("thresholds.description.min_chars", "Meta description min length", null, "chars"),
     num("thresholds.description.max_chars", "Meta description max length", null, "chars"),
+    num("thresholds.description.min_px", "Meta description min SERP width", null, "px"),
+    num("thresholds.description.max_px", "Meta description max SERP width", null, "px"),
     num("thresholds.url_max_chars", "Max URL length flag", null, "chars"),
     num("thresholds.h1_max_chars", "Max H1 length", null, "chars"),
     num("thresholds.h2_max_chars", "Max H2 length", null, "chars", true),

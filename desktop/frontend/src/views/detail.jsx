@@ -124,6 +124,7 @@ function DetailFields({ p }) {
         <Row k="Status" v={`${p.statusCode || "—"} ${p.status || p.state}`} color={statusVar(p.statusCode)} />
         <Row k="Indexability" v={`${p.indexable ? "Indexable" : "Non-Indexable"}${p.indexabilityStatus ? " · " + p.indexabilityStatus : ""}`} />
         <Row k="Content type" v={p.contentType || "—"} />
+        <Row k="HTTP version" v={p.httpVersion || "—"} />
         <Row k="Crawl depth" v={p.depth} />
         <Row k="Response time" v={p.responseTimeMs ? p.responseTimeMs + " ms" : "—"} color={p.responseTimeMs > 1500 ? "var(--s-4xx)" : null} />
         <Row k="Size" v={p.sizeKB ? p.sizeKB + " KB" : "—"} />
@@ -138,6 +139,27 @@ function DetailFields({ p }) {
         {p.fetchError && <Row k="Fetch error" v={p.fetchError} color="var(--s-4xx)" />}
         <Row k="Near-duplicate" v={p.similarity ? `${p.similarity.toFixed(0)}% closest match` : "None"} color={p.similarity > 90 ? "var(--sev-warn)" : null} />
         <Row k="Discovered via" v={p.discoveredFrom ? urlShort(p.discoveredFrom) : "Start URL"} />
+      </div>
+      <DiscoveryPath path={p.discoveryPath} url={p.url} />
+    </div>
+  );
+}
+
+/* the shortest known click path from the seed to this URL (crawl_paths data) */
+function DiscoveryPath({ path, url }) {
+  if (!path || path.length < 2) return null;
+  return (
+    <div className="card" style={{ padding: 14, marginTop: 14 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-faint)", textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 8 }}>
+        Discovery path · {path.length - 1} {path.length === 2 ? "hop" : "hops"}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        {path.map((u, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+            <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-faint)", minWidth: 18, textAlign: "right" }}>{i === 0 ? "•" : "↳"}</span>
+            <span className="mono" style={{ fontSize: 11.5, color: u === url ? "var(--ink)" : "var(--ink-3)", fontWeight: u === url ? 600 : 400, wordBreak: "break-all", paddingLeft: i * 8 }}>{urlShort(u)}</span>
+          </div>
+        ))}
       </div>
     </div>
   );

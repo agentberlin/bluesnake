@@ -41,6 +41,7 @@ type PageRecord struct {
 	StatusCode         int
 	Status             string
 	ContentType        string
+	HTTPVersion        string // negotiated protocol, e.g. HTTP/1.1, HTTP/2.0
 	ResponseTimeMs     int64
 	Size               int
 	FetchError         string
@@ -94,6 +95,14 @@ type Sink interface {
 // screenshots (extraction.store_html / rendering screenshots).
 type BlobSink interface {
 	Blob(url, kind string, data []byte) error
+}
+
+// ArchiveSink is the optional sink extension for WARC archiving
+// (extraction.store_warc): every fetched response — any status, including
+// redirects and errors pages, but not robots-blocked URLs or transport
+// failures — is offered for archiving.
+type ArchiveSink interface {
+	Archive(url string, res *fetch.Result) error
 }
 
 // Option configures a Crawler.
@@ -371,6 +380,7 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) []frontier.Ite
 	rec.StatusCode = res.StatusCode
 	rec.Status = res.Status
 	rec.ContentType = res.ContentType
+	rec.HTTPVersion = res.HTTPVersion
 	rec.ResponseTimeMs = res.ResponseTimeMs
 	rec.Size = len(res.Body)
 	rec.FetchError = res.FetchError
@@ -380,6 +390,12 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) []frontier.Ite
 		rec.Headers = make(map[string]string, len(res.Headers))
 		for name := range res.Headers {
 			rec.Headers[name] = res.Headers.Get(name)
+		}
+	}
+
+	if c.cfg.Extraction.StoreWARC && res.FetchError == "" {
+		if as, ok := c.sink.(ArchiveSink); ok {
+			c.noteSinkErr(as.Archive(it.URL, res))
 		}
 	}
 
@@ -507,6 +523,15 @@ func (c *Crawler) renderAndDiff(url string, rec *PageRecord, facts *parse.Facts,
 	rawNoindex := hasNoindexValue(facts.MetaRobots)
 	diff.NoindexOnlyRaw = rawNoindex && !hasNoindexValue(rFacts.MetaRobots)
 
+	// custom JS extraction values join the custom results (kind=js); a
+	// snippet with a content_types list only applies to matching pages
+	for _, jr := range rendered.JSResults {
+		if !c.customJSApplies(jr.Name, res.ContentType) {
+			continue
+		}
+		rec.CustomResults = append(rec.CustomResults, extract.Result{Kind: "js", Name: jr.Name, Value: jr.Value})
+	}
+
 	// merge rendered-only links (and use them for discovery)
 	seen := map[string]bool{}
 	for i := range facts.Links {
@@ -522,6 +547,25 @@ func (c *Crawler) renderAndDiff(url string, rec *PageRecord, facts *parse.Facts,
 		diff.JSLinks++
 	}
 	rec.JSDiff = diff
+}
+
+// customJSApplies checks a snippet's content_types filter against the page.
+func (c *Crawler) customJSApplies(name, contentType string) bool {
+	for _, cj := range c.cfg.CustomJS {
+		if cj.Name != name {
+			continue
+		}
+		if len(cj.ContentTypes) == 0 {
+			return true
+		}
+		for _, ct := range cj.ContentTypes {
+			if strings.Contains(contentType, ct) {
+				return true
+			}
+		}
+		return false
+	}
+	return false
 }
 
 func hasNoindexValue(values []string) bool {

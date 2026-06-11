@@ -12,6 +12,7 @@ import (
 	"github.com/hhsecond/acrawler/internal/config"
 	"github.com/hhsecond/acrawler/internal/crawler"
 	"github.com/hhsecond/acrawler/internal/parse"
+	"github.com/hhsecond/acrawler/internal/serpwidth"
 	"github.com/hhsecond/acrawler/internal/urlutil"
 )
 
@@ -87,6 +88,8 @@ var catalogue = []Def{
 	{"title_duplicate", "page_titles", "Duplicate", Opportunity, Medium},
 	{"title_over_chars", "page_titles", "Over X Characters", Opportunity, Medium},
 	{"title_below_chars", "page_titles", "Below X Characters", Opportunity, Medium},
+	{"title_over_pixels", "page_titles", "Over X Pixels", Opportunity, Medium},
+	{"title_below_pixels", "page_titles", "Below X Pixels", Opportunity, Medium},
 	{"title_same_as_h1", "page_titles", "Same as H1", Opportunity, Low},
 	{"title_multiple", "page_titles", "Multiple", Issue, High},
 	{"title_outside_head", "page_titles", "Outside <head>", Issue, High},
@@ -95,6 +98,8 @@ var catalogue = []Def{
 	{"description_duplicate", "meta_description", "Duplicate", Opportunity, Low},
 	{"description_over_chars", "meta_description", "Over X Characters", Opportunity, Low},
 	{"description_below_chars", "meta_description", "Below X Characters", Opportunity, Low},
+	{"description_over_pixels", "meta_description", "Over X Pixels", Opportunity, Low},
+	{"description_below_pixels", "meta_description", "Below X Pixels", Opportunity, Low},
 	{"description_multiple", "meta_description", "Multiple", Issue, Medium},
 	{"description_outside_head", "meta_description", "Outside <head>", Issue, Medium},
 	// Meta keywords
@@ -176,6 +181,21 @@ var catalogue = []Def{
 	{"validation_head_not_first", "validation", "<head> Not First In <html> Element", Warning, High},
 	{"validation_invalid_head_elements", "validation", "Invalid HTML Elements In <head>", Warning, High},
 	{"validation_document_over_2mb", "validation", "HTML Document Over 2MB", Issue, High},
+	// Mobile
+	{"viewport_missing", "mobile", "Viewport Not Set", Issue, High},
+	// Expansion tranche (SF-parity checks over existing crawl data)
+	{"charset_missing", "validation", "Missing Charset", Warning, Low},
+	{"html_lang_missing", "validation", "Missing <html lang> Attribute", Warning, Low},
+	{"image_missing_size_attributes", "images", "Missing Size Attributes", Opportunity, Low},
+	{"links_outlinks_to_redirect", "links", "Internal Outlinks To Redirect Pages", Opportunity, Low},
+	{"links_outlinks_to_broken", "links", "Internal Outlinks To Broken Pages", Issue, Medium},
+	{"redirect_broken", "response_codes", "Redirect To Broken Page", Issue, High},
+	{"canonical_to_redirect", "canonicals", "Canonical Is A Redirect", Issue, Medium},
+	{"hreflang_outside_head", "hreflang", "Outside <head>", Issue, Medium},
+	{"security_insecure_cookie", "security", "Cookie Without Secure Attribute", Warning, Low},
+	{"links_nofollow_inlinks_only", "links", "Nofollow Inlinks Only", Warning, Medium},
+	{"links_only_non_indexable_inlinks", "links", "Inlinks Only From Non-Indexable Pages", Warning, Low},
+	{"canonical_unlinked", "canonicals", "Unlinked Canonical", Warning, Low},
 	// AMP (static checks)
 	{"amp_missing_canonical", "amp", "Missing Canonical", Issue, High},
 	{"amp_missing_viewport", "amp", "Missing/Invalid Meta Viewport Tag", Issue, High},
@@ -224,6 +244,7 @@ func Evaluate(pages map[string]*crawler.PageRecord, cfg *config.Config) []Occurr
 		if !e.skipForIndexability(rec) {
 			e.elements(rec)
 			e.content(rec)
+			e.mobile(rec)
 		}
 		e.canonicals(rec)
 		e.structuredData(rec)
@@ -235,6 +256,7 @@ func Evaluate(pages map[string]*crawler.PageRecord, cfg *config.Config) []Occurr
 		e.images(rec)
 	}
 	e.duplicates()
+	e.inlinkAggregates()
 	return e.occs
 }
 
@@ -268,6 +290,9 @@ func (e *evaluator) responseCodes(rec *crawler.PageRecord) {
 	case rec.StatusCode >= 300:
 		if internal {
 			e.add(rec.URL, "internal_redirect", rec.RedirectURL)
+			if target, ok := e.pages[rec.RedirectURL]; ok && target.StatusCode >= 400 {
+				e.add(rec.URL, "redirect_broken", rec.RedirectURL)
+			}
 		}
 	case rec.RedirectType == "meta_refresh":
 		if internal {
@@ -364,6 +389,9 @@ func (e *evaluator) security(rec *crawler.PageRecord) {
 	}
 	if isHTTPS && isHTMLPage(rec) && rec.StatusCode == 200 {
 		header := func(name string) string { return rec.Headers[name] }
+		if sc := header("Set-Cookie"); sc != "" && !hasSecureAttribute(sc) {
+			e.add(rec.URL, "security_insecure_cookie")
+		}
 		if header("Strict-Transport-Security") == "" {
 			e.add(rec.URL, "security_missing_hsts")
 		}
@@ -380,6 +408,17 @@ func (e *evaluator) security(rec *crawler.PageRecord) {
 			e.add(rec.URL, "security_missing_referrer_policy")
 		}
 	}
+}
+
+// hasSecureAttribute reports whether a Set-Cookie value carries the Secure
+// attribute (attribute-level match: a cookie *named* "secure..." is not it).
+func hasSecureAttribute(setCookie string) bool {
+	for part := range strings.SplitSeq(setCookie, ";") {
+		if strings.EqualFold(strings.TrimSpace(part), "secure") {
+			return true
+		}
+	}
+	return false
 }
 
 func secureReferrerPolicy(v string) bool {
@@ -416,6 +455,11 @@ func (e *evaluator) elements(rec *crawler.PageRecord) {
 		} else if n < t.Title.MinChars {
 			e.add(u, "title_below_chars", title)
 		}
+		if px := serpwidth.Title(title); t.Title.MaxPx > 0 && px > t.Title.MaxPx {
+			e.add(u, "title_over_pixels", fmt.Sprintf("%dpx", px))
+		} else if t.Title.MinPx > 0 && px < t.Title.MinPx {
+			e.add(u, "title_below_pixels", fmt.Sprintf("%dpx", px))
+		}
 		if len(f.H1s) > 0 && strings.EqualFold(title, f.H1s[0]) {
 			e.add(u, "title_same_as_h1")
 		}
@@ -435,6 +479,11 @@ func (e *evaluator) elements(rec *crawler.PageRecord) {
 			e.add(u, "description_over_chars")
 		} else if n < t.Description.MinChars {
 			e.add(u, "description_below_chars")
+		}
+		if px := serpwidth.Description(f.Descriptions[0]); t.Description.MaxPx > 0 && px > t.Description.MaxPx {
+			e.add(u, "description_over_pixels", fmt.Sprintf("%dpx", px))
+		} else if t.Description.MinPx > 0 && px < t.Description.MinPx {
+			e.add(u, "description_below_pixels", fmt.Sprintf("%dpx", px))
 		}
 	}
 	if f.DescriptionsOutsideHead > 0 {
@@ -529,8 +578,13 @@ func (e *evaluator) canonicals(rec *crawler.PageRecord) {
 			break
 		}
 	}
-	if target, ok := e.pages[all[0]]; ok && all[0] != u && !target.Indexable {
-		e.add(u, "canonical_non_indexable_target", all[0])
+	if target, ok := e.pages[all[0]]; ok && all[0] != u {
+		if !target.Indexable {
+			e.add(u, "canonical_non_indexable_target", all[0])
+		}
+		if target.StatusCode >= 300 && target.StatusCode < 400 {
+			e.add(u, "canonical_to_redirect", all[0])
+		}
 	}
 }
 
@@ -605,6 +659,24 @@ func (e *evaluator) validation(rec *crawler.PageRecord) {
 	if rec.Size > 2*1024*1024 {
 		e.add(u, "validation_document_over_2mb", fmt.Sprintf("%d bytes", rec.Size))
 	}
+	// a charset can come from <meta charset> or the Content-Type header
+	if !rec.Facts.HasCharset && !strings.Contains(rec.ContentType, "charset=") &&
+		!strings.Contains(rec.Headers["Content-Type"], "charset=") {
+		e.add(u, "charset_missing")
+	}
+	if rec.Facts.Lang == "" {
+		e.add(u, "html_lang_missing")
+	}
+	if rec.Facts.HreflangOutsideHead > 0 {
+		e.add(u, "hreflang_outside_head")
+	}
+}
+
+// mobile holds the Mobile-tab checks (indexability-gated like elements).
+func (e *evaluator) mobile(rec *crawler.PageRecord) {
+	if isHTMLPage(rec) && !rec.Facts.HasViewport {
+		e.add(rec.URL, "viewport_missing")
+	}
 }
 
 // amp runs the static AMP checks on AMP pages and the AMP/non-AMP linking
@@ -668,6 +740,7 @@ func (e *evaluator) links(rec *crawler.PageRecord) {
 	f, t := rec.Facts, &e.cfg.Thresholds
 	u := rec.URL
 	internalOut, externalOut := 0, 0
+	flaggedTarget := map[string]bool{} // one occurrence per redirect/broken target
 	for _, l := range f.Links {
 		if l.Type != parse.Hyperlink {
 			continue
@@ -682,6 +755,16 @@ func (e *evaluator) links(rec *crawler.PageRecord) {
 			continue
 		}
 		internalOut++
+		if target, ok := e.pages[l.URL]; ok && !flaggedTarget[l.URL] {
+			switch {
+			case target.StatusCode >= 400:
+				flaggedTarget[l.URL] = true
+				e.add(u, "links_outlinks_to_broken", l.URL)
+			case target.StatusCode >= 300:
+				flaggedTarget[l.URL] = true
+				e.add(u, "links_outlinks_to_redirect", l.URL)
+			}
+		}
 		if l.Nofollow {
 			e.add(u, "links_internal_nofollow_outlinks", l.URL)
 		}
@@ -717,6 +800,7 @@ func (e *evaluator) links(rec *crawler.PageRecord) {
 // files (per crawled image URL).
 func (e *evaluator) images(rec *crawler.PageRecord) {
 	t := &e.cfg.Thresholds
+	unsized := map[string]bool{} // one occurrence per distinct image URL
 	for _, l := range rec.Facts.Links {
 		if l.Type != parse.Image {
 			continue
@@ -725,6 +809,10 @@ func (e *evaluator) images(rec *crawler.PageRecord) {
 			e.add(rec.URL, "image_missing_alt", l.URL)
 		} else if len([]rune(l.Alt)) > t.ImageAltMaxChars {
 			e.add(rec.URL, "image_alt_over_chars", l.URL)
+		}
+		if (l.Width == "" || l.Height == "") && !unsized[l.URL] {
+			unsized[l.URL] = true
+			e.add(rec.URL, "image_missing_size_attributes", l.URL)
 		}
 		if img, ok := e.pages[l.URL]; ok && img.Size > t.ImageMaxKB*1024 {
 			e.add(l.URL, "image_over_size", fmt.Sprintf("%d KB", img.Size/1024))
@@ -783,6 +871,66 @@ func (e *evaluator) duplicates() {
 	flag(byTitle, "title_duplicate")
 	flag(byDesc, "description_duplicate")
 	flag(byH1, "h1_duplicate")
+}
+
+// inlinkAggregates runs the cross-page link-graph checks: pages whose every
+// hyperlink inlink is nofollow, indexable pages linked only from
+// non-indexable pages, and canonical targets no page hyperlinks to
+// (DESIGN.md §5.6 inlink-derived flags). Self-links never count as inlinks.
+func (e *evaluator) inlinkAggregates() {
+	type inlinkInfo struct{ total, nofollow, indexableSrc int }
+	inlinks := map[string]*inlinkInfo{}
+	canonicalRef := map[string]string{} // canonical target -> smallest referrer
+
+	for src, rec := range e.pages {
+		if rec.State != crawler.StateCrawled || rec.Scope != "internal" || rec.Facts == nil {
+			continue
+		}
+		for _, l := range rec.Facts.Links {
+			if l.Type != parse.Hyperlink || l.URL == "" || l.URL == src {
+				continue
+			}
+			info := inlinks[l.URL]
+			if info == nil {
+				info = &inlinkInfo{}
+				inlinks[l.URL] = info
+			}
+			info.total++
+			if l.Nofollow {
+				info.nofollow++
+			}
+			if rec.Indexable {
+				info.indexableSrc++
+			}
+		}
+		for _, c := range append(append([]string{}, rec.Facts.CanonicalHTML...), rec.Facts.CanonicalHTTP...) {
+			if c == "" || c == src {
+				continue
+			}
+			if cur, ok := canonicalRef[c]; !ok || src < cur {
+				canonicalRef[c] = src
+			}
+		}
+	}
+
+	for url, rec := range e.pages {
+		if rec.State != crawler.StateCrawled || rec.Scope != "internal" ||
+			rec.Facts == nil || !isHTMLPage(rec) {
+			continue
+		}
+		info := inlinks[url]
+		if info != nil && info.total > 0 {
+			if info.nofollow == info.total {
+				e.add(url, "links_nofollow_inlinks_only")
+			}
+			if rec.Indexable && info.indexableSrc == 0 {
+				e.add(url, "links_only_non_indexable_inlinks")
+			}
+		}
+		if ref, ok := canonicalRef[url]; ok && (info == nil || info.total == 0) {
+			e.add(url, "canonical_unlinked", ref)
+		}
+	}
 }
 
 func isHTMLPage(rec *crawler.PageRecord) bool {

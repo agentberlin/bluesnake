@@ -2,7 +2,7 @@
 
 A modern, headless, CLI-first website crawler and SEO auditor in Go. Functional parity target: Screaming Frog SEO Spider's crawling/auditing core — **without** the UI and **without** third-party API integrations (GA4, GSC, PageSpeed/Lighthouse, link indexes, AI providers), and **without** opaque binary config files: everything is plain-text config + flags.
 
-Status: living document — **all milestones M0–M14 implemented** (2026-06-10). Implementation deltas from this design are tracked in §9. The feature inventories this design is derived from live in `docs/research/`:
+Status: living document — **all milestones M0–M14 implemented** (2026-06-10); **§8/§9 backlog cleared** (2026-06-11): SERP pixel widths, ISO-registry hreflang validation, LSH near-dup banding, `rendering.wait_strategy`, custom JS snippets via CDP, WARC archiving, the `serve` JSON API, crawl-path report, HTTP version capture, a 133-check catalogue, and the catalogue-coverage meta-test. Remaining deliberate cuts are listed in §9. The feature inventories this design is derived from live in `docs/research/`:
 - [01-crawl-configuration.md](research/01-crawl-configuration.md) — every SF config option
 - [02-data-model-and-checks.md](research/02-data-model-and-checks.md) — per-URL data, tabs/filters, 300+ issues, crawl analysis, link model, reports
 - [03-operations-cli-storage.md](research/03-operations-cli-storage.md) — storage modes, resume, modes, CLI, comparison
@@ -23,7 +23,7 @@ Status: living document — **all milestones M0–M14 implemented** (2026-06-10)
 9. **Very good test coverage, BDD-first**: Gherkin acceptance specs + exhaustive table-driven unit tests written before each module's implementation.
 
 ### Non-goals
-- GUI of any kind.
+- GUI of any kind. *(Superseded 2026-06: a Wails desktop app now lives in `desktop/` as a thin shell over the same internal engine and `~/.acrawler` store. The engine remains headless-first; every feature must land in the CLI and the engine before/alongside any UI surface.)*
 - Third-party API integrations (GA4, Search Console, PSI/Lighthouse, Majestic/Ahrefs/Moz, AI embeddings/LLM features, Google Sheets/Drive/Looker).
 - SERP mode pixel-perfect Google snippet simulation (we keep pixel-width calculation since title/description pixel filters depend on it, using a bundled font metrics table — but no interactive snippet editor).
 - Built-in scheduler (cron exists; our CLI is fully scriptable; we document recipes).
@@ -76,7 +76,7 @@ acrawler sitemap <crawl-id>           # generate XML sitemap(s) from a crawl
 acrawler compare <id-prev> <id-curr>  # crawl comparison (+ change detection)
 acrawler robots test <url...>         # robots.txt tester (live or --robots-file)
 acrawler config init|validate|show    # emit commented default config / validate / effective config
-acrawler serve <crawl-id>             # (later) localhost JSON API over a crawl DB
+acrawler serve                        # read-only localhost JSON API over the crawl store (--addr)
 ```
 
 Global flags: `--config <file>`, `--store-dir <dir>` (default `~/.acrawler`), `--project <name>`, `--task <name>`, `--output <dir>`, `--format csv|json|jsonl|xlsx`, `--timestamped-output`, `--overwrite`, `--quiet/--verbose`, `--log json|text`.
@@ -159,6 +159,7 @@ limits:
 
 rendering:
   mode: text             # text | javascript   (old AJAX scheme intentionally dropped: deprecated by Google 2018)
+  wait_strategy: adaptive # adaptive (settle detection) | fixed (load event + full AJAX sleep; compare-stable)
   ajax_timeout_sec: 5
   window: googlebot-desktop   # preset or {width: , height: }
   screenshots: false
@@ -307,6 +308,9 @@ internal/report/         named reports (crawl overview, chains, insecure content
 internal/sitemapgen/     XML sitemap + image sitemap generation w/ splitting + index
 internal/compare/        crawl comparison, change detection, URL mapping
 internal/serpwidth/      text pixel-width measurement (bundled font metrics table)
+internal/isocodes/       embedded ISO 639-1 + ISO 3166-1 registries (hreflang validation)
+internal/warc/           minimal WARC/1.1 writer (extraction.store_warc archives)
+internal/serve/          read-only localhost JSON API over stored crawls
 internal/version/
 features/                Gherkin .feature files (BDD acceptance specs)
 test/                    godog step definitions, fixture site builder (httptest), golden files
@@ -475,6 +479,10 @@ Each analyzer reads SQLite, writes back columns/tables; all are idempotent and r
 
 `rendering.ajax_timeout_sec` is the **hard cap** on the settle phase after DCL (not a fixed sleep); `advanced.response_timeout_sec` caps the wait for DCL itself. Worst case therefore equals the old fixed-wait behaviour. Regression tests cover early settle, permanently-open streams/iframes, and beacon chatter.
 
+**Wait strategy knob** (`rendering.wait_strategy: adaptive | fixed`): adaptive is the settle detection above; `fixed` waits for the browser load event and then sleeps the *full* AJAX timeout before snapshotting — slower, but the snapshot moment is deterministic, which keeps `compare` runs stable on pages with flaky widgets.
+
+**Custom JavaScript snippets** (`custom_js`): snippet files load at renderer construction (a missing file is a config error naming the snippet). After the page settles, `action` snippets run first (results discarded — they exist to mutate the page), then `extraction` snippets; values are stored in `custom_results` with kind `js` (JS strings verbatim, anything else compact JSON, `error: …` when a snippet throws). Each snippet is bounded by its `timeout_sec` (default 5); a `content_types` list restricts which pages a snippet's results are stored for.
+
 ---
 
 ## 6. Testing strategy (BDD)
@@ -489,9 +497,10 @@ Each analyzer reads SQLite, writes back columns/tables; all are idempotent and r
 `test/fixture` provides a declarative builder: `site.Page("/a").Title("x").LinksTo("/b", "/c").Noindex()...` → handlers on `httptest.Server`. One canonical "kitchen-sink site" exercises every issue in the catalogue; per-feature focused sites keep scenarios readable.
 
 ### Conventions
-- Every issue in the catalogue must have at least one fixture page that triggers it and one that doesn't (enforced by a meta-test iterating the catalogue against the kitchen-sink crawl).
+- Every issue in the catalogue must have at least one fixture page that triggers it and one that doesn't — enforced by the catalogue-coverage meta-test (`internal/analyze/coverage_test.go`): a kitchen-sink page set must trigger every catalogue ID, and a fully healthy two-page fixture must trigger zero occurrences. Adding a check without a fixture fails the suite.
 - Golden files under `test/golden/`; regenerate with `-update` flag.
 - Coverage gate: `make test` fails under 85% for `internal/...` (excluding `render`, which needs Chrome and is build-tagged `chrome`).
+- `@chrome`-tagged features are excluded from the default acceptance run; on a machine with Chrome run them with `ACRAWLER_FEATURE_TAGS="@chrome" go test ./test/`. Chrome-dependent Go tests skip themselves when no Chrome is found.
 
 ---
 
@@ -520,40 +529,45 @@ Definition of done per milestone: feature file(s) green, unit coverage ≥ 85% f
 ---
 
 ## 8. Open questions / future
-- `serve` subcommand (JSON API over crawl DB) — would make a future UI trivial; deferred.
 - Spelling/grammar: candidate libs need evaluation; schema already reserves columns.
 - Distributed crawling: out of scope; single-process concurrency is the design point.
 - Windows support: nothing platform-specific except Chrome discovery; CI matrix later.
-- **Renderer wait strategy knob** (`rendering.wait_strategy: adaptive | fixed`): adaptive settle
-  detection (§5.8) trades snapshot determinism for speed — two crawls of the same page may
-  snapshot at slightly different moments, which can surface as phantom diffs in `compare` on
-  pages with flaky widgets. A `fixed` mode (old behaviour: load event + full AJAX sleep) should
-  be offered for compare-stable auditing. Not yet implemented; today only adaptive exists.
-- **Settle thresholds are code constants, not config**: 500ms network-idle window, 1.5s
-  wire-silence window, 2×500ms DOM-stability probes (`internal/render`). Decide whether to
-  expose them under `rendering.` or document them as fixed. If pages ever settle wrongly, the
-  precision upgrade is a `MutationObserver` injected at document start ("ms since last DOM
-  mutation") instead of polling node counts.
+- **Settle thresholds are code constants, not config** (decided 2026-06-11): 500ms
+  network-idle window, 1.5s wire-silence window, 2×500ms DOM-stability probes
+  (`internal/render`) stay fixed — `rendering.wait_strategy: fixed` is the escape hatch
+  when adaptive settling misbehaves, so per-threshold knobs would add config surface
+  without a use case. If pages ever settle wrongly, the precision upgrade is a
+  `MutationObserver` injected at document start ("ms since last DOM mutation") instead
+  of polling node counts.
 
-## 9. Implementation status & deltas (2026-06-10)
+Resolved (2026-06-11): `serve` subcommand shipped (`internal/serve`, read-only JSON API
+over the export layer); `rendering.wait_strategy: adaptive | fixed` shipped (§5.8).
 
-All milestones M0–M14 are implemented. Where the implementation deviates from
-or subsets this design:
+## 9. Implementation status & deltas (2026-06-11)
+
+All milestones M0–M14 are implemented, and the previously-tracked gaps have
+landed: `internal/serpwidth` (bundled Arial metrics; title/description Over/
+Below X Pixels checks + pixel_width export columns), hreflang validation
+against the embedded ISO 639-1 / 3166-1 registries (`internal/isocodes`),
+LSH banding in front of the exact near-duplicate verification (band width
+adapts to the threshold; exact-equivalent at the default 90%), custom
+JavaScript snippets executed via CDP (action → extraction ordering, results
+in `custom_results` kind `js`), WARC/1.1 archiving with an own writer
+(`internal/warc`, `extraction.store_warc`), the `serve` JSON API, the
+`crawl_paths` report (per-URL discovery path, also in the desktop URL
+drawer), per-page HTTP protocol version capture (stored, exported, shown in
+the UI), and a catalogue of **133 checks** whose fixture coverage is enforced
+by a meta-test (§6).
 
 **Implemented but scoped down (extension points exist):**
-- Issues catalogue: ~100 checks implemented (per-page + cross-page + analysis
-  + structured data + JS + validation + AMP) of SF's ~300; the catalogue in
-  `internal/issues` is a data table — adding checks is incremental.
+- Issues catalogue: 133 checks of SF's ~300; the catalogue in
+  `internal/issues` is a data table — adding checks is incremental, and the
+  coverage meta-test forces a fixture for every new entry.
 - Structured data validation: curated 12-type Google rich-results requirement
   table (data-driven, `internal/structured.requirements`); full Schema.org
   vocabulary validation not shipped.
 - AMP: structural checks (canonical/viewport/charset/amp-script/reciprocity),
   not the full official AMP validator rule set.
-- Title/description thresholds: character-based only. SERP **pixel-width**
-  checks need a bundled font-metrics table (`internal/serpwidth` not built).
-- Hreflang code validation is structural (ISO-shaped), not full ISO registry.
-- Near-duplicates: minhash signatures compared all-pairs (fine to ~10k pages);
-  LSH banding is the next step for large crawls.
 - Sitemap orphan detection approximates "only discoverable via sitemap" as
   zero inlinks + sitemap-seeded.
 - Concurrency: goroutine-per-URL behind a semaphore + sink-mirrored frontier.
@@ -563,10 +577,7 @@ or subsets this design:
 **Not implemented (documented cuts):**
 - Spelling & grammar (planned cut, §1 non-goals).
 - Accessibility (axe-core) — needs an axe bundle injected via CDP.
-- WARC / full website archiving (raw HTML blob storage exists:
-  `extraction.store_html` → per-crawl assets directory).
-- Custom JavaScript snippets (config schema exists; execution via CDP not wired).
 - Old AJAX crawling scheme (deliberately dropped — deprecated by Google).
-- SERP mode, segments, visualisations, built-in scheduling (cron + CLI).
+- SERP mode's interactive snippet editor, segments, visualisations, built-in
+  scheduling (cron + CLI; pixel-width *measurement* is in, per §1).
 - Forms-based auth recorder (bring-your-own session cookie supported).
-- HTTP/2 fetch metrics, per-URL crawl-path report.

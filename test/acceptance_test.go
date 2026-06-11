@@ -51,12 +51,18 @@ func TestMain(m *testing.M) {
 }
 
 func TestFeatures(t *testing.T) {
+	// @chrome features need a local Chrome/Chromium; opt in with
+	// ACRAWLER_FEATURE_TAGS="@chrome" (or any godog tag expression).
+	tags := os.Getenv("ACRAWLER_FEATURE_TAGS")
+	if tags == "" {
+		tags = "~@pending && ~@chrome"
+	}
 	suite := godog.TestSuite{
 		ScenarioInitializer: initializeScenario,
 		Options: &godog.Options{
 			Format:   "progress",
 			Paths:    []string{"../features"},
-			Tags:     "~@pending && ~@chrome",
+			Tags:     tags,
 			Strict:   true,
 			TestingT: t,
 		},
@@ -325,6 +331,11 @@ func initializeScenario(sc *godog.ScenarioContext) {
 
 	// --- issues (registered in issues_steps_test.go) ---
 	w.registerIssuesSteps(sc)
+
+	// --- custom JS / WARC / serve (registered in their own steps files) ---
+	w.registerCustomJSSteps(sc)
+	w.registerWARCSteps(sc)
+	w.registerServeSteps(sc)
 
 	// --- include/exclude ---
 	sc.Step(`^no include or exclude patterns$`, w.noPatterns)

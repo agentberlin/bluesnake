@@ -51,6 +51,7 @@ func Default() *Config {
 		},
 		Rendering: RenderingConfig{
 			Mode:             "text",
+			WaitStrategy:     "adaptive",
 			AjaxTimeoutSec:   5,
 			Window:           "googlebot-desktop",
 			FlattenShadowDOM: true,

@@ -17,6 +17,7 @@ import (
 
 	"github.com/hhsecond/acrawler/internal/crawler"
 	"github.com/hhsecond/acrawler/internal/issues"
+	"github.com/hhsecond/acrawler/internal/serpwidth"
 	"github.com/hhsecond/acrawler/internal/store"
 	"github.com/xuri/excelize/v2"
 )
@@ -36,7 +37,7 @@ var tabs = []string{
 
 var reports = []string{
 	"crawl_overview", "redirect_chains", "canonical_chains",
-	"insecure_content", "orphan_pages",
+	"insecure_content", "orphan_pages", "crawl_paths",
 }
 
 // List returns the exportable tab names.
@@ -101,17 +102,17 @@ func sortedURLs(pages map[string]*crawler.PageRecord) []string {
 func tabHeader(name string) []string {
 	switch name {
 	case "internal", "external":
-		return []string{"url", "status_code", "status", "content_type", "indexability",
-			"indexability_status", "depth", "inlinks", "unique_inlinks", "unique_outlinks",
-			"link_score", "response_time_ms", "size", "title", "meta_description", "h1",
-			"word_count", "canonical", "redirect_url", "redirect_type"}
+		return []string{"url", "status_code", "status", "content_type", "http_version",
+			"indexability", "indexability_status", "depth", "inlinks", "unique_inlinks",
+			"unique_outlinks", "link_score", "response_time_ms", "size", "title",
+			"meta_description", "h1", "word_count", "canonical", "redirect_url", "redirect_type"}
 	case "response_codes":
 		return []string{"url", "scope", "state", "status_code", "status", "redirect_url",
 			"redirect_type", "fetch_error"}
 	case "titles":
-		return []string{"url", "title", "length", "count", "indexability_status"}
+		return []string{"url", "title", "length", "pixel_width", "count", "indexability_status"}
 	case "descriptions":
-		return []string{"url", "description", "length", "count", "indexability_status"}
+		return []string{"url", "description", "length", "pixel_width", "count", "indexability_status"}
 	case "h1":
 		return []string{"url", "h1", "length", "count", "indexability_status"}
 	case "canonicals":
@@ -151,8 +152,8 @@ func tabRow(name string, rec *crawler.PageRecord) ([]string, bool) {
 			wordCount = f.WordCount
 		}
 		return []string{rec.URL, itoa(rec.StatusCode), rec.Status, rec.ContentType,
-			indexability, rec.IndexabilityStatus, itoa(rec.Depth), itoa(rec.Inlinks),
-			itoa(rec.UniqueInlinks), itoa(rec.UniqueOutlinks),
+			rec.HTTPVersion, indexability, rec.IndexabilityStatus, itoa(rec.Depth),
+			itoa(rec.Inlinks), itoa(rec.UniqueInlinks), itoa(rec.UniqueOutlinks),
 			fmt.Sprintf("%.1f", rec.LinkScore), itoa(int(rec.ResponseTimeMs)),
 			itoa(rec.Size), title, desc, h1, itoa(wordCount), canonical,
 			rec.RedirectURL, rec.RedirectType}, true
@@ -163,14 +164,16 @@ func tabRow(name string, rec *crawler.PageRecord) ([]string, bool) {
 		if f == nil {
 			return nil, false
 		}
-		return []string{rec.URL, first(f.Titles), itoa(len([]rune(first(f.Titles)))),
-			itoa(len(f.Titles)), rec.IndexabilityStatus}, true
+		title := first(f.Titles)
+		return []string{rec.URL, title, itoa(len([]rune(title))),
+			itoa(serpwidth.Title(title)), itoa(len(f.Titles)), rec.IndexabilityStatus}, true
 	case "descriptions":
 		if f == nil {
 			return nil, false
 		}
-		return []string{rec.URL, first(f.Descriptions), itoa(len([]rune(first(f.Descriptions)))),
-			itoa(len(f.Descriptions)), rec.IndexabilityStatus}, true
+		desc := first(f.Descriptions)
+		return []string{rec.URL, desc, itoa(len([]rune(desc))),
+			itoa(serpwidth.Description(desc)), itoa(len(f.Descriptions)), rec.IndexabilityStatus}, true
 	case "h1":
 		if f == nil {
 			return nil, false
@@ -293,6 +296,8 @@ func BuildReport(st *store.Crawl, name string) (*Dataset, error) {
 		return reportByIssuePrefix(st, "insecure_content", "security_")
 	case "orphan_pages":
 		return reportByIssuePrefix(st, "orphan_pages", "sitemap_orphan")
+	case "crawl_paths":
+		return reportCrawlPaths(st)
 	}
 	return nil, fmt.Errorf("unknown report %q (try: %s)", name, strings.Join(reports, ", "))
 }
@@ -351,6 +356,38 @@ func reportChains(st *store.Crawl, typ string) (*Dataset, error) {
 		d.Rows = append(d.Rows, []string{c.Source, itoa(len(c.Hops)),
 			strings.Join(c.Hops, " -> "), c.Final, itoa(c.FinalStatus),
 			strconv.FormatBool(c.Loop)})
+	}
+	return d, nil
+}
+
+// reportCrawlPaths reconstructs each URL's discovery path by walking the
+// discovered_from edges back to the seed (SF's crawl path report). Walks are
+// cycle-safe and capped at 25 hops; a parent that was never stored still
+// appears in the path (it is the only known edge) but ends the walk.
+func reportCrawlPaths(st *store.Crawl) (*Dataset, error) {
+	pages, err := st.LoadPages()
+	if err != nil {
+		return nil, err
+	}
+	d := &Dataset{Name: "crawl_paths", Header: []string{"url", "hops", "path"}}
+	for _, url := range sortedURLs(pages) {
+		chain := []string{url}
+		seen := map[string]bool{url: true}
+		current := url
+		for len(chain) <= 25 {
+			rec, ok := pages[current]
+			if !ok {
+				break // unknown parent: already in the chain, nothing to follow
+			}
+			parent := rec.DiscoveredFrom
+			if parent == "" || seen[parent] {
+				break
+			}
+			seen[parent] = true
+			chain = append([]string{parent}, chain...)
+			current = parent
+		}
+		d.Rows = append(d.Rows, []string{url, itoa(len(chain) - 1), strings.Join(chain, " -> ")})
 	}
 	return d, nil
 }

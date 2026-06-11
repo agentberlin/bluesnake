@@ -140,6 +140,7 @@ type ExtractionConfig struct {
 	StructuredData    StructuredDataConfig `yaml:"structured_data"`
 	StoreHTML         bool                 `yaml:"store_html"`
 	StoreRenderedHTML bool                 `yaml:"store_rendered_html"`
+	StoreWARC         bool                 `yaml:"store_warc"`
 	PDF               PDFConfig            `yaml:"pdf"`
 }
 
@@ -163,7 +164,8 @@ type LimitsConfig struct {
 }
 
 type RenderingConfig struct {
-	Mode             string `yaml:"mode"` // text | javascript
+	Mode             string `yaml:"mode"`          // text | javascript
+	WaitStrategy     string `yaml:"wait_strategy"` // adaptive | fixed (DESIGN.md §8: fixed = load event + full AJAX sleep, compare-stable snapshots)
 	AjaxTimeoutSec   int    `yaml:"ajax_timeout_sec"`
 	Window           string `yaml:"window"` // preset name
 	WindowWidth      int    `yaml:"window_width"`

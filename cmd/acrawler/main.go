@@ -52,6 +52,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newExportCmd())
 	root.AddCommand(newReportCmd())
 	root.AddCommand(newSitemapCmd())
+	root.AddCommand(newServeCmd())
 	root.AddCommand(newRobotsCmd())
 	root.AddCommand(newVersionCmd())
 	return root
