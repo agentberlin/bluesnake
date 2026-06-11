@@ -568,6 +568,15 @@ func (c *Crawler) renderAndDiff(url string, rec *PageRecord, facts *parse.Facts,
 		facts.Links = append(facts.Links, l)
 		diff.JSLinks++
 	}
+	// XHR/fetch requests observed during rendering join the link set too
+	// (Screaming Frog parity: an SPA's data endpoints are discovered URLs)
+	for _, u := range rendered.XHRURLs {
+		if seen["xhr|"+u] {
+			continue
+		}
+		seen["xhr|"+u] = true
+		facts.Links = append(facts.Links, parse.Link{Type: parse.XHR, URL: u, Origin: "xhr"})
+	}
 	rec.JSDiff = diff
 }
 
@@ -663,7 +672,9 @@ func (c *Crawler) typeFlags(lt parse.LinkType, scopeClass urlutil.ScopeClass) (s
 	L, R := &c.cfg.Links, &c.cfg.Resources
 	var sc config.StoreCrawl
 	switch lt {
-	case parse.Hyperlink:
+	case parse.Hyperlink, parse.XHR:
+		// XHR-discovered URLs follow the page-link config: Screaming Frog
+		// fetches them even when JS/CSS resource crawling is off
 		if scopeClass == urlutil.External {
 			return L.External.Store, L.External.Crawl
 		}

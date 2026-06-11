@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/hhsecond/acrawler/internal/config"
+	"github.com/hhsecond/acrawler/internal/parse"
 	"github.com/hhsecond/acrawler/internal/render"
 )
 
@@ -29,6 +30,8 @@ const jsPage = `<html><head><title>Raw Title</title>
     p.textContent = 'content injected by javascript here';
     document.body.appendChild(p);
   });
+  fetch('/api/from-xhr');
+  fetch('/api/posted', {method: 'POST'});
 </script>
 </head><body><h1>raw</h1><h2>s</h2><a href="/plain">plain</a></body></html>`
 
@@ -94,5 +97,25 @@ func TestCrawlerRenderingIntegration(t *testing.T) {
 	}
 	if !foundRendered {
 		t.Error("rendered-only link missing origin=rendered")
+	}
+	// GET XHR/fetch requests made during rendering are discovered URLs
+	// (Screaming Frog parity); POSTs are not crawl targets
+	var xhrLink bool
+	for _, l := range root.Facts.Links {
+		if l.Type == parse.XHR && l.URL == srv.URL+"/api/from-xhr" {
+			xhrLink = true
+			if l.Origin != "xhr" {
+				t.Errorf("xhr link origin = %q, want %q", l.Origin, "xhr")
+			}
+		}
+	}
+	if !xhrLink {
+		t.Error("XHR request not recorded as a link")
+	}
+	if rec := res.Pages[srv.URL+"/api/from-xhr"]; rec == nil || rec.State != StateCrawled {
+		t.Errorf("XHR-discovered URL not crawled: %+v", rec)
+	}
+	if res.Pages[srv.URL+"/api/posted"] != nil {
+		t.Error("POST XHR must not be discovered")
 	}
 }

@@ -33,6 +33,7 @@ type Result struct {
 	ConsoleErrors []string
 	Screenshot    []byte
 	JSResults     []JSResult // custom JS extraction snippet values
+	XHRURLs       []string   // GET XHR/fetch request URLs observed while rendering
 }
 
 // JSResult is one custom JS extraction snippet's value for a page: JS strings
@@ -386,6 +387,30 @@ func (r *Renderer) Render(ctx context.Context, url string) (*Result, error) {
 			}
 		})
 	}
+
+	// XHR/fetch GETs the page makes while rendering are discovered URLs
+	// (Screaming Frog parity); POSTs and data:/blob: schemes are not.
+	var xhrMu sync.Mutex
+	xhrSeen := map[string]bool{}
+	chromedp.ListenTarget(tabCtx, func(ev any) {
+		e, ok := ev.(*network.EventRequestWillBeSent)
+		if !ok || e.Request.Method != "GET" {
+			return
+		}
+		if e.Type != network.ResourceTypeXHR && e.Type != network.ResourceTypeFetch {
+			return
+		}
+		u := e.Request.URL
+		if strings.HasPrefix(u, "blob:") || strings.HasPrefix(u, "data:") {
+			return
+		}
+		xhrMu.Lock()
+		if !xhrSeen[u] {
+			xhrSeen[u] = true
+			res.XHRURLs = append(res.XHRURLs, u)
+		}
+		xhrMu.Unlock()
+	})
 
 	settle := trackSettle(tabCtx)
 	actions := []chromedp.Action{

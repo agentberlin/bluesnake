@@ -36,6 +36,7 @@ const (
 	MobileAlternate LinkType = "mobile_alternate"
 	FormAction      LinkType = "form_action"
 	Uncrawlable     LinkType = "uncrawlable"
+	XHR             LinkType = "xhr" // GET XHR/fetch observed during JS rendering
 )
 
 // Link is one typed edge from the parsed page to a target URL.
@@ -54,7 +55,7 @@ type Link struct {
 	Lang     string // hreflang code
 	Width    string // img width attribute
 	Height   string // img height attribute
-	Origin   string // html | rendered (JS rendering mode)
+	Origin   string // html | rendered | xhr (JS rendering mode)
 }
 
 // Hreflang is one hreflang annotation.
