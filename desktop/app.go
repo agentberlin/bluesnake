@@ -25,6 +25,7 @@ import (
 type App struct {
 	ctx      context.Context
 	storeDir string
+	mcp      *mcpManager // localhost MCP server (settings toggle)
 
 	mu      sync.Mutex
 	session *crawlSession // at most one live crawl
@@ -36,12 +37,14 @@ type App struct {
 }
 
 func NewApp() *App {
-	return &App{
+	a := &App{
 		storeDir:   defaultStoreDir(),
 		pagesCache: map[string]map[string]*crawler.PageRecord{},
 		issueCache: map[string]map[string][]string{},
 		countCache: map[string]map[string]int{},
 	}
+	a.mcp = newMCPManager(a)
+	return a
 }
 
 func defaultStoreDir() string {
@@ -52,9 +55,13 @@ func defaultStoreDir() string {
 	return filepath.Join(home, ".bluesnake")
 }
 
-func (a *App) startup(ctx context.Context) { a.ctx = ctx }
+func (a *App) startup(ctx context.Context) {
+	a.ctx = ctx
+	a.mcp.initFromSettings() // restore the MCP toggle, auto-starting the server
+}
 
 func (a *App) shutdown(ctx context.Context) {
+	a.mcp.shutdown()
 	a.mu.Lock()
 	s := a.session
 	a.mu.Unlock()

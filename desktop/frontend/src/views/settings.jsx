@@ -4,7 +4,7 @@
    =========================================================================== */
 import React, { useEffect, useMemo, useState } from "react";
 import { Icon, Btn, IconBtn, Search, Toggle, Seg, Empty, Toast, Modal } from "../ui";
-import { api } from "../api";
+import { api, on } from "../api";
 
 /* schema: every key is a verified dotted yaml path in internal/config */
 const tg = (key, label, hint, adv) => ({ key, label, type: "toggle", hint, advanced: adv });
@@ -124,7 +124,7 @@ const encodeVal = (f, v) => {
   return JSON.stringify(v); // strings and arrays — JSON is valid YAML
 };
 
-export function SettingsView({ profileName }) {
+export function SettingsView({ profileName, focus }) {
   const [profiles, setProfiles] = useState(["Default audit"]);
   const [profile, setProfile] = useState(profileName || "Default audit");
   const [cfg, setCfg] = useState(null);
@@ -146,6 +146,8 @@ export function SettingsView({ profileName }) {
   };
   useEffect(() => { api.listProfiles().then((p) => p && p.length && setProfiles(p)).catch(() => {}); }, []);
   useEffect(() => { reload(profile); }, [profile]);
+  // deep-link from the titlebar MCP pill (and anywhere else)
+  useEffect(() => { if (focus && focus.section) { setActive(focus.section); setQ(""); setYamlMode(false); } }, [focus]);
 
   const fieldsOf = (s) => s.fields || [];
   const allFields = useMemo(() => SECTIONS.flatMap((s) => fieldsOf(s).map((f) => ({ ...f, section: s.label, sectionId: s.id }))), []);
@@ -200,6 +202,11 @@ export function SettingsView({ profileName }) {
                 {fieldsOf(s).some((f) => f.key in pending) && <span className="statusdot" style={{ background: "var(--accent)" }} />}
               </div>
             ))}
+            {/* app-level settings — not part of any crawl profile */}
+            <div className="sb-sectlabel" style={{ paddingTop: 14 }}>Application</div>
+            <div className={"sb-item" + (active === "mcp" ? " active" : "")} onClick={() => { setActive("mcp"); setQ(""); }} style={{ height: 30 }}>
+              <Icon name="plug-zap" size={15} /><span style={{ flex: 1 }}>MCP Server</span>
+            </div>
           </div>
         )}
       </div>
@@ -208,9 +215,9 @@ export function SettingsView({ profileName }) {
       <div className="main" style={{ minWidth: 0 }}>
         <div className="toolbar">
           <span className="title" style={{ fontSize: 13.5 }}>Settings</span>
-          <span className="sub">{profile}</span>
+          <span className="sub">{active === "mcp" && !yamlMode ? "Application" : profile}</span>
           <div style={{ flex: 1 }} />
-          {!yamlMode && <>
+          {!yamlMode && active !== "mcp" && <>
             <Search value={q} onChange={setQ} placeholder="Search all settings…" width={230} />
             <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--ink-2)" }}>
               <Toggle on={advanced} onChange={setAdvanced} /> Advanced
@@ -237,7 +244,8 @@ export function SettingsView({ profileName }) {
         ) : (
           <div className="scroll" style={{ padding: "20px 24px" }}>
             <div style={{ maxWidth: 720 }} className="fade">
-              {!cfg && <Empty icon="sliders-horizontal" title="Loading profile…"> </Empty>}
+              {active === "mcp" && !q && <MCPPanel onToast={fireToast} />}
+              {active !== "mcp" && !cfg && <Empty icon="sliders-horizontal" title="Loading profile…"> </Empty>}
               {cfg && q && searchHits && (
                 <>
                   <div style={{ fontSize: 12, color: "var(--ink-faint)", marginBottom: 14 }}>{searchHits.length} settings match “{q}”</div>
@@ -245,7 +253,7 @@ export function SettingsView({ profileName }) {
                   {searchHits.length === 0 && <Empty icon="search-x" title="No settings found">Nothing matches “{q}”.</Empty>}
                 </>
               )}
-              {cfg && !q && sec && (
+              {active !== "mcp" && cfg && !q && sec && (
                 <>
                   <div style={{ marginBottom: 18 }}>
                     <h2 style={{ margin: 0, fontSize: 16, fontWeight: 650, display: "flex", alignItems: "center", gap: 9 }}><Icon name={sec.icon} size={18} style={{ color: "var(--ink-3)" }} />{sec.label}</h2>
@@ -281,6 +289,129 @@ export function SettingsView({ profileName }) {
           </>} />
       )}
       {toast && <Toast {...toast} />}
+    </div>
+  );
+}
+
+/* ---- MCP server panel (app-level, not part of any profile) ------------- */
+const MCP_TOOLS = [
+  { group: "Crawl control", tools: "start_crawl · crawl_status · pause_crawl · resume_crawl · stop_crawl" },
+  { group: "Configuration", tools: "list_config_options · list_profiles · get_profile_config" },
+  { group: "Crawl data", tools: "query (read-only SQL) · get_database_schema · issue_summary · list_crawls" },
+];
+
+function MCPPanel({ onToast }) {
+  const [st, setSt] = useState(null);
+  const [port, setPort] = useState("");
+
+  useEffect(() => {
+    api.getMCPStatus().then((s) => { setSt(s); setPort(String(s.port)); }).catch(() => {});
+    return on("mcp:status", (s) => { setSt(s); setPort(String(s.port)); });
+  }, []);
+
+  async function toggle() {
+    const s = await api.setMCPEnabled(!st.enabled);
+    setSt(s);
+    if (s.error) onToast(s.error, "circle-alert");
+    else onToast(s.enabled ? "MCP server running" : "MCP server stopped", "plug-zap");
+  }
+  async function applyPort() {
+    const p = parseInt(port, 10);
+    if (!p || p === st.port) { setPort(String(st.port)); return; }
+    const s = await api.setMCPPort(p);
+    setSt(s);
+    setPort(String(s.port));
+    if (s.error) onToast(s.error, "circle-alert");
+    else onToast("MCP port set to " + s.port, "plug-zap");
+  }
+  async function copy(text) {
+    try {
+      if (window.runtime && window.runtime.ClipboardSetText) await window.runtime.ClipboardSetText(text);
+      else await navigator.clipboard.writeText(text);
+      onToast("Copied to clipboard", "copy");
+    } catch { onToast("Copy failed", "circle-alert"); }
+  }
+
+  if (!st) return <Empty icon="plug-zap" title="Loading…"> </Empty>;
+  const cmdSnippet = `claude mcp add --transport http bluesnake ${st.endpoint}`;
+  const jsonSnippet = `{"mcpServers": {"bluesnake": {"type": "http", "url": "${st.endpoint}"}}}`;
+
+  return (
+    <>
+      <div style={{ marginBottom: 18 }}>
+        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 650, display: "flex", alignItems: "center", gap: 9 }}>
+          <Icon name="plug-zap" size={18} style={{ color: "var(--ink-3)" }} />MCP Server
+        </h2>
+        <div className="hint" style={{ marginTop: 6 }}>
+          Let LLM agents (Claude Code, Claude Desktop, any MCP client) drive bluesnake: start crawls with any
+          configuration, watch progress, and analyse results with read-only SQL. The server listens on localhost
+          only — nothing leaves this machine.
+        </div>
+      </div>
+
+      {/* master toggle */}
+      <div style={{ display: "flex", gap: 16, padding: "13px 0", borderBottom: "1px solid var(--border-soft)", alignItems: "center" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Enable MCP server</div>
+          <div className="hint" style={{ marginTop: 4 }}>Stays on across restarts. Crawls an agent starts appear here live, and the pause/stop buttons work on them.</div>
+        </div>
+        <Toggle on={st.enabled} onChange={toggle} />
+      </div>
+
+      {/* live status */}
+      <div style={{ display: "flex", gap: 10, padding: "13px 0", borderBottom: "1px solid var(--border-soft)", alignItems: "center" }}>
+        <span className="statusdot" style={{ background: st.running ? "var(--sev-ok)" : "var(--ink-faint)" }} />
+        <span style={{ fontSize: 12.5, fontWeight: 600 }}>{st.running ? "Running" : "Stopped"}</span>
+        {st.running && <span className="mono" style={{ fontSize: 11.5, color: "var(--ink-2)" }}>{st.endpoint}</span>}
+        {st.running && <IconBtn icon="copy" size={13} title="Copy endpoint" onClick={() => copy(st.endpoint)} />}
+        {st.error && <span style={{ fontSize: 11.5, color: "var(--s-4xx)" }}><Icon name="circle-alert" size={12} /> {st.error}</span>}
+      </div>
+
+      {/* port */}
+      <div style={{ display: "flex", gap: 16, padding: "13px 0", borderBottom: "1px solid var(--border-soft)", alignItems: "center" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Port</div>
+          <div className="hint" style={{ marginTop: 4 }}>Applied immediately — reconnect clients after changing it.</div>
+        </div>
+        <input className="input mono" value={port} onChange={(e) => setPort(e.target.value.replace(/[^\d]/g, ""))}
+          onBlur={applyPort} onKeyDown={(e) => e.key === "Enter" && e.target.blur()} style={{ width: 92, textAlign: "right" }} />
+      </div>
+
+      {/* connect snippets */}
+      <div style={{ padding: "16px 0", borderBottom: "1px solid var(--border-soft)" }}>
+        <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>Connect a client</div>
+        <Snippet label="Claude Code" text={cmdSnippet} onCopy={copy} />
+        <Snippet label="Any MCP client (JSON config)" text={jsonSnippet} onCopy={copy} />
+        <div className="hint" style={{ marginTop: 8 }}>
+          Without the app running, the CLI serves the same endpoint: <span className="mono">bluesnake mcp</span>
+        </div>
+      </div>
+
+      {/* tool surface */}
+      <div style={{ padding: "16px 0" }}>
+        <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>What agents can do</div>
+        {MCP_TOOLS.map((g) => (
+          <div key={g.group} style={{ display: "flex", gap: 10, padding: "5px 0", fontSize: 11.5 }}>
+            <span style={{ width: 110, flex: "0 0 110px", color: "var(--ink-faint)" }}>{g.group}</span>
+            <span className="mono" style={{ color: "var(--ink-2)" }}>{g.tools}</span>
+          </div>
+        ))}
+        <div className="hint" style={{ marginTop: 8 }}>
+          SQL access is read-only and scoped to the crawl databases under your store directory.
+        </div>
+      </div>
+    </>
+  );
+}
+
+function Snippet({ label, text, onCopy }) {
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ fontSize: 10.5, color: "var(--ink-faint)", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 4 }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <pre className="mono" style={{ flex: 1, margin: 0, padding: "8px 10px", fontSize: 11, lineHeight: 1.5, border: "1px solid var(--border-soft)", borderRadius: 6, background: "var(--sidebar)", overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{text}</pre>
+        <IconBtn icon="copy" size={14} title="Copy" onClick={() => onCopy(text)} />
+      </div>
     </div>
   );
 }
