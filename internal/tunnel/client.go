@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -50,6 +51,10 @@ type Config struct {
 	InsecureSkipVerify bool
 	ServerName         string
 
+	// LogDir is the directory for the tunnel lifecycle and access logs
+	// (tunnel.log + mcp-access.log, rotated). Empty disables file logging.
+	LogDir string
+
 	// Backoff bounds; zero means defaults.
 	MinBackoff, MaxBackoff time.Duration
 }
@@ -58,6 +63,7 @@ type Config struct {
 // until its context is cancelled.
 type Client struct {
 	cfg Config
+	lg  *Loggers
 
 	mu     sync.Mutex
 	status Status
@@ -71,7 +77,7 @@ func New(cfg Config) *Client {
 	if cfg.MaxBackoff == 0 {
 		cfg.MaxBackoff = 30 * time.Second
 	}
-	return &Client{cfg: cfg, status: Status{
+	return &Client{cfg: cfg, lg: openLoggers(cfg.LogDir), status: Status{
 		State:     StateConnecting,
 		PublicURL: cfg.Identity.PublicURL(),
 		MCPURL:    cfg.Identity.MCPURL(),
@@ -107,6 +113,7 @@ func (c *Client) setState(s State, err error) {
 // exponential backoff and jitter between attempts. It always returns
 // ctx.Err() on cancellation.
 func (c *Client) Run(ctx context.Context) error {
+	defer c.lg.Close()
 	backoff := c.cfg.MinBackoff
 	attempt := 0
 	for {
@@ -117,6 +124,7 @@ func (c *Client) Run(ctx context.Context) error {
 		c.setState(StateConnecting, nil)
 		err := c.dialAndServe(ctx)
 		if ctx.Err() != nil {
+			c.lg.Tunnel().Info("stopped", "reason", "context-cancelled")
 			c.setState(StateStopped, nil)
 			return ctx.Err()
 		}
@@ -130,13 +138,26 @@ func (c *Client) Run(ctx context.Context) error {
 			backoff = c.cfg.MaxBackoff
 		}
 		jitter := time.Duration(int64(time.Now().UnixNano()) % int64(backoff/2+1))
+		wait := backoff/2 + jitter
+		c.lg.Tunnel().Warn("reconnecting",
+			"attempt", attempt,
+			"backoff_ms", wait.Milliseconds(),
+			"cause", errString(err))
 		select {
 		case <-ctx.Done():
 			c.setState(StateStopped, nil)
 			return ctx.Err()
-		case <-time.After(backoff/2 + jitter):
+		case <-time.After(wait):
 		}
 	}
+}
+
+// errString renders an error for a log attribute, tolerating nil.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // dialAndServe runs one connection lifetime: dial, authenticate, then serve
@@ -158,14 +179,29 @@ func (c *Client) dialAndServe(ctx context.Context) error {
 		InsecureSkipVerify: insecure, //nolint:gosec // only true for loopback dev servers
 	}
 
+	tlog := c.lg.Tunnel()
+	tlog.Info("dialing",
+		"connect_addr", c.cfg.Identity.ConnectAddr,
+		"server_name", serverName,
+		"tunnel_id", c.cfg.Identity.TunnelID)
+
 	dialer := &tls.Dialer{Config: tlsCfg}
 	dctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	conn, err := dialer.DialContext(dctx, "tcp", c.cfg.Identity.ConnectAddr)
 	cancel()
 	if err != nil {
+		tlog.Error("dial failed", "connect_addr", c.cfg.Identity.ConnectAddr, "err", err.Error())
 		return fmt.Errorf("dial tunnel server: %w", err)
 	}
 	defer conn.Close()
+
+	// Record the negotiated ALPN so a protocol mismatch (e.g. landing on the
+	// HTTPS path instead of the gateway connect path) is visible.
+	var alpn string
+	if tc, ok := conn.(*tls.Conn); ok {
+		alpn = tc.ConnectionState().NegotiatedProtocol
+	}
+	tlog.Info("connected", "alpn", alpn)
 
 	// Authenticate. Bound the handshake with a deadline so a dead server
 	// can't wedge us.
@@ -175,24 +211,31 @@ func (c *Client) dialAndServe(ctx context.Context) error {
 		TunnelID:      c.cfg.Identity.TunnelID,
 		ConnectSecret: c.cfg.Identity.ConnectSecret,
 	}); err != nil {
+		tlog.Error("auth send failed", "err", err.Error())
 		return fmt.Errorf("send auth: %w", err)
 	}
 	var resp wire.AuthResponse
 	if err := wire.ReadFrame(conn, &resp); err != nil {
+		tlog.Error("auth read failed", "err", err.Error())
 		return fmt.Errorf("read auth response: %w", err)
 	}
 	if !resp.OK {
+		// resp.Error is the server's reason; the connect secret is never logged.
+		tlog.Warn("auth rejected", "reason", resp.Error)
 		return fmt.Errorf("tunnel server rejected connection: %s", resp.Error)
 	}
+	tlog.Info("authenticated", "host", resp.Host)
 	_ = conn.SetDeadline(time.Time{}) // session is long-lived; clear deadline
 
-	sess, err := yamux.Server(conn, yamuxConfig())
+	sess, err := yamux.Server(conn, yamuxConfig(tlog))
 	if err != nil {
+		tlog.Error("session start failed", "err", err.Error())
 		return fmt.Errorf("start session: %w", err)
 	}
 	defer sess.Close()
 
 	c.setState(StateOnline, nil)
+	tlog.Info("online", "public_host", c.cfg.Identity.PublicHost)
 
 	// Serve every inbound stream as an HTTP request proxied to the local
 	// MCP server. http.Server over a yamux session: Accept yields one
@@ -206,6 +249,7 @@ func (c *Client) dialAndServe(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	tlog.Warn("disconnected", "cause", errString(err))
 	return fmt.Errorf("tunnel session closed: %w", err)
 }
 
@@ -234,23 +278,21 @@ func (c *Client) proxyHandler() http.Handler {
 			http.Error(w, "local MCP server is not reachable", http.StatusBadGateway)
 		},
 	}
-	return rp
+	// The access log wraps the proxy so every forwarded request — including
+	// the unmatched-path 404s and any that hang — is recorded start to finish.
+	return c.lg.accessHandler(rp)
 }
 
-func yamuxConfig() *yamux.Config {
+func yamuxConfig(log *slog.Logger) *yamux.Config {
 	cfg := yamux.DefaultConfig()
 	cfg.EnableKeepAlive = true
 	cfg.KeepAliveInterval = 20 * time.Second
 	cfg.ConnectionWriteTimeout = 30 * time.Second
-	cfg.LogOutput = logSink{}
+	// Route yamux's internal logging (keepalive/heartbeat failures, stream
+	// errors) into the tunnel lifecycle log rather than discarding it.
+	cfg.LogOutput = yamuxLogWriter{log: log}
 	return cfg
 }
-
-// logSink discards yamux's internal logging; the embedding app reports state
-// through OnStatus instead.
-type logSink struct{}
-
-func (logSink) Write(p []byte) (int, error) { return len(p), nil }
 
 // isLoopbackHost reports whether host is a loopback name/address, used to gate
 // TLS-verification skipping to local dev servers only.
