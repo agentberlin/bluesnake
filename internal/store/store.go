@@ -560,7 +560,7 @@ func extFor(kind string) string {
 	case "html", "rendered_html":
 		return ".html"
 	case "screenshot":
-		return ".png"
+		return ".jpg" // chromedp.FullScreenshot encodes JPEG
 	}
 	return ".bin"
 }

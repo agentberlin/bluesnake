@@ -48,6 +48,7 @@ const SECTIONS = [
     tg("extraction.structured_data.microdata", "Microdata", null, true),
     tg("extraction.structured_data.rdfa", "RDFa", null, true),
     tg("extraction.store_html", "Store raw HTML", "Saves every page's source to disk for later viewing.", true),
+    tg("extraction.store_rendered_html", "Store rendered HTML", "Saves the post-JavaScript DOM to disk (JavaScript rendering mode only).", true),
     tg("extraction.store_warc", "Archive responses as WARC", "Streams every fetched response into a standard .warc.gz archive next to the crawl database.", true),
   ]},
   { id: "limits", label: "Limits", icon: "gauge", fields: [
@@ -65,7 +66,7 @@ const SECTIONS = [
     ch("rendering.mode", "Rendering mode", ["text", "javascript"], "JavaScript mode loads each page in headless Chrome. Requires Chrome installed."),
     ch("rendering.wait_strategy", "Wait strategy", ["adaptive", "fixed"], "Adaptive snapshots as soon as the page settles. Fixed waits the full AJAX timeout after load — slower but deterministic for crawl comparisons."),
     num("rendering.ajax_timeout_sec", "AJAX timeout", "Max wait for scripts/XHR to settle. Pages that go network-idle sooner snapshot immediately.", "s"),
-    tg("rendering.screenshots", "Capture screenshots", null, true),
+    tg("rendering.screenshots", "Capture screenshots", "Saves a screenshot of each rendered page to disk.", true),
     tg("rendering.js_error_reporting", "Report JavaScript console errors", null, true),
     txt("rendering.chrome_path", "Chrome path", "Manual override when Chrome isn't found.", true),
   ]},

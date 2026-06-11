@@ -507,6 +507,18 @@ func (c *Crawler) renderAndDiff(url string, rec *PageRecord, facts *parse.Facts,
 	if err != nil {
 		return // rendering failure degrades to raw-HTML behaviour
 	}
+
+	// persist the rendered DOM / screenshot to the assets dir when asked
+	// (the blobs table records the file refs); same BlobSink path as raw HTML
+	if bs, ok := c.sink.(BlobSink); ok && c.sink != nil {
+		if c.cfg.Extraction.StoreRenderedHTML {
+			c.noteSinkErr(bs.Blob(url, "rendered_html", []byte(rendered.HTML)))
+		}
+		if c.cfg.Rendering.Screenshots && len(rendered.Screenshot) > 0 {
+			c.noteSinkErr(bs.Blob(url, "screenshot", rendered.Screenshot))
+		}
+	}
+
 	rFacts := parse.Parse(url, []byte(rendered.HTML), res.Headers, c.cfg)
 
 	first := func(v []string) string {
