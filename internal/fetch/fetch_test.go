@@ -326,6 +326,82 @@ func TestHSTS(t *testing.T) {
 	})
 }
 
+func TestForceHTTPVersion(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "proto=%s", r.Proto)
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+
+	t.Run("default negotiates HTTP/2", func(t *testing.T) {
+		res := newClient(t, nil, WithInsecureTLS()).Fetch(context.Background(), srv.URL)
+		if res.FetchError != "" {
+			t.Fatalf("unexpected error: %s", res.FetchError)
+		}
+		if res.HTTPVersion != "HTTP/2.0" {
+			t.Errorf("http version = %q, want HTTP/2.0", res.HTTPVersion)
+		}
+	})
+
+	t.Run("version 1.1 forces HTTP/1.1", func(t *testing.T) {
+		res := newClient(t, func(c *config.Config) { c.HTTP.Version = "1.1" }, WithInsecureTLS()).
+			Fetch(context.Background(), srv.URL)
+		if res.FetchError != "" {
+			t.Fatalf("unexpected error: %s", res.FetchError)
+		}
+		if res.HTTPVersion != "HTTP/1.1" {
+			t.Errorf("http version = %q, want HTTP/1.1", res.HTTPVersion)
+		}
+	})
+}
+
+func TestBrowserHeaders(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+	}))
+	defer srv.Close()
+
+	t.Run("sent by default", func(t *testing.T) {
+		newClient(t, nil).Fetch(context.Background(), srv.URL)
+		// Matches Screaming Frog v24.1's measured default request profile.
+		if a := got.Get("Accept"); !strings.Contains(a, "text/html") {
+			t.Errorf("Accept = %q, want a browser navigational value", a)
+		}
+		if got.Get("Cache-Control") != "no-cache" || got.Get("Pragma") != "no-cache" {
+			t.Errorf("Cache-Control/Pragma = %q/%q, want no-cache/no-cache like SF",
+				got.Get("Cache-Control"), got.Get("Pragma"))
+		}
+		// SF sends no Accept-Language, so neither do we by default.
+		if al := got.Get("Accept-Language"); al != "" {
+			t.Errorf("Accept-Language = %q, want none by default (SF sends none)", al)
+		}
+		// We must not set Accept-Encoding: the transport adds its own "gzip" and
+		// transparently decompresses only while we leave the header untouched.
+		if ae := got.Get("Accept-Encoding"); ae != "gzip" {
+			t.Errorf("Accept-Encoding = %q, want the transport's transparent \"gzip\"", ae)
+		}
+	})
+
+	t.Run("disabled via browser_headers=false", func(t *testing.T) {
+		newClient(t, func(c *config.Config) { c.HTTP.BrowserHeaders = false }).
+			Fetch(context.Background(), srv.URL)
+		if got.Get("Accept") != "" {
+			t.Errorf("Accept = %q, want none when browser headers are off", got.Get("Accept"))
+		}
+	})
+
+	t.Run("explicit header overrides the browser default", func(t *testing.T) {
+		newClient(t, func(c *config.Config) {
+			c.HTTP.Headers = map[string]string{"Accept": "application/json"}
+		}).Fetch(context.Background(), srv.URL)
+		if got.Get("Accept") != "application/json" {
+			t.Errorf("Accept = %q, want the configured value to win", got.Get("Accept"))
+		}
+	})
+}
+
 func TestInvalidURL(t *testing.T) {
 	res := newClient(t, nil).Fetch(context.Background(), "http://\x00bad")
 	if res.FetchError == "" {

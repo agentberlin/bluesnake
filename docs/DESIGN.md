@@ -226,7 +226,9 @@ speed:
 http:
   user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 12_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15"  # house SF profile UA
   robots_user_agent: "acrawler"
-  headers: {}            # name: value
+  version: ""            # "" = negotiate (prefer HTTP/2) | "1.1" force HTTP/1.1 | "2"
+  browser_headers: true  # send SF's default request profile: Accept text/html + Cache-Control/Pragma no-cache
+  headers: {}            # name: value (override the browser defaults above; e.g. add Accept-Language)
   proxy: ""              # http://user:pass@host:port
   trusted_cert_dirs: []
   auth:
@@ -347,6 +349,7 @@ docs/
 - Workers = `speed.max_threads`; a global token-bucket enforces `max_urls_per_sec`; per-host serialization (one in-flight request per host by default) prevents hammering a single origin while still saturating multi-host crawls (externals).
 - The **discovery filter chain** (pure function, heavily unit-tested): resolve → rewrite (remove params, regex, lowercase, encoding) → fragment strip (unless `crawl_fragments`) → scheme check → invalid-URL policy → scope classification (internal/external/CDN) → store/crawl flags per link type → include/exclude → robots (mode-aware) → limits (depth, folder depth, query strings, URL length, per-path, per-subdomain, total) → dedup → frontier.
 - Redirects are **data, not transport**: the client never auto-follows; a 3xx page is stored with its `Location`, and the target re-enters discovery (depth+1), bounded by `limits.max_redirects` chain length (chains reconstructed in analysis). HSTS is emulated: after seeing a valid `Strict-Transport-Security`, subsequent http:// requests to that host (+subdomains if `includeSubDomains`) are turned around locally as synthetic `307 HSTS Policy`.
+- **Browser-like requests** (`http.browser_headers`, on by default): the fetcher mirrors Screaming Frog v24.1's measured default request profile — a navigational `Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8` (byte-identical to SF's) plus `Cache-Control: no-cache` and `Pragma: no-cache`; configured `http.headers` override any of them. SF sends no `Accept-Language`, so neither do we by default (add one via `http.headers`); `Accept-Encoding` is left unset so the transport sends `gzip` exactly as SF does and keeps transparent decompression. Go's `net/http` sends no `Accept` at all by default, which trips bot-protection layers that gate on it: on scale.jobs, Clerk/Vercel returns `403` to a request with a missing or `*/*` Accept and `307 → accounts.sign-in` once `text/html` is present — independent of the UA string and the HTTP version, so this (not the transport) was the cause of the parity gap on ~61 protected pages. `http.version` (`""` = prefer HTTP/2, `"1.1"` forces HTTP/1.1 by clearing `TLSNextProto`, `"2"`) is a separate anti-fingerprinting/SF-parity knob (SF ran HTTP/1.1); empirically it does not affect the scale.jobs response on its own.
 - **Pause/resume**: frontier and visited-set live in SQLite alongside results; resume = reload frontier + config snapshot (config is frozen into the crawl DB at start; resume refuses a changed config unless `--force`).
 
 ### 5.3 Storage schema (SQLite, one DB file per crawl)

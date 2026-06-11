@@ -289,6 +289,8 @@ type AuthConfig struct {
 type HTTPConfig struct {
 	UserAgent       string            `yaml:"user_agent"`
 	RobotsUserAgent string            `yaml:"robots_user_agent"`
+	Version         string            `yaml:"version"`         // "" (negotiate, prefer HTTP/2) | "1.1" (force HTTP/1.1) | "2"
+	BrowserHeaders  bool              `yaml:"browser_headers"` // send browser-like Accept/Accept-Language defaults
 	Headers         map[string]string `yaml:"headers"`
 	Proxy           string            `yaml:"proxy"`
 	TrustedCertDirs []string          `yaml:"trusted_cert_dirs"`

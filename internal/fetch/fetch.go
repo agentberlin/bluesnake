@@ -22,6 +22,22 @@ import (
 	"github.com/hhsecond/acrawler/internal/config"
 )
 
+// browserAccept is the navigational Accept header acrawler sends when
+// http.browser_headers is on. It is byte-for-byte the value Screaming Frog
+// v24.1 sends by default (measured), and it is the header that matters to
+// bot-protection layers: Clerk middleware on Vercel returns 403 to a request
+// whose Accept is missing or "*/*", and the normal 307 auth redirect once it
+// contains "text/html" — independent of the User-Agent and the HTTP version
+// (verified live against scale.jobs). Go's net/http sends no Accept by default.
+//
+// Parity notes for the rest of SF's measured default request profile: SF also
+// sends Cache-Control/Pragma "no-cache" (set below), so we mirror that; SF
+// sends no Accept-Language, so neither do we (add one via http.headers if you
+// want it). Accept-Encoding is deliberately left unset — the transport then
+// sends "gzip" itself (exactly as SF does) and transparently decompresses;
+// setting it by hand would hand us an undecoded body to parse.
+const browserAccept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+
 // Result is everything the pipeline needs to know about one request. A nil
 // Result is never returned; network failures set FetchError with status 0.
 type Result struct {
@@ -65,6 +81,19 @@ func New(cfg *config.Config, opts ...Option) (*Client, error) {
 			return nil, fmt.Errorf("http.proxy: %w", err)
 		}
 		transport.Proxy = http.ProxyURL(pu)
+	}
+	switch cfg.HTTP.Version {
+	case "1.1":
+		// Force HTTP/1.1: a non-nil (empty) TLSNextProto map stops crypto/tls
+		// from offering h2 in ALPN, so the connection stays HTTP/1.1 even when a
+		// custom TLSClientConfig is set (trusted certs, the insecure test hook).
+		transport.ForceAttemptHTTP2 = false
+		transport.TLSNextProto = map[string]func(authority string, c *tls.Conn) http.RoundTripper{}
+	default:
+		// "" or "2": prefer HTTP/2. ForceAttemptHTTP2 keeps h2 negotiation on
+		// even when a custom TLSClientConfig would otherwise downgrade the
+		// transport to HTTP/1.1, matching what a browser negotiates.
+		transport.ForceAttemptHTTP2 = true
 	}
 	c := &Client{
 		cfg:       cfg,
@@ -137,6 +166,13 @@ func (c *Client) doOnce(ctx context.Context, u *url.URL, res *Result) {
 		return
 	}
 	req.Header.Set("User-Agent", c.cfg.HTTP.UserAgent)
+	if c.cfg.HTTP.BrowserHeaders {
+		// Screaming Frog's measured default request profile (v24.1).
+		req.Header.Set("Accept", browserAccept)
+		req.Header.Set("Cache-Control", "no-cache")
+		req.Header.Set("Pragma", "no-cache")
+	}
+	// Configured headers win over the browser defaults above.
 	for name, value := range c.cfg.HTTP.Headers {
 		req.Header.Set(name, value)
 	}

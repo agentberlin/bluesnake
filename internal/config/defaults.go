@@ -108,6 +108,11 @@ func Default() *Config {
 		HTTP: HTTPConfig{
 			UserAgent:       "Mozilla/5.0 (Macintosh; Intel Mac OS X 12_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15",
 			RobotsUserAgent: "acrawler",
+			// Mirror Screaming Frog's default request headers (Accept text/html +
+			// no-cache). Some bot-protection layers (Clerk/Vercel) 403 requests
+			// that lack a navigational Accept header even when the UA looks like a
+			// browser; see internal/fetch for the measured SF profile.
+			BrowserHeaders: true,
 		},
 		LinkPositions: []LinkPosition{
 			{Name: "head", Match: "/head"},
