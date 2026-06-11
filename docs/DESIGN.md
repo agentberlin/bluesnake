@@ -77,6 +77,7 @@ bluesnake compare <id-prev> <id-curr>  # crawl comparison (+ change detection)
 bluesnake robots test <url...>         # robots.txt tester (live or --robots-file)
 bluesnake config init|validate|show    # emit commented default config / validate / effective config
 bluesnake serve                        # read-only localhost JSON API over the crawl store (--addr)
+bluesnake mcp                          # MCP server for LLM agents over streamable HTTP (--addr, default 127.0.0.1:8473)
 ```
 
 Global flags: `--config <file>`, `--store-dir <dir>` (default `~/.bluesnake`), `--project <name>`, `--task <name>`, `--output <dir>`, `--format csv|json|jsonl|xlsx`, `--timestamped-output`, `--overwrite`, `--quiet/--verbose`, `--log json|text`.
@@ -314,6 +315,13 @@ internal/serpwidth/      text pixel-width measurement (bundled font metrics tabl
 internal/isocodes/       embedded ISO 639-1 + ISO 3166-1 registries (hreflang validation)
 internal/warc/           minimal WARC/1.1 writer (extraction.store_warc archives)
 internal/serve/          read-only localhost JSON API over stored crawls
+internal/mcp/            MCP server (hand-rolled JSON-RPC 2.0 over the streamable-HTTP transport):
+                         12 tools — crawl control (start/status/pause/resume/stop), config
+                         introspection (knob catalogue via reflection over the schema, profiles),
+                         and read-only SQL over the per-crawl SQLite DBs. Crawl control runs
+                         against a Backend interface: the CLI uses the built-in Runner; the
+                         desktop app adapts its session manager so agent-started crawls stream
+                         live into the UI (Settings ▸ MCP Server toggle, persisted in desktop.json)
 internal/version/
 features/                Gherkin .feature files (BDD acceptance specs)
 test/                    godog step definitions, fixture site builder (httptest), golden files

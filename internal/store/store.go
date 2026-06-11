@@ -183,6 +183,21 @@ func crawlPath(dir, id string) string {
 	return filepath.Join(dir, "crawls", id+".db")
 }
 
+// CrawlDBPath returns the on-disk database path of a stored crawl, with the
+// same id validation and existence check as OpenCrawl. It lets read-only
+// consumers (the MCP query tool) open their own connection without running
+// the schema DDL a writable open performs.
+func CrawlDBPath(dir, id string) (string, error) {
+	if !validCrawlID(id) {
+		return "", fmt.Errorf("crawl %q not found", id)
+	}
+	path := crawlPath(dir, id)
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("crawl %q not found", id)
+	}
+	return path, nil
+}
+
 func openCrawlDB(dir, id string) (*Crawl, error) {
 	path := crawlPath(dir, id)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

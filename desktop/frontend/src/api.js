@@ -40,6 +40,10 @@ export const api = {
   getProfileYAML: (profile) => call("GetProfileYAML", profile),
   saveProfileYAML: (profile, content) => call("SaveProfileYAML", profile, content),
   storageInfo: () => call("GetStorageInfo"),
+
+  getMCPStatus: () => call("GetMCPStatus"),
+  setMCPEnabled: (enabled) => call("SetMCPEnabled", enabled),
+  setMCPPort: (port) => call("SetMCPPort", port),
 };
 
 /* runtime events — returns an unsubscribe function for THIS listener only

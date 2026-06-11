@@ -53,6 +53,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newReportCmd())
 	root.AddCommand(newSitemapCmd())
 	root.AddCommand(newServeCmd())
+	root.AddCommand(newMCPCmd())
 	root.AddCommand(newRobotsCmd())
 	root.AddCommand(newVersionCmd())
 	return root
@@ -97,12 +98,14 @@ func newRobotsCmd() *cobra.Command {
 	return robotsCmd
 }
 
+const appVersion = "0.1.0-dev"
+
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Fprintln(cmd.OutOrStdout(), "bluesnake 0.1.0-dev")
+			fmt.Fprintln(cmd.OutOrStdout(), "bluesnake "+appVersion)
 		},
 	}
 }
