@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/hhsecond/acrawler/internal/crawler"
-	"github.com/hhsecond/acrawler/internal/export"
-	"github.com/hhsecond/acrawler/internal/issues"
-	"github.com/hhsecond/acrawler/internal/sitemapgen"
-	"github.com/hhsecond/acrawler/internal/store"
+	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/export"
+	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/sitemapgen"
+	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 

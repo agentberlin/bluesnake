@@ -16,11 +16,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
-	"github.com/hhsecond/acrawler/internal/config"
 )
 
 // networkIdleWindow is how long the wire must stay quiet (no in-flight

@@ -77,7 +77,7 @@ func archiveBytes(t *testing.T) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	w := NewWriter(&buf)
-	if err := w.WriteWarcinfo(map[string]string{"software": "acrawler-test"}); err != nil {
+	if err := w.WriteWarcinfo(map[string]string{"software": "bluesnake-test"}); err != nil {
 		t.Fatalf("WriteWarcinfo: %v", err)
 	}
 	hdr := http.Header{}
@@ -148,7 +148,7 @@ func TestWriterRoundTrip(t *testing.T) {
 	if _, ok := info.headers["WARC-Target-URI"]; ok {
 		t.Error("warcinfo must not carry WARC-Target-URI")
 	}
-	if !strings.Contains(string(info.block), "software: acrawler-test") {
+	if !strings.Contains(string(info.block), "software: bluesnake-test") {
 		t.Errorf("warcinfo block missing field, got %q", info.block)
 	}
 

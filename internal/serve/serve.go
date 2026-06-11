@@ -1,5 +1,5 @@
 // Package serve exposes stored crawls over a read-only localhost JSON API
-// (the `acrawler serve` subcommand — DESIGN.md §8). It reuses the export
+// (the `bluesnake serve` subcommand — DESIGN.md §8). It reuses the export
 // layer wholesale: every dataset, report and issue listing the CLI can
 // produce is reachable over HTTP, which makes scripting and UIs trivial.
 package serve
@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/hhsecond/acrawler/internal/export"
-	"github.com/hhsecond/acrawler/internal/issues"
-	"github.com/hhsecond/acrawler/internal/store"
+	"github.com/agentberlin/bluesnake/internal/export"
+	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/store"
 )
 
 // apiDataset is the wire form of an export.Dataset.

@@ -9,13 +9,13 @@ Feature: Crawl path report
     And a site page "/b" with body "<html><body><p>deepest</p></body></html>"
 
   Scenario: crawl_paths is a listed report
-    When I run "acrawler report --list"
+    When I run "bluesnake report --list"
     Then the exit code is 0
     And the output contains "crawl_paths"
 
   Scenario: Crawl paths report as CSV
-    When I run "acrawler crawl <serverurl>/ --store-dir <storedir> --quiet"
-    And I run "acrawler report <crawlid> crawl_paths --store-dir <storedir>"
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake report <crawlid> crawl_paths --store-dir <storedir>"
     Then the exit code is 0
     And the output contains "url,hops,path"
     And the output contains "/a -> "

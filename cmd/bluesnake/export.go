@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/hhsecond/acrawler/internal/export"
-	"github.com/hhsecond/acrawler/internal/sitemapgen"
-	"github.com/hhsecond/acrawler/internal/store"
+	"github.com/agentberlin/bluesnake/internal/export"
+	"github.com/agentberlin/bluesnake/internal/sitemapgen"
+	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -44,7 +44,7 @@ func newExportCmd() *cobra.Command {
 				return nil
 			}
 			if len(args) != 2 {
-				return exitErr{2, fmt.Errorf("usage: acrawler export <crawl-id> <tab> (or --list)")}
+				return exitErr{2, fmt.Errorf("usage: bluesnake export <crawl-id> <tab> (or --list)")}
 			}
 			st, err := store.OpenCrawl(storeDir, args[0])
 			if err != nil {
@@ -78,7 +78,7 @@ func newReportCmd() *cobra.Command {
 				return nil
 			}
 			if len(args) != 2 {
-				return exitErr{2, fmt.Errorf("usage: acrawler report <crawl-id> <name> (or --list)")}
+				return exitErr{2, fmt.Errorf("usage: bluesnake report <crawl-id> <name> (or --list)")}
 			}
 			st, err := store.OpenCrawl(storeDir, args[0])
 			if err != nil {

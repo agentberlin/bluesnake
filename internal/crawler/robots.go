@@ -9,9 +9,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/fetch"
-	"github.com/hhsecond/acrawler/internal/robots"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/fetch"
+	"github.com/agentberlin/bluesnake/internal/robots"
 )
 
 // robotsMgr applies the configured robots.txt policy: per-host fetch+cache

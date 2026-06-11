@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/urlutil"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/urlutil"
 )
 
 // Item is one admitted crawl candidate.

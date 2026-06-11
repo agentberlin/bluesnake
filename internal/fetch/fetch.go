@@ -1,4 +1,4 @@
-// Package fetch is acrawler's HTTP client. Network behaviour is data, not
+// Package fetch is bluesnake's HTTP client. Network behaviour is data, not
 // transport: redirects are never followed (they are recorded with their
 // resolved target and re-enter discovery at the crawler level), errors and
 // timeouts become no-response results, HSTS is emulated client-side as
@@ -19,10 +19,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hhsecond/acrawler/internal/config"
+	"github.com/agentberlin/bluesnake/internal/config"
 )
 
-// browserAccept is the navigational Accept header acrawler sends when
+// browserAccept is the navigational Accept header bluesnake sends when
 // http.browser_headers is on. It is byte-for-byte the value Screaming Frog
 // v24.1 sends by default (measured), and it is the header that matters to
 // bot-protection layers: Clerk middleware on Vercel returns 403 to a request

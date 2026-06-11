@@ -13,7 +13,7 @@ Allow: /admin/public
 
 export function RobotsTester() {
   const [robots, setRobots] = useState(DEFAULT_ROBOTS);
-  const [token, setToken] = useState("acrawler");
+  const [token, setToken] = useState("bluesnake");
   const [urls, setUrls] = useState("/\n/admin\n/admin/public\n/checkout");
   const [site, setSite] = useState("https://");
   const [results, setResults] = useState([]);

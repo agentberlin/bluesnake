@@ -111,7 +111,7 @@ export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDel
 
           <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, color: "var(--ink-faint)" }}>
             <Icon name="shield-check" size={14} />
-            Crawls auto-save continuously to <span className="mono">{storage ? storage.dir.replace(/^\/Users\/[^/]+/, "~") : "~/.acrawler"}</span> — there is no Save button, and closing the app never loses a crawl.
+            Crawls auto-save continuously to <span className="mono">{storage ? storage.dir.replace(/^\/Users\/[^/]+/, "~") : "~/.bluesnake"}</span> — there is no Save button, and closing the app never loses a crawl.
           </div>
         </div>
       </div>

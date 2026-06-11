@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/parse"
-	"github.com/hhsecond/acrawler/internal/render"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/parse"
+	"github.com/agentberlin/bluesnake/internal/render"
 )
 
 const jsPage = `<html><head><title>Raw Title</title>

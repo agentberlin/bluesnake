@@ -8,11 +8,11 @@ import (
 	"regexp"
 	"syscall"
 
-	"github.com/hhsecond/acrawler/internal/compare"
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/crawler"
-	"github.com/hhsecond/acrawler/internal/export"
-	"github.com/hhsecond/acrawler/internal/store"
+	"github.com/agentberlin/bluesnake/internal/compare"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/export"
+	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/spf13/cobra"
 )
 

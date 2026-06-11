@@ -7,9 +7,9 @@ Feature: Storage, pause and resume (partial crawling)
   Scenario: Crawls get IDs and are listed with project and status
     Given a site page "/" linking to "/a"
     And a site page "/a" linking to ""
-    When I run "acrawler crawl <serverurl>/ --store-dir <storedir> --project myproj --quiet"
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --project myproj --quiet"
     Then the exit code is 0
-    When I run "acrawler crawls ls --store-dir <storedir>"
+    When I run "bluesnake crawls ls --store-dir <storedir>"
     Then the exit code is 0
     And the output contains "myproj"
     And the output contains "completed"
@@ -23,14 +23,14 @@ Feature: Storage, pause and resume (partial crawling)
 
   Scenario: Resume with a changed config is refused without --force
     Given a stored crawl of a 40-page fixture site interrupted after 10 pages
-    When I run "acrawler resume <crawlid> --store-dir <storedir> --set speed.max_threads=9"
+    When I run "bluesnake resume <crawlid> --store-dir <storedir> --set speed.max_threads=9"
     Then the exit code is 2
     And the output contains "--force"
 
   Scenario: Deleting a crawl removes it from the registry
     Given a site page "/" linking to ""
-    When I run "acrawler crawl <serverurl>/ --store-dir <storedir> --quiet"
-    And I run "acrawler crawls rm <crawlid> --store-dir <storedir>"
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake crawls rm <crawlid> --store-dir <storedir>"
     Then the exit code is 0
-    When I run "acrawler crawls ls --store-dir <storedir>"
+    When I run "bluesnake crawls ls --store-dir <storedir>"
     Then the output does not contain "<crawlid>"

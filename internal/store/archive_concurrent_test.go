@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/fetch"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/fetch"
 )
 
 // TestArchiveConcurrent pins that Archive is safe to call from many crawl

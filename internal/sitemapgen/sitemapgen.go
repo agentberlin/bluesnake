@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hhsecond/acrawler/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/crawler"
 )
 
 // Options controls generation.

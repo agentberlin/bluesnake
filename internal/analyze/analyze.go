@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/crawler"
-	"github.com/hhsecond/acrawler/internal/isocodes"
-	"github.com/hhsecond/acrawler/internal/issues"
-	"github.com/hhsecond/acrawler/internal/parse"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/isocodes"
+	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/parse"
 )
 
 // Chain is one redirect or canonical chain.

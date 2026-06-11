@@ -5,9 +5,9 @@ import (
 	"sort"
 	"text/tabwriter"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/issues"
-	"github.com/hhsecond/acrawler/internal/store"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/spf13/cobra"
 )
 

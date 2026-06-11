@@ -1,5 +1,5 @@
 Feature: Robots.txt handling
-  acrawler obeys robots.txt with Google REP semantics (RFC 9309 + Google
+  bluesnake obeys robots.txt with Google REP semantics (RFC 9309 + Google
   extensions): user-agent group selection by longest matching token with
   fallback to *, longest-path-match rule precedence, allow wins ties,
   wildcards * and $ supported. Three modes: respect, ignore (file not even
@@ -13,15 +13,15 @@ Feature: Robots.txt handling
       Allow: /private/public-bit
       Disallow: /*.pdf$
 
-      User-agent: acrawler
+      User-agent: bluesnake
       Disallow: /only-for-others/
 
       Sitemap: https://ex.com/sitemap.xml
       """
 
   Scenario: Group selection prefers our specific token
-    Then "https://ex.com/private/x" is allowed for robots user-agent "acrawler"
-    And "https://ex.com/only-for-others/x" is blocked for robots user-agent "acrawler"
+    Then "https://ex.com/private/x" is allowed for robots user-agent "bluesnake"
+    And "https://ex.com/only-for-others/x" is blocked for robots user-agent "bluesnake"
 
   Scenario: Generic agents fall back to the star group
     Then "https://ex.com/private/x" is blocked for robots user-agent "somebot"
@@ -37,7 +37,7 @@ Feature: Robots.txt handling
     And "https://ex.com/a/deep/doc.pdf" is blocked for robots user-agent "somebot"
 
   Scenario: Token matching is case-insensitive and prefix-based
-    Then "https://ex.com/only-for-others/x" is blocked for robots user-agent "ACrawler-Images"
+    Then "https://ex.com/only-for-others/x" is blocked for robots user-agent "Bluesnake-Images"
 
   Scenario: Blocked verdicts carry the matched rule line
     Then blocking "https://ex.com/private/x" for "somebot" reports matched line 2
@@ -57,7 +57,7 @@ Feature: Robots.txt handling
       User-agent: *
       Disallow: /private/
       """
-    When I run "acrawler robots test --robots-file <robotsfile> --robots-user-agent somebot https://ex.com/private/x https://ex.com/ok"
+    When I run "bluesnake robots test --robots-file <robotsfile> --robots-user-agent somebot https://ex.com/private/x https://ex.com/ok"
     Then the exit code is 0
     And the output contains "BLOCKED  https://ex.com/private/x"
     And the output contains "Disallow: /private/"

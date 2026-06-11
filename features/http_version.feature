@@ -5,8 +5,8 @@ Feature: HTTP protocol version capture
 
   Scenario: Exported internal tab carries the HTTP version
     Given a site page "/" with body "<html><head><title>Home page title here</title></head><body><h1>Home</h1></body></html>"
-    When I run "acrawler crawl <serverurl>/ --store-dir <storedir> --quiet"
-    And I run "acrawler export <crawlid> internal --store-dir <storedir>"
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake export <crawlid> internal --store-dir <storedir>"
     Then the exit code is 0
     And the output contains "http_version"
     And the output contains "HTTP/1.1"

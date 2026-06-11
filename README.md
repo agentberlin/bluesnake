@@ -1,4 +1,4 @@
-# acrawler
+# bluesnake
 
 A modern, headless, CLI-first website crawler and SEO auditor in Go — feature parity target is Screaming Frog SEO Spider's crawling/auditing core, minus the UI, minus third-party API integrations, and minus binary config files. Everything is plain-text YAML config + flags, stored in crash-safe SQLite crawl databases.
 
@@ -18,24 +18,24 @@ BDD-first: Gherkin acceptance specs in `features/` (run by godog), exhaustive ta
 ```sh
 make test        # unit + acceptance tests
 make cover       # coverage report (85% gate on internal/...)
-make build       # build ./bin/acrawler
+make build       # build ./bin/bluesnake
 make lint        # gofmt + go vet
 ```
 
-Scenarios tagged `@pending` describe modules not yet implemented; they are skipped and reported. Removing the tag is part of each milestone's definition of done. Scenarios tagged `@chrome` need a local Chrome/Chromium and are excluded by default — run them with `ACRAWLER_FEATURE_TAGS="@chrome" go test ./test/`.
+Scenarios tagged `@pending` describe modules not yet implemented; they are skipped and reported. Removing the tag is part of each milestone's definition of done. Scenarios tagged `@chrome` need a local Chrome/Chromium and are excluded by default — run them with `BLUESNAKE_FEATURE_TAGS="@chrome" go test ./test/`.
 
 A catalogue-coverage meta-test (`internal/analyze/coverage_test.go`) enforces DESIGN.md §6: every one of the 133 audit checks must have a triggering fixture, and a fully healthy fixture site must trigger none.
 
-Beyond crawling/auditing/exporting, the CLI can also serve everything over a read-only JSON API (`acrawler serve`), archive every fetched response as standard WARC (`extraction.store_warc: true`), execute custom JavaScript snippets during JS rendering (`custom_js`), and reconstruct each URL's discovery path (`acrawler report <id> crawl_paths`).
+Beyond crawling/auditing/exporting, the CLI can also serve everything over a read-only JSON API (`bluesnake serve`), archive every fetched response as standard WARC (`extraction.store_warc: true`), execute custom JavaScript snippets during JS rendering (`custom_js`), and reconstruct each URL's discovery path (`bluesnake report <id> crawl_paths`).
 
 ## Desktop app (Wails)
 
-`desktop/` is a native desktop GUI (Go + [Wails v2](https://wails.io) + React) over the same internal crawl engine the CLI uses — same `~/.acrawler` store, so crawls started from either are visible in both. The UI implements the Claude Design handoff: crawl manager, New Crawl flow, live progress, results workspace (dataset rail + tables + issues browser + per-URL drawer), settings/profiles, compare, and a robots.txt tester.
+`desktop/` is a native desktop GUI (Go + [Wails v2](https://wails.io) + React) over the same internal crawl engine the CLI uses — same `~/.bluesnake` store, so crawls started from either are visible in both. The UI implements the Claude Design handoff: crawl manager, New Crawl flow, live progress, results workspace (dataset rail + tables + issues browser + per-URL drawer), settings/profiles, compare, and a robots.txt tester.
 
 Realtime: the crawler streams pages through its `Sink` interface; the desktop app tees that stream into the SQLite store *and* an aggregator that emits throttled `crawl:progress` Wails events (~4/s) plus a final `crawl:done` — the React progress view subscribes via the Wails event runtime. Pause interrupts the crawl resumably (the store already persists the frontier); Stop finalises early and runs analysis on what was crawled.
 
 ```sh
 go install github.com/wailsapp/wails/v2/cmd/wails@latest   # one-time
 make desktop-dev   # live-reload development app
-make desktop       # production build → desktop/build/bin/acrawler.app
+make desktop       # production build → desktop/build/bin/bluesnake.app
 ```

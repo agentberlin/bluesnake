@@ -5,7 +5,7 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/hhsecond/acrawler/internal/serve"
+	"github.com/agentberlin/bluesnake/internal/serve"
 	"github.com/spf13/cobra"
 )
 

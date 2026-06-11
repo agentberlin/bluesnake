@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hhsecond/acrawler/internal/config"
+	"github.com/agentberlin/bluesnake/internal/config"
 )
 
 func extract(t *testing.T, body string, enable func(*config.StructuredDataConfig)) *PageData {

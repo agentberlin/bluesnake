@@ -5,10 +5,10 @@ import (
 	"encoding/xml"
 	"fmt"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/fetch"
-	"github.com/hhsecond/acrawler/internal/frontier"
-	"github.com/hhsecond/acrawler/internal/urlutil"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/fetch"
+	"github.com/agentberlin/bluesnake/internal/frontier"
+	"github.com/agentberlin/bluesnake/internal/urlutil"
 )
 
 // FetchSitemapURLs downloads a sitemap (or sitemap index) and returns the

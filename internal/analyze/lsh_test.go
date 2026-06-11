@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/crawler"
 )
 
 func mkSig(f func(i int) uint64) signature {

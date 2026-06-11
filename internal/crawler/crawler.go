@@ -14,15 +14,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/extract"
-	"github.com/hhsecond/acrawler/internal/fetch"
-	"github.com/hhsecond/acrawler/internal/frontier"
-	"github.com/hhsecond/acrawler/internal/indexability"
-	"github.com/hhsecond/acrawler/internal/parse"
-	"github.com/hhsecond/acrawler/internal/render"
-	"github.com/hhsecond/acrawler/internal/structured"
-	"github.com/hhsecond/acrawler/internal/urlutil"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/extract"
+	"github.com/agentberlin/bluesnake/internal/fetch"
+	"github.com/agentberlin/bluesnake/internal/frontier"
+	"github.com/agentberlin/bluesnake/internal/indexability"
+	"github.com/agentberlin/bluesnake/internal/parse"
+	"github.com/agentberlin/bluesnake/internal/render"
+	"github.com/agentberlin/bluesnake/internal/structured"
+	"github.com/agentberlin/bluesnake/internal/urlutil"
 )
 
 // Crawl states.

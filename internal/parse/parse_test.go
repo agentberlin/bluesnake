@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hhsecond/acrawler/internal/config"
+	"github.com/agentberlin/bluesnake/internal/config"
 )
 
 func parseHTML(t *testing.T, pageURL, body string, header http.Header, mutate func(*config.Config)) *Facts {

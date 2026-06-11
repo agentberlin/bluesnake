@@ -9,14 +9,14 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/hhsecond/acrawler/internal/analyze"
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/crawler"
-	"github.com/hhsecond/acrawler/internal/extract"
-	"github.com/hhsecond/acrawler/internal/frontier"
-	"github.com/hhsecond/acrawler/internal/issues"
-	"github.com/hhsecond/acrawler/internal/parse"
-	"github.com/hhsecond/acrawler/internal/structured"
+	"github.com/agentberlin/bluesnake/internal/analyze"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/extract"
+	"github.com/agentberlin/bluesnake/internal/frontier"
+	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/parse"
+	"github.com/agentberlin/bluesnake/internal/structured"
 )
 
 func TestCrawlLifecycle(t *testing.T) {

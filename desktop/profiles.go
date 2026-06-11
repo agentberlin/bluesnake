@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/store"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/store"
 	"gopkg.in/yaml.v3"
 )
 

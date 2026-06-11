@@ -10,7 +10,7 @@ Disallow: /private/
 Allow: /private/public-bit
 Disallow: /*.pdf$
 
-User-agent: acrawler
+User-agent: bluesnake
 Disallow: /only-for-others/
 
 Sitemap: https://ex.com/sitemap.xml
@@ -24,15 +24,15 @@ func TestGroupSelection(t *testing.T) {
 		allowed bool
 	}{
 		// our specific token gets its own group, not *
-		{"acrawler", "https://ex.com/private/x", true},
-		{"acrawler", "https://ex.com/only-for-others/x", false},
+		{"bluesnake", "https://ex.com/private/x", true},
+		{"bluesnake", "https://ex.com/only-for-others/x", false},
 		// generic agents fall back to *
 		{"somebot", "https://ex.com/private/x", false},
 		{"somebot", "https://ex.com/only-for-others/x", true},
 		// token match is case-insensitive and prefix-based (Googlebot-Images
 		// matches a "googlebot" group)
-		{"ACrawler-Images", "https://ex.com/only-for-others/x", false},
-		{"AcrawlerFoo", "https://ex.com/only-for-others/x", false},
+		{"Bluesnake-Images", "https://ex.com/only-for-others/x", false},
+		{"BluesnakeFoo", "https://ex.com/only-for-others/x", false},
 	}
 	for _, tt := range tests {
 		v := f.Verdict(tt.ua, tt.url)

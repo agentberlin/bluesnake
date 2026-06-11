@@ -12,13 +12,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hhsecond/acrawler/internal/analyze"
-	"github.com/hhsecond/acrawler/internal/compare"
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/crawler"
-	"github.com/hhsecond/acrawler/internal/issues"
-	"github.com/hhsecond/acrawler/internal/robots"
-	"github.com/hhsecond/acrawler/internal/store"
+	"github.com/agentberlin/bluesnake/internal/analyze"
+	"github.com/agentberlin/bluesnake/internal/compare"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/robots"
+	"github.com/agentberlin/bluesnake/internal/store"
 )
 
 // App is the Wails-bound service layer over the internal crawl engine.
@@ -47,9 +47,9 @@ func NewApp() *App {
 func defaultStoreDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ".acrawler"
+		return ".bluesnake"
 	}
-	return filepath.Join(home, ".acrawler")
+	return filepath.Join(home, ".bluesnake")
 }
 
 func (a *App) startup(ctx context.Context) { a.ctx = ctx }

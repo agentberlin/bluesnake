@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/indexability"
+	"github.com/agentberlin/bluesnake/internal/parse"
 	"github.com/cucumber/godog"
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/indexability"
-	"github.com/hhsecond/acrawler/internal/parse"
 )
 
 func (w *world) registerParseSteps(sc *godog.ScenarioContext) {

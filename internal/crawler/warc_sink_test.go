@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/fetch"
-	"github.com/hhsecond/acrawler/internal/frontier"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/fetch"
+	"github.com/agentberlin/bluesnake/internal/frontier"
 )
 
 // archiveRecorder is a Sink that also implements the optional ArchiveSink

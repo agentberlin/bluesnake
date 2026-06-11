@@ -3,8 +3,8 @@ package analyze
 import (
 	"testing"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/parse"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/parse"
 )
 
 func hasOccDetail(r *Results, url, id, detail string) bool {

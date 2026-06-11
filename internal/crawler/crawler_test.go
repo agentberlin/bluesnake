@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/frontier"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/frontier"
 )
 
 // site is a tiny declarative fixture server.

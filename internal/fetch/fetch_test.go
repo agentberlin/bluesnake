@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/hhsecond/acrawler/internal/config"
+	"github.com/agentberlin/bluesnake/internal/config"
 )
 
 func newClient(t *testing.T, mutate func(*config.Config), opts ...Option) *Client {
@@ -157,12 +157,12 @@ func TestHeadersAndUserAgent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	t.Setenv("ACRAWLER_TEST_PW", "s3cret")
+	t.Setenv("BLUESNAKE_TEST_PW", "s3cret")
 	c := newClient(t, func(c *config.Config) {
 		c.HTTP.UserAgent = "mybot/9"
 		c.HTTP.Headers = map[string]string{"Accept-Language": "de"}
 		c.HTTP.Auth.Basic = []config.BasicAuth{
-			{URLPrefix: srv.URL, Username: "alice", PasswordEnv: "ACRAWLER_TEST_PW"},
+			{URLPrefix: srv.URL, Username: "alice", PasswordEnv: "BLUESNAKE_TEST_PW"},
 		}
 	})
 	c.Fetch(context.Background(), srv.URL+"/x")

@@ -6,7 +6,7 @@ func base() Input {
 	return Input{
 		PageURL:                   "https://ex.com/p",
 		StatusCode:                200,
-		RobotsUserAgent:           "acrawler",
+		RobotsUserAgent:           "bluesnake",
 		RespectSelfRefMetaRefresh: true,
 	}
 }
@@ -35,7 +35,7 @@ func TestEvaluate(t *testing.T) {
 		{"meta noindex", func(in *Input) { in.MetaRobots = []string{"noindex, follow"} }, false, Noindex},
 		{"meta none", func(in *Input) { in.MetaRobots = []string{"none"} }, false, Noindex},
 		{"x-robots noindex", func(in *Input) { in.XRobotsTag = []string{"noindex"} }, false, Noindex},
-		{"x-robots scoped to us", func(in *Input) { in.XRobotsTag = []string{"acrawler: noindex"} }, false, Noindex},
+		{"x-robots scoped to us", func(in *Input) { in.XRobotsTag = []string{"bluesnake: noindex"} }, false, Noindex},
 		{"x-robots scoped to other", func(in *Input) { in.XRobotsTag = []string{"otherbot: noindex"} }, true, ""},
 		{"x-robots unavailable_after is not a scope", func(in *Input) {
 			in.XRobotsTag = []string{"unavailable_after: 25 Jun 2030"}

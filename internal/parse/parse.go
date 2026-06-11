@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/urlutil"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/urlutil"
 	"golang.org/x/net/html"
 )
 

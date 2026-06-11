@@ -9,11 +9,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/crawler"
-	"github.com/hhsecond/acrawler/internal/parse"
-	"github.com/hhsecond/acrawler/internal/serpwidth"
-	"github.com/hhsecond/acrawler/internal/urlutil"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/parse"
+	"github.com/agentberlin/bluesnake/internal/serpwidth"
+	"github.com/agentberlin/bluesnake/internal/urlutil"
 )
 
 type Severity string

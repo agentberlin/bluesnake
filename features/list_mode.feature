@@ -8,7 +8,7 @@ Feature: List mode
     And a site page "/b" linking to ""
     And a site page "/not-followed" linking to ""
     And a URL list file containing "<serverurl>/a" and "<serverurl>/b"
-    When I run "acrawler list <listfile> --store-dir <storedir> --quiet"
+    When I run "bluesnake list <listfile> --store-dir <storedir> --quiet"
     Then the exit code is 0
     And the page "/a" was requested exactly 1 times
     And the page "/b" was requested exactly 1 times
@@ -18,13 +18,13 @@ Feature: List mode
   Scenario: Redirect chains are followed to the end with --follow-redirects
     Given a test server redirect chain from "/r" of length 3
     And a URL list file containing "<serverurl>/r0" and "<serverurl>/r0"
-    When I run "acrawler list <listfile> --store-dir <storedir> --quiet --follow-redirects"
+    When I run "bluesnake list <listfile> --store-dir <storedir> --quiet --follow-redirects"
     Then the exit code is 0
     And the page "/end" was requested exactly 1 times
 
   Scenario: A sitemap can be the list source
     Given a site page "/from-sitemap" linking to ""
     And a test server route "/list.xml" responding 200 with body "<urlset><url><loc><serverurl>/from-sitemap</loc></url></urlset>"
-    When I run "acrawler list --sitemap <serverurl>/list.xml --store-dir <storedir> --quiet"
+    When I run "bluesnake list --sitemap <serverurl>/list.xml --store-dir <storedir> --quiet"
     Then the exit code is 0
     And the page "/from-sitemap" was requested exactly 1 times

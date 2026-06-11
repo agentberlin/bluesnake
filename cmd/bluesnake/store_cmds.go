@@ -9,18 +9,18 @@ import (
 	"syscall"
 	"text/tabwriter"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/crawler"
-	"github.com/hhsecond/acrawler/internal/store"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/spf13/cobra"
 )
 
 func defaultStoreDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ".acrawler"
+		return ".bluesnake"
 	}
-	return filepath.Join(home, ".acrawler")
+	return filepath.Join(home, ".bluesnake")
 }
 
 func newCrawlsCmd() *cobra.Command {
@@ -165,7 +165,7 @@ func finishCrawl(cmd *cobra.Command, st *store.Crawl, storeDir string, res *craw
 	status := store.StatusCompleted
 	if res.Interrupted {
 		status = store.StatusInterrupted
-		fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: acrawler resume %s --store-dir %s\n", st.ID, storeDir)
+		fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", st.ID, storeDir)
 	}
 	if err := store.SetStatus(storeDir, st.ID, status, res.Crawled); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning:", err)

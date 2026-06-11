@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hhsecond/acrawler/internal/config"
+	"github.com/agentberlin/bluesnake/internal/config"
 )
 
 func requireChrome(t *testing.T) *config.Config {

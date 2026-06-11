@@ -1,4 +1,4 @@
-// acrawler is a headless, CLI-first website crawler and SEO auditor.
+// bluesnake is a headless, CLI-first website crawler and SEO auditor.
 // See docs/DESIGN.md for the architecture this binary exposes.
 package main
 
@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/robots"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/robots"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -36,7 +36,7 @@ func main() {
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "acrawler",
+		Use:           "bluesnake",
 		Short:         "A modern, headless website crawler and SEO auditor",
 		SilenceUsage:  true,
 		SilenceErrors: false,
@@ -91,7 +91,7 @@ func newRobotsCmd() *cobra.Command {
 		},
 	}
 	testCmd.Flags().StringVar(&robotsFile, "robots-file", "", "robots.txt file to test against")
-	testCmd.Flags().StringVar(&userAgent, "robots-user-agent", "acrawler", "robots user-agent token")
+	testCmd.Flags().StringVar(&userAgent, "robots-user-agent", "bluesnake", "robots user-agent token")
 
 	robotsCmd.AddCommand(testCmd)
 	return robotsCmd
@@ -102,7 +102,7 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Fprintln(cmd.OutOrStdout(), "acrawler 0.1.0-dev")
+			fmt.Fprintln(cmd.OutOrStdout(), "bluesnake 0.1.0-dev")
 		},
 	}
 }
@@ -110,7 +110,7 @@ func newVersionCmd() *cobra.Command {
 func newConfigCmd() *cobra.Command {
 	cfgCmd := &cobra.Command{
 		Use:   "config",
-		Short: "Manage acrawler configuration",
+		Short: "Manage bluesnake configuration",
 	}
 
 	var stdout bool
@@ -123,7 +123,7 @@ func newConfigCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			header := "# acrawler configuration. Every key shown with its default value.\n" +
+			header := "# bluesnake configuration. Every key shown with its default value.\n" +
 				"# Any key may be omitted; unknown keys are errors.\n" +
 				"# Reference: docs/DESIGN.md §4.\n"
 			out := append([]byte(header), data...)
@@ -142,7 +142,7 @@ func newConfigCmd() *cobra.Command {
 		},
 	}
 	initCmd.Flags().BoolVar(&stdout, "stdout", false, "write to stdout instead of a file")
-	initCmd.Flags().StringVarP(&outFile, "output", "o", "acrawler.yaml", "output file")
+	initCmd.Flags().StringVarP(&outFile, "output", "o", "bluesnake.yaml", "output file")
 
 	validateCmd := &cobra.Command{
 		Use:   "validate <file>",

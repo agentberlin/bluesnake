@@ -8,9 +8,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/frontier"
-	"github.com/hhsecond/acrawler/internal/render"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/frontier"
+	"github.com/agentberlin/bluesnake/internal/render"
 )
 
 // blobRecorder is a Sink that also implements BlobSink, recording every blob.

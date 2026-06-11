@@ -18,15 +18,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hhsecond/acrawler/internal/analyze"
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/crawler"
-	"github.com/hhsecond/acrawler/internal/fetch"
-	"github.com/hhsecond/acrawler/internal/frontier"
-	"github.com/hhsecond/acrawler/internal/issues"
-	"github.com/hhsecond/acrawler/internal/parse"
-	"github.com/hhsecond/acrawler/internal/structured"
-	"github.com/hhsecond/acrawler/internal/warc"
+	"github.com/agentberlin/bluesnake/internal/analyze"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/fetch"
+	"github.com/agentberlin/bluesnake/internal/frontier"
+	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/parse"
+	"github.com/agentberlin/bluesnake/internal/structured"
+	"github.com/agentberlin/bluesnake/internal/warc"
 	"gopkg.in/yaml.v3"
 	_ "modernc.org/sqlite"
 )
@@ -244,7 +244,7 @@ func (c *Crawl) Archive(url string, res *fetch.Result) error {
 		c.archive = warc.NewWriter(f)
 		if info.Size() == 0 { // only the first writer emits the warcinfo record
 			if err := c.archive.WriteWarcinfo(map[string]string{
-				"software": "acrawler",
+				"software": "bluesnake",
 				"format":   "WARC File Format 1.1",
 			}); err != nil {
 				return err
