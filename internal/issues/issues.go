@@ -389,8 +389,13 @@ func (e *evaluator) security(rec *crawler.PageRecord) {
 	}
 	if isHTTPS && isHTMLPage(rec) && rec.StatusCode == 200 {
 		header := func(name string) string { return rec.Headers[name] }
-		if sc := header("Set-Cookie"); sc != "" && !hasSecureAttribute(sc) {
-			e.add(rec.URL, "security_insecure_cookie")
+		// the crawler newline-joins repeated Set-Cookie headers; flag if any
+		// cookie lacks the Secure attribute
+		for _, sc := range strings.Split(header("Set-Cookie"), "\n") {
+			if sc != "" && !hasSecureAttribute(sc) {
+				e.add(rec.URL, "security_insecure_cookie")
+				break
+			}
 		}
 		if header("Strict-Transport-Security") == "" {
 			e.add(rec.URL, "security_missing_hsts")

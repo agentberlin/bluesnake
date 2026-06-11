@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/hhsecond/acrawler/internal/analyze"
@@ -84,7 +86,10 @@ type Crawl struct {
 	dir string
 	db  *sql.DB
 
-	// WARC archive (extraction.store_warc), created lazily on first Archive
+	// WARC archive (extraction.store_warc), created lazily on first Archive.
+	// archiveMu guards the lazy init and the writes — the crawler calls
+	// Archive from many worker goroutines concurrently.
+	archiveMu   sync.Mutex
 	archive     *warc.Writer
 	archiveFile *os.File
 	archivePath string
@@ -148,12 +153,30 @@ func CreateCrawl(dir, project, seed, mode string, cfg *config.Config) (*Crawl, e
 	return c, nil
 }
 
-// OpenCrawl opens an existing crawl database by ID.
+// OpenCrawl opens an existing crawl database by ID. The id must be a single
+// safe path element — never a separator or "..": the network-exposed `serve`
+// API passes user-controlled ids straight through, and a traversing id would
+// otherwise let it open (and CREATE-TABLE / ALTER into) an arbitrary file.
 func OpenCrawl(dir, id string) (*Crawl, error) {
+	if !validCrawlID(id) {
+		return nil, fmt.Errorf("crawl %q not found", id)
+	}
 	if _, err := os.Stat(crawlPath(dir, id)); err != nil {
-		return nil, fmt.Errorf("crawl %s not found in %s", id, dir)
+		return nil, fmt.Errorf("crawl %q not found", id)
 	}
 	return openCrawlDB(dir, id)
+}
+
+// validCrawlID rejects ids that aren't a plain filename (path separators,
+// "..", empty, or absolute) so a crawl id can never escape the crawls dir.
+func validCrawlID(id string) bool {
+	if id == "" || id == "." || id == ".." {
+		return false
+	}
+	if strings.ContainsAny(id, `/\`) || strings.Contains(id, "..") {
+		return false
+	}
+	return id == filepath.Base(id)
 }
 
 func crawlPath(dir, id string) string {
@@ -181,36 +204,51 @@ func openCrawlDB(dir, id string) (*Crawl, error) {
 }
 
 func (c *Crawl) Close() error {
+	c.archiveMu.Lock()
 	if c.archiveFile != nil {
 		c.archive.Close()
 		c.archiveFile.Close()
 		c.archiveFile = nil
 	}
+	c.archiveMu.Unlock()
 	return c.db.Close()
 }
 
 // Archive implements crawler.ArchiveSink: fetched responses stream into
 // <crawl-id>.assets/archive.warc.gz (one gzip member per record), created
-// lazily with a leading warcinfo record.
+// lazily with a leading warcinfo record. Safe for concurrent use — the
+// crawler calls it from every worker goroutine.
 func (c *Crawl) Archive(url string, res *fetch.Result) error {
+	c.archiveMu.Lock()
+	defer c.archiveMu.Unlock()
 	if c.archive == nil {
 		dir := filepath.Join(c.dir, "crawls", c.ID+".assets")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 		path := filepath.Join(dir, "archive.warc.gz")
-		f, err := os.Create(path)
+		// O_APPEND so resuming a crawl (a fresh *Crawl over the same id)
+		// extends the existing archive instead of truncating it; gzip
+		// members concatenate, which is the standard .warc.gz layout.
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
+			return err
+		}
+		info, err := f.Stat()
+		if err != nil {
+			f.Close()
 			return err
 		}
 		c.archiveFile = f
 		c.archivePath = path
 		c.archive = warc.NewWriter(f)
-		if err := c.archive.WriteWarcinfo(map[string]string{
-			"software": "acrawler",
-			"format":   "WARC File Format 1.1",
-		}); err != nil {
-			return err
+		if info.Size() == 0 { // only the first writer emits the warcinfo record
+			if err := c.archive.WriteWarcinfo(map[string]string{
+				"software": "acrawler",
+				"format":   "WARC File Format 1.1",
+			}); err != nil {
+				return err
+			}
 		}
 	}
 	proto := res.HTTPVersion

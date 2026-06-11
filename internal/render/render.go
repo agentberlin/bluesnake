@@ -350,7 +350,19 @@ func (r *Renderer) Render(ctx context.Context, url string) (*Result, error) {
 
 	tabCtx, cancel := chromedp.NewContext(r.allocCtx)
 	defer cancel()
-	timeout := time.Duration(r.cfg.Advanced.ResponseTimeoutSec+r.cfg.Rendering.AjaxTimeoutSec+10) * time.Second
+	// the tab budget must cover the wait phase AND every custom JS snippet's
+	// own timeout, or a slow snippet (within its documented timeout_sec) would
+	// blow the deadline mid-snippet and abort the whole render — losing the
+	// rendered HTML, the JS diff and the other snippets' results
+	budget := r.cfg.Advanced.ResponseTimeoutSec + r.cfg.Rendering.AjaxTimeoutSec + 10
+	for _, s := range r.snippets {
+		if s.cfg.TimeoutSec > 0 {
+			budget += s.cfg.TimeoutSec
+		} else {
+			budget += 5 // matches runCustomJS's default
+		}
+	}
+	timeout := time.Duration(budget) * time.Second
 	tabCtx, cancelTimeout := context.WithTimeout(tabCtx, timeout)
 	defer cancelTimeout()
 	go func() { // propagate caller cancellation

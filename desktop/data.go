@@ -256,12 +256,12 @@ func (a *App) Overview(id string) (*Overview, error) {
 }
 
 // discoveryPath walks discovered_from edges back to the seed (seed first,
-// url last). Cycle-safe and capped at 25 hops, like the crawl_paths report.
+// url last). The seen set makes it cycle-safe, so it walks the full depth.
 func discoveryPath(pages map[string]*crawler.PageRecord, url string) []string {
 	chain := []string{url}
 	seen := map[string]bool{url: true}
 	current := url
-	for len(chain) <= 25 {
+	for {
 		rec, ok := pages[current]
 		if !ok {
 			break

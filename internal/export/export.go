@@ -360,10 +360,32 @@ func reportChains(st *store.Crawl, typ string) (*Dataset, error) {
 	return d, nil
 }
 
+// discoveryChain walks discovered_from edges back to the seed (seed first,
+// url last). The seen set makes it cycle-safe, so it walks the full depth —
+// no hop cap that could mis-root a deep chain. A parent that was never stored
+// still appears as the chain's first element but ends the walk.
+func discoveryChain(pages map[string]*crawler.PageRecord, url string) []string {
+	chain := []string{url}
+	seen := map[string]bool{url: true}
+	current := url
+	for {
+		rec, ok := pages[current]
+		if !ok {
+			break
+		}
+		parent := rec.DiscoveredFrom
+		if parent == "" || seen[parent] {
+			break
+		}
+		seen[parent] = true
+		chain = append([]string{parent}, chain...)
+		current = parent
+	}
+	return chain
+}
+
 // reportCrawlPaths reconstructs each URL's discovery path by walking the
-// discovered_from edges back to the seed (SF's crawl path report). Walks are
-// cycle-safe and capped at 25 hops; a parent that was never stored still
-// appears in the path (it is the only known edge) but ends the walk.
+// discovered_from edges back to the seed (SF's crawl path report).
 func reportCrawlPaths(st *store.Crawl) (*Dataset, error) {
 	pages, err := st.LoadPages()
 	if err != nil {
@@ -371,22 +393,7 @@ func reportCrawlPaths(st *store.Crawl) (*Dataset, error) {
 	}
 	d := &Dataset{Name: "crawl_paths", Header: []string{"url", "hops", "path"}}
 	for _, url := range sortedURLs(pages) {
-		chain := []string{url}
-		seen := map[string]bool{url: true}
-		current := url
-		for len(chain) <= 25 {
-			rec, ok := pages[current]
-			if !ok {
-				break // unknown parent: already in the chain, nothing to follow
-			}
-			parent := rec.DiscoveredFrom
-			if parent == "" || seen[parent] {
-				break
-			}
-			seen[parent] = true
-			chain = append([]string{parent}, chain...)
-			current = parent
-		}
+		chain := discoveryChain(pages, url)
 		d.Rows = append(d.Rows, []string{url, itoa(len(chain) - 1), strings.Join(chain, " -> ")})
 	}
 	return d, nil

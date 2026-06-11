@@ -245,8 +245,8 @@ These numbers drive the issue checks. Grouped editor with reset-to-default.
 
 | Threshold | Default |
 |---|---|
-| Page title length | min 30 / max 60 characters (pixel-width limits 200–561 exist in config for future use) |
-| Meta description length | min 70 / max 155 characters (pixels 400–985, future) |
+| Page title length | min 30 / max 60 characters; SERP pixel width min 200 / max 561 px (live — drives the Over/Below X Pixels checks, measured with bundled Arial metrics) |
+| Meta description length | min 70 / max 155 characters; SERP pixel width min 400 / max 985 px (live) |
 | Max URL length (for the "URL too long" flag) | 115 characters |
 | Max H1 / H2 length | 70 characters each |
 | Max image alt-text length | 100 characters |
@@ -553,11 +553,18 @@ to dataset exports.
 
 ## 9. Explicitly out of scope for now (leave room, don't design flows)
 
-Future features with config slots or known plans — the design can reserve
-space but shouldn't build full flows: custom JavaScript snippet execution ·
-rendered-HTML & screenshot persistence · pixel-width title/description checks
-· spelling & grammar · accessibility audits · WARC site archiving · crawl
-scheduling · per-URL "crawl path" report · visualisations (crawl tree /
+Now shipped (2026-06) and surfaced in the UI — design against the real
+behaviour, not the placeholders this section used to list: custom JavaScript
+snippet execution (`custom_js`; results appear under custom extractions with
+kind `js`), pixel-width title/description checks, WARC site archiving
+(extraction → "Archive responses as WARC"), the per-URL crawl-path report
+(`crawl_paths`; the URL drawer shows the discovery path), the rendering
+**wait strategy** choice (adaptive | fixed), and per-page HTTP protocol
+version (shown in the URL drawer).
+
+Still out of scope — the design can reserve space but shouldn't build full
+flows: rendered-HTML & screenshot persistence · spelling & grammar ·
+accessibility audits · crawl scheduling · visualisations (crawl tree /
 force-directed graphs) · segments (user-defined colored groupings) ·
 Screaming Frog's third-party integrations (Analytics, Search Console,
 PageSpeed) — these are permanently out of scope.

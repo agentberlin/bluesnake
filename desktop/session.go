@@ -7,6 +7,7 @@ import (
 
 	"github.com/hhsecond/acrawler/internal/config"
 	"github.com/hhsecond/acrawler/internal/crawler"
+	"github.com/hhsecond/acrawler/internal/fetch"
 	"github.com/hhsecond/acrawler/internal/frontier"
 	"github.com/hhsecond/acrawler/internal/store"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -296,4 +297,10 @@ func (t *uiSink) FrontierDone(url string) error { return t.inner.FrontierDone(ur
 // screenshots) when the engine asks for it.
 func (t *uiSink) Blob(url, kind string, data []byte) error {
 	return t.inner.Blob(url, kind, data)
+}
+
+// Archive forwards the optional ArchiveSink extension so extraction.store_warc
+// works from the desktop app (the engine reaches it by type assertion).
+func (t *uiSink) Archive(url string, res *fetch.Result) error {
+	return t.inner.Archive(url, res)
 }

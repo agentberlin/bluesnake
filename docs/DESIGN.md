@@ -142,6 +142,7 @@ extraction:
                     case_sensitive: false}
   store_html: false
   store_rendered_html: false
+  store_warc: false      # archive every fetched response as WARC/1.1 (any status, incl. redirects/errors)
   pdf: {store: false, extract_properties: false, extract_link_text: false}
 
 limits:

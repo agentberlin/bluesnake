@@ -8,6 +8,7 @@ package crawler
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -389,6 +390,13 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) []frontier.Ite
 	if len(res.Headers) > 0 {
 		rec.Headers = make(map[string]string, len(res.Headers))
 		for name := range res.Headers {
+			// Set-Cookie is the one header that legitimately repeats (one per
+			// cookie); keep every value, newline-joined, so the cookie checks
+			// see them all (a header value can never contain a newline).
+			if http.CanonicalHeaderKey(name) == "Set-Cookie" {
+				rec.Headers[name] = strings.Join(res.Headers.Values(name), "\n")
+				continue
+			}
 			rec.Headers[name] = res.Headers.Get(name)
 		}
 	}
@@ -455,7 +463,9 @@ func (c *Crawler) handleContent(it frontier.Item, scopeClass urlutil.ScopeClass,
 			c.renderAndDiff(it.URL, rec, facts, res)
 		}
 		if c.extractEngine != nil {
-			rec.CustomResults = c.extractEngine.Run(res.Body, facts.ContentText)
+			// append, not assign: renderAndDiff may already have stored
+			// custom JS (kind=js) results on this record
+			rec.CustomResults = append(rec.CustomResults, c.extractEngine.Run(res.Body, facts.ContentText)...)
 		}
 		rec.StructuredData = structured.Extract(res.Body, c.cfg)
 		idxInput.MetaRobots = facts.MetaRobots

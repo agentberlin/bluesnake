@@ -1,6 +1,7 @@
 package export
 
 import (
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -122,5 +123,40 @@ func TestCrawlPathsReport(t *testing.T) {
 	parts := strings.Split(orphan[2], " -> ")
 	if len(parts) != 2 || parts[0] != "https://ex.com/ghost" || parts[1] != "https://ex.com/orphanly" {
 		t.Errorf("orphanly path = %q, want the known parent then the url", orphan[2])
+	}
+}
+
+// TestCrawlPathsDeepChain pins that a discovery chain longer than the old
+// 25-hop guard still reports the true hop count and roots at the seed.
+func TestCrawlPathsDeepChain(t *testing.T) {
+	st, err := store.CreateCrawl(t.TempDir(), "", "https://ex.com/p0", "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	const depth = 40
+	for i := 0; i <= depth; i++ {
+		rec := &crawler.PageRecord{
+			URL: fmt.Sprintf("https://ex.com/p%d", i), Scope: "internal",
+			State: crawler.StateCrawled, StatusCode: 200,
+		}
+		if i > 0 {
+			rec.DiscoveredFrom = fmt.Sprintf("https://ex.com/p%d", i-1)
+		}
+		if err := st.Page(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d, err := BuildReport(st, "crawl_paths")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deepest := pathRowOf(t, d, fmt.Sprintf("https://ex.com/p%d", depth))
+	if deepest[1] != strconv.Itoa(depth) {
+		t.Errorf("deepest hops = %q, want %d (no 25-hop clamp)", deepest[1], depth)
+	}
+	if !strings.HasPrefix(deepest[2], "https://ex.com/p0 -> ") {
+		t.Errorf("deepest path must root at the seed, got %q", deepest[2])
 	}
 }

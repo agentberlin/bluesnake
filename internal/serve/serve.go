@@ -72,11 +72,16 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// open resolves the crawl id from the path; a missing crawl is a 404.
+// open resolves the crawl id from the path; a missing crawl is a 404. The
+// error sent to the client is generic on purpose — store errors carry
+// filesystem paths and SQLite internals that this localhost-but-bindable API
+// should not disclose (store.OpenCrawl also rejects traversing ids).
 func (h *handler) open(w http.ResponseWriter, r *http.Request) *store.Crawl {
 	st, err := store.OpenCrawl(h.storeDir, r.PathValue("id"))
 	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
+		// generic + no echo of the (user-controlled) id: avoid both path
+		// disclosure and reflecting arbitrary input back in the response
+		writeError(w, http.StatusNotFound, "crawl not found")
 		return nil
 	}
 	return st
@@ -85,7 +90,7 @@ func (h *handler) open(w http.ResponseWriter, r *http.Request) *store.Crawl {
 func (h *handler) crawls(w http.ResponseWriter, r *http.Request) {
 	infos, err := store.ListCrawls(h.storeDir)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	entries := make([]apiCrawl, 0, len(infos))
@@ -161,7 +166,7 @@ func (h *handler) issues(w http.ResponseWriter, r *http.Request) {
 	defer st.Close()
 	counts, err := st.IssueCounts()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	entries := make([]apiIssue, 0, len(counts))
@@ -192,7 +197,7 @@ func (h *handler) page(w http.ResponseWriter, r *http.Request) {
 	defer st.Close()
 	pages, err := st.LoadPages()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	rec, ok := pages[url]

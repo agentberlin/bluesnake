@@ -281,6 +281,26 @@ func TestInsecureCookie(t *testing.T) {
 	}
 }
 
+// The crawler newline-joins repeated Set-Cookie headers; an insecure cookie
+// anywhere in the set must be flagged even when the first one is Secure.
+func TestInsecureCookieMultiValue(t *testing.T) {
+	mk := func(url, joined string) *crawler.PageRecord {
+		p := htmlPage(url, expansionFacts())
+		p.Headers = map[string]string{"Set-Cookie": joined}
+		return p
+	}
+	occs := eval(
+		mk("https://ex.com/secure-then-insecure", "a=1; Secure; HttpOnly\nb=2; HttpOnly"),
+		mk("https://ex.com/all-secure", "a=1; Secure\nb=2; Secure; HttpOnly"),
+	)
+	if !has(occs, "https://ex.com/secure-then-insecure", "security_insecure_cookie") {
+		t.Error("an insecure cookie after a secure one must still be flagged")
+	}
+	if has(occs, "https://ex.com/all-secure", "security_insecure_cookie") {
+		t.Error("all-secure multi-cookie response must not be flagged")
+	}
+}
+
 func TestNofollowInlinksOnly(t *testing.T) {
 	linkTo := func(url string, nofollow bool) parse.Link {
 		return parse.Link{Type: parse.Hyperlink, URL: url, Anchor: "target page", Nofollow: nofollow}

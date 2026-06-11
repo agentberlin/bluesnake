@@ -1,7 +1,9 @@
 package serve
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -271,6 +273,42 @@ func TestErrors(t *testing.T) {
 				t.Errorf(`body %v lacks an "error" message`, body)
 			}
 		})
+	}
+}
+
+// A traversing crawl id must never reach a file outside the store: the mux
+// path-cleans literal "../", and store.OpenCrawl rejects %2f-encoded ones.
+// Either way the request must not succeed and must not leak the store path.
+func TestServeNoPathTraversal(t *testing.T) {
+	srv, _ := apiServer(t)
+	for _, raw := range []string{
+		"/api/crawls/..%2f..%2fetc/overview",
+		"/api/crawls/%2e%2e%2foutside/overview",
+		"/api/crawls/..%2f..%2f..%2f..%2fetc%2fpasswd/page?url=x",
+	} {
+		resp, err := http.Get(srv.URL + raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			t.Errorf("traversing request %q succeeded (200) — must be rejected", raw)
+		}
+		if bytes.Contains(body, []byte("/etc/passwd")) {
+			t.Errorf("response for %q reflects a traversal target: %s", raw, body)
+		}
+	}
+}
+
+// Error bodies must not disclose the store directory (the API can be bound
+// off-localhost via --addr).
+func TestServeErrorsDoNotLeakStorePath(t *testing.T) {
+	srv, _ := apiServer(t)
+	var nf map[string]string
+	get(t, srv, "/api/crawls/nope/overview", &nf)
+	if strings.ContainsAny(nf["error"], "/\\") {
+		t.Errorf("404 body leaks a filesystem path: %q", nf["error"])
 	}
 }
 
