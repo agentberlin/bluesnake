@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -76,6 +77,7 @@ func (m *tunnelManager) startLocked() {
 	m.client = tunnel.New(tunnel.Config{
 		Identity:           id,
 		LocalAddr:          localAddr,
+		LogDir:             filepath.Join(m.app.storeDir, "logs"),
 		InsecureSkipVerify: os.Getenv("BLUESNAKE_TUNNEL_INSECURE") == "1",
 		ServerName:         os.Getenv("BLUESNAKE_TUNNEL_SERVER_NAME"),
 		OnStatus:           m.onStatus,

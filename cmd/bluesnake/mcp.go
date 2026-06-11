@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -99,6 +100,7 @@ func startPublicTunnel(ctx context.Context, cmd *cobra.Command, storeDir, localA
 	c := tunnel.New(tunnel.Config{
 		Identity:           id,
 		LocalAddr:          localAddr,
+		LogDir:             filepath.Join(storeDir, "logs"),
 		InsecureSkipVerify: insecure,
 		ServerName:         serverName,
 		OnStatus: func(s tunnel.Status) {
