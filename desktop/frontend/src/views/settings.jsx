@@ -387,6 +387,9 @@ function MCPPanel({ onToast }) {
         </div>
       </div>
 
+      {/* public URL (reverse tunnel) */}
+      <TunnelSection mcpRunning={st.running} onToast={onToast} copy={copy} />
+
       {/* tool surface */}
       <div style={{ padding: "16px 0" }}>
         <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>What agents can do</div>
@@ -401,6 +404,81 @@ function MCPPanel({ onToast }) {
         </div>
       </div>
     </>
+  );
+}
+
+/* ---- public URL via reverse tunnel ------------------------------------- */
+function TunnelSection({ mcpRunning, onToast, copy }) {
+  const [t, setT] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.getTunnelStatus().then(setT).catch(() => {});
+    return on("tunnel:status", setT);
+  }, []);
+
+  async function toggle() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const s = await api.setTunnelEnabled(!t.enabled);
+      setT(s);
+      if (s.error) onToast(s.error, "circle-alert");
+      else onToast(s.enabled ? "Creating public URL…" : "Public URL disabled", "globe");
+    } finally { setBusy(false); }
+  }
+  if (!t) return null;
+  const online = t.state === "online";
+  const connecting = t.state === "connecting";
+  const canEnable = mcpRunning || t.enabled;
+
+  const stateLabel = !t.enabled ? "Off"
+    : online ? "Live"
+    : connecting ? "Connecting…"
+    : t.state === "error" ? "Error" : "Stopped";
+  const stateColor = online ? "var(--sev-ok)" : t.state === "error" ? "var(--s-4xx)" : "var(--ink-faint)";
+
+  return (
+    <div style={{ padding: "16px 0", borderBottom: "1px solid var(--border-soft)" }}>
+      <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 7 }}>
+            <Icon name="globe" size={15} style={{ color: "var(--ink-3)" }} />Public URL
+          </div>
+          <div className="hint" style={{ marginTop: 4 }}>
+            {canEnable
+              ? "Expose this MCP server over a public HTTPS URL so a remote MCP client can reach it. Off by default; the server stays localhost-only until you turn this on."
+              : "Enable the MCP server above first — the public URL forwards to it."}
+          </div>
+        </div>
+        <Toggle on={t.enabled} onChange={toggle} disabled={!canEnable || busy} />
+      </div>
+
+      {t.enabled && (
+        <>
+          <div style={{ display: "flex", gap: 10, padding: "12px 0 4px", alignItems: "center" }}>
+            <span className="statusdot" style={{ background: stateColor }} />
+            <span style={{ fontSize: 12.5, fontWeight: 600 }}>{stateLabel}</span>
+            {t.error && <span style={{ fontSize: 11.5, color: "var(--s-4xx)" }}><Icon name="circle-alert" size={12} /> {t.error}</span>}
+          </div>
+
+          {t.mcpUrl && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+              <pre className="mono" style={{ flex: 1, margin: 0, padding: "8px 10px", fontSize: 11, lineHeight: 1.5, border: "1px solid var(--border-soft)", borderRadius: 6, background: "var(--sidebar)", overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{t.mcpUrl}</pre>
+              <IconBtn icon="copy" size={14} title="Copy public MCP URL" onClick={() => copy(t.mcpUrl)} />
+            </div>
+          )}
+
+          <div className="hint" style={{ marginTop: 10, display: "flex", gap: 7, alignItems: "flex-start", color: "var(--s-4xx)" }}>
+            <Icon name="shield-alert" size={13} style={{ flex: "0 0 13px", marginTop: 1 }} />
+            <span>
+              Anyone with this URL can drive your crawler and read your crawl data — its randomized address is the
+              only thing keeping it private, so don't share it publicly. Turn this off to take it offline.
+            </span>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

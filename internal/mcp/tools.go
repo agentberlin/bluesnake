@@ -321,6 +321,9 @@ func (s *Server) buildTools() []Tool {
 				if strings.TrimSpace(a.SQL) == "" {
 					return "", fmt.Errorf("sql is required")
 				}
+				if err := guardReadOnlySQL(a.SQL); err != nil {
+					return "", err
+				}
 				maxRows := a.MaxRows
 				if maxRows <= 0 {
 					maxRows = 200
@@ -394,7 +397,13 @@ func (s *Server) openCrawlRO(id string) (*sql.DB, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	// mode=ro makes the main DB read-only; query_only blocks any writes to
+	// attached/temp DBs; trusted_schema=0 hardens against malicious
+	// schema-defined functions. Combined with guardReadOnlySQL (which rejects
+	// anything that isn't a single SELECT/WITH/EXPLAIN/VALUES and thus blocks
+	// ATTACH), this keeps the publicly-reachable query tool a true read window.
+	dsn := "file:" + path + "?mode=ro&_pragma=query_only(1)&_pragma=trusted_schema(0)&_pragma=busy_timeout(3000)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, "", err
 	}
@@ -404,6 +413,56 @@ func (s *Server) openCrawlRO(id string) (*sql.DB, string, error) {
 		return nil, "", err
 	}
 	return db, id, nil
+}
+
+// guardReadOnlySQL rejects anything that isn't a single read-only statement.
+// This is the primary defense (driver-independent) against ATTACH/DETACH
+// escaping the read-only main DB to read arbitrary files — ATTACH cannot appear
+// inside a SELECT and cannot be a second statement, so requiring a single
+// SELECT/WITH/EXPLAIN/VALUES/PRAGMA statement blocks it outright.
+func guardReadOnlySQL(q string) error {
+	// Reject multiple statements (ignoring a single optional trailing ';').
+	body := strings.TrimRight(strings.TrimSpace(q), "; \t\r\n")
+	if strings.Contains(body, ";") {
+		return fmt.Errorf("only a single statement is allowed")
+	}
+	switch firstSQLKeyword(body) {
+	case "select", "with", "explain", "values", "pragma":
+		return nil
+	default:
+		return fmt.Errorf("only read-only SELECT/WITH queries are allowed")
+	}
+}
+
+// firstSQLKeyword returns the lowercased first token of a SQL statement after
+// skipping leading line (--) and block (/* */) comments and whitespace.
+func firstSQLKeyword(s string) string {
+	for {
+		s = strings.TrimLeft(s, " \t\r\n")
+		switch {
+		case strings.HasPrefix(s, "--"):
+			if i := strings.IndexByte(s, '\n'); i >= 0 {
+				s = s[i+1:]
+			} else {
+				return ""
+			}
+		case strings.HasPrefix(s, "/*"):
+			if i := strings.Index(s, "*/"); i >= 0 {
+				s = s[i+2:]
+			} else {
+				return ""
+			}
+		default:
+			end := len(s)
+			for i, r := range s {
+				if r == ' ' || r == '\t' || r == '\r' || r == '\n' || r == '(' {
+					end = i
+					break
+				}
+			}
+			return strings.ToLower(s[:end])
+		}
+	}
 }
 
 func runQuery(ctx context.Context, db *sql.DB, crawlID, query string, maxRows int) (string, error) {

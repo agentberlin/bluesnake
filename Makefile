@@ -10,10 +10,14 @@ APP_NAME := bluesnake.app
 APP_BUNDLE := desktop/build/bin/$(APP_NAME)
 APP_INSTALL_DIR ?= $(HOME)/Applications
 
-.PHONY: build test unit acceptance cover lint clean desktop desktop-build desktop-dev
+.PHONY: build tunnel-server test unit acceptance cover lint clean desktop desktop-build desktop-dev
 
 build:
 	$(GO) build -o bin/bluesnake ./cmd/bluesnake
+
+# Reverse-tunnel server (deployed separately; self-contained under tunnelserver/).
+tunnel-server:
+	$(GO) build -o bin/bluesnake-tunnelserver ./tunnelserver
 
 # desktop app (Wails) — requires the wails CLI: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 # `make desktop` builds the .app bundle and installs it into APP_INSTALL_DIR so
@@ -33,7 +37,7 @@ desktop-dev:
 test: unit acceptance
 
 unit:
-	$(GO) test $(COVER_PKGS) ./cmd/...
+	$(GO) test $(COVER_PKGS) ./cmd/... ./tunnelserver/...
 
 acceptance: build
 	$(GO) test ./test/...

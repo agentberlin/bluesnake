@@ -39,3 +39,13 @@ go install github.com/wailsapp/wails/v2/cmd/wails@latest   # one-time
 make desktop-dev   # live-reload development app
 make desktop       # production build → desktop/build/bin/bluesnake.app
 ```
+
+## MCP server & public URLs
+
+`bluesnake mcp` (and the desktop app's MCP toggle) expose the crawler to LLM agents over the MCP streamable-HTTP transport, bound to localhost. To let a *remote* MCP client reach a local server, opt into a reverse tunnel that provides a stable public HTTPS URL — `bluesnake mcp --public`, or the **Public URL** toggle in the desktop MCP settings. It is off by default; the server stays localhost-only until you turn it on.
+
+The embedded tunnel client lives in `internal/tunnel/`; the separately-deployable tunnel server lives in `tunnelserver/`. Full architecture, wire protocol, security model, and deployment runbook: [docs/TUNNEL.md](docs/TUNNEL.md).
+
+```sh
+make tunnel-server   # build the server → bin/bluesnake-tunnelserver
+```
