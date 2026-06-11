@@ -1,4 +1,5 @@
 bin/
+/bluesnake
 coverage.out
 *.db
 .DS_Store

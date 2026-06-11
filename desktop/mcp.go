@@ -59,6 +59,9 @@ type appSettings struct {
 		Enabled bool `json:"enabled"`
 		Port    int  `json:"port"`
 	} `json:"mcp"`
+	Tunnel struct {
+		Enabled bool `json:"enabled"`
+	} `json:"tunnel"`
 }
 
 func (a *App) settingsPath() string { return filepath.Join(a.storeDir, "desktop.json") }
@@ -126,6 +129,17 @@ func (m *mcpManager) stopLocked() {
 	}
 }
 
+// localAddr returns the bound MCP listener address while running (for the
+// tunnel to forward to), or "" when stopped.
+func (m *mcpManager) localAddr() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ln != nil {
+		return m.ln.Addr().String()
+	}
+	return ""
+}
+
 func (m *mcpManager) statusLocked() MCPStatus {
 	st := MCPStatus{Enabled: m.enabled, Running: m.ln != nil, Port: m.port, Error: m.err}
 	if st.Running {
@@ -166,6 +180,8 @@ func (a *App) SetMCPEnabled(enabled bool) MCPStatus {
 
 	a.persistMCP(st)
 	runtime.EventsEmit(a.ctx, "mcp:status", st)
+	// The public tunnel forwards to the MCP listener; follow it up or down.
+	a.tunnel.onMCPChanged()
 	return st
 }
 
@@ -188,6 +204,7 @@ func (a *App) SetMCPPort(port int) MCPStatus {
 
 	a.persistMCP(st)
 	runtime.EventsEmit(a.ctx, "mcp:status", st)
+	a.tunnel.onMCPChanged()
 	return st
 }
 

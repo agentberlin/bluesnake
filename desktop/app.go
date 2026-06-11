@@ -25,7 +25,8 @@ import (
 type App struct {
 	ctx      context.Context
 	storeDir string
-	mcp      *mcpManager // localhost MCP server (settings toggle)
+	mcp      *mcpManager    // localhost MCP server (settings toggle)
+	tunnel   *tunnelManager // optional public HTTPS URL for the MCP server
 
 	mu      sync.Mutex
 	session *crawlSession // at most one live crawl
@@ -44,6 +45,7 @@ func NewApp() *App {
 		countCache: map[string]map[string]int{},
 	}
 	a.mcp = newMCPManager(a)
+	a.tunnel = newTunnelManager(a)
 	return a
 }
 
@@ -57,10 +59,12 @@ func defaultStoreDir() string {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.mcp.initFromSettings() // restore the MCP toggle, auto-starting the server
+	a.mcp.initFromSettings()    // restore the MCP toggle, auto-starting the server
+	a.tunnel.initFromSettings() // then the public-URL toggle (forwards to the MCP server)
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	a.tunnel.shutdown()
 	a.mcp.shutdown()
 	a.mu.Lock()
 	s := a.session

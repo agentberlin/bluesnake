@@ -44,6 +44,9 @@ export const api = {
   getMCPStatus: () => call("GetMCPStatus"),
   setMCPEnabled: (enabled) => call("SetMCPEnabled", enabled),
   setMCPPort: (port) => call("SetMCPPort", port),
+
+  getTunnelStatus: () => call("GetTunnelStatus"),
+  setTunnelEnabled: (enabled) => call("SetTunnelEnabled", enabled),
 };
 
 /* runtime events — returns an unsubscribe function for THIS listener only
