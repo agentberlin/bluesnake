@@ -67,18 +67,27 @@ Each install holds **one secret**, generated server-side at registration and
 returned exactly once:
 
 - **connect secret** — authenticates the tunnel connection. Never leaves the
-  machine; travels only inside the TLS tunnel handshake. Only its sha256 *hash*
-  is stored; the plaintext is shown once and never persisted server-side.
+  machine; travels only inside the TLS tunnel handshake. Only its *hash* is
+  stored (HMAC-SHA256 keyed by `SECRET_PEPPER`, or plain sha256 when unset); the
+  plaintext is shown once and never persisted server-side.
 
 The public URL itself carries no token — it is just `https://<id>.t.snake.blue/mcp`.
-What keeps it private is the **unguessable random subdomain** (a 12-char nanoid),
-exactly like an unguessable share link. This is a deliberate phase-1 simplification
-(a per-request URL token was considered and dropped); see phase 2 for the path to
-real per-request auth.
+What keeps it private is the **unguessable random subdomain**: a 12-character id
+drawn from `[a-z0-9]` (DNS-label-safe) by `crypto/rand` with rejection sampling,
+i.e. **≈ 62 bits of entropy** (36¹² ≈ 4.7·10¹⁸), exactly like an unguessable
+share link. This is a deliberate phase-1 simplification (a per-request URL token
+was considered and dropped); see phase 2 for the path to real per-request auth.
 
-> Why sha256 and not bcrypt/argon? The connect secret is a 32-byte random token,
-> not a user-chosen password. There is nothing to brute-force; a fast hash with a
-> constant-time compare is the correct tool.
+> **On the 62-bit figure:** the subdomain is base36 (not a default ~126-bit
+> nanoid) because it doubles as a DNS label. 62 bits is far beyond *online*
+> brute force — each guess is an HTTPS request, so even at 10⁶ tries/sec a hit is
+> ~10⁵ years away — but it is the **sole** gate now that the URL token is gone.
+> Raising it is just a length change (24 chars → ≈ 124 bits); kept at 12 for
+> shorter URLs in phase 1.
+
+> Why a fast hash and not bcrypt/argon? The connect secret is a 32-byte random
+> token, not a user-chosen password. There is nothing to brute-force; a fast
+> keyed hash with a constant-time compare is the correct tool.
 
 ## Security model (phase 1)
 
@@ -87,9 +96,11 @@ What's defended:
 - **Subdomain hijack** — claiming a subdomain requires the connect secret, which
   is never in the URL. Verified constant-time; unknown-id and wrong-secret paths
   cost the same (no timing oracle on id existence).
-- **URL guessing** — subdomains are 12-char random ids (36¹² ≈ 4.7·10¹⁸), which
-  is what gates access to a live tunnel in phase 1. Brute-forcing the space is
-  infeasible; there is no enumeration endpoint.
+- **URL guessing** — subdomains are 12-char base36 ids (≈ 62 bits, 36¹² ≈
+  4.7·10¹⁸), which is what gates access to a live tunnel in phase 1. Online
+  brute force is infeasible (each guess is an HTTPS request) and there is no
+  enumeration endpoint. Note this is below a 128-bit bar and is the *only* gate
+  on the public endpoint — see the entropy note above and phase 2.
 - **DNS rebinding** — the gateway rewrites `Host` to the local server's address
   and strips `Origin` before forwarding, satisfying the local MCP server's
   localhost-only Host/Origin guard.
@@ -293,8 +304,11 @@ Carried over from phase 1, roughly in priority order:
 
 1. **Real per-request auth on the public URL.** The biggest gap: a leaked URL is
    currently a full grant. Options: a capability token (re-introduced, but
-   server-issued and rotatable), MCP-level auth (bearer/OAuth), or signed/expiring
-   URLs. This is what makes the tunnel safe to share casually.
+   server-issued and rotatable), a secret in a **request header** (keeps the URL
+   clean; MCP client configs support a `headers` field), MCP-level auth
+   (bearer/OAuth), or signed/expiring URLs. This is what makes the tunnel safe to
+   share casually. Cheap interim hardening: raise the subdomain to ≈ 124 bits
+   (24 chars) so the sole gate is well past any bar.
 2. **Revocation that kills live sessions.** A `POST /v1/revoke` (authenticated by
    the connect secret) that sets `revoked=true` **and** closes the live
    `registry.Session` immediately, plus periodic re-validation of connected
