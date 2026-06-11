@@ -101,6 +101,6 @@ Feature: Spider mode crawl
   Scenario: The crawl CLI prints a summary
     Given a site page "/" linking to "/a"
     And a site page "/a" linking to ""
-    When I run "acrawler crawl <serverurl>/"
+    When I run "bluesnake crawl <serverurl>/"
     Then the exit code is 0
     And the output contains "Crawled 2 URLs"

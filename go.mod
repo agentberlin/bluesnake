@@ -1,4 +1,4 @@
-module github.com/hhsecond/acrawler
+module github.com/agentberlin/bluesnake
 
 go 1.26
 

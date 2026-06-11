@@ -1,5 +1,5 @@
 // Package acceptance runs the Gherkin specs in features/ against the real
-// acrawler binary and library API. Scenarios tagged @pending describe modules
+// bluesnake binary and library API. Scenarios tagged @pending describe modules
 // not yet implemented and are excluded from the run (see README).
 package acceptance
 
@@ -19,30 +19,30 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/fetch"
+	"github.com/agentberlin/bluesnake/internal/indexability"
+	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/parse"
+	"github.com/agentberlin/bluesnake/internal/robots"
+	"github.com/agentberlin/bluesnake/internal/urlutil"
 	"github.com/cucumber/godog"
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/crawler"
-	"github.com/hhsecond/acrawler/internal/fetch"
-	"github.com/hhsecond/acrawler/internal/indexability"
-	"github.com/hhsecond/acrawler/internal/issues"
-	"github.com/hhsecond/acrawler/internal/parse"
-	"github.com/hhsecond/acrawler/internal/robots"
-	"github.com/hhsecond/acrawler/internal/urlutil"
 	"gopkg.in/yaml.v3"
 )
 
 var binPath string
 
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "acrawler-acceptance")
+	dir, err := os.MkdirTemp("", "bluesnake-acceptance")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	binPath = filepath.Join(dir, "acrawler")
-	out, err := exec.Command("go", "build", "-o", binPath, "github.com/hhsecond/acrawler/cmd/acrawler").CombinedOutput()
+	binPath = filepath.Join(dir, "bluesnake")
+	out, err := exec.Command("go", "build", "-o", binPath, "github.com/agentberlin/bluesnake/cmd/bluesnake").CombinedOutput()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "building acrawler: %v\n%s", err, out)
+		fmt.Fprintf(os.Stderr, "building bluesnake: %v\n%s", err, out)
 		os.Exit(1)
 	}
 	code := m.Run()
@@ -52,8 +52,8 @@ func TestMain(m *testing.M) {
 
 func TestFeatures(t *testing.T) {
 	// @chrome features need a local Chrome/Chromium; opt in with
-	// ACRAWLER_FEATURE_TAGS="@chrome" (or any godog tag expression).
-	tags := os.Getenv("ACRAWLER_FEATURE_TAGS")
+	// BLUESNAKE_FEATURE_TAGS="@chrome" (or any godog tag expression).
+	tags := os.Getenv("BLUESNAKE_FEATURE_TAGS")
 	if tags == "" {
 		tags = "~@pending && ~@chrome"
 	}
@@ -236,7 +236,7 @@ func initializeScenario(sc *godog.ScenarioContext) {
 	w := &world{}
 	sc.Before(func(ctx context.Context, s *godog.Scenario) (context.Context, error) {
 		*w = world{}
-		dir, err := os.MkdirTemp("", "acrawler-scenario")
+		dir, err := os.MkdirTemp("", "bluesnake-scenario")
 		w.tmpDir = dir
 		return ctx, err
 	})
@@ -368,7 +368,7 @@ func (w *world) configFileDoc(doc *godog.DocString) error {
 }
 
 func (w *world) writeCfgFile() error {
-	w.cfgPath = filepath.Join(w.tmpDir, "acrawler.yaml")
+	w.cfgPath = filepath.Join(w.tmpDir, "bluesnake.yaml")
 	return os.WriteFile(w.cfgPath, w.cfgData, 0o644)
 }
 
@@ -440,8 +440,8 @@ func (w *world) runCLI(command string) error {
 		command = strings.ReplaceAll(command, "<crawlid>", w.storedCrawlID)
 	}
 	args := strings.Fields(command)
-	if len(args) == 0 || args[0] != "acrawler" {
-		return fmt.Errorf("command must start with 'acrawler': %q", command)
+	if len(args) == 0 || args[0] != "bluesnake" {
+		return fmt.Errorf("command must start with 'bluesnake': %q", command)
 	}
 	cmd := exec.Command(binPath, args[1:]...)
 	cmd.Dir = w.tmpDir

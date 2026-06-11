@@ -1,5 +1,5 @@
 Feature: Read-only serve API
-  `acrawler serve` exposes stored crawls over a localhost JSON API so other
+  `bluesnake serve` exposes stored crawls over a localhost JSON API so other
   tools (and the desktop UI) can read crawl data without opening SQLite
   themselves. These scenarios exercise the HTTP handler against a real
   stored crawl: registry listing, dataset exports, evaluated issues, and

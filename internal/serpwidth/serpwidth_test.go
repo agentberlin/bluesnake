@@ -52,13 +52,13 @@ func TestWidthFallbacks(t *testing.T) {
 
 func TestTitleAndDescription(t *testing.T) {
 	// the convenience wrappers fix the Google desktop SERP font sizes
-	if got, want := Title("acrawler"), Width("acrawler", TitleFontPx); got != want {
+	if got, want := Title("bluesnake"), Width("bluesnake", TitleFontPx); got != want {
 		t.Errorf("Title = %d, want %d", got, want)
 	}
-	if got, want := Description("acrawler"), Width("acrawler", DescriptionFontPx); got != want {
+	if got, want := Description("bluesnake"), Width("bluesnake", DescriptionFontPx); got != want {
 		t.Errorf("Description = %d, want %d", got, want)
 	}
-	if Title("acrawler") <= Description("acrawler") {
+	if Title("bluesnake") <= Description("bluesnake") {
 		t.Error("title font is larger than description font")
 	}
 }

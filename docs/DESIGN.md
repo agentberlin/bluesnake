@@ -1,4 +1,4 @@
-# acrawler — Design Document
+# bluesnake — Design Document
 
 A modern, headless, CLI-first website crawler and SEO auditor in Go. Functional parity target: Screaming Frog SEO Spider's crawling/auditing core — **without** the UI and **without** third-party API integrations (GA4, GSC, PageSpeed/Lighthouse, link indexes, AI providers), and **without** opaque binary config files: everything is plain-text config + flags.
 
@@ -19,11 +19,11 @@ Status: living document — **all milestones M0–M14 implemented** (2026-06-10)
 5. **Analyze** post-crawl: link score, redirect/canonical chains, near-duplicates, hreflang reciprocity, sitemap set-operations, orphans.
 6. **Report/Export**: all tab/filter exports, bulk exports, reports, XML sitemap generation — CSV/JSON(L)/xlsx.
 7. **Compare** two crawls: filter deltas (Added/New/Removed/Missing), change detection, URL mapping.
-8. **Plain-text everything**: one YAML config schema covering every knob; CLI flags override; `acrawler config init` emits a fully-commented default.
+8. **Plain-text everything**: one YAML config schema covering every knob; CLI flags override; `bluesnake config init` emits a fully-commented default.
 9. **Very good test coverage, BDD-first**: Gherkin acceptance specs + exhaustive table-driven unit tests written before each module's implementation.
 
 ### Non-goals
-- GUI of any kind. *(Superseded 2026-06: a Wails desktop app now lives in `desktop/` as a thin shell over the same internal engine and `~/.acrawler` store. The engine remains headless-first; every feature must land in the CLI and the engine before/alongside any UI surface.)*
+- GUI of any kind. *(Superseded 2026-06: a Wails desktop app now lives in `desktop/` as a thin shell over the same internal engine and `~/.bluesnake` store. The engine remains headless-first; every feature must land in the CLI and the engine before/alongside any UI surface.)*
 - Third-party API integrations (GA4, Search Console, PSI/Lighthouse, Majestic/Ahrefs/Moz, AI embeddings/LLM features, Google Sheets/Drive/Looker).
 - SERP mode pixel-perfect Google snippet simulation (we keep pixel-width calculation since title/description pixel filters depend on it, using a bundled font metrics table — but no interactive snippet editor).
 - Built-in scheduler (cron exists; our CLI is fully scriptable; we document recipes).
@@ -33,7 +33,7 @@ Status: living document — **all milestones M0–M14 implemented** (2026-06-10)
 - Plain-text config (YAML) with JSON-schema validation, instead of `.seospiderconfig` binaries.
 - First-class JSON/JSONL output for piping (SF is spreadsheet-centric).
 - Single static binary; storage is embedded (SQLite), no JVM/memory allocation tuning.
-- Discoverable exports: `acrawler export --list` enumerates every exportable dataset.
+- Discoverable exports: `bluesnake export --list` enumerates every exportable dataset.
 - Go regex (RE2) everywhere — documented difference from SF's Java regex (no backtracking/lookahead; predictable performance).
 
 ---
@@ -57,41 +57,41 @@ Status: living document — **all milestones M0–M14 implemented** (2026-06-10)
 | BDD | `cucumber/godog` Gherkin features + stdlib `testing` table-driven unit tests | explicit user requirement |
 | Lint/CI | `gofmt`, `go vet`, `staticcheck`; GitHub Actions later | |
 
-Module path: `github.com/hhsecond/acrawler`.
+Module path: `github.com/agentberlin/bluesnake`.
 
 ---
 
 ## 3. CLI surface
 
 ```
-acrawler crawl <url>                  # spider mode crawl
-acrawler list <file|->                # list mode (file, stdin, or --sitemap <url>)
-acrawler resume <crawl-id>            # resume a paused/interrupted crawl
-acrawler crawls [ls|rm|export|info]   # manage stored crawls (IDs, projects)
-acrawler analyze <crawl-id>           # (re-)run post-crawl analysis
-acrawler export <crawl-id> ...        # tab/filter/bulk exports; --list to discover
-acrawler report <crawl-id> ...        # named reports; --list to discover
-acrawler issues <crawl-id>            # issues summary (and per-issue export)
-acrawler sitemap <crawl-id>           # generate XML sitemap(s) from a crawl
-acrawler compare <id-prev> <id-curr>  # crawl comparison (+ change detection)
-acrawler robots test <url...>         # robots.txt tester (live or --robots-file)
-acrawler config init|validate|show    # emit commented default config / validate / effective config
-acrawler serve                        # read-only localhost JSON API over the crawl store (--addr)
+bluesnake crawl <url>                  # spider mode crawl
+bluesnake list <file|->                # list mode (file, stdin, or --sitemap <url>)
+bluesnake resume <crawl-id>            # resume a paused/interrupted crawl
+bluesnake crawls [ls|rm|export|info]   # manage stored crawls (IDs, projects)
+bluesnake analyze <crawl-id>           # (re-)run post-crawl analysis
+bluesnake export <crawl-id> ...        # tab/filter/bulk exports; --list to discover
+bluesnake report <crawl-id> ...        # named reports; --list to discover
+bluesnake issues <crawl-id>            # issues summary (and per-issue export)
+bluesnake sitemap <crawl-id>           # generate XML sitemap(s) from a crawl
+bluesnake compare <id-prev> <id-curr>  # crawl comparison (+ change detection)
+bluesnake robots test <url...>         # robots.txt tester (live or --robots-file)
+bluesnake config init|validate|show    # emit commented default config / validate / effective config
+bluesnake serve                        # read-only localhost JSON API over the crawl store (--addr)
 ```
 
-Global flags: `--config <file>`, `--store-dir <dir>` (default `~/.acrawler`), `--project <name>`, `--task <name>`, `--output <dir>`, `--format csv|json|jsonl|xlsx`, `--timestamped-output`, `--overwrite`, `--quiet/--verbose`, `--log json|text`.
+Global flags: `--config <file>`, `--store-dir <dir>` (default `~/.bluesnake`), `--project <name>`, `--task <name>`, `--output <dir>`, `--format csv|json|jsonl|xlsx`, `--timestamped-output`, `--overwrite`, `--quiet/--verbose`, `--log json|text`.
 
 Every config key is overridable as a flag using dotted names: `--set spider.limits.max_depth=3 --set speed.max_threads=10` plus dedicated shorthand flags for the common ones (`--depth`, `--threads`, `--rate`, `--include`, `--exclude`, `--user-agent`, ...).
 
 Crawl UX (headless but informative): single-line progress (crawled/queued/errors/URLs-sec), `--progress none|line|live`; non-zero exit codes contract: `0` ok, `1` crawl error, `2` config error, `3` interrupted (resumable).
 
-`Ctrl-C` = graceful pause (frontier + state committed; prints `acrawler resume <id>` hint). Second `Ctrl-C` = hard stop (still safe by WAL).
+`Ctrl-C` = graceful pause (frontier + state committed; prints `bluesnake resume <id>` hint). Second `Ctrl-C` = hard stop (still safe by WAL).
 
 ---
 
 ## 4. Configuration schema (YAML)
 
-One file = one crawl profile. Everything has a default; an empty file is a valid config. Full schema (abridged here; canonical commented version is emitted by `acrawler config init` and kept in `docs/examples/acrawler.yaml`):
+One file = one crawl profile. Everything has a default; an empty file is a valid config. Full schema (abridged here; canonical commented version is emitted by `bluesnake config init` and kept in `docs/examples/bluesnake.yaml`):
 
 ```yaml
 mode: spider            # spider | list  (set implicitly by CLI subcommand)
@@ -225,7 +225,7 @@ speed:
 
 http:
   user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 12_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15"  # house SF profile UA
-  robots_user_agent: "acrawler"
+  robots_user_agent: "bluesnake"
   version: ""            # "" = negotiate (prefer HTTP/2) | "1.1" force HTTP/1.1 | "2"
   browser_headers: true  # send SF's default request profile: Accept text/html + Cache-Control/Pragma no-cache
   headers: {}            # name: value (override the browser defaults above; e.g. add Accept-Language)
@@ -248,7 +248,7 @@ link_positions:          # ordered; first match wins; substring match on link XP
   - {name: content, match: "/"}
 store_link_paths: true
 
-list_mode:               # only used by `acrawler list`
+list_mode:               # only used by `bluesnake list`
   respect_robots: false  # SF: list mode ignores robots by default
   crawl_depth: 0
 
@@ -264,7 +264,7 @@ analysis:
   sitemaps: true
 
 storage:
-  dir: ~/.acrawler       # crawl DBs live here, one SQLite file per crawl
+  dir: ~/.bluesnake       # crawl DBs live here, one SQLite file per crawl
   retention_days: 0      # 0 = keep forever
 compare:
   change_detection: [titles, descriptions, h1, word_count, crawl_depth, links, structured_data, content]
@@ -281,7 +281,7 @@ Validation: unknown keys are errors (with a "did you mean" suggestion); every re
 ### 5.1 Package layout
 
 ```
-cmd/acrawler/            main; cobra commands only (thin: parse flags → call internal)
+cmd/bluesnake/            main; cobra commands only (thin: parse flags → call internal)
 internal/config/         schema structs, defaults, YAML load/merge/validate, flag --set overlay
 internal/urlutil/        normalization, resolution, rewriting, include/exclude, classification
                          (internal/external, folder depth, path type), fragment & encoding rules
@@ -354,7 +354,7 @@ docs/
 
 ### 5.3 Storage schema (SQLite, one DB file per crawl)
 
-`~/.acrawler/crawls/<crawl-id>.db`, plus a tiny registry DB `~/.acrawler/registry.db` (crawl id, project, task name, seed, mode, started/finished, status, counts). Crawl ID = `<yyyymmdd-hhmmss>-<short-rand>`.
+`~/.bluesnake/crawls/<crawl-id>.db`, plus a tiny registry DB `~/.bluesnake/registry.db` (crawl id, project, task name, seed, mode, started/finished, status, counts). Crawl ID = `<yyyymmdd-hhmmss>-<short-rand>`.
 
 ```sql
 -- meta
@@ -457,7 +457,7 @@ Two rule classes:
 
 Catalogue: every issue has `ID` (stable, snake_case), `Tab`, `Name`, `Severity` (issue|warning|opportunity), `Priority` (high|med|low), `Description`, `HowToFix`. The full SF catalogue from research doc 02 is encoded; integration-only issues omitted.
 
-### 5.6 Post-crawl analysis (`acrawler analyze`, auto by default)
+### 5.6 Post-crawl analysis (`bluesnake analyze`, auto by default)
 
 Each analyzer reads SQLite, writes back columns/tables; all are idempotent and re-runnable (e.g. after changing near-dup threshold — mirrors SF):
 - **link_score**: PageRank (d=0.85, 40 iters or ε<1e-6) over followed internal hyperlinks; scaled 0–100.
@@ -470,7 +470,7 @@ Each analyzer reads SQLite, writes back columns/tables; all are idempotent and r
 
 ### 5.7 Compare
 
-`acrawler compare <prev> <curr>`: attaches both DBs, applies URL mapping regexes to previous, computes per-filter membership deltas (Added/New/Removed/Missing per SF semantics) and element change detection (title/desc/h1/word-count/depth/link-metrics/content-similarity), writes a comparison report (terminal summary + exportable CSV/JSON).
+`bluesnake compare <prev> <curr>`: attaches both DBs, applies URL mapping regexes to previous, computes per-filter membership deltas (Added/New/Removed/Missing per SF semantics) and element change detection (title/desc/h1/word-count/depth/link-metrics/content-similarity), writes a comparison report (terminal summary + exportable CSV/JSON).
 
 ### 5.8 Rendering (phase 2)
 
@@ -504,7 +504,7 @@ Each analyzer reads SQLite, writes back columns/tables; all are idempotent and r
 - Every issue in the catalogue must have at least one fixture page that triggers it and one that doesn't — enforced by the catalogue-coverage meta-test (`internal/analyze/coverage_test.go`): a kitchen-sink page set must trigger every catalogue ID, and a fully healthy two-page fixture must trigger zero occurrences. Adding a check without a fixture fails the suite.
 - Golden files under `test/golden/`; regenerate with `-update` flag.
 - Coverage gate: `make test` fails under 85% for `internal/...` (excluding `render`, which needs Chrome and is build-tagged `chrome`).
-- `@chrome`-tagged features are excluded from the default acceptance run; on a machine with Chrome run them with `ACRAWLER_FEATURE_TAGS="@chrome" go test ./test/`. Chrome-dependent Go tests skip themselves when no Chrome is found.
+- `@chrome`-tagged features are excluded from the default acceptance run; on a machine with Chrome run them with `BLUESNAKE_FEATURE_TAGS="@chrome" go test ./test/`. Chrome-dependent Go tests skip themselves when no Chrome is found.
 
 ---
 
@@ -595,7 +595,7 @@ surfaced in the desktop Settings UI have been removed from it (the YAML keys
 remain valid for forward-compat). Wiring them is tracked future work.
 
 **Extraction is always full (these toggles are inert by design here).** Unlike
-Screaming Frog — which uses per-field switches to save memory — acrawler
+Screaming Frog — which uses per-field switches to save memory — bluesnake
 extracts the entire per-URL dataset in one cheap parse pass, so these never
 gate anything: `extraction.page_details.*` (titles, meta_descriptions,
 meta_keywords, h1, h2, indexability, word_count, readability,
@@ -628,7 +628,7 @@ correctly gated.)
 **Storage knobs not yet wired:** `storage.dir` (the store path comes from
 `--store-dir` or the app default, not this field) and `storage.retention_days`
 (no pruning exists). When retention lands it will be an explicit
-`acrawler crawls prune` command (+ a desktop action), never an automatic
+`bluesnake crawls prune` command (+ a desktop action), never an automatic
 delete-on-startup.
 
 **Compare deltas — two dead change-detection values:** `compare.change_detection`

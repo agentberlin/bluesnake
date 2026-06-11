@@ -1,5 +1,5 @@
 Feature: Plain-text configuration
-  acrawler is configured by a single YAML file plus CLI overrides.
+  bluesnake is configured by a single YAML file plus CLI overrides.
   An empty config is valid: every key has a documented default.
   Unknown keys and invalid values are hard errors at load time.
 
@@ -95,17 +95,17 @@ Feature: Plain-text configuration
     And the effective value of "scope.crawl_all_subdomains" is "true"
 
   Scenario: config init emits a default file that round-trips
-    When I run "acrawler config init --stdout"
+    When I run "bluesnake config init --stdout"
     Then the exit code is 0
     And the output is a valid config that loads with all default values
 
   Scenario: config validate reports success for a valid file
     Given a config file with contents "speed: {max_threads: 2}"
-    When I run "acrawler config validate <configfile>"
+    When I run "bluesnake config validate <configfile>"
     Then the exit code is 0
 
   Scenario: config validate reports failure for an invalid file
     Given a config file with contents "speed: {max_threads: -2}"
-    When I run "acrawler config validate <configfile>"
+    When I run "bluesnake config validate <configfile>"
     Then the exit code is 2
     And the output contains "max_threads"

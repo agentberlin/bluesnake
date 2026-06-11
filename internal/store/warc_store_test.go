@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/fetch"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/fetch"
 )
 
 // warcRecord is one parsed record: header map plus the raw block.

@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/hhsecond/acrawler/internal/config"
+	"github.com/agentberlin/bluesnake/internal/config"
 	"golang.org/x/net/html"
 )
 

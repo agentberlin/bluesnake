@@ -1,4 +1,4 @@
-# acrawler Desktop App — UI/UX Design Brief
+# bluesnake Desktop App — UI/UX Design Brief
 
 This document is written for a designer with **no knowledge of the codebase**.
 It contains everything the current product can do, every setting a user can
@@ -300,8 +300,8 @@ A "try a URL" preview box showing before→after would prevent many mistakes.
 
 | Setting | Control | Default | Meaning |
 |---|---|---|---|
-| User-agent | text (with presets worth designing: acrawler default, Googlebot, Chrome…) | `acrawler/1.0 (+github.com/hhsecond/acrawler)` | What the crawler calls itself to servers. |
-| Robots user-agent token | text | `acrawler` | The name used when matching robots.txt rules (separate on purpose). |
+| User-agent | text (with presets worth designing: bluesnake default, Googlebot, Chrome…) | `bluesnake/1.0 (+github.com/agentberlin/bluesnake)` | What the crawler calls itself to servers. |
+| Robots user-agent token | text | `bluesnake` | The name used when matching robots.txt rules (separate on purpose). |
 | Custom HTTP headers | name/value list | empty | e.g. `Accept-Language: de`. |
 | Proxy | text (`http://user:pass@host:port`) | empty | |
 | Trusted certificate folders | list of folders | empty | For sites with private/internal TLS certificates. |
@@ -355,7 +355,7 @@ Hreflang, Canonicals, Link metrics, Sitemaps.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| Storage folder | `~/.acrawler` | Where crawls live on disk. |
+| Storage folder | `~/.bluesnake` | Where crawls live on disk. |
 | Crawl retention | keep forever | Auto-delete crawls older than N days (0 = never). |
 
 ### 5.20 Compare

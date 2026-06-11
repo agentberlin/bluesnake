@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/hhsecond/acrawler/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/crawler"
 )
 
 // The engine reaches WARC archiving by asserting the sink implements

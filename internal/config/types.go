@@ -1,4 +1,4 @@
-// Package config defines acrawler's complete plain-text configuration schema:
+// Package config defines bluesnake's complete plain-text configuration schema:
 // one YAML document covering every crawl knob (the Screaming Frog feature set),
 // strict parsing (unknown keys are errors), defaults for everything, dotted-path
 // overrides, and validation with key-path error messages.

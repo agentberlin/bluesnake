@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 
+	"github.com/agentberlin/bluesnake/internal/serve"
 	"github.com/cucumber/godog"
-	"github.com/hhsecond/acrawler/internal/serve"
 )
 
 func (w *world) registerServeSteps(sc *godog.ScenarioContext) {

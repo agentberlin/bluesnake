@@ -26,7 +26,7 @@ const SECTIONS = [
     lst("scope.exclude", "Exclude patterns (regex)", "URLs matching any are never requested. Exclude beats include."),
   ]},
   { id: "extraction", label: "Extraction", icon: "scan-line", fields: [
-    // acrawler always extracts the full per-URL dataset in one parse pass —
+    // bluesnake always extracts the full per-URL dataset in one parse pass —
     // the per-field page_details/url_details/directives toggles SF uses to
     // save memory have no effect here, so they aren't shown (see DESIGN §9).
     tg("extraction.structured_data.jsonld", "JSON-LD", "Structured data master toggle."),

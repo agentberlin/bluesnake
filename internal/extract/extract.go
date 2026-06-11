@@ -12,9 +12,9 @@ import (
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/antchfx/htmlquery"
 	"github.com/antchfx/xpath"
-	"github.com/hhsecond/acrawler/internal/config"
 	"golang.org/x/net/html"
 )
 

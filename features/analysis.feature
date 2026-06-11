@@ -30,7 +30,7 @@ Feature: Post-crawl analysis
   Scenario: The analyze CLI re-runs analysis on a stored crawl
     Given a site page "/" linking to "/a"
     And a site page "/a" linking to ""
-    When I run "acrawler crawl <serverurl>/ --store-dir <storedir> --quiet"
-    And I run "acrawler analyze <crawlid> --store-dir <storedir>"
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake analyze <crawlid> --store-dir <storedir>"
     Then the exit code is 0
     And the output contains "Analysis:"

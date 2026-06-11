@@ -19,7 +19,7 @@ Feature: Custom search and custom extraction
       custom_extraction:
         - {name: sku, type: css, expression: "#sku"}
       """
-    When I run "acrawler crawl <serverurl>/ --store-dir <storedir> --config <configfile> --quiet"
-    And I run "acrawler export <crawlid> custom --store-dir <storedir>"
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --config <configfile> --quiet"
+    And I run "bluesnake export <crawlid> custom --store-dir <storedir>"
     Then the exit code is 0
     And the output contains "AB-12"

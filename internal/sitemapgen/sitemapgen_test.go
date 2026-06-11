@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hhsecond/acrawler/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/crawler"
 )
 
 func mkPages(n int) map[string]*crawler.PageRecord {

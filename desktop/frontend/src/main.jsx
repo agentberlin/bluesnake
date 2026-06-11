@@ -1,5 +1,5 @@
 /* ===========================================================================
-   acrawler — app shell + router (Wails frontend)
+   bluesnake — app shell + router (Wails frontend)
    =========================================================================== */
 import React, { useEffect, useState, useCallback } from "react";
 import ReactDOM from "react-dom/client";
@@ -19,7 +19,7 @@ import { CompareView } from "./views/compare";
 import { RobotsTester } from "./views/robots";
 
 function App() {
-  const [dark, setDark] = useState(() => localStorage.getItem("acrawler-theme") === "dark");
+  const [dark, setDark] = useState(() => localStorage.getItem("bluesnake-theme") === "dark");
   const [view, setView] = useState("home");
   const [crawls, setCrawls] = useState([]);
   const [activeCrawl, setActiveCrawl] = useState(null);
@@ -33,7 +33,7 @@ function App() {
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
-    localStorage.setItem("acrawler-theme", dark ? "dark" : "light");
+    localStorage.setItem("bluesnake-theme", dark ? "dark" : "light");
   }, [dark]);
 
   const refresh = useCallback(() => {
@@ -104,7 +104,7 @@ function App() {
         </span>
         <div className="tb-title">
           <Icon name="bug" size={15} style={{ color: "var(--ink-3)" }} />
-          acrawler
+          bluesnake
           <span className="dot" />
           <span style={{ color: "var(--ink-faint)", fontWeight: 500 }} className="mono">
             {activeCrawl ? hostOf(activeCrawl.seed) : "no crawl"}
@@ -161,7 +161,7 @@ function App() {
             {!collapsed && <>
               <Icon name="hard-drive" size={14} style={{ color: "var(--ink-faint)" }} />
               <div style={{ fontSize: 10.5, color: "var(--ink-faint)", lineHeight: 1.3 }}>
-                <div className="mono">{storage ? storage.dir.replace(/^\/Users\/[^/]+/, "~") : "~/.acrawler"}</div>
+                <div className="mono">{storage ? storage.dir.replace(/^\/Users\/[^/]+/, "~") : "~/.bluesnake"}</div>
                 <div>{storage ? `${storage.sizeMB >= 1024 ? (storage.sizeMB / 1024).toFixed(1) + " GB" : storage.sizeMB + " MB"} · ${storage.crawls} crawls` : ""}</div>
               </div>
               <div style={{ flex: 1 }} />

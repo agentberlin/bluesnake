@@ -29,15 +29,15 @@ Feature: Issue detection
 
   Scenario: The issues CLI prints a summary
     Given a site page "/" with body "<html><body><a href='/missing-page'>x</a></body></html>"
-    When I run "acrawler crawl <serverurl>/ --store-dir <storedir> --quiet"
-    And I run "acrawler issues <crawlid> --store-dir <storedir>"
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake issues <crawlid> --store-dir <storedir>"
     Then the exit code is 0
     And the output contains "internal_client_error"
     And the output contains "title_missing"
 
   Scenario: Listing URLs for one issue
     Given a site page "/" with body "<html><body><a href='/gone'>x</a></body></html>"
-    When I run "acrawler crawl <serverurl>/ --store-dir <storedir> --quiet"
-    And I run "acrawler issues <crawlid> --store-dir <storedir> --urls internal_client_error"
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake issues <crawlid> --store-dir <storedir> --urls internal_client_error"
     Then the exit code is 0
     And the output contains "/gone"

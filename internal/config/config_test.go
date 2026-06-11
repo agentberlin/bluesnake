@@ -299,7 +299,7 @@ func TestRoundTrip(t *testing.T) {
 }
 
 func TestLoadFileMissing(t *testing.T) {
-	if _, err := LoadFile("/nonexistent/acrawler.yaml"); err == nil {
+	if _, err := LoadFile("/nonexistent/bluesnake.yaml"); err == nil {
 		t.Error("missing file must error")
 	}
 }

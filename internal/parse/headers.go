@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/hhsecond/acrawler/internal/urlutil"
+	"github.com/agentberlin/bluesnake/internal/urlutil"
 )
 
 // parseHeaderFacts extracts the HTTP-level equivalents of head elements:

@@ -15,10 +15,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/hhsecond/acrawler/internal/crawler"
-	"github.com/hhsecond/acrawler/internal/issues"
-	"github.com/hhsecond/acrawler/internal/serpwidth"
-	"github.com/hhsecond/acrawler/internal/store"
+	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/serpwidth"
+	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/xuri/excelize/v2"
 )
 

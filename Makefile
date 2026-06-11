@@ -6,14 +6,14 @@ COVER_MIN := 85
 # Where the built .app bundle gets installed so Spotlight can index it.
 # ~/Applications is user-writable (no sudo) and indexed by Spotlight; override
 # with `make desktop APP_INSTALL_DIR=/Applications` for a system-wide install.
-APP_NAME := acrawler.app
+APP_NAME := bluesnake.app
 APP_BUNDLE := desktop/build/bin/$(APP_NAME)
 APP_INSTALL_DIR ?= $(HOME)/Applications
 
 .PHONY: build test unit acceptance cover lint clean desktop desktop-build desktop-dev
 
 build:
-	$(GO) build -o bin/acrawler ./cmd/acrawler
+	$(GO) build -o bin/bluesnake ./cmd/bluesnake
 
 # desktop app (Wails) — requires the wails CLI: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 # `make desktop` builds the .app bundle and installs it into APP_INSTALL_DIR so
@@ -22,7 +22,7 @@ desktop: desktop-build
 	@mkdir -p "$(APP_INSTALL_DIR)"
 	@rm -rf "$(APP_INSTALL_DIR)/$(APP_NAME)"
 	@cp -R "$(APP_BUNDLE)" "$(APP_INSTALL_DIR)/"
-	@echo "Installed $(APP_NAME) to $(APP_INSTALL_DIR) — search for \"acrawler\" in Spotlight."
+	@echo "Installed $(APP_NAME) to $(APP_INSTALL_DIR) — search for \"bluesnake\" in Spotlight."
 
 desktop-build:
 	cd desktop && wails build

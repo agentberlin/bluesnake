@@ -1,5 +1,5 @@
 /* ===========================================================================
-   acrawler — shared UI primitives (ported from the design handoff)
+   bluesnake — shared UI primitives (ported from the design handoff)
    =========================================================================== */
 import React, { useEffect } from "react";
 import { icons } from "lucide-react";

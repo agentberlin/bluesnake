@@ -3,9 +3,9 @@ package main
 import (
 	"fmt"
 
-	"github.com/hhsecond/acrawler/internal/analyze"
-	"github.com/hhsecond/acrawler/internal/config"
-	"github.com/hhsecond/acrawler/internal/store"
+	"github.com/agentberlin/bluesnake/internal/analyze"
+	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -68,7 +68,7 @@ func runAnalysis(cmd *cobra.Command, st *store.Crawl, cfg *config.Config, quiet 
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Analysis: %d chains, %d near-duplicate pages\n",
 			len(results.Chains), len(results.NearDups))
-		fmt.Fprintf(cmd.OutOrStdout(), "Issues: %d occurrences across %d checks (acrawler issues %s)\n",
+		fmt.Fprintf(cmd.OutOrStdout(), "Issues: %d occurrences across %d checks (bluesnake issues %s)\n",
 			total, len(counts), st.ID)
 	}
 	return nil

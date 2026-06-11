@@ -1,4 +1,4 @@
-// acrawler desktop is the Wails GUI over the same internal crawl engine the
+// bluesnake desktop is the Wails GUI over the same internal crawl engine the
 // CLI uses. The frontend (desktop/frontend) is a Vite+React port of the
 // Claude Design handoff bundle; realtime crawl progress flows over Wails
 // runtime events (see session.go).
@@ -20,7 +20,7 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:     "acrawler",
+		Title:     "bluesnake",
 		Width:     1320,
 		Height:    860,
 		MinWidth:  980,

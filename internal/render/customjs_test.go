@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hhsecond/acrawler/internal/config"
+	"github.com/agentberlin/bluesnake/internal/config"
 )
 
 const customJSPage = `<html><head><title>Raw Title</title></head><body><h1>x</h1><p>body</p></body></html>`

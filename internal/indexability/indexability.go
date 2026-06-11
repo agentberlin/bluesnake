@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/hhsecond/acrawler/internal/urlutil"
+	"github.com/agentberlin/bluesnake/internal/urlutil"
 )
 
 // Reasons, in evaluation order.

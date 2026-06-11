@@ -19,7 +19,7 @@ func TestTestRobotsVerdicts(t *testing.T) {
 		"Disallow: /admin",
 		"Allow: /admin/public",
 	}, "\n")
-	got := a.TestRobots(robots, "acrawler", []string{"/", "/admin", "/admin/public", ""})
+	got := a.TestRobots(robots, "bluesnake", []string{"/", "/admin", "/admin/public", ""})
 	if len(got) != 3 {
 		t.Fatalf("verdicts = %d, want 3 (blank lines skipped)", len(got))
 	}

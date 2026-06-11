@@ -107,7 +107,7 @@ func Default() *Config {
 		Speed: SpeedConfig{MaxThreads: 5},
 		HTTP: HTTPConfig{
 			UserAgent:       "Mozilla/5.0 (Macintosh; Intel Mac OS X 12_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15",
-			RobotsUserAgent: "acrawler",
+			RobotsUserAgent: "bluesnake",
 			// Mirror Screaming Frog's default request headers (Accept text/html +
 			// no-cache). Some bot-protection layers (Clerk/Vercel) 403 requests
 			// that lack a navigational Accept header even when the UA looks like a
@@ -129,7 +129,7 @@ func Default() *Config {
 			NearDuplicates: true, Pagination: true, Hreflang: true,
 			Canonicals: true, Links: true, Sitemaps: true,
 		},
-		Storage: StorageConfig{Dir: "~/.acrawler"},
+		Storage: StorageConfig{Dir: "~/.bluesnake"},
 		Compare: CompareConfig{
 			ChangeDetection: []string{
 				"titles", "descriptions", "h1", "word_count",
