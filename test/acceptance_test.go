@@ -117,6 +117,7 @@ type world struct {
 	hitsMu        sync.Mutex
 	server        *httptest.Server
 	tlsServer     bool
+	http2         bool
 	fetchOverride []string
 	basicUser     string
 	basicPass     string
@@ -205,9 +206,15 @@ func (w *world) ensureServer() *httptest.Server {
 		body := strings.ReplaceAll(spec.body, "<serverurl>", "http://"+r.Host)
 		fmt.Fprint(rw, body)
 	})
-	if w.tlsServer {
+	switch {
+	case w.http2:
+		srv := httptest.NewUnstartedServer(handler)
+		srv.EnableHTTP2 = true
+		srv.StartTLS()
+		w.server = srv
+	case w.tlsServer:
 		w.server = httptest.NewTLSServer(handler)
-	} else {
+	default:
 		w.server = httptest.NewServer(handler)
 	}
 	return w.server
@@ -302,12 +309,14 @@ func initializeScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^a test server route "([^"]*)" that sleeps (\d+)ms before responding 200$`, w.routeSlow)
 	sc.Step(`^a test server route "([^"]*)" responding (\d+) with a body of (\d+) KB$`, w.routeBigBody)
 	sc.Step(`^a TLS test server route "([^"]*)" responding (\d+) with body "([^"]*)" and HSTS header "([^"]*)"$`, w.routeTLSHSTS)
+	sc.Step(`^a TLS test server route "([^"]*)" responding (\d+) with body "([^"]*)" that supports HTTP/2$`, w.routeHTTP2)
 	sc.Step(`^the fetch config override "([^"]*)"$`, w.addFetchOverride)
 	sc.Step(`^basic auth is configured for the server with username "([^"]*)" and password "([^"]*)"$`, w.configureBasicAuth)
 	sc.Step(`^I fetch "([^"]*)"$`, w.fetchPath)
 	sc.Step(`^I fetch "([^"]*)" over https$`, w.fetchPath)
 	sc.Step(`^I fetch "([^"]*)" over plain http on the same host$`, w.fetchPlainHTTP)
 	sc.Step(`^the fetch status code is (\d+)$`, w.fetchStatusCode)
+	sc.Step(`^the negotiated HTTP version is "([^"]*)"$`, w.fetchHTTPVersion)
 	sc.Step(`^the fetch status is "([^"]*)"$`, w.fetchStatus)
 	sc.Step(`^the fetch body is "([^"]*)"$`, w.fetchBody)
 	sc.Step(`^a response time was recorded$`, w.fetchTimeRecorded)
@@ -691,6 +700,14 @@ func (w *world) routeBigBody(path string, status, kb int) error {
 	return nil
 }
 
+func (w *world) routeHTTP2(path string, status int, body string) error {
+	w.tlsServer = true
+	w.http2 = true
+	r := w.route(path)
+	r.status, r.body = status, body
+	return nil
+}
+
 func (w *world) routeTLSHSTS(path string, status int, body, hsts string) error {
 	w.tlsServer = true
 	r := w.route(path)
@@ -765,6 +782,13 @@ func (w *world) fetchPlainHTTP(path string) error {
 func (w *world) fetchStatusCode(want int) error {
 	if w.fetchRes.StatusCode != want {
 		return fmt.Errorf("status = %d (error %q), want %d", w.fetchRes.StatusCode, w.fetchRes.FetchError, want)
+	}
+	return nil
+}
+
+func (w *world) fetchHTTPVersion(want string) error {
+	if w.fetchRes.HTTPVersion != want {
+		return fmt.Errorf("http version = %q (error %q), want %q", w.fetchRes.HTTPVersion, w.fetchRes.FetchError, want)
 	}
 	return nil
 }

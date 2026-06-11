@@ -47,6 +47,39 @@ Feature: HTTP fetching
     Then the server saw user-agent "mybot/9" on "/echo"
     And the server saw header "Accept-Language" with value "de" on "/echo"
 
+  Scenario: Browser-like headers match Screaming Frog's defaults
+    Given a test server route "/echo" responding 200 with body "ok"
+    When I fetch "/echo"
+    Then the server saw header "Accept" with value "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" on "/echo"
+    And the server saw header "Cache-Control" with value "no-cache" on "/echo"
+    And the server saw header "Pragma" with value "no-cache" on "/echo"
+    And the server saw header "Accept-Language" with value "" on "/echo"
+
+  Scenario: Browser default headers can be turned off
+    Given a test server route "/echo" responding 200 with body "ok"
+    And the fetch config override "http.browser_headers=false"
+    When I fetch "/echo"
+    Then the server saw header "Accept" with value "" on "/echo"
+
+  Scenario: Configured headers win over the browser defaults
+    Given a test server route "/echo" responding 200 with body "ok"
+    And the fetch config override "http.headers={Accept: application/json}"
+    When I fetch "/echo"
+    Then the server saw header "Accept" with value "application/json" on "/echo"
+
+  Scenario: HTTP/2 is negotiated by default against an HTTP/2 server
+    Given a TLS test server route "/v" responding 200 with body "ok" that supports HTTP/2
+    When I fetch "/v" over https
+    Then the fetch status code is 200
+    And the negotiated HTTP version is "HTTP/2.0"
+
+  Scenario: The HTTP version can be forced to 1.1
+    Given a TLS test server route "/v" responding 200 with body "ok" that supports HTTP/2
+    And the fetch config override "http.version=1.1"
+    When I fetch "/v" over https
+    Then the fetch status code is 200
+    And the negotiated HTTP version is "HTTP/1.1"
+
   Scenario: Basic auth applies to matching URL prefixes
     Given a test server route "/secure" requiring basic auth "alice" "s3cret"
     And basic auth is configured for the server with username "alice" and password "s3cret"

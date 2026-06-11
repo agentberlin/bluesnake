@@ -139,6 +139,7 @@ func (c *Config) Validate() error {
 	oneOf("rendering.wait_strategy", c.Rendering.WaitStrategy, "adaptive", "fixed")
 	oneOf("advanced.cookie_storage", c.Advanced.CookieStorage, "session", "persistent", "none")
 	oneOf("advanced.percent_encoding", c.Advanced.PercentEncoding, "upper", "lower")
+	oneOf("http.version", c.HTTP.Version, "", "1.1", "2")
 
 	if c.Speed.MaxThreads < 1 {
 		bad("speed.max_threads: must be >= 1, got %d", c.Speed.MaxThreads)

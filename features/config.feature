@@ -18,6 +18,8 @@ Feature: Plain-text configuration
     And the effective value of "links.pagination.crawl" is "false"
     And the effective value of "links.hreflang.store" is "true"
     And the effective value of "links.hreflang.crawl" is "false"
+    And the effective value of "http.browser_headers" is "true"
+    And the effective value of "http.version" is ""
 
   Scenario: Partial config merges over defaults
     Given a config file with contents:
@@ -59,6 +61,15 @@ Feature: Plain-text configuration
       """
     When the config is loaded
     Then loading fails with an error containing "robots.mode"
+
+  Scenario: Invalid HTTP version is rejected
+    Given a config file with contents:
+      """
+      http:
+        version: "3"
+      """
+    When the config is loaded
+    Then loading fails with an error containing "http.version"
 
   Scenario: Out-of-range threshold is rejected
     Given a config file with contents:
