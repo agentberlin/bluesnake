@@ -26,24 +26,9 @@ const SECTIONS = [
     lst("scope.exclude", "Exclude patterns (regex)", "URLs matching any are never requested. Exclude beats include."),
   ]},
   { id: "extraction", label: "Extraction", icon: "scan-line", fields: [
-    tg("extraction.page_details.titles", "Page titles"),
-    tg("extraction.page_details.meta_descriptions", "Meta descriptions"),
-    tg("extraction.page_details.meta_keywords", "Meta keywords"),
-    tg("extraction.page_details.h1", "H1"),
-    tg("extraction.page_details.h2", "H2"),
-    tg("extraction.page_details.indexability", "Indexability"),
-    tg("extraction.page_details.word_count", "Word count"),
-    tg("extraction.page_details.readability", "Readability"),
-    tg("extraction.page_details.text_to_code_ratio", "Text-to-code ratio"),
-    tg("extraction.page_details.hash", "Page hash (exact-duplicate detection)"),
-    tg("extraction.page_details.page_size", "Page size"),
-    tg("extraction.page_details.forms", "Forms"),
-    tg("extraction.url_details.response_time", "Response time"),
-    tg("extraction.url_details.last_modified", "Last-modified"),
-    tg("extraction.url_details.http_headers", "HTTP headers"),
-    tg("extraction.url_details.cookies", "Cookies", null, true),
-    tg("extraction.directives.meta_robots", "Meta robots"),
-    tg("extraction.directives.x_robots_tag", "X-Robots-Tag"),
+    // acrawler always extracts the full per-URL dataset in one parse pass —
+    // the per-field page_details/url_details/directives toggles SF uses to
+    // save memory have no effect here, so they aren't shown (see DESIGN §9).
     tg("extraction.structured_data.jsonld", "JSON-LD", "Structured data master toggle."),
     tg("extraction.structured_data.microdata", "Microdata", null, true),
     tg("extraction.structured_data.rdfa", "RDFa", null, true),
@@ -121,13 +106,14 @@ const SECTIONS = [
     tg("analysis.near_duplicates", "Near-duplicates"),
     tg("analysis.pagination", "Pagination"),
     tg("analysis.hreflang", "Hreflang"),
-    tg("analysis.canonicals", "Canonicals"),
+    // analysis.canonicals omitted: canonical-chain analysis is gated by
+    // "Redirect chains" today; the separate toggle is unwired (DESIGN §9).
     tg("analysis.sitemaps", "Sitemaps"),
   ]},
-  { id: "storage", label: "Storage", icon: "hard-drive", fields: [
-    txt("storage.dir", "Storage folder"),
-    num("storage.retention_days", "Crawl retention (days, 0 = forever)", null, "days", true),
-  ]},
+  // Storage section omitted: storage.dir and storage.retention_days are not
+  // yet wired (the store path comes from --store-dir / the app default, and
+  // retention pruning is unimplemented) — see DESIGN §9. The active storage
+  // location is shown read-only on the home screen via GetStorageInfo.
 ];
 
 const getPath = (obj, key) => key.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);

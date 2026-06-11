@@ -582,3 +582,53 @@ by a meta-test (§6).
 - SERP mode's interactive snippet editor, segments, visualisations, built-in
   scheduling (cron + CLI; pixel-width *measurement* is in, per §1).
 - Forms-based auth recorder (bring-your-own session cookie supported).
+
+### 9.1 Known config no-ops (2026-06-11 audit)
+
+A full audit of every config field found a set that is parsed, defaulted and
+validated but **not yet consumed** — flipping them changes nothing. They are
+listed here so the schema doesn't silently lie; the misleading ones that were
+surfaced in the desktop Settings UI have been removed from it (the YAML keys
+remain valid for forward-compat). Wiring them is tracked future work.
+
+**Extraction is always full (these toggles are inert by design here).** Unlike
+Screaming Frog — which uses per-field switches to save memory — acrawler
+extracts the entire per-URL dataset in one cheap parse pass, so these never
+gate anything: `extraction.page_details.*` (titles, meta_descriptions,
+meta_keywords, h1, h2, indexability, word_count, readability,
+text_to_code_ratio, hash, page_size, forms), `extraction.url_details.*`
+(response_time, last_modified, http_headers, cookies),
+`extraction.directives.{meta_robots,x_robots_tag}`. (Note: `cookies` is also
+not *collected* yet — there is no cookies table.)
+
+**Reserved for unbuilt features:** `extraction.pdf.*` (no PDF parsing),
+`extraction.structured_data.{google_rich_results_validation,case_sensitive}`
+(the curated rich-results check ignores both flags),
+`rendering.flatten_shadow_dom` / `rendering.flatten_iframes` (chromedp
+`OuterHTML` doesn't flatten), `rendering.window` (the preset name is ignored;
+`window_width`/`window_height` are honoured), `advanced.html_validation` (the
+Validation-tab checks always run regardless), `http.trusted_cert_dirs` (no
+custom CA pool is built — only the documented insecure-TLS test hook exists).
+
+**Resource/link `store` flags are unenforced.** `resources.{images,media,css,
+javascript,swf}.store` and `links.{internal,external,canonicals,pagination,
+hreflang,amp,meta_refresh,iframes,mobile_alternate}.store` are read by
+`crawler.typeFlags` but the caller uses only the `crawl` half; every parsed
+edge is stored regardless. (The `crawl` flags *are* enforced — discovery is
+correctly gated.)
+
+**Behavioural flags not yet wired:** `advanced.respect_noindex`,
+`advanced.respect_canonical`, `advanced.respect_next_prev`,
+`advanced.ignore_paginated_for_duplicates`, and `analysis.canonicals`
+(canonical-chain analysis currently piggybacks on `analysis.redirect_chains`).
+
+**Storage knobs not yet wired:** `storage.dir` (the store path comes from
+`--store-dir` or the app default, not this field) and `storage.retention_days`
+(no pruning exists). When retention lands it will be an explicit
+`acrawler crawls prune` command (+ a desktop action), never an automatic
+delete-on-startup.
+
+**Compare deltas — two dead change-detection values:** `compare.change_detection`
+is honoured, but its `content` and `structured_data` entries have no detector,
+and `compare.content_change_threshold` is unread (it pairs with the unbuilt
+`content` similarity delta).
