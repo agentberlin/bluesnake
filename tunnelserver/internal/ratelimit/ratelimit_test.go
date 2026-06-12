@@ -47,6 +47,25 @@ func TestPerKeyIsolation(t *testing.T) {
 	}
 }
 
+func TestIPKey(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"203.0.113.7", "203.0.113.7"},                // IPv4 unchanged
+		{"::ffff:203.0.113.7", "203.0.113.7"},         // 4-in-6 unmapped to IPv4
+		{"2001:db8:1:2::aaaa", "2001:db8:1:2::/64"},   // IPv6 → /64 prefix
+		{"2001:db8:1:2:ffff::1", "2001:db8:1:2::/64"}, // same /64 → same key
+		{"2001:db8:1:3::1", "2001:db8:1:3::/64"},      // different /64 → different key
+		{"not-an-ip", "not-an-ip"},                    // pass through
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := IPKey(c.in); got != c.want {
+			t.Errorf("IPKey(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestGCDropsIdleBuckets(t *testing.T) {
 	now := time.Unix(0, 0)
 	l := New(1, 1)

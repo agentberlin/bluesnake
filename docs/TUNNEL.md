@@ -54,6 +54,10 @@ and update the import path of `wire`. No other coupling exists.
 2. Client sends one newline-delimited JSON `AuthRequest`
    `{v, tunnel_id, connect_secret}`.
 3. Server replies with one `AuthResponse` `{ok, host}` (or `{ok:false, error}`).
+   A definitive credential rejection says `unauthorized`; a control-plane store
+   outage says `temporarily unavailable, retry later` instead, so a database
+   blip is never mistaken for a revoked/invalid identity (clients keep their
+   `tunnel.json` and simply keep reconnecting).
 4. On success the same connection becomes a yamux session (client = yamux
    server, gateway = yamux client). The gateway opens a stream per public HTTP
    request; the client serves it.
@@ -111,9 +115,12 @@ What's defended:
   `CF-Connecting-IP` is trusted for the client IP **only** when the request
   arrives from a configured trusted-proxy range (Cloudflare's published ranges by
   default), so a direct-to-origin caller cannot spoof it to mint fresh buckets.
+  IPv6 sources are bucketed by **/64** (the standard end-site allocation), so
+  rotating through addresses inside one delegated prefix doesn't mint fresh
+  per-IP buckets.
 - **Connect-path abuse** — the tunnel-connect (ALPN) path has its own per-IP rate
-  limit and a global concurrent-handshake cap, applied before the DB lookup, so
-  unauthenticated connects can't exhaust goroutines/DB.
+  limit (IPv6 by /64, as above) and a global concurrent-handshake cap, applied
+  before the DB lookup, so unauthenticated connects can't exhaust goroutines/DB.
 - **Resource exhaustion** — bounded auth-frame size, handshake deadline, 8 MB
   public request-body cap, slowloris `ReadHeaderTimeout`, server `IdleTimeout`, a
   global accepted-connection cap, a per-session concurrent-stream cap, and yamux

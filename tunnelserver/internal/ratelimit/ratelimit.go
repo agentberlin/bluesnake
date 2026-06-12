@@ -5,6 +5,7 @@
 package ratelimit
 
 import (
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -80,6 +81,26 @@ func (l *Limiter) gcLocked(now time.Time) {
 			delete(l.buckets, k)
 		}
 	}
+}
+
+// IPKey canonicalizes an IP address into a per-IP bucket key. IPv6 addresses
+// collapse to their /64 prefix — a single end site routinely holds a whole
+// /64, so keying on the full address would hand an attacker 2^64 fresh
+// buckets. IPv4 (including 4-in-6-mapped) keys on the address itself.
+// Non-IP strings pass through unchanged.
+func IPKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	if addr.Is4() || addr.Is4In6() {
+		return addr.Unmap().String()
+	}
+	prefix, err := addr.Prefix(64)
+	if err != nil {
+		return ip
+	}
+	return prefix.String()
 }
 
 // Len reports the number of tracked buckets (test/metrics helper).

@@ -15,6 +15,7 @@ package gateway
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -78,10 +79,10 @@ func New(reg *registry.Registry, st store.Store, baseDomain string, log *slog.Lo
 func (g *Gateway) HandleConn(conn net.Conn) {
 	defer conn.Close()
 
-	// Throttle per source IP before spending a goroutine-second and a DB query
-	// on an unauthenticated peer.
+	// Throttle per source IP (IPv6 bucketed by /64) before spending a
+	// goroutine-second and a DB query on an unauthenticated peer.
 	ip := remoteIP(conn)
-	if !g.connLimiter.Allow(ip) {
+	if !g.connLimiter.Allow(ratelimit.IPKey(ip)) {
 		g.log.Debug("tunnel connect rate-limited", "remote", ip)
 		return
 	}
@@ -109,10 +110,17 @@ func (g *Gateway) HandleConn(conn net.Conn) {
 		return
 	}
 
-	tn, ok := g.authenticate(req)
-	if !ok {
-		_ = wire.WriteFrame(conn, wire.AuthResponse{OK: false, Error: "unauthorized"})
-		g.log.Info("tunnel auth rejected", "tunnel_id", req.TunnelID, "remote", conn.RemoteAddr())
+	tn, err := g.authenticate(req)
+	if err != nil {
+		_ = wire.WriteFrame(conn, wire.AuthResponse{OK: false, Error: err.Error()})
+		if errors.Is(err, errUnavailable) {
+			// A store outage must not read as a credential rejection: clients
+			// (and users) could react by discarding tunnel.json, permanently
+			// losing their subdomain.
+			g.log.Error("tunnel auth: store unavailable", "tunnel_id", req.TunnelID, "remote", conn.RemoteAddr())
+		} else {
+			g.log.Info("tunnel auth rejected", "tunnel_id", req.TunnelID, "remote", conn.RemoteAddr())
+		}
 		return
 	}
 
@@ -162,30 +170,45 @@ func remoteIP(conn net.Conn) string {
 	return host
 }
 
+// Auth failure classes, sent verbatim in the AuthResponse Error field.
+// errUnauthorized is definitive (bad id/secret/version, or revoked);
+// errUnavailable means the server couldn't check — the client should keep its
+// credentials and retry.
+var (
+	errUnauthorized = errors.New("unauthorized")
+	errUnavailable  = errors.New("temporarily unavailable, retry later")
+)
+
 // authenticate validates an auth frame in constant time with respect to
 // whether the tunnel id exists, so timing can't be used to enumerate ids.
-func (g *Gateway) authenticate(req wire.AuthRequest) (*store.Tunnel, bool) {
+func (g *Gateway) authenticate(req wire.AuthRequest) (*store.Tunnel, error) {
 	if req.V != wire.Version {
-		return nil, false
+		return nil, errUnauthorized
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	tn, err := g.st.GetByID(ctx, req.TunnelID)
 	provided := store.Hash(req.ConnectSecret)
-	if err != nil || tn == nil {
+	switch {
+	case errors.Is(err, store.ErrNotFound) || (err == nil && tn == nil):
 		// Compare against a fixed dummy so the unknown-id path costs the
 		// same as the wrong-secret path.
 		subtle.ConstantTimeCompare(provided, dummyHash)
-		return nil, false
-	}
-	if tn.Revoked {
-		return nil, false
+		return nil, errUnauthorized
+	case err != nil:
+		// Store outage, not a verdict on the credentials.
+		return nil, errUnavailable
 	}
 	if subtle.ConstantTimeCompare(provided, tn.ConnectSecretHash) != 1 {
-		return nil, false
+		return nil, errUnauthorized
 	}
-	return tn, true
+	// Checked after the compare so revoked and wrong-secret are
+	// indistinguishable from outside, in timing and in response.
+	if tn.Revoked {
+		return nil, errUnauthorized
+	}
+	return tn, nil
 }
 
 var dummyHash = make([]byte, 32)

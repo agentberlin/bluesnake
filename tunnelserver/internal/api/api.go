@@ -50,8 +50,6 @@ type API struct {
 	trustedProxies []*net.IPNet
 }
 
-const maxBody = 4 << 10
-
 // New constructs the API.
 func New(cfg Config) *API {
 	if cfg.Log == nil {
@@ -152,7 +150,7 @@ func (a *API) handleRegister(w http.ResponseWriter, r *http.Request) {
 // limit must not keep draining the shared global bucket (which would let one IP
 // 429 everyone). Only requests that clear per-IP consume a global token.
 func (a *API) allow(w http.ResponseWriter, r *http.Request) bool {
-	if !a.perIP.Allow(a.clientIP(r)) {
+	if !a.perIP.Allow(ratelimit.IPKey(a.clientIP(r))) {
 		writeError(w, http.StatusTooManyRequests, "too many requests, slow down")
 		return false
 	}

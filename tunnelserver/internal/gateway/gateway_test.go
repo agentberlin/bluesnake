@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -53,21 +54,39 @@ func TestAuthenticate(t *testing.T) {
 	_ = st.Create(ctx, &store.Tunnel{ID: "dead", ConnectSecretHash: store.Hash("secret"), Revoked: true})
 
 	cases := []struct {
-		name string
-		req  wire.AuthRequest
-		want bool
+		name    string
+		req     wire.AuthRequest
+		wantErr error
 	}{
-		{"valid", wire.AuthRequest{V: wire.Version, TunnelID: "good", ConnectSecret: "secret"}, true},
-		{"wrong secret", wire.AuthRequest{V: wire.Version, TunnelID: "good", ConnectSecret: "nope"}, false},
-		{"unknown id", wire.AuthRequest{V: wire.Version, TunnelID: "ghost", ConnectSecret: "secret"}, false},
-		{"revoked", wire.AuthRequest{V: wire.Version, TunnelID: "dead", ConnectSecret: "secret"}, false},
-		{"bad version", wire.AuthRequest{V: 99, TunnelID: "good", ConnectSecret: "secret"}, false},
+		{"valid", wire.AuthRequest{V: wire.Version, TunnelID: "good", ConnectSecret: "secret"}, nil},
+		{"wrong secret", wire.AuthRequest{V: wire.Version, TunnelID: "good", ConnectSecret: "nope"}, errUnauthorized},
+		{"unknown id", wire.AuthRequest{V: wire.Version, TunnelID: "ghost", ConnectSecret: "secret"}, errUnauthorized},
+		{"revoked", wire.AuthRequest{V: wire.Version, TunnelID: "dead", ConnectSecret: "secret"}, errUnauthorized},
+		{"bad version", wire.AuthRequest{V: 99, TunnelID: "good", ConnectSecret: "secret"}, errUnauthorized},
 	}
 	for _, c := range cases {
-		_, ok := g.authenticate(c.req)
-		if ok != c.want {
-			t.Errorf("%s: authenticate ok = %v, want %v", c.name, ok, c.want)
+		_, err := g.authenticate(c.req)
+		if !errors.Is(err, c.wantErr) {
+			t.Errorf("%s: authenticate err = %v, want %v", c.name, err, c.wantErr)
 		}
+	}
+}
+
+// failingStore simulates a store outage: every lookup errors.
+type failingStore struct{ store.Store }
+
+func (failingStore) GetByID(context.Context, string) (*store.Tunnel, error) {
+	return nil, errors.New("db down")
+}
+
+// TestAuthenticateStoreOutage: a store outage must surface as "temporarily
+// unavailable", never as a credential rejection — clients (and users) react to
+// "unauthorized" by discarding tunnel.json, permanently losing the subdomain.
+func TestAuthenticateStoreOutage(t *testing.T) {
+	g := New(registry.New(), failingStore{}, "t.snake.blue", nil)
+	_, err := g.authenticate(wire.AuthRequest{V: wire.Version, TunnelID: "good", ConnectSecret: "secret"})
+	if !errors.Is(err, errUnavailable) {
+		t.Errorf("store outage err = %v, want errUnavailable", err)
 	}
 }
 

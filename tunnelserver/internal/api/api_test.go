@@ -151,6 +151,36 @@ func TestSpoofedProxyHeaderFromUntrustedPeer(t *testing.T) {
 
 func itoa(i int) string { return string(rune('0' + i)) }
 
+// TestIPv6RateLimitBucketsBySlash64: rotating through addresses inside one
+// routed /64 must NOT mint fresh per-IP buckets; a different /64 is unaffected.
+func TestIPv6RateLimitBucketsBySlash64(t *testing.T) {
+	st := store.NewMem()
+	a := New(Config{
+		Store: st, BaseDomain: "t.snake.blue",
+		PerIPPerMin: 1, PerIPBurst: 1,
+		GlobalPerMin: 100000, GlobalBurst: 100000,
+	})
+	h := a.Handler()
+
+	send := func(ip string) int {
+		req := httptest.NewRequest(http.MethodPost, "http://api/v1/register", nil)
+		req.RemoteAddr = "[" + ip + "]:4242"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if c := send("2001:db8:1:2::1"); c != 200 {
+		t.Fatalf("first request from /64 should pass, got %d", c)
+	}
+	if c := send("2001:db8:1:2::2"); c != http.StatusTooManyRequests {
+		t.Errorf("second address in the same /64 must share the bucket, got %d", c)
+	}
+	if c := send("2001:db8:9:9::1"); c != 200 {
+		t.Errorf("a different /64 should have its own bucket, got %d", c)
+	}
+}
+
 func TestHealth(t *testing.T) {
 	a, _ := newAPI(t)
 	rec := do(t, a.Handler(), http.MethodGet, "http://api/v1/health", "", "1.2.3.4")
