@@ -50,12 +50,25 @@ func brandHost(site string) string {
 	return strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
 }
 
-// fetchFavicon downloads host's favicon from Google's favicon service,
+// fetchFavicon downloads host's favicon from Google's faviconV2 service,
 // returning the image bytes and content type (or nil, "" on any failure).
+//
+// faviconV2 (with no fallback_opts) returns a 404 when a site has no favicon,
+// rather than the older s2 endpoint's generic globe placeholder — so a real
+// miss cleanly falls back to the domain initial instead of a soulless globe.
+// It also serves crisper, properly-sized icons.
 func fetchFavicon(host string) ([]byte, string) {
-	endpoint := "https://www.google.com/s2/favicons?sz=64&domain=" + url.QueryEscape(host)
+	target := url.QueryEscape("https://" + host)
+	endpoint := "https://t1.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON_SERVER&size=64&url=" + target
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, ""
+	}
+	// faviconV2 is a browser-facing endpoint; identify as one so it serves us.
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "+
+		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(endpoint)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, ""
 	}
