@@ -90,13 +90,15 @@ func (a *analyzer) add(url, id, detail string) {
 // linkGraph computes unique in/outlink counts and PageRank-style link scores
 // over followed internal hyperlink edges between crawled pages.
 func (a *analyzer) linkGraph() {
+	// self-links count towards unique in/outlinks (Screaming Frog parity);
+	// PageRank below skips them so a page cannot vote for itself
 	edges := map[string]map[string]bool{} // src -> set of dst
 	for url, rec := range a.pages {
 		if rec.Facts == nil || rec.Scope != "internal" {
 			continue
 		}
 		for _, l := range rec.Facts.Links {
-			if l.Type != parse.Hyperlink || l.Nofollow || l.URL == url {
+			if l.Type != parse.Hyperlink || l.Nofollow {
 				continue
 			}
 			target, ok := a.pages[l.URL]
@@ -141,8 +143,18 @@ func (a *analyzer) linkGraph() {
 			next[n] = base
 		}
 		for src, dsts := range edges {
-			share := damping * rank[src] / float64(len(dsts))
+			out := len(dsts)
+			if dsts[src] {
+				out-- // self-loops count for link metrics, not for PageRank
+			}
+			if out == 0 {
+				continue
+			}
+			share := damping * rank[src] / float64(out)
 			for dst := range dsts {
+				if dst == src {
+					continue
+				}
 				next[dst] += share
 			}
 		}
@@ -413,8 +425,11 @@ func (a *analyzer) sitemaps(index SitemapIndex) {
 		if !rec.Indexable && rec.State == crawler.StateCrawled {
 			a.add(url, "sitemap_non_indexable", strings.Join(listedIn, ", "))
 		}
-		// discovered only via the sitemap (no inlinks, not the seed)
-		if rec.Inlinks == 0 && rec.Depth == 0 && rec.DiscoveredFrom == "" {
+		// discovered only via the sitemap: no inlinks and no followed-link
+		// path from a seed (depth 0 covers resumed crawls, which keep
+		// admit-time depths)
+		if rec.Inlinks == 0 && rec.DiscoveredFrom == "" &&
+			(rec.Depth == crawler.NoDepth || rec.Depth == 0) {
 			a.add(url, "sitemap_orphan", strings.Join(listedIn, ", "))
 		}
 		if len(listedIn) > 1 {

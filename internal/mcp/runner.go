@@ -309,6 +309,13 @@ type runnerSink struct {
 	s     *runnerSession
 }
 
+// the tee must keep forwarding every optional sink extension the store has
+var (
+	_ crawler.BlobSink    = (*runnerSink)(nil)
+	_ crawler.ArchiveSink = (*runnerSink)(nil)
+	_ crawler.SitemapSink = (*runnerSink)(nil)
+)
+
 func (t *runnerSink) Page(rec *crawler.PageRecord) error {
 	if err := t.inner.Page(rec); err != nil {
 		return err
@@ -329,10 +336,15 @@ func (t *runnerSink) FrontierAdd(it frontier.Item) error {
 
 func (t *runnerSink) FrontierDone(url string) error { return t.inner.FrontierDone(url) }
 
-// Blob and Archive forward the optional sink extensions (stored HTML,
-// screenshots, WARC) — the engine reaches them by type assertion.
+// Blob, Archive and SitemapEntry forward the optional sink extensions
+// (stored HTML, screenshots, WARC, sitemap entries) — the engine reaches
+// them by type assertion.
 func (t *runnerSink) Blob(url, kind string, data []byte) error {
 	return t.inner.Blob(url, kind, data)
+}
+
+func (t *runnerSink) SitemapEntry(sitemap, url string) error {
+	return t.inner.SitemapEntry(sitemap, url)
 }
 
 func (t *runnerSink) Archive(url string, res *fetch.Result) error {

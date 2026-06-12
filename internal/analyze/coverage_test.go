@@ -102,8 +102,9 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 		p.Facts = &parse.Facts{
 			Titles:       []string{"Duplicate Title Coverage Page Here"},
 			Descriptions: []string{"A duplicated meta description that is comfortably over the seventy character minimum threshold."},
-			H1s:          []string{"dup heading"}, HeadingLevels: []int{1},
-			Hash: "dup-hash",
+			H1s:          []string{"dup heading"}, H2s: []string{"dup subheading"},
+			HeadingLevels: []int{1, 2},
+			Hash:          "dup-hash",
 		}
 		_ = i
 	}
@@ -141,6 +142,13 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 	}
 	same := add(covPage(ks + "/t-same"))
 	same.Facts = &parse.Facts{Titles: []string{"Same Text Here On Title And H1"}, H1s: []string{"same text here on title and h1"}, HeadingLevels: []int{1}}
+	skipped := add(covPage(ks + "/t-skipped")) // h1 > h3 > h2: first h2 follows a deeper heading
+	skipped.Facts = &parse.Facts{
+		Titles:       []string{"A Page With Non-Sequential Headings"},
+		Descriptions: []string{"This page exists to exercise the non-sequential h2 check with a heading order of h1, h3, h2."},
+		H1s:          []string{"top heading"}, H2s: []string{"late subheading"},
+		HeadingLevels: []int{1, 3, 2},
+	}
 
 	// --- content ---
 	thin := add(covPage(ks + "/c-thin"))
@@ -183,7 +191,8 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 
 	// --- directives ---
 	dir := add(covPage(ks + "/dir"))
-	dir.Facts = &parse.Facts{MetaRobots: []string{"noindex, nofollow"}, XRobotsTag: []string{"none"}}
+	dir.Facts = &parse.Facts{MetaRobots: []string{"noindex, nofollow"}, XRobotsTag: []string{"none"},
+		MetaRobotsOutsideHead: 1}
 
 	// --- links ---
 	manyInt := add(covPage(ks + "/lk-many-int"))
@@ -337,7 +346,7 @@ func healthyPages() map[string]*crawler.PageRecord {
 			Titles:        []string{title},
 			Descriptions:  []string{desc},
 			H1s:           []string{h1},
-			H2s:           []string{"A subheading"},
+			H2s:           []string{h1 + " subheading"},
 			HeadingLevels: []int{1, 2},
 			HasViewport:   true, HasCharset: true, Lang: "en",
 			CanonicalHTML: []string{url},
@@ -365,6 +374,9 @@ func TestCatalogueFixtureCoverage(t *testing.T) {
 	pages, sitemaps := kitchenSink()
 	cfg := config.Default()
 	cfg.Content.NearDuplicates.Enabled = true
+	cfg.Resources.Images.Store = true           // image checks are storage-gated
+	cfg.Links.External.Store = true             // high-external-outlinks is storage-gated
+	cfg.Extraction.StructuredData.JSONLD = true // structured_missing needs extraction on
 
 	triggered := map[string]bool{}
 	for _, o := range issues.Evaluate(pages, cfg) {

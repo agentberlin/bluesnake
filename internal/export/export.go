@@ -151,8 +151,12 @@ func tabRow(name string, rec *crawler.PageRecord) ([]string, bool) {
 			canonical = first(f.CanonicalHTML)
 			wordCount = f.WordCount
 		}
+		depth := "" // blank when no followed-link path reaches the URL
+		if rec.Depth != crawler.NoDepth {
+			depth = itoa(rec.Depth)
+		}
 		return []string{rec.URL, itoa(rec.StatusCode), rec.Status, rec.ContentType,
-			rec.HTTPVersion, indexability, rec.IndexabilityStatus, itoa(rec.Depth),
+			rec.HTTPVersion, indexability, rec.IndexabilityStatus, depth,
 			itoa(rec.Inlinks), itoa(rec.UniqueInlinks), itoa(rec.UniqueOutlinks),
 			fmt.Sprintf("%.1f", rec.LinkScore), itoa(int(rec.ResponseTimeMs)),
 			itoa(rec.Size), title, desc, h1, itoa(wordCount), canonical,

@@ -139,7 +139,10 @@ func TestImageMissingSizeAttributes(t *testing.T) {
 		{Type: parse.Image, URL: "https://ex.com/no-height.png", Alt: "b", Width: "100"},
 		{Type: parse.Image, URL: "https://ex.com/sized.png", Alt: "c", Width: "100", Height: "80"},
 	}
-	occs := eval(htmlPage("https://ex.com/p", f))
+	cfg := config.Default()
+	cfg.Resources.Images.Store = true // image checks are storage-gated
+	page := htmlPage("https://ex.com/p", f)
+	occs := Evaluate(map[string]*crawler.PageRecord{page.URL: page}, cfg)
 	counts := map[string]int{}
 	for _, d := range detailsOf(occs, "https://ex.com/p", "image_missing_size_attributes") {
 		counts[d]++

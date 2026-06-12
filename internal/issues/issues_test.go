@@ -311,7 +311,9 @@ func TestImageAndDepthChecks(t *testing.T) {
 		},
 	})
 	page.Depth = 9
-	occs := eval(page, img)
+	cfg := config.Default()
+	cfg.Resources.Images.Store = true // image checks are storage-gated
+	occs := Evaluate(map[string]*crawler.PageRecord{img.URL: img, page.URL: page}, cfg)
 	for _, id := range []string{"image_missing_alt", "image_alt_over_chars",
 		"links_no_anchor_text", "links_high_crawl_depth"} {
 		if !has(occs, "https://ex.com/p", id) {

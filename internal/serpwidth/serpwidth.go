@@ -1,16 +1,20 @@
 // Package serpwidth measures the approximate rendered pixel width of text
 // the way Google's desktop results page displays it (Arial), using a bundled
 // font-metrics table — no font files or rendering engine involved. Titles
-// render at 20px and descriptions at 13px; the thresholds.title/description
+// render at 20px and descriptions at ~14px; the thresholds.title/description
 // min_px/max_px config compares against these measurements (DESIGN.md §9).
 package serpwidth
 
 import "math"
 
-// Google desktop SERP font sizes (CSS pixels).
+// Google desktop SERP font sizes (CSS pixels). Descriptions render at a
+// nominal 14px with real Arial shaping (kerning); this kern-less metrics
+// table reproduces those measurements at 13.9 — fitted against Screaming
+// Frog's reported widths across thousands of live descriptions (13.0 read
+// ~7% short, 14.0 ~1% long).
 const (
 	TitleFontPx       = 20.0
-	DescriptionFontPx = 13.0
+	DescriptionFontPx = 13.9
 )
 
 // asciiWidths holds advance widths in 1/1000 em for runes 32..126, from the

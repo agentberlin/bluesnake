@@ -275,6 +275,13 @@ type uiSink struct {
 	s     *crawlSession
 }
 
+// the tee must keep forwarding every optional sink extension the store has
+var (
+	_ crawler.BlobSink    = (*uiSink)(nil)
+	_ crawler.ArchiveSink = (*uiSink)(nil)
+	_ crawler.SitemapSink = (*uiSink)(nil)
+)
+
 func (t *uiSink) Page(rec *crawler.PageRecord) error {
 	if err := t.inner.Page(rec); err != nil {
 		return err
@@ -303,4 +310,10 @@ func (t *uiSink) Blob(url, kind string, data []byte) error {
 // works from the desktop app (the engine reaches it by type assertion).
 func (t *uiSink) Archive(url string, res *fetch.Result) error {
 	return t.inner.Archive(url, res)
+}
+
+// SitemapEntry forwards the optional SitemapSink extension so sitemap
+// entries reach the database from the desktop app.
+func (t *uiSink) SitemapEntry(sitemap, url string) error {
+	return t.inner.SitemapEntry(sitemap, url)
 }
