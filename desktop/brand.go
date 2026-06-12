@@ -50,25 +50,20 @@ func brandHost(site string) string {
 	return strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
 }
 
-// fetchFavicon downloads host's favicon from Google's faviconV2 service,
+// fetchFavicon downloads host's favicon from Google's s2 favicon service,
 // returning the image bytes and content type (or nil, "" on any failure).
 //
-// faviconV2 (with no fallback_opts) returns a 404 when a site has no favicon,
-// rather than the older s2 endpoint's generic globe placeholder — so a real
-// miss cleanly falls back to the domain initial instead of a soulless globe.
-// It also serves crisper, properly-sized icons.
+// s2 returns the real icon with HTTP 200 when a site has a favicon, and a 404
+// (carrying a generic globe placeholder) when it doesn't or the domain is
+// unreachable. The globe ONLY ever arrives with a non-200 status, so the
+// StatusCode guard below drops it: a faviconless site falls back to the domain
+// initial and we never show the soulless globe. Don't "upgrade" this to the
+// gstatic faviconV2 endpoint — it 404s for plain server-side requests (it's
+// gated to in-browser callers), which would leave every brand without a logo.
 func fetchFavicon(host string) ([]byte, string) {
-	target := url.QueryEscape("https://" + host)
-	endpoint := "https://t1.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON_SERVER&size=64&url=" + target
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, ""
-	}
-	// faviconV2 is a browser-facing endpoint; identify as one so it serves us.
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "+
-		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+	endpoint := "https://www.google.com/s2/favicons?sz=64&domain=" + url.QueryEscape(host)
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := client.Get(endpoint)
 	if err != nil {
 		return nil, ""
 	}
