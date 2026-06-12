@@ -42,21 +42,22 @@ const (
 
 // Link is one typed edge from the parsed page to a target URL.
 type Link struct {
-	Type     LinkType
-	URL      string // resolved + normalized; empty for uncrawlable raw links
-	Raw      string // href as written
-	Anchor   string
-	Alt      string
-	Rel      string
-	Target   string
-	Nofollow bool
-	PathType string
-	ElemPath string
-	Position string
-	Lang     string // hreflang code
-	Width    string // img width attribute
-	Height   string // img height attribute
-	Origin   string // html | rendered | xhr (JS rendering mode)
+	Type      LinkType
+	URL       string // resolved + normalized; empty for uncrawlable raw links
+	Raw       string // href as written
+	Anchor    string
+	Alt       string
+	Rel       string
+	Target    string
+	Nofollow  bool
+	PathType  string
+	ElemPath  string
+	Position  string
+	Lang      string // hreflang code
+	Width     string // img width attribute
+	Height    string // img height attribute
+	NoAltAttr bool   // img carried no alt attribute at all (vs alt="")
+	Origin    string // html | rendered | xhr (JS rendering mode)
 }
 
 // Hreflang is one hreflang annotation.
@@ -94,6 +95,7 @@ type Facts struct {
 	H1s           []string
 	H2s           []string
 	HeadingLevels []int // document order of h1..h6 levels
+	H1AltText     bool  // an h1's text came from an image alt attribute
 
 	MetaRobots            []string
 	MetaRobotsOutsideHead int
@@ -102,9 +104,10 @@ type Facts struct {
 	MetaRefresh    string // raw content attribute
 	MetaRefreshURL string // resolved target ("" if none); self URL for bare delays
 
-	CanonicalHTML        []string
-	CanonicalHTTP        []string
-	CanonicalOutsideHead int
+	CanonicalHTML         []string
+	CanonicalHTTP         []string
+	CanonicalOutsideHead  int
+	CanonicalInvalidAttrs []string // hreflang/lang/media/type attrs found on canonical link elements
 
 	NextHTML, PrevHTML []string
 	NextHTTP, PrevHTTP []string
@@ -262,6 +265,14 @@ func (p *parser) handleElement(n *html.Node, path string) {
 		text := collapseSpace(subtreeText(n))
 		switch n.Data {
 		case "h1":
+			// image-only h1: Screaming Frog extracts the image alt as the
+			// h1 text and flags the page (h1 "Alt Text in h1" filter)
+			if text == "" {
+				if alt := collapseSpace(firstImgAlt(n)); alt != "" {
+					text = alt
+					f.H1AltText = true
+				}
+			}
 			f.H1s = append(f.H1s, text)
 		case "h2":
 			f.H2s = append(f.H2s, text)
@@ -394,6 +405,13 @@ func (p *parser) handleLinkElement(n *html.Node, path string) {
 			if !inHead(path) {
 				f.CanonicalOutsideHead++
 			}
+			// hreflang/lang/media/type are invalid in a canonical annotation
+			// (SF Canonicals "Invalid Attribute In Annotation")
+			for _, bad := range []string{"hreflang", "lang", "media", "type"} {
+				if hasAttr(n, bad) {
+					f.CanonicalInvalidAttrs = append(f.CanonicalInvalidAttrs, bad)
+				}
+			}
 			p.addLink(n, path, Link{Type: Canonical, Raw: href, URL: resolved})
 		case "stylesheet":
 			p.addLink(n, path, Link{Type: CSS, Raw: href, URL: resolved})
@@ -461,16 +479,15 @@ func (p *parser) handleAnchor(n *html.Node, path string) {
 
 func (p *parser) handleImg(n *html.Node, path string) {
 	alt, altSet := attrOK(n, "alt")
-	_ = altSet
 	if src := attr(n, "src"); src != "" {
 		p.addLink(n, path, Link{
-			Type: Image, Raw: src, Alt: alt,
+			Type: Image, Raw: src, Alt: alt, NoAltAttr: !altSet,
 			Width: attr(n, "width"), Height: attr(n, "height"),
 		})
 	}
 	if p.cfg.Advanced.ExtractSrcset {
 		for _, cand := range parseSrcset(attr(n, "srcset")) {
-			p.addLink(n, path, Link{Type: Image, Raw: cand, Alt: alt})
+			p.addLink(n, path, Link{Type: Image, Raw: cand, Alt: alt, NoAltAttr: !altSet})
 		}
 	}
 }
