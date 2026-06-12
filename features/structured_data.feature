@@ -13,8 +13,8 @@ Feature: Structured data
       """
     And a site page "/bad" with body:
       """
-      <html><head><title>Article missing its headline prop</title>
-      <script type="application/ld+json">{"@type":"Article","author":"someone"}</script>
+      <html><head><title>Recipe missing its required props</title>
+      <script type="application/ld+json">{"@type":"Recipe","recipeIngredient":["x"]}</script>
       </head><body><h1>b</h1><h2>s</h2></body></html>
       """
     And the crawl config override "extraction.structured_data.jsonld=true"

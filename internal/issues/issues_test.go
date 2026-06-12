@@ -389,3 +389,48 @@ func TestValidationAndAMPChecks(t *testing.T) {
 		}
 	}
 }
+
+// Issue scoping measured against Screaming Frog (2026-06-12 yc5 run):
+// security header checks apply to EVERY internal 2xx response including
+// images fetched via <a href>; URL checks apply to HTML pages only; an
+// oversized image crawled as a page is flagged even with image resource
+// crawling off.
+func TestNonHTMLPageScoping(t *testing.T) {
+	img := &crawler.PageRecord{
+		URL: "https://ex.com/big_image.png", Scope: "internal",
+		State: crawler.StateCrawled, StatusCode: 200, Status: "OK",
+		ContentType: "image/png", Indexable: true,
+		Size: 200 * 1024, // over the 100 KB default threshold
+	}
+	occs := eval(img)
+
+	for _, id := range []string{
+		"security_missing_hsts", "security_missing_csp",
+		"security_missing_content_type_options",
+		"security_missing_x_frame_options", "security_missing_referrer_policy",
+	} {
+		if !has(occs, img.URL, id) {
+			t.Errorf("non-HTML 2xx must get header check %s", id)
+		}
+	}
+	if has(occs, img.URL, "url_underscores") {
+		t.Error("URL checks must not flag non-HTML resources (SF scopes them to pages)")
+	}
+	if !has(occs, img.URL, "image_over_size") {
+		t.Error("oversized image crawled as a page must be flagged regardless of resources.images.store")
+	}
+}
+
+// SF's H1 "Duplicate" filter matches on either extracted instance — a page
+// whose H1-1 equals its H1-2 is itself a duplicate (hamming.ai blog pages).
+func TestSamePageH1Duplicate(t *testing.T) {
+	rec := htmlPage("https://ex.com/post", &parse.Facts{
+		Titles: []string{"a reasonable length page title here"},
+		H1s:    []string{"Same Heading", "Same Heading"},
+		H2s:    []string{"x"}, HeadingLevels: []int{1, 1, 2},
+	})
+	occs := eval(rec)
+	if !has(occs, rec.URL, "h1_duplicate") {
+		t.Error("page with two identical h1s must be flagged h1_duplicate")
+	}
+}

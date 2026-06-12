@@ -83,8 +83,11 @@ func (m *robotsMgr) sitemapsFor(ctx context.Context, rawURL string) []string {
 	return m.fileFor(ctx, u).Sitemaps
 }
 
-// fileFor fetches and caches robots.txt per scheme+host. Non-2xx responses
-// (and network errors) yield an allow-all file, matching Google's 4xx rule.
+// fileFor fetches and caches robots.txt per scheme+host. Redirects are
+// followed up to five hops (Google REP — robots.txt for the original host
+// is whatever the chain resolves to, even cross-host: a seed-host 308 to
+// the www robots.txt is the common case). Non-2xx terminal responses (and
+// network errors) yield an allow-all file, matching Google's 4xx rule.
 func (m *robotsMgr) fileFor(ctx context.Context, u *url.URL) *robots.File {
 	key := u.Scheme + "://" + u.Host
 
@@ -93,11 +96,20 @@ func (m *robotsMgr) fileFor(ctx context.Context, u *url.URL) *robots.File {
 	if f, ok := m.cache[key]; ok {
 		return f
 	}
-	res := m.client.Fetch(ctx, key+"/robots.txt")
 	var file *robots.File
-	if res.FetchError == "" && res.StatusCode >= 200 && res.StatusCode < 300 {
-		file = robots.Parse(res.Body)
-	} else {
+	target := key + "/robots.txt"
+	for hop := 0; hop <= 5; hop++ {
+		res := m.client.Fetch(ctx, target)
+		if res.FetchError == "" && res.StatusCode >= 300 && res.StatusCode < 400 && res.RedirectURL != "" {
+			target = res.RedirectURL
+			continue
+		}
+		if res.FetchError == "" && res.StatusCode >= 200 && res.StatusCode < 300 {
+			file = robots.Parse(res.Body)
+		}
+		break
+	}
+	if file == nil {
 		file = robots.Parse(nil)
 	}
 	m.cache[key] = file

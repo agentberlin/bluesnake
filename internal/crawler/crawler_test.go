@@ -607,3 +607,133 @@ func TestSitemapAutoDiscovery(t *testing.T) {
 		t.Errorf("robots-discovered sitemap URL must be crawled: %+v", rec)
 	}
 }
+
+// Robots.txt served behind a redirect (the common apex→www 308) must be
+// followed — Google's REP allows five hops. A dead-end here used to read as
+// allow-all with no Sitemap directives, silently disabling both rule
+// enforcement and sitemap auto-discovery (measured against Screaming Frog
+// on happyrobot.ai / greptile.com / artisan.co, 2026-06-12).
+func TestRobotsRedirectFollowed(t *testing.T) {
+	var srvURL string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/real-robots.txt", http.StatusPermanentRedirect)
+	})
+	mux.HandleFunc("/real-robots.txt", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "User-agent: *\nDisallow: /private/\nSitemap: %s/map.xml\n", srvURL)
+	})
+	mux.HandleFunc("/map.xml", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `<urlset><url><loc>%s/orphan</loc></url></urlset>`, srvURL)
+	})
+	for _, p := range []string{"/", "/orphan", "/private/x"} {
+		body := `<p>x</p>`
+		if p == "/" {
+			body = `<a href="/private/x">x</a>`
+		}
+		mux.HandleFunc(p, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprint(w, body)
+		})
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	srvURL = srv.URL
+
+	cfg := config.Default()
+	cfg.Sitemaps.CrawlLinked = true
+	cfg.Sitemaps.AutoDiscoverViaRobots = true
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := c.Run(context.Background(), srv.URL+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := res.Pages[srv.URL+"/orphan"]; rec == nil || rec.State != StateCrawled {
+		t.Errorf("sitemap URL behind redirected robots.txt not crawled: %+v", rec)
+	}
+	if rec := res.Pages[srv.URL+"/private/x"]; rec == nil || rec.State != StateBlockedRobots {
+		t.Errorf("/private/x = %+v, want blocked by the redirect-target robots rules", rec)
+	}
+}
+
+// An internal page redirecting off-site must not cause a fetch of the
+// external target while external link crawling is off (greptile.com's oauth
+// chain pulled gitlab.com pages into the crawl, 2026-06-12).
+func TestExternalRedirectTargetNotFetched(t *testing.T) {
+	extHits := 0
+	ext := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		extHits++
+		fmt.Fprint(w, "<p>x</p>")
+	}))
+	defer ext.Close()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<a href="/away">x</a>`)
+	})
+	mux.HandleFunc("/away", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, ext.URL+"/landing", http.StatusFound)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cfg := config.Default() // external links: store/crawl off
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := c.Run(context.Background(), srv.URL+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := res.Pages[srv.URL+"/away"]; rec == nil || rec.RedirectURL == "" {
+		t.Fatalf("redirect source = %+v, want recorded redirect", rec)
+	}
+	if extHits != 0 {
+		t.Errorf("external redirect target fetched %d times, want 0", extHits)
+	}
+	if rec := res.Pages[ext.URL+"/landing"]; rec != nil {
+		t.Errorf("external redirect target admitted: %+v", rec)
+	}
+}
+
+// Inlinks counts hyperlink edges only (SF's "Inlinks" column): a redirect
+// source still sets discovered-from but does not count (yonedalabs.com was
+// reported one high on every redirect target, 2026-06-12).
+func TestInlinksCountHyperlinksOnly(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<a href="/moved">x</a>`)
+	})
+	mux.HandleFunc("/moved", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/final", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("/final", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "<p>x</p>")
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c, err := New(config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := c.Run(context.Background(), srv.URL+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved, final := res.Pages[srv.URL+"/moved"], res.Pages[srv.URL+"/final"]
+	if moved == nil || moved.Inlinks != 1 {
+		t.Errorf("/moved inlinks = %+v, want 1 (the hyperlink)", moved)
+	}
+	if final == nil || final.Inlinks != 0 {
+		t.Errorf("/final inlinks = %+v, want 0 (redirect source doesn't count)", final)
+	}
+	if final != nil && final.DiscoveredFrom != srv.URL+"/moved" {
+		t.Errorf("/final discovered-from = %q, want the redirect source", final.DiscoveredFrom)
+	}
+}

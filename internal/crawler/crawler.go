@@ -380,7 +380,6 @@ func (c *Crawler) process(ctx context.Context, wg *sync.WaitGroup, it frontier.I
 		return
 	}
 	for _, d := range c.crawlOne(ctx, it) {
-		c.noteInlink(d.URL, it.URL)
 		if c.frontier.Admit(d) {
 			c.sinkFrontierAdd(d)
 			wg.Add(1)
@@ -499,11 +498,17 @@ func (c *Crawler) handleContent(it frontier.Item, scopeClass urlutil.ScopeClass,
 	// the source depth so a depth-0 list still follows whole chains
 	if res.RedirectURL != "" {
 		if c.cfg.Limits.MaxRedirects < 0 || it.RedirectHops+1 <= c.cfg.Limits.MaxRedirects {
-			if d, ok := c.admitTarget(res.RedirectURL, it, true); ok {
-				if c.cfg.Advanced.AlwaysFollowRedirects {
-					d.Depth = it.Depth
+			// external redirect targets obey the external-links gate, like
+			// hyperlinks: with externals off the redirect is recorded but
+			// its target is never fetched
+			if c.classify(res.RedirectURL) != urlutil.External || c.cfg.Links.External.Crawl {
+				if d, ok := c.admitTarget(res.RedirectURL, it, true); ok {
+					if c.cfg.Advanced.AlwaysFollowRedirects {
+						d.Depth = it.Depth
+					}
+					c.noteInlink(d.URL, it.URL, false)
+					discoveries = append(discoveries, d)
 				}
-				discoveries = append(discoveries, d)
 			}
 		}
 	}
@@ -634,7 +639,11 @@ func (c *Crawler) renderAndDiff(url string, rec *PageRecord, facts *parse.Facts,
 		}
 		l.Origin = "rendered"
 		facts.Links = append(facts.Links, l)
-		diff.JSLinks++
+		// "Contains JavaScript Links" counts rendered-only HYPERLINKS, like
+		// Screaming Frog — scripts/images injected by analytics don't count
+		if l.Type == parse.Hyperlink {
+			diff.JSLinks++
+		}
 	}
 	// XHR/fetch requests observed during rendering join the link set too
 	// (Screaming Frog parity: an SPA's data endpoints are discovered URLs)
@@ -706,6 +715,7 @@ func (c *Crawler) discoverLinks(it frontier.Item, facts *parse.Facts) []frontier
 			if l.Type == parse.Canonical && c.cfg.Advanced.AlwaysFollowCanonicals {
 				d.Depth = it.Depth
 			}
+			c.noteInlink(d.URL, it.URL, l.Type == parse.Hyperlink)
 			out = append(out, d)
 		}
 	}
@@ -740,13 +750,18 @@ func (c *Crawler) typeFlags(lt parse.LinkType, scopeClass urlutil.ScopeClass) (s
 	L, R := &c.cfg.Links, &c.cfg.Resources
 	var sc config.StoreCrawl
 	switch lt {
-	case parse.Hyperlink, parse.XHR:
-		// XHR-discovered URLs follow the page-link config: Screaming Frog
-		// fetches them even when JS/CSS resource crawling is off
+	case parse.Hyperlink:
 		if scopeClass == urlutil.External {
 			return L.External.Store, L.External.Crawl
 		}
 		return L.Internal.Store, L.Internal.Crawl
+	case parse.XHR:
+		// XHR/fetch requests observed during rendering are JS data
+		// endpoints, not page links: Screaming Frog buckets them under
+		// JavaScript resources and never enqueues them as pages (measured
+		// 2026-06-12 — SF rendered crawls skip Next.js ?_rsc prefetches,
+		// which mint a fresh token per render and explode the frontier).
+		sc = R.JavaScript
 	case parse.Image:
 		sc = R.Images
 	case parse.CSS:
@@ -837,11 +852,17 @@ func (c *Crawler) record(rec *PageRecord) {
 	}
 }
 
-func (c *Crawler) noteInlink(target, source string) {
+// noteInlink records a discovery edge. countIt distinguishes hyperlink
+// edges — the only kind Screaming Frog's "Inlinks" column counts — from
+// redirect/iframe/meta-refresh discoveries, which still set the
+// discovered-from source but don't inflate the inlink count.
+func (c *Crawler) noteInlink(target, source string, countIt bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	info := c.inlinks[target]
-	info.count++
+	if countIt {
+		info.count++
+	}
 	if info.first == "" {
 		info.first = source
 	}

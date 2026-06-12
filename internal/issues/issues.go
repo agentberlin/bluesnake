@@ -167,8 +167,12 @@ var catalogue = []Def{
 	// Structured data
 	{"structured_missing", "structured_data", "Missing", Opportunity, Low},
 	{"structured_parse_error", "structured_data", "Parse Errors", Issue, High},
-	{"structured_validation_error", "structured_data", "Validation Errors", Issue, High},
-	{"structured_validation_warning", "structured_data", "Validation Warnings", Opportunity, Low},
+	// our validator checks Google rich-result property requirements
+	// (internal/structured.requirements), which is SF's "Rich Result
+	// Validation" bucket — schema.org vocabulary validation (SF's plain
+	// "Validation Errors/Warnings") is a documented cut (DESIGN §9)
+	{"structured_validation_error", "structured_data", "Rich Result Validation Errors", Issue, High},
+	{"structured_validation_warning", "structured_data", "Rich Result Validation Warnings", Opportunity, Low},
 	// JavaScript rendering
 	{"js_noindex_only_raw", "javascript", "Noindex Only in Original HTML", Issue, High},
 	{"js_canonical_mismatch", "javascript", "Canonical Mismatch", Issue, High},
@@ -240,7 +244,13 @@ func Evaluate(pages map[string]*crawler.PageRecord, cfg *config.Config) []Occurr
 		if rec.State != crawler.StateCrawled || rec.Scope != "internal" {
 			continue
 		}
-		e.urlChecks(rec)
+		if isHTMLPage(rec) {
+			// SF scopes URL checks to pages, not resources fetched via
+			// <a href> (images crawled as URLs are exempt — measured)
+			e.urlChecks(rec)
+		}
+		e.securityHeaders(rec)
+		e.imagePage(rec)
 		if rec.Facts == nil {
 			continue
 		}
@@ -391,31 +401,51 @@ func (e *evaluator) security(rec *crawler.PageRecord) {
 			e.add(rec.URL, "security_form_on_http")
 		}
 	}
-	if isHTTPS && isHTMLPage(rec) && rec.StatusCode == 200 {
-		header := func(name string) string { return rec.Headers[name] }
-		// the crawler newline-joins repeated Set-Cookie headers; flag if any
-		// cookie lacks the Secure attribute
-		for _, sc := range strings.Split(header("Set-Cookie"), "\n") {
-			if sc != "" && !hasSecureAttribute(sc) {
-				e.add(rec.URL, "security_insecure_cookie")
-				break
-			}
+}
+
+// securityHeaders runs the response-header checks. Unlike the link/form
+// checks these apply to EVERY internal 2xx response, HTML or not — SF flags
+// images fetched via <a href> for missing HSTS/CSP/etc too (measured).
+// Runs before the Facts guard, since non-HTML pages carry no Facts.
+func (e *evaluator) securityHeaders(rec *crawler.PageRecord) {
+	if !strings.HasPrefix(rec.URL, "https://") ||
+		rec.StatusCode < 200 || rec.StatusCode >= 300 {
+		return
+	}
+	header := func(name string) string { return rec.Headers[name] }
+	// the crawler newline-joins repeated Set-Cookie headers; flag if any
+	// cookie lacks the Secure attribute
+	for _, sc := range strings.Split(header("Set-Cookie"), "\n") {
+		if sc != "" && !hasSecureAttribute(sc) {
+			e.add(rec.URL, "security_insecure_cookie")
+			break
 		}
-		if header("Strict-Transport-Security") == "" {
-			e.add(rec.URL, "security_missing_hsts")
-		}
-		if header("Content-Security-Policy") == "" {
-			e.add(rec.URL, "security_missing_csp")
-		}
-		if !strings.EqualFold(header("X-Content-Type-Options"), "nosniff") {
-			e.add(rec.URL, "security_missing_content_type_options")
-		}
-		if v := strings.ToUpper(header("X-Frame-Options")); v != "DENY" && v != "SAMEORIGIN" {
-			e.add(rec.URL, "security_missing_x_frame_options")
-		}
-		if !secureReferrerPolicy(header("Referrer-Policy")) {
-			e.add(rec.URL, "security_missing_referrer_policy")
-		}
+	}
+	if header("Strict-Transport-Security") == "" {
+		e.add(rec.URL, "security_missing_hsts")
+	}
+	if header("Content-Security-Policy") == "" {
+		e.add(rec.URL, "security_missing_csp")
+	}
+	if !strings.EqualFold(header("X-Content-Type-Options"), "nosniff") {
+		e.add(rec.URL, "security_missing_content_type_options")
+	}
+	if v := strings.ToUpper(header("X-Frame-Options")); v != "DENY" && v != "SAMEORIGIN" {
+		e.add(rec.URL, "security_missing_x_frame_options")
+	}
+	if !secureReferrerPolicy(header("Referrer-Policy")) {
+		e.add(rec.URL, "security_missing_referrer_policy")
+	}
+}
+
+// imagePage flags an image URL crawled as a page (reached via <a href>)
+// that exceeds the size threshold — SF reports these under Images: Over X KB
+// even with image resource crawling off. Runs before the Facts guard.
+func (e *evaluator) imagePage(rec *crawler.PageRecord) {
+	t := &e.cfg.Thresholds
+	if strings.HasPrefix(rec.ContentType, "image/") && rec.StatusCode == 200 &&
+		rec.Size > t.ImageMaxKB*1024 {
+		e.add(rec.URL, "image_over_size", fmt.Sprintf("%d KB", rec.Size/1024))
 	}
 }
 
@@ -898,8 +928,11 @@ func (e *evaluator) duplicates() {
 		if len(f.Descriptions) > 0 {
 			collect(byDesc, f.Descriptions[0], url)
 		}
-		if len(f.H1s) > 0 {
-			collect(byH1, f.H1s[0], url)
+		// SF extracts two h1s per page (H1-1, H1-2) and its Duplicate
+		// filter matches on either — a page whose two h1s are identical
+		// is itself a Duplicate (measured on hamming.ai blog pages)
+		for _, h1 := range f.H1s[:min(len(f.H1s), 2)] {
+			collect(byH1, h1, url)
 		}
 		// Screaming Frog extracts two h2s per page (H2-1, H2-2) and its
 		// Duplicate filter matches on either

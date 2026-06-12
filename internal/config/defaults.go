@@ -114,12 +114,18 @@ func Default() *Config {
 			// browser; see internal/fetch for the measured SF profile.
 			BrowserHeaders: true,
 		},
+		// Screaming Frog's default Link Position search terms (decoded from
+		// .seospiderconfig mCustomPositionsConfig): substring match over the
+		// link's element path, first rule wins. "/head/" (trailing slash)
+		// keeps body/header links out of the head bucket; the bare
+		// "nav"/"header"/"footer" terms also match class names once element
+		// paths carry attribute qualifiers, exactly as SF's do.
 		LinkPositions: []LinkPosition{
-			{Name: "head", Match: "/head"},
-			{Name: "nav", Match: "/nav"},
-			{Name: "header", Match: "/header"},
-			{Name: "sidebar", Match: "/aside"},
-			{Name: "footer", Match: "/footer"},
+			{Name: "head", Match: "/head/"},
+			{Name: "nav", Match: "nav"},
+			{Name: "header", Match: "header"},
+			{Name: "sidebar", Match: "aside"},
+			{Name: "footer", Match: "footer"},
 			{Name: "content", Match: "/"},
 		},
 		StoreLinkPaths: true,
