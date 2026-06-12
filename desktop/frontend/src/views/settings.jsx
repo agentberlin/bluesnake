@@ -2,7 +2,7 @@
    Settings & Profiles — curated tree bound to the real config schema
    (dotted yaml-tag keys), search, simple/advanced, raw YAML editor.
    =========================================================================== */
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Icon, Btn, IconBtn, Search, Toggle, Seg, Empty, Toast, Modal } from "../ui";
 import { api, on } from "../api";
 
@@ -124,7 +124,7 @@ const encodeVal = (f, v) => {
   return JSON.stringify(v); // strings and arrays — JSON is valid YAML
 };
 
-export function SettingsView({ profileName, focus }) {
+export function SettingsView({ profileName, focus, onBack, backLabel }) {
   const [profiles, setProfiles] = useState(["Default audit"]);
   const [profile, setProfile] = useState(profileName || "Default audit");
   const [cfg, setCfg] = useState(null);
@@ -214,6 +214,7 @@ export function SettingsView({ profileName, focus }) {
       {/* content */}
       <div className="main" style={{ minWidth: 0 }}>
         <div className="toolbar">
+          {onBack && <Btn size="sm" variant="ghost" icon="arrow-left" onClick={onBack} style={{ marginRight: 2 }}>{backLabel || "Back"}</Btn>}
           <span className="title" style={{ fontSize: 13.5 }}>Settings</span>
           <span className="sub">{active === "mcp" && !yamlMode ? "Application" : profile}</span>
           <div style={{ flex: 1 }} />
@@ -293,28 +294,64 @@ export function SettingsView({ profileName, focus }) {
   );
 }
 
-/* ---- MCP server panel (app-level, not part of any profile) ------------- */
-const MCP_TOOLS = [
-  { group: "Crawl control", tools: "start_crawl · crawl_status · pause_crawl · resume_crawl · stop_crawl" },
-  { group: "Configuration", tools: "list_config_options · list_profiles · get_profile_config" },
-  { group: "Crawl data", tools: "query (read-only SQL) · get_database_schema · issue_summary · list_crawls" },
-];
-
+/* ---- MCP server panel (app-level, not part of any profile) -------------
+   One control surface: Start the server, and — on by default — expose it
+   over a public HTTPS URL. Both the local and public URLs are shown to copy.
+   The public URL is just the reverse tunnel pointed at the local listener. */
 function MCPPanel({ onToast }) {
-  const [st, setSt] = useState(null);
+  const [st, setSt] = useState(null);     // MCPStatus
+  const [t, setT] = useState(null);       // TunnelStatus
   const [port, setPort] = useState("");
+  const [wantPublic, setWantPublic] = useState(true); // default: also get a public URL
+  const [busy, setBusy] = useState(false);
+  const seeded = useRef(false);
 
   useEffect(() => {
     api.getMCPStatus().then((s) => { setSt(s); setPort(String(s.port)); }).catch(() => {});
-    return on("mcp:status", (s) => { setSt(s); setPort(String(s.port)); });
+    api.getTunnelStatus().then(setT).catch(() => {});
+    const offMcp = on("mcp:status", (s) => { setSt(s); setPort(String(s.port)); });
+    const offTun = on("tunnel:status", setT);
+    return () => { offMcp(); offTun(); };
   }, []);
 
-  async function toggle() {
-    const s = await api.setMCPEnabled(!st.enabled);
-    setSt(s);
-    if (s.error) onToast(s.error, "circle-alert");
-    else onToast(s.enabled ? "MCP server running" : "MCP server stopped", "plug-zap");
+  // Seed the "public URL" intent once from persisted state: respect a prior
+  // explicit opt-out (server on, tunnel off); otherwise leave it on by default.
+  useEffect(() => {
+    if (seeded.current || !st || !t) return;
+    seeded.current = true;
+    if (t.enabled) setWantPublic(true);
+    else if (st.enabled) setWantPublic(false);
+  }, [st, t]);
+
+  async function toggleServer() {
+    if (busy || !st) return;
+    setBusy(true);
+    try {
+      const turningOn = !st.enabled;
+      const s = await api.setMCPEnabled(turningOn);
+      setSt(s);
+      if (s.error) { onToast(s.error, "circle-alert"); return; }
+      onToast(turningOn ? "MCP server started" : "MCP server stopped", "plug-zap");
+      if (turningOn && wantPublic && t && !t.enabled) {
+        setT(await api.setTunnelEnabled(true));            // honour the default public URL
+      } else if (!turningOn && t && t.enabled) {
+        setT(await api.setTunnelEnabled(false));           // take the public URL down with the server
+      }
+    } finally { setBusy(false); }
   }
+
+  async function togglePublic(next) {
+    setWantPublic(next);
+    if (!st || !st.enabled) return;                        // no server yet — just remember the intent
+    setBusy(true);
+    try {
+      const tt = await api.setTunnelEnabled(next);
+      setT(tt);
+      if (tt.error) onToast(tt.error, "circle-alert");
+      else onToast(next ? "Creating public URL…" : "Public URL disabled", "globe");
+    } finally { setBusy(false); }
+  }
+
   async function applyPort() {
     const p = parseInt(port, 10);
     if (!p || p === st.port) { setPort(String(st.port)); return; }
@@ -336,6 +373,14 @@ function MCPPanel({ onToast }) {
   const cmdSnippet = `claude mcp add --transport http bluesnake ${st.endpoint}`;
   const jsonSnippet = `{"mcpServers": {"bluesnake": {"type": "http", "url": "${st.endpoint}"}}}`;
 
+  const pub = t || { enabled: false, state: "disabled" };
+  const pubOnline = pub.state === "online";
+  const pubConnecting = pub.state === "connecting";
+  const pubLabel = pubOnline ? "Live"
+    : pubConnecting ? "Connecting…"
+    : pub.state === "error" ? "Error" : "Starting…";
+  const pubColor = pubOnline ? "var(--sev-ok)" : pub.state === "error" ? "var(--s-4xx)" : "var(--ink-faint)";
+
   return (
     <>
       <div style={{ marginBottom: 18 }}>
@@ -344,28 +389,59 @@ function MCPPanel({ onToast }) {
         </h2>
         <div className="hint" style={{ marginTop: 6 }}>
           Let LLM agents (Claude Code, Claude Desktop, any MCP client) drive bluesnake: start crawls with any
-          configuration, watch progress, and analyse results with read-only SQL. The server listens on localhost
-          only — nothing leaves this machine.
+          configuration, watch progress, and analyse results with read-only SQL. Runs on this machine, with an
+          optional public URL for remote clients.
         </div>
       </div>
 
-      {/* master toggle */}
-      <div style={{ display: "flex", gap: 16, padding: "13px 0", borderBottom: "1px solid var(--border-soft)", alignItems: "center" }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Enable MCP server</div>
-          <div className="hint" style={{ marginTop: 4 }}>Stays on across restarts. Crawls an agent starts appear here live, and the pause/stop buttons work on them.</div>
+      {/* server control + the public-URL option, together */}
+      <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 16, padding: "14px 16px", alignItems: "center" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 650 }}>Start MCP server</div>
+            <div className="hint" style={{ marginTop: 4 }}>Stays on across restarts. Crawls an agent starts appear here live, and the pause/stop buttons work on them.</div>
+          </div>
+          <Toggle on={st.enabled} onChange={toggleServer} disabled={busy} />
         </div>
-        <Toggle on={st.enabled} onChange={toggle} />
+        <div style={{ display: "flex", gap: 13, padding: "12px 16px", alignItems: "center", borderTop: "1px solid var(--border-soft)", background: "var(--surface-2)" }}>
+          <Icon name="globe" size={16} style={{ color: "var(--ink-3)", flex: "0 0 16px" }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600 }}>Also create a public URL</div>
+            <div className="hint" style={{ marginTop: 3 }}>On by default — reach this server from a remote MCP client over HTTPS. Turn off to keep it on this machine only.</div>
+          </div>
+          <Toggle on={wantPublic} onChange={togglePublic} disabled={busy} />
+        </div>
       </div>
 
-      {/* live status */}
-      <div style={{ display: "flex", gap: 10, padding: "13px 0", borderBottom: "1px solid var(--border-soft)", alignItems: "center" }}>
-        <span className="statusdot" style={{ background: st.running ? "var(--sev-ok)" : "var(--ink-faint)" }} />
-        <span style={{ fontSize: 12.5, fontWeight: 600 }}>{st.running ? "Running" : "Stopped"}</span>
-        {st.running && <span className="mono" style={{ fontSize: 11.5, color: "var(--ink-2)" }}>{st.endpoint}</span>}
-        {st.running && <IconBtn icon="copy" size={13} title="Copy endpoint" onClick={() => copy(st.endpoint)} />}
-        {st.error && <span style={{ fontSize: 11.5, color: "var(--s-4xx)" }}><Icon name="circle-alert" size={12} /> {st.error}</span>}
-      </div>
+      {/* live status + URLs to copy */}
+      {st.running ? (
+        <div style={{ padding: "2px 0 16px", borderBottom: "1px solid var(--border-soft)" }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <span className="statusdot" style={{ background: "var(--sev-ok)" }} />
+            <span style={{ fontSize: 12.5, fontWeight: 600 }}>Running</span>
+            {st.error && <span style={{ fontSize: 11.5, color: "var(--s-4xx)" }}><Icon name="circle-alert" size={12} /> {st.error}</span>}
+          </div>
+          <UrlRow label="Local URL" value={st.endpoint} onCopy={copy} />
+          {wantPublic && (
+            <>
+              <UrlRow label="Public URL" value={pub.mcpUrl || ""} badge={pubLabel} badgeColor={pubColor}
+                placeholder={pub.state === "error" ? (pub.error || "Couldn’t create a public URL") : "Creating public URL…"}
+                onCopy={copy} />
+              <Note>
+                This URL reaches only this MCP server — an agent can start crawls and read your crawl data through
+                it, and nothing else on your machine. The address is randomized, so only the people you share it
+                with can use it. Switch “public URL” off anytime to take it offline.
+              </Note>
+            </>
+          )}
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 10, padding: "13px 0", borderBottom: "1px solid var(--border-soft)", alignItems: "center" }}>
+          <span className="statusdot" style={{ background: "var(--ink-faint)" }} />
+          <span style={{ fontSize: 12.5, fontWeight: 600 }}>Stopped</span>
+          {st.error && <span style={{ fontSize: 11.5, color: "var(--s-4xx)" }}><Icon name="circle-alert" size={12} /> {st.error}</span>}
+        </div>
+      )}
 
       {/* port */}
       <div style={{ display: "flex", gap: 16, padding: "13px 0", borderBottom: "1px solid var(--border-soft)", alignItems: "center" }}>
@@ -378,7 +454,7 @@ function MCPPanel({ onToast }) {
       </div>
 
       {/* connect snippets */}
-      <div style={{ padding: "16px 0", borderBottom: "1px solid var(--border-soft)" }}>
+      <div style={{ padding: "16px 0" }}>
         <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>Connect a client</div>
         <Snippet label="Claude Code" text={cmdSnippet} onCopy={copy} />
         <Snippet label="Any MCP client (JSON config)" text={jsonSnippet} onCopy={copy} />
@@ -386,98 +462,33 @@ function MCPPanel({ onToast }) {
           Without the app running, the CLI serves the same endpoint: <span className="mono">bluesnake mcp</span>
         </div>
       </div>
-
-      {/* public URL (reverse tunnel) */}
-      <TunnelSection mcpRunning={st.running} onToast={onToast} copy={copy} />
-
-      {/* tool surface */}
-      <div style={{ padding: "16px 0" }}>
-        <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>What agents can do</div>
-        {MCP_TOOLS.map((g) => (
-          <div key={g.group} style={{ display: "flex", gap: 10, padding: "5px 0", fontSize: 11.5 }}>
-            <span style={{ width: 110, flex: "0 0 110px", color: "var(--ink-faint)" }}>{g.group}</span>
-            <span className="mono" style={{ color: "var(--ink-2)" }}>{g.tools}</span>
-          </div>
-        ))}
-        <div className="hint" style={{ marginTop: 8 }}>
-          SQL access is read-only and scoped to the crawl databases under your store directory.
-        </div>
-      </div>
     </>
   );
 }
 
-/* ---- public URL via reverse tunnel ------------------------------------- */
-function TunnelSection({ mcpRunning, onToast, copy }) {
-  const [t, setT] = useState(null);
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    api.getTunnelStatus().then(setT).catch(() => {});
-    return on("tunnel:status", setT);
-  }, []);
-
-  async function toggle() {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const s = await api.setTunnelEnabled(!t.enabled);
-      setT(s);
-      if (s.error) onToast(s.error, "circle-alert");
-      else onToast(s.enabled ? "Creating public URL…" : "Public URL disabled", "globe");
-    } finally { setBusy(false); }
-  }
-  if (!t) return null;
-  const online = t.state === "online";
-  const connecting = t.state === "connecting";
-  const canEnable = mcpRunning || t.enabled;
-
-  const stateLabel = !t.enabled ? "Off"
-    : online ? "Live"
-    : connecting ? "Connecting…"
-    : t.state === "error" ? "Error" : "Stopped";
-  const stateColor = online ? "var(--sev-ok)" : t.state === "error" ? "var(--s-4xx)" : "var(--ink-faint)";
-
+/* a copyable endpoint with an optional state badge (local + public URLs) */
+function UrlRow({ label, value, placeholder, badge, badgeColor, onCopy }) {
+  const has = !!value;
   return (
-    <div style={{ padding: "16px 0", borderBottom: "1px solid var(--border-soft)" }}>
-      <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 7 }}>
-            <Icon name="globe" size={15} style={{ color: "var(--ink-3)" }} />Public URL
-          </div>
-          <div className="hint" style={{ marginTop: 4 }}>
-            {canEnable
-              ? "Expose this MCP server over a public HTTPS URL so a remote MCP client can reach it. Off by default; the server stays localhost-only until you turn this on."
-              : "Enable the MCP server above first — the public URL forwards to it."}
-          </div>
-        </div>
-        <Toggle on={t.enabled} onChange={toggle} disabled={!canEnable || busy} />
+    <div style={{ marginTop: 11 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
+        <span style={{ fontSize: 10.5, color: "var(--ink-faint)", textTransform: "uppercase", letterSpacing: ".05em" }}>{label}</span>
+        {badge && <span style={{ fontSize: 10.5, fontWeight: 600, color: badgeColor }}>· {badge}</span>}
       </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <pre className="mono" style={{ flex: 1, margin: 0, padding: "8px 10px", fontSize: 11, lineHeight: 1.5, border: "1px solid var(--border-soft)", borderRadius: 6, background: "var(--sidebar)", overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all", color: has ? "var(--ink)" : "var(--ink-faint)" }}>{has ? value : (placeholder || "…")}</pre>
+        {has && <IconBtn icon="copy" size={14} title={"Copy " + label.toLowerCase()} onClick={() => onCopy(value)} />}
+      </div>
+    </div>
+  );
+}
 
-      {t.enabled && (
-        <>
-          <div style={{ display: "flex", gap: 10, padding: "12px 0 4px", alignItems: "center" }}>
-            <span className="statusdot" style={{ background: stateColor }} />
-            <span style={{ fontSize: 12.5, fontWeight: 600 }}>{stateLabel}</span>
-            {t.error && <span style={{ fontSize: 11.5, color: "var(--s-4xx)" }}><Icon name="circle-alert" size={12} /> {t.error}</span>}
-          </div>
-
-          {t.mcpUrl && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-              <pre className="mono" style={{ flex: 1, margin: 0, padding: "8px 10px", fontSize: 11, lineHeight: 1.5, border: "1px solid var(--border-soft)", borderRadius: 6, background: "var(--sidebar)", overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{t.mcpUrl}</pre>
-              <IconBtn icon="copy" size={14} title="Copy public MCP URL" onClick={() => copy(t.mcpUrl)} />
-            </div>
-          )}
-
-          <div className="hint" style={{ marginTop: 10, display: "flex", gap: 7, alignItems: "flex-start", color: "var(--s-4xx)" }}>
-            <Icon name="shield-alert" size={13} style={{ flex: "0 0 13px", marginTop: 1 }} />
-            <span>
-              Anyone with this URL can drive your crawler and read your crawl data — its randomized address is the
-              only thing keeping it private, so don't share it publicly. Turn this off to take it offline.
-            </span>
-          </div>
-        </>
-      )}
+/* a calm informational note (sticky-note feel — not an alarm) */
+function Note({ children }) {
+  return (
+    <div style={{ display: "flex", gap: 9, alignItems: "flex-start", marginTop: 12, padding: "10px 12px", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8, fontSize: 11.5, color: "var(--ink-2)", lineHeight: 1.55 }}>
+      <Icon name="info" size={14} style={{ flex: "0 0 14px", marginTop: 1, color: "var(--ink-faint)" }} />
+      <span>{children}</span>
     </div>
   );
 }
