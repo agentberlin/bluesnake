@@ -13,8 +13,9 @@
   --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* brand blue — perceptible but restrained (one hue drives the whole chrome) */
-  --accent-h: 252;
+  /* brand blue — perceptible but restrained (one hue drives the whole chrome);
+     hue matched to the logo mark's azure (logo.png averages ~oklch hue 239) */
+  --accent-h: 240;
   --accent: oklch(0.50 0.14 var(--accent-h));
   --accent-soft: oklch(0.50 0.14 var(--accent-h) / 0.10);
   --accent-ring: oklch(0.50 0.14 var(--accent-h) / 0.30);
@@ -348,7 +349,7 @@ input[type=range]{ accent-color: var(--accent); }
   box-shadow:var(--shadow);
 }
 .wl-cmd:focus-within{ border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-ring), var(--shadow); }
-.wl-cmd-prefix{ font-size:12.5px; color:var(--ink-faint); padding:0 0 0 15px; white-space:nowrap; user-select:none; }
+.wl-cmd-prefix{ font-size:12.5px; color:var(--ink-faint); padding:0 0 0 15px; white-space:nowrap; user-select:none; cursor:text; }
 .wl-cmd input{
   flex:1; min-width:0; height:100%; border:0; outline:none; background:transparent;
   color:var(--ink); font-size:13px; padding:0 10px;
