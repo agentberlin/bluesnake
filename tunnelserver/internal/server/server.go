@@ -13,6 +13,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -95,7 +96,7 @@ func New(cfg Config) (*Server, error) {
 		Log:               log,
 	})
 
-	root := routeByHost(cfg.APIHost, cfg.BaseDomain, apiSrv.Handler(), gw.PublicHandler())
+	root := logRequests(log, routeByHost(cfg.APIHost, cfg.BaseDomain, apiSrv.Handler(), gw.PublicHandler()))
 
 	s := &Server{cfg: cfg, log: log, gw: gw, root: root}
 	s.httpSrv = &http.Server{
@@ -133,6 +134,77 @@ func routeByHost(apiHost, baseDomain string, apiHandler, publicHandler http.Hand
 			http.NotFound(w, r)
 		}
 	})
+}
+
+// logRequests wraps h to emit one structured access-log line per HTTP request
+// reaching the public listener — covering both the control plane (api host) and
+// the data-plane proxy (tunnel subdomains). It records only non-PII metadata:
+// the method, host, path, response status, byte count, and latency. Request and
+// response bodies, query strings, request headers, and client IPs are
+// deliberately omitted so user data never lands in the logs. (Tunnel-connect
+// connections arrive via ALPN and bypass the HTTP handler, so they are not
+// double-counted here; they have their own connect/disconnect lines.)
+func logRequests(log *slog.Logger, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		h.ServeHTTP(rec, r)
+		log.Info("request",
+			"method", r.Method,
+			"host", hostOnly(r.Host),
+			"path", r.URL.Path,
+			"status", rec.status,
+			"bytes", rec.bytes,
+			"dur_ms", time.Since(start).Milliseconds(),
+		)
+	})
+}
+
+// hostOnly strips any port from a Host header for tidier log lines.
+func hostOnly(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return host
+}
+
+// statusRecorder wraps an http.ResponseWriter to capture the status code and
+// number of bytes written for access logging. It forwards Flush and Hijack to
+// the underlying writer so the streaming reverse proxy (FlushInterval: -1, used
+// for SSE) and any connection upgrades keep working unchanged.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+	wrote  bool
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if !s.wrote {
+		s.status = code
+		s.wrote = true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	s.wrote = true
+	n, err := s.ResponseWriter.Write(b)
+	s.bytes += n
+	return n, err
+}
+
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hj, ok := s.ResponseWriter.(http.Hijacker); ok {
+		return hj.Hijack()
+	}
+	return nil, nil, fmt.Errorf("server: underlying ResponseWriter does not support hijacking")
 }
 
 // Serve runs the server on the given TLS listener until ctx is cancelled. The
