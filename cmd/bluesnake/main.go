@@ -9,6 +9,7 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/robots"
+	"github.com/agentberlin/bluesnake/internal/version"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -98,7 +99,8 @@ func newRobotsCmd() *cobra.Command {
 	return robotsCmd
 }
 
-const appVersion = "0.1.0-dev"
+// appVersion is the single canonical version (see internal/version).
+var appVersion = version.Version
 
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{

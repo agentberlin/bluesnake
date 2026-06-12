@@ -12,6 +12,7 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/mcp"
 	"github.com/agentberlin/bluesnake/internal/store"
+	"github.com/agentberlin/bluesnake/internal/version"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -21,10 +22,11 @@ import (
 // UI exactly like one started by hand — and the UI's pause/stop buttons work
 // on it.
 
-const (
-	defaultMCPPort = 8473
-	appVersion     = "0.1.0-dev"
-)
+const defaultMCPPort = 8473
+
+// appVersion is the single canonical version (see internal/version), reported
+// in the MCP server handshake.
+var appVersion = version.Version
 
 // MCPStatus is what the frontend renders (titlebar pill + settings panel).
 type MCPStatus struct {

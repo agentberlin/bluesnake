@@ -10,6 +10,7 @@ import "./styles.css";
 import { api, on, urlShort, hostOf } from "./api";
 import { Icon, IconBtn } from "./ui";
 import { CrawlManager } from "./views/home";
+import { Welcome } from "./views/welcome";
 import { NewCrawl } from "./views/newcrawl";
 import { CrawlProgress } from "./views/progress";
 import { ResultsWorkspace } from "./views/results-shell";
@@ -22,6 +23,7 @@ function App() {
   const [dark, setDark] = useState(() => localStorage.getItem("bluesnake-theme") === "dark");
   const [view, setView] = useState("home");
   const [crawls, setCrawls] = useState([]);
+  const [crawlsLoaded, setCrawlsLoaded] = useState(false); // gates the first-run welcome until we know
   const [activeCrawl, setActiveCrawl] = useState(null);
   const [liveCrawlId, setLiveCrawlId] = useState(null);
   const [resultsTab, setResultsTab] = useState("internal");
@@ -40,7 +42,7 @@ function App() {
   }, [dark]);
 
   const refresh = useCallback(() => {
-    api.listCrawls().then((cs) => setCrawls(cs || [])).catch(() => {});
+    api.listCrawls().then((cs) => { setCrawls(cs || []); setCrawlsLoaded(true); }).catch(() => setCrawlsLoaded(true));
     api.storageInfo().then(setStorage).catch(() => {});
   }, []);
 
@@ -63,6 +65,15 @@ function App() {
     setLiveCrawlId(id);
     setView("progress");
     refresh();
+  }
+  // first-run welcome: a bare domain → a sensible default spider crawl
+  function startFromWelcome(rawUrl) {
+    let u = (rawUrl || "").trim();
+    if (u && !/^https?:\/\//i.test(u)) u = "https://" + u;
+    return startCrawl({
+      mode: "spider", url: u, listUrls: [], sitemapUrl: "", project: "",
+      profile: "Default audit", threads: 5, rate: 2, maxDepth: -1, rendering: "text",
+    });
   }
   async function resumeCrawl(c) {
     const id = await api.resumeCrawl(c.id);
@@ -196,7 +207,12 @@ function App() {
         </div>
 
         {/* main routed content */}
-        {view === "home" && <CrawlManager crawls={crawls} onOpen={openCrawl} onResume={resumeCrawl} onCompare={() => setView("compare")} onNew={() => setView("new")} onDelete={deleteCrawl} storage={storage} />}
+        {view === "home" && crawlsLoaded && (
+          crawls.length === 0
+            ? <Welcome onStart={startFromWelcome} onConfigure={() => setView("new")}
+                onMcp={() => { setSettingsFocus({ section: "mcp" }); setSettingsBack({ view: "home", label: "Back" }); setView("settings"); }} />
+            : <CrawlManager crawls={crawls} onOpen={openCrawl} onResume={resumeCrawl} onCompare={() => setView("compare")} onNew={() => setView("new")} onDelete={deleteCrawl} storage={storage} />
+        )}
         {view === "new" && <NewCrawl onStart={startCrawl} onOpenSettings={(p) => { setSettingsProfile(p); setSettingsBack({ view: "new", label: "New Crawl" }); setView("settings"); }} />}
         {view === "progress" && <CrawlProgress crawlId={liveCrawlId} onOpenResults={finishToResults} />}
         {view === "results" && activeCrawl && (
