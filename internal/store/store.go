@@ -420,7 +420,8 @@ func (c *Crawl) ProcessedURLs() ([]string, error) {
 	return urls, rows.Err()
 }
 
-// UpdateInlinks writes the inlink aggregates computed by the crawl.
+// UpdateInlinks writes the post-crawl page aggregates: inlink counts and the
+// recomputed crawl depth (NULL when no followed-link path reaches the URL).
 func (c *Crawl) UpdateInlinks(pages map[string]*crawler.PageRecord) error {
 	tx, err := c.db.Begin()
 	if err != nil {
@@ -428,8 +429,9 @@ func (c *Crawl) UpdateInlinks(pages map[string]*crawler.PageRecord) error {
 	}
 	defer tx.Rollback()
 	for url, rec := range pages {
-		if _, err := tx.Exec(`UPDATE pages SET inlinks = ?, discovered_from = ? WHERE url = ?`,
-			rec.Inlinks, rec.DiscoveredFrom, url); err != nil {
+		depth := sql.NullInt64{Int64: int64(rec.Depth), Valid: rec.Depth != crawler.NoDepth}
+		if _, err := tx.Exec(`UPDATE pages SET inlinks = ?, discovered_from = ?, depth = ? WHERE url = ?`,
+			rec.Inlinks, rec.DiscoveredFrom, depth, url); err != nil {
 			return err
 		}
 	}
@@ -439,7 +441,7 @@ func (c *Crawl) UpdateInlinks(pages map[string]*crawler.PageRecord) error {
 // LoadPages reconstructs every PageRecord (including parsed facts) from the
 // crawl database, keyed by URL.
 func (c *Crawl) LoadPages() (map[string]*crawler.PageRecord, error) {
-	rows, err := c.db.Query(`SELECT url, scope, state, depth, status_code, status,
+	rows, err := c.db.Query(`SELECT url, scope, state, COALESCE(depth, -1), status_code, status,
 		content_type, COALESCE(http_version,''), response_time_ms, size, fetch_error, redirect_url,
 		redirect_type, matched_robots_line, indexable, indexability_status,
 		inlinks, COALESCE(discovered_from,''), outside_start_folder,

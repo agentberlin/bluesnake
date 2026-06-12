@@ -44,6 +44,7 @@ Feature: Issue detection — catalogue expansion
       <img src="/sized.png" alt="sized image" width="100" height="80">
       </body></html>
       """
+    And the crawl config override "resources.images.store=true"
     When I crawl the site into a store
     And issues are evaluated
     Then the page "/" has issue "image_missing_size_attributes"

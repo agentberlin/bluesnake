@@ -111,8 +111,10 @@ var catalogue = []Def{
 	{"h1_multiple", "h1", "Multiple", Warning, Medium},
 	{"h1_non_sequential", "h1", "Non-sequential", Warning, Low},
 	{"h2_missing", "h2", "Missing", Warning, Low},
+	{"h2_duplicate", "h2", "Duplicate", Opportunity, Low},
 	{"h2_over_chars", "h2", "Over X Characters", Opportunity, Low},
 	{"h2_multiple", "h2", "Multiple", Warning, Low},
+	{"h2_non_sequential", "h2", "Non-Sequential", Warning, Low},
 	// Content
 	{"content_low_word_count", "content", "Low Content Pages", Opportunity, Medium},
 	{"content_exact_duplicate", "content", "Exact Duplicates", Issue, High},
@@ -136,6 +138,7 @@ var catalogue = []Def{
 	{"directive_noindex", "directives", "Noindex", Warning, High},
 	{"directive_nofollow", "directives", "Nofollow", Warning, High},
 	{"directive_none", "directives", "None", Warning, High},
+	{"directive_outside_head", "directives", "Outside <head>", Issue, High},
 	// Links
 	{"links_high_internal_outlinks", "links", "Pages With High Internal Outlinks", Warning, Low},
 	{"links_high_external_outlinks", "links", "Pages With High External Outlinks", Warning, Low},
@@ -162,6 +165,7 @@ var catalogue = []Def{
 	{"sitemap_in_multiple", "sitemaps", "URLs In Multiple Sitemaps", Warning, Low},
 	{"sitemap_not_in_sitemap", "sitemaps", "URLs Not In Sitemap", Issue, Medium},
 	// Structured data
+	{"structured_missing", "structured_data", "Missing", Opportunity, Low},
 	{"structured_parse_error", "structured_data", "Parse Errors", Issue, High},
 	{"structured_validation_error", "structured_data", "Validation Errors", Issue, High},
 	{"structured_validation_warning", "structured_data", "Validation Warnings", Opportunity, Low},
@@ -498,6 +502,16 @@ func (e *evaluator) elements(rec *crawler.PageRecord) {
 		e.add(u, "keywords_multiple")
 	}
 
+	// Screaming Frog extracts two h1s and two h2s per page and runs the
+	// length checks on both
+	overChars := func(headings []string, max int) bool {
+		for _, h := range headings[:min(len(headings), 2)] {
+			if len([]rune(h)) > max {
+				return true
+			}
+		}
+		return false
+	}
 	switch {
 	case len(f.H1s) == 0 || strings.TrimSpace(f.H1s[0]) == "":
 		e.add(u, "h1_missing")
@@ -505,7 +519,7 @@ func (e *evaluator) elements(rec *crawler.PageRecord) {
 		if len(f.H1s) > 1 {
 			e.add(u, "h1_multiple")
 		}
-		if len([]rune(f.H1s[0])) > t.H1MaxChars {
+		if overChars(f.H1s, t.H1MaxChars) {
 			e.add(u, "h1_over_chars")
 		}
 		if len(f.HeadingLevels) > 0 && f.HeadingLevels[0] != 1 {
@@ -519,8 +533,20 @@ func (e *evaluator) elements(rec *crawler.PageRecord) {
 		if len(f.H2s) > 1 {
 			e.add(u, "h2_multiple")
 		}
-		if len([]rune(f.H2s[0])) > t.H2MaxChars {
+		if overChars(f.H2s, t.H2MaxChars) {
 			e.add(u, "h2_over_chars")
+		}
+		// an h2 should be the next heading level after the h1: flag pages
+		// whose first h2 follows a deeper heading (h1 > h3 > h2 ordering)
+		prev := 0
+		for _, level := range f.HeadingLevels {
+			if level == 2 {
+				if prev > 2 {
+					e.add(u, "h2_non_sequential", fmt.Sprintf("first h2 follows an h%d", prev))
+				}
+				break
+			}
+			prev = level
 		}
 	}
 }
@@ -595,6 +621,11 @@ func (e *evaluator) canonicals(rec *crawler.PageRecord) {
 
 func (e *evaluator) structuredData(rec *crawler.PageRecord) {
 	sd := rec.StructuredData
+	x := &e.cfg.Extraction.StructuredData
+	if (x.JSONLD || x.Microdata || x.RDFa) && isHTMLPage(rec) && !e.skipForIndexability(rec) &&
+		(sd == nil || len(sd.Formats) == 0) {
+		e.add(rec.URL, "structured_missing")
+	}
 	if sd == nil {
 		return
 	}
@@ -727,6 +758,9 @@ func (e *evaluator) amp(rec *crawler.PageRecord) {
 }
 
 func (e *evaluator) directives(rec *crawler.PageRecord) {
+	if rec.Facts.MetaRobotsOutsideHead > 0 {
+		e.add(rec.URL, "directive_outside_head")
+	}
 	for _, v := range append(append([]string{}, rec.Facts.MetaRobots...), rec.Facts.XRobotsTag...) {
 		for directive := range strings.SplitSeq(v, ",") {
 			switch strings.ToLower(strings.TrimSpace(directive)) {
@@ -792,7 +826,9 @@ func (e *evaluator) links(rec *crawler.PageRecord) {
 		if internalOut > t.HighInternalOutlinks {
 			e.add(u, "links_high_internal_outlinks", fmt.Sprintf("%d", internalOut))
 		}
-		if externalOut > t.HighExternalOutlinks {
+		// external outlinks are only tracked when external links are stored
+		// (Screaming Frog parity: the metric is blank with storage off)
+		if e.cfg.Links.External.Store && externalOut > t.HighExternalOutlinks {
 			e.add(u, "links_high_external_outlinks", fmt.Sprintf("%d", externalOut))
 		}
 		if rec.Depth > t.HighCrawlDepth {
@@ -802,8 +838,12 @@ func (e *evaluator) links(rec *crawler.PageRecord) {
 }
 
 // images flags issues on image *references* (per page) and oversized image
-// files (per crawled image URL).
+// files (per crawled image URL). Image checks only run when images are
+// stored (Screaming Frog parity: no image reporting with storage off).
 func (e *evaluator) images(rec *crawler.PageRecord) {
+	if !e.cfg.Resources.Images.Store {
+		return
+	}
 	t := &e.cfg.Thresholds
 	unsized := map[string]bool{} // one occurrence per distinct image URL
 	for _, l := range rec.Facts.Links {
@@ -833,6 +873,7 @@ func (e *evaluator) duplicates() {
 	byTitle := map[string]*group{}
 	byDesc := map[string]*group{}
 	byH1 := map[string]*group{}
+	byH2 := map[string]*group{}
 
 	collect := func(m map[string]*group, key, url string) {
 		if key == "" {
@@ -860,6 +901,11 @@ func (e *evaluator) duplicates() {
 		if len(f.H1s) > 0 {
 			collect(byH1, f.H1s[0], url)
 		}
+		// Screaming Frog extracts two h2s per page (H2-1, H2-2) and its
+		// Duplicate filter matches on either
+		for _, h2 := range f.H2s[:min(len(f.H2s), 2)] {
+			collect(byH2, h2, url)
+		}
 	}
 
 	flag := func(m map[string]*group, issueID string) {
@@ -876,6 +922,7 @@ func (e *evaluator) duplicates() {
 	flag(byTitle, "title_duplicate")
 	flag(byDesc, "description_duplicate")
 	flag(byH1, "h1_duplicate")
+	flag(byH2, "h2_duplicate")
 }
 
 // inlinkAggregates runs the cross-page link-graph checks: pages whose every

@@ -287,6 +287,12 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 	}
 	wg.Wait()
 
+	// resumed runs see only this session's pages — the BFS would have no
+	// crawled seed to start from, so keep admit-time depths there
+	if len(c.resumeProcessed) == 0 {
+		c.recomputeDepths(seeds)
+	}
+
 	res := &Result{
 		Pages:       c.pages,
 		Interrupted: ctx.Err() != nil,
@@ -304,6 +310,66 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 		}
 	}
 	return res, c.sinkErr
+}
+
+// NoDepth marks pages with no followed-link path from a seed (discovered
+// via sitemaps only, or linked solely from such pages).
+const NoDepth = -1
+
+// recomputeDepths replaces admit-time depths with the shortest followed-link
+// path from a seed (Screaming Frog parity). Sitemap discovery contributes no
+// depth: URLs reachable only that way keep NoDepth, as do their descendants.
+// Redirects (HTTP, meta refresh, JS) count as a hop, like a link.
+func (c *Crawler) recomputeDepths(seeds []string) {
+	adj := make(map[string][]string, len(c.pages))
+	for url, rec := range c.pages {
+		var out []string
+		if rec.RedirectURL != "" && rec.RedirectURL != url {
+			out = append(out, rec.RedirectURL)
+		}
+		if rec.Facts != nil {
+			for _, l := range rec.Facts.Links {
+				switch l.Type {
+				case parse.Hyperlink:
+					if l.Nofollow && !c.cfg.Scope.FollowInternalNofollow {
+						continue
+					}
+				case parse.IFrame:
+					if !c.cfg.Links.IFrames.Crawl {
+						continue
+					}
+				default:
+					continue
+				}
+				if l.URL == "" || l.URL == url {
+					continue
+				}
+				out = append(out, l.URL)
+			}
+		}
+		adj[url] = out
+	}
+	for _, rec := range c.pages {
+		rec.Depth = NoDepth
+	}
+	queue := make([]string, 0, len(seeds))
+	for _, s := range seeds {
+		if rec, ok := c.pages[s]; ok && rec.Depth == NoDepth {
+			rec.Depth = 0
+			queue = append(queue, s)
+		}
+	}
+	for len(queue) > 0 {
+		u := queue[0]
+		queue = queue[1:]
+		d := c.pages[u].Depth
+		for _, v := range adj[u] {
+			if rec, ok := c.pages[v]; ok && rec.Depth == NoDepth {
+				rec.Depth = d + 1
+				queue = append(queue, v)
+			}
+		}
+	}
 }
 
 func (c *Crawler) process(ctx context.Context, wg *sync.WaitGroup, it frontier.Item) {

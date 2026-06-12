@@ -89,11 +89,11 @@ func TestTitlePixelIssues(t *testing.T) {
 
 func TestDescriptionPixelIssues(t *testing.T) {
 	// 100 W's: 100 chars (within the 70..155 char window) but
-	// 100 * 944 * 13 / 1000 = 1227.2 -> 1227px, over the 985px default.
+	// 100 * 944 * 13.9 / 1000 = 1312.16 -> 1312px, over the 985px default.
 	wide := strings.Repeat("W", 100)
-	// 130 l's: 130 chars (within the char window) but
-	// 130 * 222 * 13 / 1000 = 375.18 -> 375px, under the 400px default.
-	narrow := strings.Repeat("l", 130)
+	// 125 l's: 125 chars (within the char window) but
+	// 125 * 222 * 13.9 / 1000 = 385.725 -> 386px, under the 400px default.
+	narrow := strings.Repeat("l", 125)
 	normal := "The quick brown fox jumps over the lazy dog while the lazy dog " +
 		"watches the quick brown fox jump over it again and again all day"
 	occs := eval(
@@ -114,18 +114,18 @@ func TestDescriptionPixelIssues(t *testing.T) {
 		fmt.Sprintf("%dpx", serpwidth.Description(wide)); got != want {
 		t.Errorf("description_over_pixels detail = %q, want %q", got, want)
 	}
-	if got := occDetail(occs, "https://ex.com/wide", "description_over_pixels"); got != "1227px" {
-		t.Errorf("description_over_pixels detail = %q, want \"1227px\"", got)
+	if got := occDetail(occs, "https://ex.com/wide", "description_over_pixels"); got != "1312px" {
+		t.Errorf("description_over_pixels detail = %q, want \"1312px\"", got)
 	}
 
 	if !has(occs, "https://ex.com/narrow", "description_below_pixels") {
 		t.Error("missing description_below_pixels on narrow description")
 	}
 	if has(occs, "https://ex.com/narrow", "description_below_chars") {
-		t.Error("130-char description must not trip the character check")
+		t.Error("125-char description must not trip the character check")
 	}
-	if got := occDetail(occs, "https://ex.com/narrow", "description_below_pixels"); got != "375px" {
-		t.Errorf("description_below_pixels detail = %q, want \"375px\"", got)
+	if got := occDetail(occs, "https://ex.com/narrow", "description_below_pixels"); got != "386px" {
+		t.Errorf("description_below_pixels detail = %q, want \"386px\"", got)
 	}
 
 	for _, url := range []string{"https://ex.com/normal", "https://ex.com/none", "https://ex.com/empty"} {

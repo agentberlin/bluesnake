@@ -9,6 +9,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/agentberlin/bluesnake/internal/config"
@@ -94,8 +95,9 @@ type Facts struct {
 	H2s           []string
 	HeadingLevels []int // document order of h1..h6 levels
 
-	MetaRobots []string
-	XRobotsTag []string
+	MetaRobots            []string
+	MetaRobotsOutsideHead int
+	XRobotsTag            []string
 
 	MetaRefresh    string // raw content attribute
 	MetaRefreshURL string // resolved target ("" if none); self URL for bare delays
@@ -333,6 +335,9 @@ func (p *parser) handleMeta(n *html.Node, path string) {
 		f.Keywords = append(f.Keywords, content)
 	case "robots":
 		f.MetaRobots = append(f.MetaRobots, content)
+		if !inHead(path) {
+			f.MetaRobotsOutsideHead++
+		}
 	case "viewport":
 		f.HasViewport = true
 	}
@@ -534,16 +539,57 @@ func hasAncestorTag(path, tag string) bool {
 	return strings.Contains(path+"/", "/"+tag+"/")
 }
 
+// inlineElements are phrasing-content elements whose text runs together
+// with adjacent text (browser rendering and Screaming Frog behaviour:
+// "data<span>.</span>" reads "data."). Crossing any other element boundary
+// separates words. Form controls and replaced elements (img, svg, input,
+// select) are transparent too — Screaming Frog joins "aa<img>bb" into one
+// word; their internal text (option labels, svg titles) never counts
+// because of nonTextElements.
+var inlineElements = map[string]bool{
+	"a": true, "abbr": true, "b": true, "bdi": true, "bdo": true,
+	"cite": true, "code": true, "data": true, "dfn": true, "em": true,
+	"i": true, "kbd": true, "mark": true, "q": true, "rp": true,
+	"rt": true, "ruby": true, "s": true, "samp": true, "small": true,
+	"span": true, "strong": true, "sub": true, "sup": true, "time": true,
+	"u": true, "var": true, "font": true, "big": true, "strike": true,
+	"tt": true, "nobr": true,
+	"button": true, "label": true, "img": true, "input": true,
+	"svg": true, "select": true, "textarea": true, "picture": true,
+	"source": true, "wbr": true, "output": true, "meter": true,
+	"progress": true, "canvas": true, "object": true, "embed": true,
+}
+
+// sameTagAdjacent reports whether n is an inline element immediately
+// preceded by a sibling element of the same tag (`</span><span>` with
+// nothing — not even a comment — between). Screaming Frog breaks words
+// there, but joins text across every other inline boundary.
+func sameTagAdjacent(n *html.Node) bool {
+	return n.Type == html.ElementNode && inlineElements[n.Data] &&
+		n.PrevSibling != nil && n.PrevSibling.Type == html.ElementNode &&
+		n.PrevSibling.Data == n.Data
+}
+
 func subtreeText(n *html.Node) string {
 	var b strings.Builder
 	var visit func(*html.Node)
 	visit = func(n *html.Node) {
 		if n.Type == html.TextNode {
 			b.WriteString(n.Data)
+			return
+		}
+		if n.Type == html.ElementNode && slices.Contains(nonTextElements, n.Data) {
+			return
+		}
+		boundary := n.Type == html.ElementNode && !inlineElements[n.Data]
+		if boundary || sameTagAdjacent(n) {
 			b.WriteString(" ")
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
 			visit(c)
+		}
+		if boundary {
+			b.WriteString(" ")
 		}
 	}
 	visit(n)
