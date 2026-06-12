@@ -241,11 +241,11 @@ custom_extraction: []    # [{name:, type: xpath|css|regex, expression:, attribut
 custom_js: []            # [{name:, type: extraction|action, file: snippet.js, timeout_sec: 5, content_types: [text/html]}]
 
 link_positions:          # ordered; first match wins; substring match on link XPath/element chain
-  - {name: head,    match: "/head"}
-  - {name: nav,     match: "/nav"}
-  - {name: header,  match: "/header"}
-  - {name: sidebar, match: "/aside"}
-  - {name: footer,  match: "/footer"}
+  - {name: head,    match: "/head/"}   # SF's decoded default search terms: the trailing
+  - {name: nav,     match: "nav"}      # slash keeps <header> links out of the head bucket,
+  - {name: header,  match: "header"}   # and the bare terms also match class names once
+  - {name: sidebar, match: "aside"}    # element paths carry attribute qualifiers
+  - {name: footer,  match: "footer"}
   - {name: content, match: "/"}
 store_link_paths: true
 
