@@ -11,6 +11,7 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/indexability"
 	"github.com/agentberlin/bluesnake/internal/isocodes"
 	"github.com/agentberlin/bluesnake/internal/issues"
 	"github.com/agentberlin/bluesnake/internal/parse"
@@ -78,13 +79,35 @@ func Run(pages map[string]*crawler.PageRecord, sitemaps SitemapIndex, cfg *confi
 }
 
 type analyzer struct {
-	pages map[string]*crawler.PageRecord
-	cfg   *config.Config
-	res   *Results
+	pages       map[string]*crawler.PageRecord
+	cfg         *config.Config
+	res         *Results
+	hyperlinked map[string]bool // memoized by hyperlinkedSet
 }
 
 func (a *analyzer) add(url, id, detail string) {
 	a.res.Occurrences = append(a.res.Occurrences, issues.Occurrence{URL: url, IssueID: id, Detail: detail})
+}
+
+// hyperlinkedSet returns every URL that is the target of at least one
+// hyperlink from another page (self-links excluded). The "unlinked" checks
+// (canonical-/hreflang-/pagination-only discoverability) test against it.
+func (a *analyzer) hyperlinkedSet() map[string]bool {
+	if a.hyperlinked != nil {
+		return a.hyperlinked
+	}
+	a.hyperlinked = map[string]bool{}
+	for src, rec := range a.pages {
+		if rec.Facts == nil {
+			continue
+		}
+		for _, l := range rec.Facts.Links {
+			if l.Type == parse.Hyperlink && l.URL != "" && l.URL != src {
+				a.hyperlinked[l.URL] = true
+			}
+		}
+	}
+	return a.hyperlinked
 }
 
 // linkGraph computes unique in/outlink counts and PageRank-style link scores
@@ -328,12 +351,32 @@ func validHreflang(code string) bool {
 	return !hasRegion || isocodes.ValidRegion(region)
 }
 
+// hreflangEntries returns a page's HTML + HTTP hreflang annotations.
+func hreflangEntries(rec *crawler.PageRecord) []parse.Hreflang {
+	return append(append([]parse.Hreflang{}, rec.Facts.HreflangHTML...), rec.Facts.HreflangHTTP...)
+}
+
+// hreflangSelfCode returns the language code a page declares for itself
+// (its annotation whose URL is the page, x-default aside), "" if none.
+func hreflangSelfCode(rec *crawler.PageRecord) string {
+	if rec.Facts == nil {
+		return ""
+	}
+	for _, h := range hreflangEntries(rec) {
+		if h.URL == rec.URL && !strings.EqualFold(h.Lang, "x-default") {
+			return h.Lang
+		}
+	}
+	return ""
+}
+
 func (a *analyzer) hreflang() {
+	annotated := map[string]string{} // annotation target -> smallest annotating source
 	for url, rec := range a.pages {
 		if rec.Facts == nil {
 			continue
 		}
-		entries := append(append([]parse.Hreflang{}, rec.Facts.HreflangHTML...), rec.Facts.HreflangHTTP...)
+		entries := hreflangEntries(rec)
 		if len(entries) == 0 {
 			continue
 		}
@@ -353,13 +396,30 @@ func (a *analyzer) hreflang() {
 			if !ok {
 				continue
 			}
+			if cur, seen := annotated[h.URL]; !seen || url < cur {
+				annotated[h.URL] = url
+			}
 			if target.StatusCode != 200 {
 				a.add(url, "hreflang_non_200", h.URL)
 				continue
 			}
+			// the return-link family: hreflang must reference indexable,
+			// canonical URLs, with codes matching the target's own declaration
+			if !strings.EqualFold(h.Lang, "x-default") {
+				if sc := hreflangSelfCode(target); sc != "" && !strings.EqualFold(sc, h.Lang) {
+					a.add(url, "hreflang_inconsistent_return",
+						fmt.Sprintf("%s self-declares %q, annotated %q", h.URL, sc, h.Lang))
+				}
+			}
+			if t := canonicalTarget(target); t != "" && t != target.URL {
+				a.add(url, "hreflang_non_canonical_return", h.URL)
+			}
+			if target.IndexabilityStatus == indexability.Noindex {
+				a.add(url, "hreflang_noindex_return", h.URL)
+			}
 			if target.Facts != nil {
 				returns := false
-				for _, th := range append(append([]parse.Hreflang{}, target.Facts.HreflangHTML...), target.Facts.HreflangHTTP...) {
+				for _, th := range hreflangEntries(target) {
 					if th.URL == url {
 						returns = true
 						break
@@ -377,9 +437,66 @@ func (a *analyzer) hreflang() {
 			a.add(url, "hreflang_missing_x_default", "")
 		}
 	}
+	hyperlinked := a.hyperlinkedSet()
+	for t, src := range annotated {
+		rec := a.pages[t]
+		if rec.Scope == "internal" && rec.State == crawler.StateCrawled && !hyperlinked[t] {
+			a.add(t, "hreflang_unlinked", "annotated by "+src)
+		}
+	}
+}
+
+// nextTarget / prevTarget return the first pagination annotation in a
+// direction ("" when none) — the step functions for loop walking.
+func nextTarget(rec *crawler.PageRecord) string {
+	if rec.Facts == nil {
+		return ""
+	}
+	for _, t := range append(append([]string{}, rec.Facts.NextHTML...), rec.Facts.NextHTTP...) {
+		if t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+func prevTarget(rec *crawler.PageRecord) string {
+	if rec.Facts == nil {
+		return ""
+	}
+	for _, t := range append(append([]string{}, rec.Facts.PrevHTML...), rec.Facts.PrevHTTP...) {
+		if t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+// followPagination walks a pagination chain from start, reporting the hop
+// count when the chain revisits a URL (a loop). Bounded like followChain.
+func (a *analyzer) followPagination(start string, step func(*crawler.PageRecord) string) (int, bool) {
+	seen := map[string]bool{start: true}
+	current := start
+	for hops := 1; hops <= 25; hops++ {
+		rec, ok := a.pages[current]
+		if !ok {
+			return 0, false
+		}
+		t := step(rec)
+		if t == "" {
+			return 0, false
+		}
+		if seen[t] {
+			return hops, true
+		}
+		seen[t] = true
+		current = t
+	}
+	return 0, false
 }
 
 func (a *analyzer) pagination() {
+	annotated := map[string]string{} // pagination target -> smallest annotating source
 	for url, rec := range a.pages {
 		if rec.Facts == nil {
 			continue
@@ -389,6 +506,11 @@ func (a *analyzer) pagination() {
 				target, ok := a.pages[t]
 				if !ok {
 					continue
+				}
+				if t != url {
+					if cur, seen := annotated[t]; !seen || url < cur {
+						annotated[t] = url
+					}
 				}
 				if target.StatusCode != 200 {
 					a.add(url, "pagination_non_200", t)
@@ -412,11 +534,36 @@ func (a *analyzer) pagination() {
 		}
 		check(rec.Facts.NextHTML, func(f *parse.Facts) []string { return f.PrevHTML })
 		check(rec.Facts.PrevHTML, func(f *parse.Facts) []string { return f.NextHTML })
+		// loops are walked per direction: reciprocal next/prev pairs are the
+		// healthy shape, a chain revisiting a URL in one direction is not
+		for _, step := range []func(*crawler.PageRecord) string{nextTarget, prevTarget} {
+			if hops, loop := a.followPagination(url, step); loop {
+				a.add(url, "pagination_loop", fmt.Sprintf("%d hops", hops))
+			}
+		}
+	}
+	hyperlinked := a.hyperlinkedSet()
+	for t, src := range annotated {
+		rec := a.pages[t]
+		if rec.Scope == "internal" && rec.State == crawler.StateCrawled && !hyperlinked[t] {
+			a.add(t, "pagination_unlinked", "in pagination of "+src)
+		}
 	}
 }
 
 // sitemaps runs the set operations between sitemap entries and crawl results.
 func (a *analyzer) sitemaps(index SitemapIndex) {
+	perSitemap := map[string]int{} // sitemap URL -> listed URL count
+	for _, listedIn := range index {
+		for _, sm := range listedIn {
+			perSitemap[sm]++
+		}
+	}
+	for sm, n := range perSitemap {
+		if n > 50000 {
+			a.add(sm, "sitemap_over_50k", fmt.Sprintf("%d URLs", n))
+		}
+	}
 	for url, listedIn := range index {
 		rec, ok := a.pages[url]
 		if !ok {

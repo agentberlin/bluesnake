@@ -2,7 +2,7 @@
 
 A modern, headless, CLI-first website crawler and SEO auditor in Go. Functional parity target: Screaming Frog SEO Spider's crawling/auditing core — **without** the UI and **without** third-party API integrations (GA4, GSC, PageSpeed/Lighthouse, link indexes, AI providers), and **without** opaque binary config files: everything is plain-text config + flags.
 
-Status: living document — **all milestones M0–M14 implemented** (2026-06-10); **§8/§9 backlog cleared** (2026-06-11): SERP pixel widths, ISO-registry hreflang validation, LSH near-dup banding, `rendering.wait_strategy`, custom JS snippets via CDP, WARC archiving, the `serve` JSON API, crawl-path report, HTTP version capture, a 133-check catalogue, and the catalogue-coverage meta-test. Remaining deliberate cuts are listed in §9. The feature inventories this design is derived from live in `docs/research/`:
+Status: living document — **all milestones M0–M14 implemented** (2026-06-10); **§8/§9 backlog cleared** (2026-06-11): SERP pixel widths, ISO-registry hreflang validation, LSH near-dup banding, `rendering.wait_strategy`, custom JS snippets via CDP, WARC archiving, the `serve` JSON API, crawl-path report, HTTP version capture, a 164-check catalogue (second tranche 2026-06-12, §9), and the catalogue-coverage meta-test. Remaining deliberate cuts are listed in §9. The feature inventories this design is derived from live in `docs/research/`:
 - [01-crawl-configuration.md](research/01-crawl-configuration.md) — every SF config option
 - [02-data-model-and-checks.md](research/02-data-model-and-checks.md) — per-URL data, tabs/filters, 300+ issues, crawl analysis, link model, reports
 - [03-operations-cli-storage.md](research/03-operations-cli-storage.md) — storage modes, resume, modes, CLI, comparison
@@ -568,13 +568,36 @@ in `custom_results` kind `js`), WARC/1.1 archiving with an own writer
 (`internal/warc`, `extraction.store_warc`), the `serve` JSON API, the
 `crawl_paths` report (per-URL discovery path, also in the desktop URL
 drawer), per-page HTTP protocol version capture (stored, exported, shown in
-the UI), and a catalogue of **133 checks** whose fixture coverage is enforced
+the UI), and a catalogue of **164 checks** whose fixture coverage is enforced
 by a meta-test (§6).
 
+**2026-06-12 — second catalogue tranche (+27 checks, → 164).** Completed the
+native-data checks of the directives tab (NoImageIndex, Unavailable_After,
+NoSnippet, NoTranslate, NoODP, NoYDIR), the pagination tab (URL not in anchor
+tag, non-indexable, multiple, loop, unlinked) and the hreflang tab (multiple
+entries, not using canonical, the return-link family — inconsistent /
+non-canonical / noindex — and unlinked), plus: uncrawlable internal outlinks,
+follow-&-nofollow inlinks, internal-search URLs, canonical annotations with
+fragments or invalid attributes, CSS/JS resources over 2MB, sitemaps over 50k
+URLs, JS-updated meta descriptions, the Missing Alt Attribute / Missing Alt
+Text split (alt absent vs `alt=""`), and Alt Text in h1 — an image-only h1
+now extracts the image alt as its text, mirroring SF. Three parse-level facts
+carry these: `Link.NoAltAttr`, `Facts.H1AltText`,
+`Facts.CanonicalInvalidAttrs`.
+
 **Implemented but scoped down (extension points exist):**
-- Issues catalogue: 133 checks of SF's ~300; the catalogue in
+- Issues catalogue: 164 checks of SF's ~300; the catalogue in
   `internal/issues` is a data table — adding checks is incremental, and the
-  coverage meta-test forces a fixture for every new entry.
+  coverage meta-test forces a fixture for every new entry. The remaining
+  native-crawl gaps each need new infrastructure, deliberately deferred:
+  rendering-mode JavaScript filters (new `JSDiff` fields), Bad Content Type
+  (response-body sniffing in `fetch`), Broken Bookmark (fragment-edge
+  semantics — entangled with G28, probe SF first), Redirection (HTTP Refresh
+  header) as a redirect type (fetch/indexability wiring), sitemap over 50MB
+  (sitemap response sizes are not captured), Background/Incorrectly-Sized
+  Images (rendering + analysis), High Carbon Rating (CO₂ model). The rest of
+  SF's ~300 is accessibility/spelling/AMP-validator/integration checks that
+  are cut or tracked separately below.
 - Structured data validation: curated 12-type Google rich-results requirement
   table (data-driven, `internal/structured.requirements`); full Schema.org
   vocabulary validation not shipped.
@@ -659,7 +682,7 @@ uncertainty.
 | Item | Parity gain | Real-world use | Risk | Notes |
 |---|---|---|---|---|
 | Tokenization parity (G7/G21) — word count, sentences, Flesch | High | High | Med | Largest remaining numeric divergence (hundreds of word-count diffs per site); readability buckets flip issue lists. Pin SF's rules with probe pages first (td/tr sentence semantics, inline joins without spaces) |
-| Issues catalogue 133 → ~300 | High | High | Low | Issue lists are the visible product. Data-table additions, fixture-enforced, incremental. A chunk of the missing set is spelling/a11y/AMP/integration checks that are cut anyway |
+| Issues catalogue 164 → ~300 (residual tail) | Med | Med | Low-Med | 27 checks shipped 2026-06-12 (directives/pagination/hreflang/links complete for native data, §9). What remains needs new infrastructure per check — rendering-mode JS filters, Bad Content Type sniffing, Broken Bookmark (G28-entangled), HTTP Refresh header, sitemap >50MB — or is a11y/spelling/AMP-validator work tracked in its own rows |
 | `respect_noindex/canonical/next_prev` wiring | Med | High | Med | Real SF workflow knobs ("crawl as Google indexes"). Today they parse and silently do nothing. Defaults off, so no default-behavior risk |
 | SF-style elem paths `[n]`/`[@class]` (G10) | High | Med | Med | Kills ~12k cosmetic path diffs/site and unlocks SF's class-driven Navigation position matches. Exact qualifier rules need probes (SF emits [n] only for same-tag siblings, sometimes [@class] instead) |
 | Accessibility (axe via CDP) | Med | High | Med | Most-requested real-world audit type; SF ships it. Needs Chrome + axe bundle injection. More "useful" than "parity" |

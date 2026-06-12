@@ -89,6 +89,7 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 	for _, u := range []string{
 		ks + "/Upper", ks + "/under_score", ks + "/café", ks + "/pp?utm_source=x",
 		ks + "/a//b", ks + "/sp%20ace", ks + "/rep/rep/x",
+		ks + "/search?q=widgets",
 		ks + "/" + strings.Repeat("long/", 30),
 	} {
 		p := add(covPage(u))
@@ -142,6 +143,13 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 	}
 	same := add(covPage(ks + "/t-same"))
 	same.Facts = &parse.Facts{Titles: []string{"Same Text Here On Title And H1"}, H1s: []string{"same text here on title and h1"}, HeadingLevels: []int{1}}
+	altH1 := add(covPage(ks + "/t-alt-h1"))
+	altH1.Facts = &parse.Facts{
+		Titles:        []string{"A Page Whose H1 Is An Image Alt"},
+		H1s:           []string{"Company Logo"},
+		H1AltText:     true,
+		HeadingLevels: []int{1},
+	}
 	skipped := add(covPage(ks + "/t-skipped")) // h1 > h3 > h2: first h2 follows a deeper heading
 	skipped.Facts = &parse.Facts{
 		Titles:       []string{"A Page With Non-Sequential Headings"},
@@ -160,6 +168,7 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 	imgs := add(covPage(ks + "/imgs"))
 	imgs.Facts = &parse.Facts{Links: []parse.Link{
 		{Type: parse.Image, URL: ks + "/noalt.png"},
+		{Type: parse.Image, URL: ks + "/noattr.png", NoAltAttr: true, Width: "10", Height: "10"},
 		{Type: parse.Image, URL: ks + "/longalt.png", Alt: strings.Repeat("alt ", 30), Width: "10", Height: "10"},
 		{Type: parse.Image, URL: ks + "/big.png", Alt: "big image", Width: "10", Height: "10"},
 	}}
@@ -170,7 +179,11 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 	cnMulti := add(covPage(ks + "/cn-multi"))
 	cnMulti.Facts = &parse.Facts{
 		CanonicalHTML: []string{ks + "/x", ks + "/y"}, CanonicalOutsideHead: 1,
-		Links: []parse.Link{{Type: parse.Canonical, Raw: "/x", URL: ks + "/x", PathType: "root_relative"}},
+		CanonicalInvalidAttrs: []string{"hreflang"},
+		Links: []parse.Link{
+			{Type: parse.Canonical, Raw: "/x", URL: ks + "/x", PathType: "root_relative"},
+			{Type: parse.Canonical, Raw: ks + "/y#frag", URL: ks + "/y", PathType: "absolute"},
+		},
 	}
 	cnIsed := add(covPage(ks + "/cn-ised"))
 	cnIsed.Indexable, cnIsed.IndexabilityStatus = false, "Canonicalised"
@@ -191,7 +204,9 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 
 	// --- directives ---
 	dir := add(covPage(ks + "/dir"))
-	dir.Facts = &parse.Facts{MetaRobots: []string{"noindex, nofollow"}, XRobotsTag: []string{"none"},
+	dir.Facts = &parse.Facts{
+		MetaRobots:            []string{"noindex, nofollow", "noimageindex, nosnippet, notranslate"},
+		XRobotsTag:            []string{"none", "noodp, noydir", "unavailable_after: 25-Aug-2026 15:00:00 PST"},
 		MetaRobotsOutsideHead: 1}
 
 	// --- links ---
@@ -209,6 +224,7 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 		{Type: parse.Hyperlink, URL: ks + "/ok", Anchor: "fine anchor", Nofollow: true},
 		hyper(ks+"/ok2", "click here"),
 		{Type: parse.Hyperlink, URL: ks + "/ok"},
+		{Type: parse.Uncrawlable, Raw: "javascript:void(0)", Anchor: "menu toggle"},
 	}}
 	toBad := add(covPage(ks + "/lk-to-bad"))
 	toBad.Facts = &parse.Facts{Links: []parse.Link{
@@ -230,6 +246,8 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 		{Lang: "en", URL: ks + "/hl-en"},
 		{Lang: "de", URL: ks + "/hl-de"},
 		{Lang: "fr", URL: ks + "/hl-fr"},
+		{Lang: "it", URL: ks + "/hl-can"},
+		{Lang: "pt", URL: ks + "/hl-noidx"},
 		{Lang: "x-default", URL: ks + "/hl-en"},
 		{Lang: "zz", URL: ks + "/hl-en"},
 		{Lang: "es", URL: ks + "/hl-es404"},
@@ -239,23 +257,57 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 		{Lang: "de", URL: ks + "/hl-de"},
 		{Lang: "en", URL: ks + "/hl-en"},
 	}}
-	// fr annotates only de (not itself, not en): en's fr-link gets no return
-	// link, and fr itself lacks a self reference and an x-default
+	// fr annotates only de (not en): en's fr-link gets no return link; its
+	// self-declared fr-FR conflicts with en's plain-fr annotation
 	hlFr := add(covPage(ks + "/hl-fr"))
 	hlFr.Facts = &parse.Facts{HreflangHTML: []parse.Hreflang{
+		{Lang: "fr-FR", URL: ks + "/hl-fr"},
 		{Lang: "de", URL: ks + "/hl-de"},
 	}}
+	// canonicalised hreflang target: en's it-annotation is a non-canonical
+	// return link
+	hlCan := add(covPage(ks + "/hl-can"))
+	hlCan.Indexable, hlCan.IndexabilityStatus = false, "Canonicalised"
+	hlCan.Facts = &parse.Facts{
+		CanonicalHTML: []string{ks + "/ok"},
+		HreflangHTML:  []parse.Hreflang{{Lang: "it", URL: ks + "/hl-can"}},
+	}
+	// noindexed hreflang target: en's pt-annotation is a noindex return link
+	hlNoidx := add(covPage(ks + "/hl-noidx"))
+	hlNoidx.Indexable, hlNoidx.IndexabilityStatus = false, "Noindex"
+	hlNoidx.Facts = &parse.Facts{HreflangHTML: []parse.Hreflang{{Lang: "pt", URL: ks + "/hl-noidx"}}}
 	es404 := add(covPage(ks + "/hl-es404"))
 	es404.StatusCode, es404.Indexable, es404.Facts = 404, false, nil
 	stray := add(covPage(ks + "/hl-stray"))
-	stray.Facts = &parse.Facts{HreflangOutsideHead: 1}
+	stray.Facts = &parse.Facts{HreflangOutsideHead: 1, HreflangHTML: []parse.Hreflang{
+		{Lang: "en", URL: ks + "/hl-conflict-a"}, // two URLs for one code
+		{Lang: "en", URL: ks + "/hl-conflict-b"},
+	}}
+	// a canonicalised page whose hreflang still references itself
+	hlSelf := add(covPage(ks + "/hl-self"))
+	hlSelf.Facts = &parse.Facts{
+		CanonicalHTML: []string{ks + "/ok"},
+		HreflangHTML:  []parse.Hreflang{{Lang: "nl", URL: ks + "/hl-self"}},
+	}
 
 	// --- pagination ---
 	pg1 := add(covPage(ks + "/pg1"))
-	pg1.Facts = &parse.Facts{NextHTML: []string{ks + "/pg2", ks + "/pg404"}}
+	pg1.Facts = &parse.Facts{NextHTML: []string{ks + "/pg2", ks + "/pg404", ks + "/pg-noidx"}}
 	add(covPage(ks + "/pg2")) // no rel=prev back -> sequence error
 	pg404 := add(covPage(ks + "/pg404"))
 	pg404.StatusCode, pg404.Indexable, pg404.Facts = 404, false, nil
+	pgNoidx := add(covPage(ks + "/pg-noidx"))
+	pgNoidx.Indexable, pgNoidx.IndexabilityStatus = false, "Noindex"
+	add(func() *crawler.PageRecord { // rel=next loop
+		p := covPage(ks + "/pgl1")
+		p.Facts = &parse.Facts{NextHTML: []string{ks + "/pgl2"}}
+		return p
+	}())
+	add(func() *crawler.PageRecord {
+		p := covPage(ks + "/pgl2")
+		p.Facts = &parse.Facts{NextHTML: []string{ks + "/pgl1"}}
+		return p
+	}())
 
 	// --- sitemaps ---
 	add(covPage(ks + "/sm-orphan")) // depth 0, no inlinks, listed below
@@ -266,6 +318,9 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 		ks + "/sm-orphan":  {ks + "/sitemap.xml"},
 		ks + "/sm-noindex": {ks + "/sitemap.xml"},
 		ks + "/sm-multi":   {ks + "/sitemap.xml", ks + "/sitemap2.xml"},
+	}
+	for i := 0; i <= 50000; i++ { // 50001 entries -> sitemap_over_50k
+		sitemaps[fmt.Sprintf("%s/sm-gen/%d", ks, i)] = []string{ks + "/sitemap-big.xml"}
 	}
 
 	// --- structured data ---
@@ -281,10 +336,13 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 	js.JSDiff = &crawler.JSDiff{
 		NoindexOnlyRaw: true, CanonicalChanged: true, RenderedCanonical: ks + "/x",
 		TitleChanged: true, RenderedTitle: "rendered", H1Changed: true,
-		JSLinks: 2, ConsoleErrors: []string{"boom"},
+		DescriptionChanged: true,
+		JSLinks:            2, ConsoleErrors: []string{"boom"},
 	}
 
 	// --- validation ---
+	bigCSS := add(covPage(ks + "/big.css"))
+	bigCSS.ContentType, bigCSS.Size, bigCSS.Facts = "text/css", 3*1024*1024, nil
 	vd := add(covPage(ks + "/vd"))
 	vd.Size = 3 * 1024 * 1024
 	vd.Facts = &parse.Facts{Head: parse.HeadValidity{

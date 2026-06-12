@@ -211,6 +211,36 @@ var catalogue = []Def{
 	{"amp_missing_script", "amp", "Missing/Invalid AMP Script", Issue, High},
 	{"amp_missing_return_link", "amp", "Missing Non-AMP Return Link", Issue, High},
 	{"amp_indexable", "amp", "Indexable AMP Page", Warning, High},
+	// Expansion tranche 2 (2026-06): completes the directives, pagination,
+	// hreflang and links tabs plus singles, all over existing crawl data
+	{"directive_noimageindex", "directives", "NoImageIndex", Issue, Low},
+	{"directive_unavailable_after", "directives", "Unavailable_After", Warning, Medium},
+	{"directive_nosnippet", "directives", "NoSnippet", Warning, Low},
+	{"directive_notranslate", "directives", "NoTranslate", Warning, Low},
+	{"directive_noodp", "directives", "NoODP", Warning, Low},
+	{"directive_noydir", "directives", "NoYDIR", Warning, Low},
+	{"pagination_not_in_anchor", "pagination", "Pagination URL Not In Anchor Tag", Issue, High},
+	{"pagination_non_indexable", "pagination", "Non-Indexable", Warning, High},
+	{"pagination_multiple", "pagination", "Multiple Pagination URLs", Issue, Low},
+	{"hreflang_multiple_entries", "hreflang", "Multiple Entries", Issue, High},
+	{"hreflang_not_using_canonical", "hreflang", "Not Using Canonical", Issue, High},
+	{"links_uncrawlable_outlinks", "links", "Pages With Uncrawlable Internal Outlinks", Warning, High},
+	{"links_follow_nofollow_inlinks", "links", "Follow & Nofollow Internal Inlinks To Page", Warning, Low},
+	{"url_internal_search", "url", "Internal Search", Warning, Low},
+	{"canonical_contains_fragment", "canonicals", "Contains Fragment URL", Issue, High},
+	{"canonical_invalid_attribute", "canonicals", "Invalid Attribute In Annotation", Issue, High},
+	{"validation_resource_over_2mb", "validation", "Resource Over 2MB", Issue, High},
+	{"js_description_updated", "javascript", "Meta Description Updated by JavaScript", Warning, Medium},
+	{"image_missing_alt_attribute", "images", "Missing Alt Attribute", Issue, Low},
+	{"h1_alt_text", "h1", "Alt Text in h1", Warning, Low},
+	// Expansion tranche 2, analysis phase (computed by the analyze package)
+	{"pagination_loop", "pagination", "Pagination Loop", Issue, Low},
+	{"pagination_unlinked", "pagination", "Unlinked Pagination URLs", Issue, Medium},
+	{"hreflang_inconsistent_return", "hreflang", "Inconsistent Language & Region Return Links", Issue, High},
+	{"hreflang_non_canonical_return", "hreflang", "Non-Canonical Return Links", Issue, High},
+	{"hreflang_noindex_return", "hreflang", "Noindex Return Links", Issue, High},
+	{"hreflang_unlinked", "hreflang", "Unlinked Hreflang URLs", Issue, Medium},
+	{"sitemap_over_50k", "sitemaps", "XML Sitemap With Over 50k URLs", Issue, High},
 }
 
 var defByID = func() map[string]Def {
@@ -251,6 +281,7 @@ func Evaluate(pages map[string]*crawler.PageRecord, cfg *config.Config) []Occurr
 		}
 		e.securityHeaders(rec)
 		e.imagePage(rec)
+		e.resourceSize(rec)
 		if rec.Facts == nil {
 			continue
 		}
@@ -261,6 +292,8 @@ func Evaluate(pages map[string]*crawler.PageRecord, cfg *config.Config) []Occurr
 			e.mobile(rec)
 		}
 		e.canonicals(rec)
+		e.paginationPage(rec)
+		e.hreflangPage(rec)
 		e.structuredData(rec)
 		e.javascript(rec)
 		e.validation(rec)
@@ -356,9 +389,25 @@ func (e *evaluator) urlChecks(rec *crawler.PageRecord) {
 			break
 		}
 	}
+	if _, query, ok := strings.Cut(path, "?"); ok {
+		for param := range strings.SplitSeq(query, "&") {
+			name, value, _ := strings.Cut(param, "=")
+			if value != "" && internalSearchParams[strings.ToLower(name)] {
+				e.add(u, "url_internal_search", name)
+				break
+			}
+		}
+	}
 	if len(u) > e.cfg.Thresholds.URLMaxChars {
 		e.add(u, "url_over_length", fmt.Sprintf("%d chars", len(u)))
 	}
+}
+
+// internalSearchParams are the query parameter names that mark a URL as an
+// on-site search results page (URL tab "Internal Search") when non-empty.
+var internalSearchParams = map[string]bool{
+	"q": true, "s": true, "search": true, "query": true,
+	"keyword": true, "keywords": true,
 }
 
 func hasRepeatedSegment(path string) bool {
@@ -435,6 +484,20 @@ func (e *evaluator) securityHeaders(rec *crawler.PageRecord) {
 	}
 	if !secureReferrerPolicy(header("Referrer-Policy")) {
 		e.add(rec.URL, "security_missing_referrer_policy")
+	}
+}
+
+// resourceSize flags oversized non-HTML text resources (Validation tab
+// "Resource Over 2MB"): CSS and JavaScript files Google may refuse to parse.
+// HTML documents have their own check; images their own size threshold.
+// Runs before the Facts guard, since resources carry no Facts.
+func (e *evaluator) resourceSize(rec *crawler.PageRecord) {
+	if rec.StatusCode != 200 || isHTMLPage(rec) {
+		return
+	}
+	if (strings.Contains(rec.ContentType, "css") || strings.Contains(rec.ContentType, "javascript")) &&
+		rec.Size > 2*1024*1024 {
+		e.add(rec.URL, "validation_resource_over_2mb", fmt.Sprintf("%d bytes", rec.Size))
 	}
 }
 
@@ -555,6 +618,9 @@ func (e *evaluator) elements(rec *crawler.PageRecord) {
 		if len(f.HeadingLevels) > 0 && f.HeadingLevels[0] != 1 {
 			e.add(u, "h1_non_sequential", fmt.Sprintf("first heading is h%d", f.HeadingLevels[0]))
 		}
+		if f.H1AltText {
+			e.add(u, "h1_alt_text", f.H1s[0])
+		}
 	}
 	switch {
 	case len(f.H2s) == 0:
@@ -639,6 +705,15 @@ func (e *evaluator) canonicals(rec *crawler.PageRecord) {
 			break
 		}
 	}
+	for _, l := range f.Links {
+		if l.Type == parse.Canonical && strings.Contains(l.Raw, "#") {
+			e.add(u, "canonical_contains_fragment", l.Raw)
+			break
+		}
+	}
+	if len(f.CanonicalInvalidAttrs) > 0 {
+		e.add(u, "canonical_invalid_attribute", strings.Join(f.CanonicalInvalidAttrs, ", "))
+	}
 	if target, ok := e.pages[all[0]]; ok && all[0] != u {
 		if !target.Indexable {
 			e.add(u, "canonical_non_indexable_target", all[0])
@@ -646,6 +721,78 @@ func (e *evaluator) canonicals(rec *crawler.PageRecord) {
 		if target.StatusCode >= 300 && target.StatusCode < 400 {
 			e.add(u, "canonical_to_redirect", all[0])
 		}
+	}
+}
+
+// paginationPage runs the per-page Pagination-tab checks; sequence/loop/
+// unlinked checks that need the whole graph live in the analyze package.
+func (e *evaluator) paginationPage(rec *crawler.PageRecord) {
+	f := rec.Facts
+	u := rec.URL
+	nexts := append(append([]string{}, f.NextHTML...), f.NextHTTP...)
+	prevs := append(append([]string{}, f.PrevHTML...), f.PrevHTTP...)
+	if len(nexts) == 0 && len(prevs) == 0 {
+		return
+	}
+	if len(nexts) > 1 || len(prevs) > 1 {
+		e.add(u, "pagination_multiple", fmt.Sprintf("%d next, %d prev", len(nexts), len(prevs)))
+	}
+	hyperlinked := map[string]bool{}
+	for _, l := range f.Links {
+		if l.Type == parse.Hyperlink && l.URL != "" {
+			hyperlinked[l.URL] = true
+		}
+	}
+	seen := map[string]bool{}
+	for _, t := range append(nexts, prevs...) {
+		if t == "" || t == u || seen[t] {
+			continue
+		}
+		seen[t] = true
+		// pagination URLs must also exist as plain <a href> hyperlinks on the
+		// page, or crawlers may not discover the series
+		if !hyperlinked[t] {
+			e.add(u, "pagination_not_in_anchor", t)
+		}
+		// non-200 targets belong to pagination_non_200 (analysis phase)
+		if target, ok := e.pages[t]; ok && target.State == crawler.StateCrawled &&
+			target.StatusCode == 200 && !target.Indexable {
+			e.add(u, "pagination_non_indexable", t)
+		}
+	}
+}
+
+// hreflangPage runs the per-page Hreflang-tab checks; reciprocity and the
+// return-link family need the whole graph and live in the analyze package.
+func (e *evaluator) hreflangPage(rec *crawler.PageRecord) {
+	f := rec.Facts
+	u := rec.URL
+	entries := append(append([]parse.Hreflang{}, f.HreflangHTML...), f.HreflangHTTP...)
+	if len(entries) == 0 {
+		return
+	}
+	byLang := map[string]map[string]bool{}
+	selfRef := false
+	for _, h := range entries {
+		code := strings.ToLower(h.Lang)
+		if byLang[code] == nil {
+			byLang[code] = map[string]bool{}
+		}
+		byLang[code][h.URL] = true
+		if h.URL == u {
+			selfRef = true
+		}
+	}
+	for code, urls := range byLang {
+		if len(urls) > 1 {
+			e.add(u, "hreflang_multiple_entries", code)
+		}
+	}
+	// hreflang must reference canonical URLs: a canonicalised page whose
+	// annotations still reference the page itself is not using its canonical
+	all := append(append([]string{}, f.CanonicalHTML...), f.CanonicalHTTP...)
+	if selfRef && len(all) > 0 && all[0] != "" && all[0] != u {
+		e.add(u, "hreflang_not_using_canonical", all[0])
 	}
 }
 
@@ -683,6 +830,9 @@ func (e *evaluator) javascript(rec *crawler.PageRecord) {
 	}
 	if d.TitleChanged {
 		e.add(rec.URL, "js_title_updated", d.RenderedTitle)
+	}
+	if d.DescriptionChanged {
+		e.add(rec.URL, "js_description_updated")
 	}
 	if d.H1Changed {
 		e.add(rec.URL, "js_h1_updated")
@@ -793,13 +943,34 @@ func (e *evaluator) directives(rec *crawler.PageRecord) {
 	}
 	for _, v := range append(append([]string{}, rec.Facts.MetaRobots...), rec.Facts.XRobotsTag...) {
 		for directive := range strings.SplitSeq(v, ",") {
-			switch strings.ToLower(strings.TrimSpace(directive)) {
+			// valued directives ("unavailable_after: <date>", "max-snippet:50")
+			// match on the name before the colon
+			trimmed := strings.TrimSpace(directive)
+			token := strings.ToLower(trimmed)
+			value := ""
+			if i := strings.Index(token, ":"); i >= 0 {
+				token = strings.TrimSpace(token[:i])
+				value = strings.TrimSpace(trimmed[i+1:])
+			}
+			switch token {
 			case "noindex":
 				e.add(rec.URL, "directive_noindex")
 			case "nofollow":
 				e.add(rec.URL, "directive_nofollow")
 			case "none":
 				e.add(rec.URL, "directive_none")
+			case "noimageindex":
+				e.add(rec.URL, "directive_noimageindex")
+			case "nosnippet":
+				e.add(rec.URL, "directive_nosnippet")
+			case "notranslate":
+				e.add(rec.URL, "directive_notranslate")
+			case "noodp":
+				e.add(rec.URL, "directive_noodp")
+			case "noydir":
+				e.add(rec.URL, "directive_noydir")
+			case "unavailable_after":
+				e.add(rec.URL, "directive_unavailable_after", value)
 			}
 		}
 	}
@@ -808,9 +979,13 @@ func (e *evaluator) directives(rec *crawler.PageRecord) {
 func (e *evaluator) links(rec *crawler.PageRecord) {
 	f, t := rec.Facts, &e.cfg.Thresholds
 	u := rec.URL
-	internalOut, externalOut := 0, 0
+	internalOut, externalOut, uncrawlable := 0, 0, 0
 	flaggedTarget := map[string]bool{} // one occurrence per redirect/broken target
 	for _, l := range f.Links {
+		if l.Type == parse.Uncrawlable {
+			uncrawlable++
+			continue
+		}
 		if l.Type != parse.Hyperlink {
 			continue
 		}
@@ -849,6 +1024,9 @@ func (e *evaluator) links(rec *crawler.PageRecord) {
 			}
 		}
 	}
+	if uncrawlable > 0 {
+		e.add(u, "links_uncrawlable_outlinks", fmt.Sprintf("%d uncrawlable outlinks", uncrawlable))
+	}
 	if isHTMLPage(rec) {
 		if internalOut == 0 {
 			e.add(u, "links_no_internal_outlinks")
@@ -880,9 +1058,14 @@ func (e *evaluator) images(rec *crawler.PageRecord) {
 		if l.Type != parse.Image {
 			continue
 		}
-		if strings.TrimSpace(l.Alt) == "" {
+		switch {
+		case l.NoAltAttr:
+			// no alt attribute at all is its own check; an empty alt may be
+			// an intentional decorative-image marker
+			e.add(rec.URL, "image_missing_alt_attribute", l.URL)
+		case strings.TrimSpace(l.Alt) == "":
 			e.add(rec.URL, "image_missing_alt", l.URL)
-		} else if len([]rune(l.Alt)) > t.ImageAltMaxChars {
+		case len([]rune(l.Alt)) > t.ImageAltMaxChars:
 			e.add(rec.URL, "image_alt_over_chars", l.URL)
 		}
 		if (l.Width == "" || l.Height == "") && !unsized[l.URL] {
@@ -1007,6 +1190,10 @@ func (e *evaluator) inlinkAggregates() {
 		if info != nil && info.total > 0 {
 			if info.nofollow == info.total {
 				e.add(url, "links_nofollow_inlinks_only")
+			}
+			if info.nofollow > 0 && info.nofollow < info.total {
+				e.add(url, "links_follow_nofollow_inlinks",
+					fmt.Sprintf("%d follow / %d nofollow", info.total-info.nofollow, info.nofollow))
 			}
 			if rec.Indexable && info.indexableSrc == 0 {
 				e.add(url, "links_only_non_indexable_inlinks")
