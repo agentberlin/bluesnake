@@ -10,6 +10,7 @@ import "./styles.css";
 import { api, on, urlShort, hostOf } from "./api";
 import { Icon, IconBtn } from "./ui";
 import { CrawlManager } from "./views/home";
+import { Welcome } from "./views/welcome";
 import { NewCrawl } from "./views/newcrawl";
 import { CrawlProgress } from "./views/progress";
 import { ResultsWorkspace } from "./views/results-shell";
@@ -22,6 +23,7 @@ function App() {
   const [dark, setDark] = useState(() => localStorage.getItem("bluesnake-theme") === "dark");
   const [view, setView] = useState("home");
   const [crawls, setCrawls] = useState([]);
+  const [crawlsLoaded, setCrawlsLoaded] = useState(false); // gates the first-run welcome until we know
   const [activeCrawl, setActiveCrawl] = useState(null);
   const [liveCrawlId, setLiveCrawlId] = useState(null);
   const [resultsTab, setResultsTab] = useState("internal");
@@ -32,6 +34,7 @@ function App() {
   const [storage, setStorage] = useState(null);
   const [mcp, setMcp] = useState(null); // MCPStatus
   const [settingsFocus, setSettingsFocus] = useState(null); // {section} -> open Settings on it
+  const [settingsBack, setSettingsBack] = useState(null); // {view,label} -> show a "back" button in Settings
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
@@ -39,7 +42,7 @@ function App() {
   }, [dark]);
 
   const refresh = useCallback(() => {
-    api.listCrawls().then((cs) => setCrawls(cs || [])).catch(() => {});
+    api.listCrawls().then((cs) => { setCrawls(cs || []); setCrawlsLoaded(true); }).catch(() => setCrawlsLoaded(true));
     api.storageInfo().then(setStorage).catch(() => {});
   }, []);
 
@@ -62,6 +65,15 @@ function App() {
     setLiveCrawlId(id);
     setView("progress");
     refresh();
+  }
+  // first-run welcome: a bare domain → a sensible default spider crawl
+  function startFromWelcome(rawUrl) {
+    let u = (rawUrl || "").trim();
+    if (u && !/^https?:\/\//i.test(u)) u = "https://" + u;
+    return startCrawl({
+      mode: "spider", url: u, listUrls: [], sitemapUrl: "", project: "",
+      profile: "Default audit", threads: 5, rate: 2, maxDepth: -1, rendering: "text",
+    });
   }
   async function resumeCrawl(c) {
     const id = await api.resumeCrawl(c.id);
@@ -101,6 +113,14 @@ function App() {
     { id: "settings", label: "Settings & Profiles", icon: "sliders-horizontal" },
   ];
 
+  // Titlebar host follows what's on screen: the live crawl while one is
+  // running (so a fresh crawl's domain shows immediately, not the last one
+  // you opened), otherwise the crawl whose results you're viewing.
+  const liveCrawl = crawls.find((c) => c.id === liveCrawlId);
+  const titleHost = view === "progress"
+    ? (liveCrawl ? hostOf(liveCrawl.seed) : "crawling…")
+    : (activeCrawl ? hostOf(activeCrawl.seed) : "no crawl");
+
   return (
     <div className="win">
       {/* title bar (native traffic lights sit in the left inset) */}
@@ -112,8 +132,8 @@ function App() {
           <img src="/logo.png" alt="" width={16} height={16} draggable={false} style={{ display: "block", borderRadius: 3 }} />
           bluesnake
           <span className="dot" />
-          <span style={{ color: "var(--ink-faint)", fontWeight: 500 }} className="mono">
-            {activeCrawl ? hostOf(activeCrawl.seed) : "no crawl"}
+          <span style={{ color: "var(--ink-faint)", fontWeight: 500, whiteSpace: "nowrap" }} className="mono">
+            {titleHost}
           </span>
         </div>
         <div className="tb-spacer" />
@@ -121,7 +141,7 @@ function App() {
           <button
             className="pill tb-nodrag"
             title={mcp && mcp.running ? `MCP server running — ${mcp.endpoint}` : "MCP server off — click to set up LLM access"}
-            onClick={() => { setSettingsFocus({ section: "mcp" }); setView("settings"); }}
+            onClick={() => { setSettingsFocus({ section: "mcp" }); setSettingsBack(null); setView("settings"); }}
             style={{ height: 22, cursor: "pointer", gap: 6, fontSize: 11, color: "var(--ink-2)", background: "transparent" }}
           >
             <Icon name="plug-zap" size={12} />
@@ -143,7 +163,7 @@ function App() {
           </div>
           <div className="sb-nav">
             {nav.map((n) => (
-              <div key={n.id} className={"sb-item" + (view === n.id ? " active" : "")} onClick={() => setView(n.id)} title={collapsed ? n.label : null}>
+              <div key={n.id} className={"sb-item" + (view === n.id ? " active" : "")} onClick={() => { if (n.id === "settings") setSettingsBack(null); setView(n.id); }} title={collapsed ? n.label : null}>
                 <Icon name={n.icon} size={15} />
                 {!collapsed && <>{n.label}{n.count != null && <span className="count">{n.count}</span>}</>}
               </div>
@@ -182,13 +202,18 @@ function App() {
               </div>
               <div style={{ flex: 1 }} />
             </>}
-            <IconBtn icon="settings" title="Settings" onClick={() => setView("settings")} />
+            <IconBtn icon="settings" title="Settings" onClick={() => { setSettingsBack(null); setView("settings"); }} />
           </div>
         </div>
 
         {/* main routed content */}
-        {view === "home" && <CrawlManager crawls={crawls} onOpen={openCrawl} onResume={resumeCrawl} onCompare={() => setView("compare")} onNew={() => setView("new")} onDelete={deleteCrawl} storage={storage} />}
-        {view === "new" && <NewCrawl onStart={startCrawl} onOpenSettings={(p) => { setSettingsProfile(p); setView("settings"); }} />}
+        {view === "home" && crawlsLoaded && (
+          crawls.length === 0
+            ? <Welcome onStart={startFromWelcome} onConfigure={() => setView("new")}
+                onMcp={() => { setSettingsFocus({ section: "mcp" }); setSettingsBack({ view: "home", label: "Back" }); setView("settings"); }} />
+            : <CrawlManager crawls={crawls} onOpen={openCrawl} onResume={resumeCrawl} onCompare={() => setView("compare")} onNew={() => setView("new")} onDelete={deleteCrawl} storage={storage} />
+        )}
+        {view === "new" && <NewCrawl onStart={startCrawl} onOpenSettings={(p) => { setSettingsProfile(p); setSettingsBack({ view: "new", label: "New Crawl" }); setView("settings"); }} />}
         {view === "progress" && <CrawlProgress crawlId={liveCrawlId} onOpenResults={finishToResults} />}
         {view === "results" && activeCrawl && (
           <ResultsWorkspace
@@ -201,7 +226,8 @@ function App() {
             onFilterByIssue={openDataset}
           />
         )}
-        {view === "settings" && <SettingsView profileName={settingsProfile} focus={settingsFocus} />}
+        {view === "settings" && <SettingsView profileName={settingsProfile} focus={settingsFocus}
+          onBack={settingsBack ? () => setView(settingsBack.view) : null} backLabel={settingsBack ? settingsBack.label : null} />}
         {view === "compare" && <CompareView crawls={crawls} />}
         {view === "robots" && <RobotsTester />}
       </div>
