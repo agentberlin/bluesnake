@@ -571,33 +571,26 @@ drawer), per-page HTTP protocol version capture (stored, exported, shown in
 the UI), and a catalogue of **164 checks** whose fixture coverage is enforced
 by a meta-test (§6).
 
-**2026-06-12 — second catalogue tranche (+27 checks, → 164).** Completed the
-native-data checks of the directives tab (NoImageIndex, Unavailable_After,
-NoSnippet, NoTranslate, NoODP, NoYDIR), the pagination tab (URL not in anchor
-tag, non-indexable, multiple, loop, unlinked) and the hreflang tab (multiple
-entries, not using canonical, the return-link family — inconsistent /
-non-canonical / noindex — and unlinked), plus: uncrawlable internal outlinks,
-follow-&-nofollow inlinks, internal-search URLs, canonical annotations with
-fragments or invalid attributes, CSS/JS resources over 2MB, sitemaps over 50k
-URLs, JS-updated meta descriptions, the Missing Alt Attribute / Missing Alt
-Text split (alt absent vs `alt=""`), and Alt Text in h1 — an image-only h1
-now extracts the image alt as its text, mirroring SF. Three parse-level facts
-carry these: `Link.NoAltAttr`, `Facts.H1AltText`,
-`Facts.CanonicalInvalidAttrs`.
+**2026-06-12 — second catalogue tranche (+27 → 164).** Completed the
+issues-library entries for the directives, pagination, hreflang and links
+tabs that are computable on existing data, plus internal-search URLs,
+canonical fragment/invalid-attribute, CSS/JS resource >2MB, sitemap >50k,
+JS-updated description, the Missing Alt Attribute vs Alt Text split, and Alt
+Text in h1. Carried by three new parse facts: `Link.NoAltAttr`,
+`Facts.H1AltText`, `Facts.CanonicalInvalidAttrs`.
 
 **Implemented but scoped down (extension points exist):**
-- Issues catalogue: 164 checks of SF's ~300; the catalogue in
-  `internal/issues` is a data table — adding checks is incremental, and the
-  coverage meta-test forces a fixture for every new entry. The remaining
-  native-crawl gaps each need new infrastructure, deliberately deferred:
-  rendering-mode JavaScript filters (new `JSDiff` fields), Bad Content Type
-  (response-body sniffing in `fetch`), Broken Bookmark (fragment-edge
-  semantics — entangled with G28, probe SF first), Redirection (HTTP Refresh
-  header) as a redirect type (fetch/indexability wiring), sitemap over 50MB
-  (sitemap response sizes are not captured), Background/Incorrectly-Sized
-  Images (rendering + analysis), High Carbon Rating (CO₂ model). The rest of
-  SF's ~300 is accessibility/spelling/AMP-validator/integration checks that
-  are cut or tracked separately below.
+- Issues catalogue: **164 = the full issues library computable on the current
+  data model** (the no-new-infrastructure boundary, not an arbitrary stop).
+  The gap to SF's ~300 is not flat: ~92 are accessibility (axe — own row
+  §9.2), the rest spelling (cut), AMP-validator and integration checks; strip
+  those and the priority-classified non-a11y ceiling is ~200. The remaining
+  ~36 each cross an infra boundary, deferred per check: rendering-mode JS
+  filters (new `JSDiff` fields + Chrome), Bad Content Type (body sniffing),
+  Broken Bookmark (fragment edges — G28, probe SF first), HTTP Refresh
+  redirect type, sitemap >50MB (response sizes uncaptured), Background/
+  Incorrectly-Sized Images (render+analysis), High Carbon Rating. Catalogue
+  is a data table; the coverage meta-test forces a fixture per entry.
 - Structured data validation: curated 12-type Google rich-results requirement
   table (data-driven, `internal/structured.requirements`); full Schema.org
   vocabulary validation not shipped.
