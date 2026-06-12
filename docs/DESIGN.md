@@ -643,3 +643,35 @@ delete-on-startup.
 is honoured, but its `content` and `structured_data` entries have no detector,
 and `compare.content_change_threshold` is unread (it pairs with the unbuilt
 `content` similarity delta).
+
+### 9.2 Backlog prioritization matrix (2026-06-12)
+
+Pending items ranked after the 5-domain Screaming Frog comparison
+(`~/crawl_comparison_experiment/runs/2026-06-12-yc5/{GAPLOG,FINDINGS}.md` —
+G-numbers below refer to its gap log). Columns: **parity gain** = how much
+closer to SF's actual output/behavior, **real-world use** = whether a working
+SEO would feel it, **risk** = regression blast radius + implementation
+uncertainty.
+
+<!-- MAINTENANCE: when an item ships, REMOVE its row from this table and
+     record the change in §9 (and §9.1 if it wires up a config no-op). -->
+
+| Item | Parity gain | Real-world use | Risk | Notes |
+|---|---|---|---|---|
+| Tokenization parity (G7/G21) — word count, sentences, Flesch | High | High | Med | Largest remaining numeric divergence (hundreds of word-count diffs per site); readability buckets flip issue lists. Pin SF's rules with probe pages first (td/tr sentence semantics, inline joins without spaces) |
+| Issues catalogue 133 → ~300 | High | High | Low | Issue lists are the visible product. Data-table additions, fixture-enforced, incremental. A chunk of the missing set is spelling/a11y/AMP/integration checks that are cut anyway |
+| `respect_noindex/canonical/next_prev` wiring | Med | High | Med | Real SF workflow knobs ("crawl as Google indexes"). Today they parse and silently do nothing. Defaults off, so no default-behavior risk |
+| SF-style elem paths `[n]`/`[@class]` (G10) | High | Med | Med | Kills ~12k cosmetic path diffs/site and unlocks SF's class-driven Navigation position matches. Exact qualifier rules need probes (SF emits [n] only for same-tag siblings, sometimes [@class] instead) |
+| Accessibility (axe via CDP) | Med | High | Med | Most-requested real-world audit type; SF ships it. Needs Chrome + axe bundle injection. More "useful" than "parity" |
+| Shadow-DOM/iframe flattening (`rendering.flatten_*`) | Med | Med-High | Med | Web-component sites currently lose rendered text/links that SF sees |
+| Rich-result matrix breadth (G5 residual) | Med | Med-High | Low | Extend `structured.requirements` (SoftwareApplication, Review, HowTo, AggregateRating) with probes against SF |
+| Cookie collection (`url_details.cookies`) | Med | Med | Low-Med | Whole SF report we lack; GDPR/consent audits use it. Needs a cookies table + rendered-mode capture |
+| Persistent-frontier worker pool (scale) | Indirect | High | Med-High | Gates large-site (e-commerce) crawls; rendered stores already hit ~1GB on mid-size sites |
+| Fragment self-edges (G28) | Med | Low | Med | SF keeps `<a href="#x">` as empty-anchor self-edges (feeds its no-anchor-text counts). Changes outlink counts everywhere — probe SF's dedup semantics first |
+| Schema.org vocabulary validation | Low-Med | Low | Med | SF's plain validation found zero issues across all 5 test domains — rich-results is what fires. Big build, small payoff |
+| Compare detectors (`content`/`structured_data`) | Low-Med | Med | Low | Real workflow, but only for repeat-crawl users |
+| Store-flag enforcement (§9.1) | Low | Low-Med | Low | DB size on big crawls; SF-visible counts already match |
+| PDF extraction (`extraction.pdf.*`) | Low-Med | Low | Med | Niche (gov/edu/docs sites). New parser dependency |
+| AMP full validator | Low | Near-zero | Med | AMP is effectively dead. Skip unless a user asks |
+| Spelling & grammar | Med | Low | High | Visible SF tab but noisy and rarely enabled; stays cut (§1 non-goals) |
+| Orphan-detection exactness, retention/prune, cert dirs, window presets | Low | Low | Low | Housekeeping tier |
