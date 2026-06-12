@@ -37,7 +37,7 @@ or in a client's JSON config:
   {"mcpServers": {"bluesnake": {"type": "http", "url": "http://127.0.0.1:8473/mcp"}}}
 
 With --public, bluesnake also opens a reverse tunnel and prints a public HTTPS
-URL (https://<id>.t.snake.blue/<token>/mcp) that proxies to this local server,
+URL (https://<id>.t.snake.blue/mcp) that proxies to this local server,
 so a remote MCP client can reach it without any port-forwarding. The tunnel
 identity is stored under the crawl directory and reused across runs, so the URL
 is stable. Without --public the server stays bound to localhost only.

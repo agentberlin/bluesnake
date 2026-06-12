@@ -144,7 +144,7 @@ func loadConfig() config {
 
 func buildStore(ctx context.Context, cfg config, log *slog.Logger) (store.Store, error) {
 	if cfg.dbDSN == "" {
-		log.Warn("no BLUESNAKE_TUNNEL_DB_DSN set — using in-memory store (state is lost on restart; dev only)")
+		log.Warn("no DATABASE_URL set — using in-memory store (state is lost on restart; dev only)")
 		return store.NewMem(), nil
 	}
 	return store.NewGorm(ctx, cfg.dbDSN)
