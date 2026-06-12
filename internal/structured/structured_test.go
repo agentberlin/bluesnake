@@ -57,8 +57,19 @@ func TestJSONLDGraphAndMissingRequired(t *testing.T) {
 	if d == nil {
 		t.Fatal("nil data")
 	}
-	if len(d.Errors) != 1 || !strings.Contains(d.Errors[0], "headline") {
-		t.Errorf("errors = %v", d.Errors)
+	// Article's headline is recommended (not required): SF reports its
+	// absence as a Rich Result Validation Warning, never an error
+	if len(d.Errors) != 0 {
+		t.Errorf("errors = %v, want none", d.Errors)
+	}
+	var headlineWarn bool
+	for _, w := range d.Warnings {
+		if strings.Contains(w, "headline") {
+			headlineWarn = true
+		}
+	}
+	if !headlineWarn {
+		t.Errorf("warnings = %v, want missing-headline warning", d.Warnings)
 	}
 }
 

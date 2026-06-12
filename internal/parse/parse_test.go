@@ -320,3 +320,34 @@ func TestUncrawlableLinks(t *testing.T) {
 		t.Errorf("uncrawlable count = %d, want 2", count)
 	}
 }
+
+// Zero-width characters injected by heading-anchor generators (Mintlify et
+// al) are stripped from extracted text — Screaming Frog's H2s never carry
+// them (measured on greptile.com/docs, 2026-06-12).
+func TestZeroWidthCharsStripped(t *testing.T) {
+	f := parseHTML(t, "https://ex.com/p",
+		"<html><body><h2>\u200b Filters</h2><h1>A\ufeffB</h1></body></html>", nil, nil)
+	if len(f.H2s) != 1 || f.H2s[0] != "Filters" {
+		t.Errorf("H2s = %q, want [Filters]", f.H2s)
+	}
+	if len(f.H1s) != 1 || f.H1s[0] != "AB" {
+		t.Errorf("H1s = %q, want [AB]", f.H1s)
+	}
+}
+
+// Link-position rules are Screaming Frog's default search terms; the head
+// rule is "/head/" so links inside <header> never match it (yonedalabs.com
+// classified header links as "head" with the old "/head" term).
+func TestLinkPositionHeaderNotHead(t *testing.T) {
+	f := parseHTML(t, "https://ex.com/p", `
+		<html><body>
+			<header><a href="/from-header">x</a></header>
+			<footer><a href="/from-footer">y</a></footer>
+		</body></html>`, nil, nil)
+	if l := findLink(f, Hyperlink, "https://ex.com/from-header"); l == nil || l.Position != "header" {
+		t.Errorf("header link position = %+v, want header", l)
+	}
+	if l := findLink(f, Hyperlink, "https://ex.com/from-footer"); l == nil || l.Position != "footer" {
+		t.Errorf("footer link position = %+v, want footer", l)
+	}
+}

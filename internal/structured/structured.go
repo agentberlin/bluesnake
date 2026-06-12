@@ -28,10 +28,13 @@ type PageData struct {
 // requirements: Google rich-results required/recommended properties for the
 // curated feature subset.
 var requirements = map[string]struct{ required, recommended []string }{
-	"Product":        {[]string{"name"}, []string{"image", "offers", "review", "aggregateRating"}},
-	"Article":        {[]string{"headline"}, []string{"image", "datePublished", "author"}},
-	"NewsArticle":    {[]string{"headline"}, []string{"image", "datePublished", "author"}},
-	"BlogPosting":    {[]string{"headline"}, []string{"image", "datePublished", "author"}},
+	"Product": {[]string{"name"}, []string{"image", "offers", "review", "aggregateRating"}},
+	// headline is recommended, not required: Google's Article rich result
+	// has no required properties, and SF reports a missing headline as a
+	// Rich Result Validation *Warning* (measured on yonedalabs.com)
+	"Article":        {nil, []string{"headline", "image", "datePublished", "author"}},
+	"NewsArticle":    {nil, []string{"headline", "image", "datePublished", "author"}},
+	"BlogPosting":    {nil, []string{"headline", "image", "datePublished", "author"}},
 	"BreadcrumbList": {[]string{"itemListElement"}, nil},
 	"FAQPage":        {[]string{"mainEntity"}, nil},
 	"Recipe":         {[]string{"name", "image"}, []string{"recipeIngredient", "recipeInstructions"}},

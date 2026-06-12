@@ -98,8 +98,11 @@ func TestCrawlerRenderingIntegration(t *testing.T) {
 	if !foundRendered {
 		t.Error("rendered-only link missing origin=rendered")
 	}
-	// GET XHR/fetch requests made during rendering are discovered URLs
-	// (Screaming Frog parity); POSTs are not crawl targets
+	// GET XHR/fetch requests made during rendering are recorded as xhr
+	// links but never crawled as pages while JS resource crawling is off —
+	// SF buckets them as JavaScript resources, and treating them as page
+	// links makes Next.js ?_rsc prefetches (fresh token per render) explode
+	// the frontier. POSTs are not recorded at all.
 	var xhrLink bool
 	for _, l := range root.Facts.Links {
 		if l.Type == parse.XHR && l.URL == srv.URL+"/api/from-xhr" {
@@ -112,8 +115,8 @@ func TestCrawlerRenderingIntegration(t *testing.T) {
 	if !xhrLink {
 		t.Error("XHR request not recorded as a link")
 	}
-	if rec := res.Pages[srv.URL+"/api/from-xhr"]; rec == nil || rec.State != StateCrawled {
-		t.Errorf("XHR-discovered URL not crawled: %+v", rec)
+	if rec := res.Pages[srv.URL+"/api/from-xhr"]; rec != nil {
+		t.Errorf("XHR URL must not be crawled with resources.javascript.crawl off: %+v", rec)
 	}
 	if res.Pages[srv.URL+"/api/posted"] != nil {
 		t.Error("POST XHR must not be discovered")

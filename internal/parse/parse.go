@@ -615,6 +615,11 @@ func firstImgAlt(n *html.Node) string {
 	return alt
 }
 
+// zeroWidth strips invisible code points (zero-width spaces/joiners, BOM)
+// that anchor-link generators inject into headings — Screaming Frog's
+// extracted text never contains them (measured on Mintlify docs pages).
+var zeroWidth = strings.NewReplacer("\u200b", "", "\u200c", "", "\u200d", "", "\ufeff", "")
+
 func collapseSpace(s string) string {
-	return strings.Join(strings.Fields(s), " ")
+	return strings.Join(strings.Fields(zeroWidth.Replace(s)), " ")
 }
