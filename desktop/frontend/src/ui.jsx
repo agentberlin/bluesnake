@@ -1,8 +1,9 @@
 /* ===========================================================================
    bluesnake — shared UI primitives (ported from the design handoff)
    =========================================================================== */
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { icons } from "lucide-react";
+import { brandLogo, hostOf } from "./api";
 
 /* ---- Lucide icon wrapper (name strings like "layout-grid") ------------- */
 function pascal(n) {
@@ -12,6 +13,28 @@ export function Icon({ name, size = 16, stroke = 2, className, style }) {
   const L = icons[pascal(name)];
   if (!L) return <svg width={size} height={size} aria-hidden />;
   return <L size={size} strokeWidth={stroke} className={className} style={style} aria-hidden />;
+}
+
+/* ---- brand favicon chip ----------------------------------------------- */
+/* Shows a site's favicon (fetched + cached by the backend), falling back to the
+   domain's initial while it loads or when no logo exists. `dot` draws a small
+   status badge in the corner; `active` draws a selection ring. */
+export function BrandMark({ seed, size = 26, dot, active }) {
+  const host = hostOf(seed || "");
+  const [logo, setLogo] = useState("");
+  useEffect(() => {
+    let alive = true;
+    setLogo("");
+    if (host) brandLogo(seed).then((u) => { if (alive) setLogo(u); });
+    return () => { alive = false; };
+  }, [host]);
+  return (
+    <span className={"brandmark" + (active ? " active" : "")}
+      style={{ width: size, height: size, fontSize: Math.round(size * 0.42) }}>
+      {logo ? <img src={logo} alt="" draggable={false} /> : (host.charAt(0) || "?").toUpperCase()}
+      {dot && <span className="statusdot" style={{ background: dot }} />}
+    </span>
+  );
 }
 
 /* ---- semantic color helpers ------------------------------------------- */

@@ -2,7 +2,7 @@
    Crawl Manager (home) — all stored crawls
    =========================================================================== */
 import React, { useState } from "react";
-import { Icon, Btn, IconBtn, Search, SEV, Modal } from "../ui";
+import { Icon, Btn, IconBtn, Search, SEV, Modal, BrandMark } from "../ui";
 import { urlShort, hostOf } from "../api";
 
 export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDelete, storage }) {
@@ -74,7 +74,9 @@ export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDel
                     <span className="statusdot" style={{ background: sm.c, boxShadow: `0 0 0 3px color-mix(in oklab, ${sm.c} 18%, transparent)` }} />
                     <span style={{ fontSize: 12, fontWeight: 600, color: c.status === "interrupted" ? "var(--sev-warn)" : "var(--ink-2)" }}>{sm.label}</span>
                   </div>
-                  <div style={{ minWidth: 0 }}>
+                  <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 11 }}>
+                    <BrandMark seed={c.seed} size={30} />
+                    <div style={{ minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                       <span className="mono" style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{urlShort(c.seed)}</span>
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, color: "var(--ink-3)", flex: "0 0 auto", padding: "1px 6px", background: "var(--surface-2)", border: "1px solid var(--border)" }}>
@@ -86,6 +88,7 @@ export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDel
                       <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.project || hostOf(c.seed)}</span>
                       <span style={{ color: "var(--border-strong)" }}>·</span>
                       <span className="mono">{(c.started || "").split(" ")[0]}</span>
+                    </div>
                     </div>
                   </div>
                   <div style={{ textAlign: "right" }}>
