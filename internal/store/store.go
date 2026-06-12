@@ -104,9 +104,12 @@ func registryDB(dir string) (*sql.DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS crawls(
-		id TEXT PRIMARY KEY, project TEXT, seed TEXT, mode TEXT, status TEXT,
-		started INT, finished INT, crawled INT DEFAULT 0)`)
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS crawls(
+			id TEXT PRIMARY KEY, project TEXT, seed TEXT, mode TEXT, status TEXT,
+			started INT, finished INT, crawled INT DEFAULT 0);
+		CREATE TABLE IF NOT EXISTS brands(
+			host TEXT PRIMARY KEY, logo BLOB, logo_type TEXT, fetched INT);`)
 	if err != nil {
 		db.Close()
 		return nil, err

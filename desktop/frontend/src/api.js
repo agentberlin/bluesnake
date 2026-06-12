@@ -59,3 +59,22 @@ export function on(event, cb) {
 
 export const urlShort = (u) => (u || "").replace(/^https?:\/\/(www\.)?/, "");
 export const hostOf = (u) => urlShort(u).replace(/\/.*$/, "");
+
+/* Brand favicons. The backend fetches each logo from Google once and caches it
+   to disk; we memoise the result per host for this session so a logo costs at
+   most one backend round-trip no matter how many places render it. Resolves to
+   a data: URL, or "" meaning "no logo — fall back to the domain initial". */
+const _logoCache = new Map(); // host -> dataURL ("")
+const _logoInflight = new Map(); // host -> Promise<dataURL>
+export function brandLogo(seed) {
+  const host = hostOf(seed);
+  if (!host) return Promise.resolve("");
+  if (_logoCache.has(host)) return Promise.resolve(_logoCache.get(host));
+  if (_logoInflight.has(host)) return _logoInflight.get(host);
+  const p = Promise.resolve()
+    .then(() => call("BrandLogo", seed))
+    .then((dataUrl) => { const v = dataUrl || ""; _logoCache.set(host, v); _logoInflight.delete(host); return v; })
+    .catch(() => { _logoInflight.delete(host); return ""; });
+  _logoInflight.set(host, p);
+  return p;
+}

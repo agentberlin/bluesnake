@@ -8,7 +8,7 @@ import "@fontsource/jetbrains-mono/500.css";
 import "@fontsource/jetbrains-mono/600.css";
 import "./styles.css";
 import { api, on, urlShort, hostOf } from "./api";
-import { Icon, IconBtn } from "./ui";
+import { Icon, IconBtn, BrandMark } from "./ui";
 import { CrawlManager } from "./views/home";
 import { Welcome } from "./views/welcome";
 import { NewCrawl } from "./views/newcrawl";
@@ -177,14 +177,13 @@ function App() {
               const dotc = c.status === "completed" ? "var(--sev-ok)" : c.status === "interrupted" ? "var(--sev-warn)" : "var(--accent)";
               const host = hostOf(c.seed);
               if (collapsed) return (
-                <button key={c.id} className={"sb-monogram" + (active ? " active" : "")} title={host + " · " + c.crawled.toLocaleString() + " URLs"} onClick={() => openCrawl(c)}>
-                  {(host.charAt(0) || "?").toUpperCase()}
-                  <span className="statusdot" style={{ background: dotc }} />
+                <button key={c.id} className="sb-monogram" title={host + " · " + c.crawled.toLocaleString() + " URLs"} onClick={() => openCrawl(c)}>
+                  <BrandMark seed={c.seed} size={34} dot={dotc} active={active} />
                 </button>
               );
               return (
                 <div key={c.id} className={"sb-crawl" + (active ? " active" : "")} onClick={() => openCrawl(c)}>
-                  <span className="statusdot" style={{ background: dotc, marginTop: 5, alignSelf: "flex-start" }} />
+                  <BrandMark seed={c.seed} size={26} dot={dotc} />
                   <div className="meta">
                     <div className="host">{host}</div>
                     <div className="sub">{c.crawled.toLocaleString()} URLs{c.started ? " · " + c.started.split(" ")[0] : ""}</div>
