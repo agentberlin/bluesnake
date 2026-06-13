@@ -47,7 +47,8 @@ type Info struct {
 	Status   string
 	Started  time.Time
 	Finished time.Time
-	Crawled  int
+	Crawled  int // URLs fetched (got a response)
+	Total    int // URLs encountered (fetched + robots-blocked + errored)
 }
 
 const crawlSchema = `
@@ -111,6 +112,14 @@ func registryDB(dir string) (*sql.DB, error) {
 		CREATE TABLE IF NOT EXISTS brands(
 			host TEXT PRIMARY KEY, logo BLOB, logo_type TEXT, fetched INT);`)
 	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	// migration: `total` (URLs encountered) was added after `crawled` (URLs
+	// fetched). SQLite has no ADD COLUMN IF NOT EXISTS, so tolerate the
+	// duplicate-column error on registries that already have it.
+	if _, err := db.Exec(`ALTER TABLE crawls ADD COLUMN total INT DEFAULT 0`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
 		db.Close()
 		return nil, err
 	}
@@ -443,6 +452,14 @@ func (c *Crawl) UpdateInlinks(pages map[string]*crawler.PageRecord) error {
 
 // LoadPages reconstructs every PageRecord (including parsed facts) from the
 // crawl database, keyed by URL.
+// PageCount returns the number of URLs recorded for this crawl (every state) —
+// the "URLs encountered" total, without materialising every row.
+func (c *Crawl) PageCount() (int, error) {
+	var n int
+	err := c.db.QueryRow(`SELECT COUNT(*) FROM pages`).Scan(&n)
+	return n, err
+}
+
 func (c *Crawl) LoadPages() (map[string]*crawler.PageRecord, error) {
 	rows, err := c.db.Query(`SELECT url, scope, state, COALESCE(depth, -1), status_code, status,
 		content_type, COALESCE(http_version,''), response_time_ms, size, fetch_error, redirect_url,
@@ -704,7 +721,7 @@ func ListCrawls(dir string) ([]Info, error) {
 		return nil, err
 	}
 	defer reg.Close()
-	rows, err := reg.Query(`SELECT id, project, seed, mode, status, started, COALESCE(finished, 0), crawled
+	rows, err := reg.Query(`SELECT id, project, seed, mode, status, started, COALESCE(finished, 0), crawled, COALESCE(total, 0)
 		FROM crawls ORDER BY started`)
 	if err != nil {
 		return nil, err
@@ -715,7 +732,7 @@ func ListCrawls(dir string) ([]Info, error) {
 		var in Info
 		var started, finished int64
 		if err := rows.Scan(&in.ID, &in.Project, &in.Seed, &in.Mode, &in.Status,
-			&started, &finished, &in.Crawled); err != nil {
+			&started, &finished, &in.Crawled, &in.Total); err != nil {
 			return nil, err
 		}
 		in.Started = time.Unix(started, 0)
@@ -727,15 +744,29 @@ func ListCrawls(dir string) ([]Info, error) {
 	return infos, rows.Err()
 }
 
-// SetStatus updates a crawl's registry row.
-func SetStatus(dir, id, status string, crawled int) error {
+// SetStatus updates a crawl's registry row. crawled is URLs fetched; total is
+// URLs encountered (fetched + robots-blocked + errored — SF's headline count).
+func SetStatus(dir, id, status string, crawled, total int) error {
 	reg, err := registryDB(dir)
 	if err != nil {
 		return err
 	}
 	defer reg.Close()
-	_, err = reg.Exec(`UPDATE crawls SET status = ?, crawled = ?, finished = ? WHERE id = ?`,
-		status, crawled, time.Now().Unix(), id)
+	_, err = reg.Exec(`UPDATE crawls SET status = ?, crawled = ?, total = ?, finished = ? WHERE id = ?`,
+		status, crawled, total, time.Now().Unix(), id)
+	return err
+}
+
+// SetTotal backfills the encountered-URL count on an existing crawl row. Crawls
+// finished before `total` existed have it at 0; the desktop list fills it in
+// lazily (a COUNT over the crawl's pages) the first time they're shown.
+func SetTotal(dir, id string, total int) error {
+	reg, err := registryDB(dir)
+	if err != nil {
+		return err
+	}
+	defer reg.Close()
+	_, err = reg.Exec(`UPDATE crawls SET total = ? WHERE id = ?`, total, id)
 	return err
 }
 

@@ -93,7 +93,8 @@ type CrawlSummary struct {
 	Mode          string `json:"mode"`
 	Status        string `json:"status"`
 	Started       string `json:"started"`
-	Crawled       int    `json:"crawled"`
+	Crawled       int    `json:"crawled"` // URLs fetched (got a response)
+	Total         int    `json:"total"`   // URLs encountered (fetched + robots-blocked + errored)
 	Issues        int    `json:"issues"`
 	Warnings      int    `json:"warnings"`
 	Opportunities int    `json:"opportunities"`
@@ -108,13 +109,22 @@ func (a *App) ListCrawls() ([]CrawlSummary, error) {
 	for _, in := range infos {
 		cs := CrawlSummary{
 			ID: in.ID, Project: in.Project, Seed: in.Seed, Mode: in.Mode,
-			Status: in.Status, Crawled: in.Crawled,
+			Status: in.Status, Crawled: in.Crawled, Total: in.Total,
 		}
 		if !in.Started.IsZero() {
 			cs.Started = in.Started.Format("2006-01-02 15:04")
 		}
 		if in.Status != store.StatusRunning {
 			if st, err := store.OpenCrawl(a.storeDir, in.ID); err == nil {
+				// crawls finished before `total` existed have it at 0; backfill
+				// the encountered count from the pages table and persist it so
+				// the registry-backed surfaces (CLI, MCP) pick it up too.
+				if cs.Total == 0 {
+					if n, err := st.PageCount(); err == nil && n > 0 {
+						cs.Total = n
+						_ = store.SetTotal(a.storeDir, in.ID, n)
+					}
+				}
 				if counts, err := st.IssueCounts(); err == nil {
 					for id, n := range counts {
 						def, ok := issues.Lookup(id)

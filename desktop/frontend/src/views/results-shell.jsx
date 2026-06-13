@@ -82,7 +82,7 @@ export function ResultsWorkspace({ crawl, tab, setTab, issueFilter, setIssueFilt
           <div className="mono" style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{urlShort(crawl.seed)}</div>
           <div style={{ fontSize: 10.5, color: "var(--ink-faint)", marginTop: 2, display: "flex", alignItems: "center", gap: 5 }}>
             <span className="statusdot" style={{ background: crawl.status === "interrupted" ? "var(--sev-warn)" : "var(--sev-ok)" }} />
-            {crawl.crawled.toLocaleString()} URLs{crawl.started ? " · " + crawl.started.split(" ")[0] : ""}
+            {(crawl.total || crawl.crawled).toLocaleString()} URLs{crawl.started ? " · " + crawl.started.split(" ")[0] : ""}
           </div>
         </div>
         <div className="sb-nav" style={{ paddingTop: 2 }}>
@@ -200,7 +200,7 @@ function ResultsOverview({ crawl, setTab, onFilterByIssue }) {
     <div className="scroll" style={{ padding: 20 }}>
       <div style={{ maxWidth: 1080, margin: "0 auto" }} className="fade">
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 14 }}>
-          <Metric label="URLs crawled" value={o.total.toLocaleString()} sub={`${o.internal.toLocaleString()} internal · ${o.external.toLocaleString()} external`} onClick={() => setTab("internal")} />
+          <Metric label="URLs found" value={o.total.toLocaleString()} sub={`${o.crawled.toLocaleString()} crawled · ${o.blocked.toLocaleString()} blocked by robots`} onClick={() => setTab("internal")} />
           <Metric label="Indexable" value={o.indexable.toLocaleString()} sub={`${Math.round(o.indexable / indexTotal * 100)}% of internal pages`} color="var(--sev-ok)" />
           <Metric label="Issues found" value={o.issues} sub="high-priority problems" color="var(--sev-issue)" onClick={() => setTab("issues")} />
           <Metric label="Avg link score" value={o.avgLinkScore ? o.avgLinkScore.toFixed(0) : "—"} sub="0–100, PageRank-like" />

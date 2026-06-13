@@ -44,7 +44,7 @@ export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDel
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div style={{ fontWeight: 650, fontSize: 13.5 }}>{urlShort(c.seed)}</div>
                     <div className="mono" style={{ fontSize: 11.5, color: "var(--ink-faint)", marginTop: 2 }}>
-                      Paused at {c.crawled.toLocaleString()} URLs · {c.started} · nothing was lost
+                      Paused at {(c.total || c.crawled).toLocaleString()} URLs · {c.started} · nothing was lost
                     </div>
                   </div>
                   <Btn icon="trash-2" onClick={() => setConfirm(c)}>Discard</Btn>
@@ -92,7 +92,7 @@ export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDel
                     </div>
                   </div>
                   <div style={{ textAlign: "right" }}>
-                    <div className="mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{c.crawled.toLocaleString()}</div>
+                    <div className="mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{(c.total || c.crawled).toLocaleString()}</div>
                   </div>
                   <div style={{ display: "flex", gap: 9 }}>
                     {["issue", "warning", "opportunity"].map((s) => (
@@ -122,7 +122,7 @@ export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDel
       {confirm && (
         <Modal onClose={() => setConfirm(null)} title="Delete crawl?" danger
           icon="trash-2"
-          body={<>This permanently deletes the crawl of <b className="mono">{urlShort(confirm.seed)}</b> ({confirm.crawled.toLocaleString()} URLs) and all its data. This cannot be undone.</>}
+          body={<>This permanently deletes the crawl of <b className="mono">{urlShort(confirm.seed)}</b> ({(confirm.total || confirm.crawled).toLocaleString()} URLs) and all its data. This cannot be undone.</>}
           actions={<>
             <Btn onClick={() => setConfirm(null)}>Cancel</Btn>
             <Btn variant="primary" style={{ background: "var(--s-4xx)" }} onClick={() => { onDelete(confirm); setConfirm(null); }}>Delete permanently</Btn>

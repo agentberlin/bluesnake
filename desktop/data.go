@@ -151,9 +151,8 @@ type IssueEntry struct {
 type Overview struct {
 	ID            string       `json:"id"`
 	Seed          string       `json:"seed"`
-	Total         int          `json:"total"`
-	Internal      int          `json:"internal"`
-	External      int          `json:"external"`
+	Total         int          `json:"total"`   // URLs encountered (all states)
+	Crawled       int          `json:"crawled"` // URLs fetched (state == crawled)
 	S2xx          int          `json:"s2xx"`
 	S3xx          int          `json:"s3xx"`
 	S4xx          int          `json:"s4xx"`
@@ -179,10 +178,16 @@ func (a *App) Overview(id string) (*Overview, error) {
 	var scoreN int
 	for _, p := range pages {
 		o.Total++
+		// Indexability covers every internal URL: a robots-blocked or errored
+		// URL is non-indexable, so it belongs in the denominator (SF's
+		// Indexable/Non-Indexable totals span all internal URLs, not just the
+		// fetched ones).
 		if p.Scope == "internal" {
-			o.Internal++
-		} else {
-			o.External++
+			if p.Indexable {
+				o.Indexable++
+			} else {
+				o.NonIndexable++
+			}
 		}
 		switch p.State {
 		case crawler.StateBlockedRobots:
@@ -191,6 +196,9 @@ func (a *App) Overview(id string) (*Overview, error) {
 		case crawler.StateError:
 			o.NoResp++
 			continue
+		}
+		if p.State == crawler.StateCrawled {
+			o.Crawled++
 		}
 		switch {
 		case p.StatusCode >= 500:
@@ -202,16 +210,10 @@ func (a *App) Overview(id string) (*Overview, error) {
 		case p.StatusCode >= 200:
 			o.S2xx++
 		}
-		if p.Scope == "internal" {
-			if p.Indexable {
-				o.Indexable++
-			} else {
-				o.NonIndexable++
-			}
-			if p.LinkScore > 0 {
-				scoreSum += p.LinkScore
-				scoreN++
-			}
+		// Link score is meaningful only for fetched pages.
+		if p.Scope == "internal" && p.LinkScore > 0 {
+			scoreSum += p.LinkScore
+			scoreN++
 		}
 	}
 	if scoreN > 0 {

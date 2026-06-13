@@ -155,8 +155,8 @@ func printSummary(cmd *cobra.Command, res *crawler.Result) {
 		}
 	}
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "Crawled %d URLs (%d internal, %d external) in %s\n",
-		res.Crawled, internal, external, res.Duration.Round(res.Duration/100+1))
+	fmt.Fprintf(out, "Found %d URLs (%d internal, %d external) — %d crawled in %s\n",
+		res.Total, internal, external, res.Crawled, res.Duration.Round(res.Duration/100+1))
 	fmt.Fprintf(out, "  2xx: %d  3xx: %d  4xx: %d  5xx: %d  blocked: %d  no-response: %d\n",
 		s2, s3, s4, s5, blocked, errs)
 	fmt.Fprintf(out, "  indexable: %d  non-indexable: %d\n", indexable, nonIndexable)

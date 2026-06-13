@@ -31,7 +31,7 @@ type Progress struct {
 	CrawlID    string  `json:"crawl_id"`
 	Seed       string  `json:"seed"`
 	State      string  `json:"state"` // running
-	Crawled    int     `json:"crawled"`
+	Total      int     `json:"total"` // URLs processed so far (fetched + robots-blocked + errored)
 	Discovered int     `json:"discovered"`
 	Queue      int     `json:"queue"`
 	S2xx       int     `json:"status_2xx"`

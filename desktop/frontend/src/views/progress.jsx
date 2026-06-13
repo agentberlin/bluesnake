@@ -34,10 +34,10 @@ export function CrawlProgress({ crawlId, onOpenResults }) {
     await api.resumeCrawl(crawlId);
   }
 
-  const s = snap || { crawled: 0, discovered: 1, queue: 0, s2xx: 0, s3xx: 0, s4xx: 0, s5xx: 0, blocked: 0, noresp: 0, indexable: 0, rate: 0, elapsedSec: 0, threads: 0, feed: [], seed: "" };
+  const s = snap || { total: 0, discovered: 1, queue: 0, s2xx: 0, s3xx: 0, s4xx: 0, s5xx: 0, blocked: 0, noresp: 0, indexable: 0, rate: 0, elapsedSec: 0, threads: 0, feed: [], seed: "" };
   const status = { "2xx": s.s2xx, "3xx": s.s3xx, "4xx": s.s4xx, "5xx": s.s5xx, blocked: s.blocked, noresp: s.noresp };
   const discovered = Math.max(s.discovered, 1);
-  const pct = Math.min(100, Math.round((s.crawled / discovered) * 100) || 0);
+  const pct = Math.min(100, Math.round((s.total / discovered) * 100) || 0);
   const fmt = (sec) => `${Math.floor(sec / 60)}m ${String(sec % 60).padStart(2, "0")}s`;
   const host = urlShort(s.seed || "");
   const feed = s.feed || [];
@@ -69,7 +69,7 @@ export function CrawlProgress({ crawlId, onOpenResults }) {
           <div className="card" style={{ padding: 18, marginBottom: 16 }}>
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 11 }}>
               <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-                <span className="mono" style={{ fontSize: 22, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{s.crawled.toLocaleString()}</span>
+                <span className="mono" style={{ fontSize: 22, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{s.total.toLocaleString()}</span>
                 <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>of ~{discovered.toLocaleString()} discovered</span>
               </div>
               <span className="mono" style={{ fontSize: 13, color: "var(--ink-2)", fontWeight: 600 }}>{state === "done" ? "100" : pct}%</span>
@@ -85,7 +85,7 @@ export function CrawlProgress({ crawlId, onOpenResults }) {
           <div className="card" style={{ display: "flex", padding: 0, overflow: "hidden", marginBottom: 16 }}>
             {stat("Queue", state !== "running" ? "0" : s.queue.toLocaleString(), state !== "running" ? "drained" : "URLs waiting")}
             {stat("Pages / sec", state !== "running" ? "—" : s.rate.toFixed(1), state !== "running" ? "finished" : "live")}
-            {stat("Indexable", s.indexable.toLocaleString(), `${Math.max(0, s.crawled - s.indexable)} non-indexable`, "var(--sev-ok)")}
+            {stat("Indexable", s.indexable.toLocaleString(), `${Math.max(0, s.total - s.indexable)} non-indexable`, "var(--sev-ok)")}
             <div style={{ flex: 1, padding: "16px 18px" }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-faint)", textTransform: "uppercase", letterSpacing: ".05em" }}>Elapsed</div>
               <div className="mono" style={{ fontSize: 27, fontWeight: 600, marginTop: 5, letterSpacing: "-.02em", fontVariantNumeric: "tabular-nums" }}>{fmt(s.elapsedSec)}</div>
@@ -99,10 +99,10 @@ export function CrawlProgress({ crawlId, onOpenResults }) {
               <div style={{ fontSize: 12.5, fontWeight: 650, marginBottom: 14 }}>Response codes</div>
               <StatusBar status={status} height={10} showLabels />
               <div style={{ marginTop: 18, paddingTop: 16, borderTop: "1px solid var(--border-soft)", display: "flex", alignItems: "center", gap: 11 }}>
-                <Ring value={s.indexable} total={s.crawled || 1} size={46} color="var(--sev-ok)" />
+                <Ring value={s.indexable} total={s.total || 1} size={46} color="var(--sev-ok)" />
                 <div>
-                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>{s.crawled ? Math.round(s.indexable / s.crawled * 100) : 0}% indexable</div>
-                  <div className="hint">{s.indexable.toLocaleString()} of {s.crawled.toLocaleString()} could be indexed by Google</div>
+                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>{s.total ? Math.round(s.indexable / s.total * 100) : 0}% indexable</div>
+                  <div className="hint">{s.indexable.toLocaleString()} of {s.total.toLocaleString()} could be indexed by Google</div>
                 </div>
               </div>
             </div>
@@ -132,7 +132,7 @@ export function CrawlProgress({ crawlId, onOpenResults }) {
             <div className="card fade" style={{ marginTop: 16, padding: 20, display: "flex", alignItems: "center", gap: 18 }}>
               <div style={{ width: 46, height: 46, flex: "0 0 46px", display: "flex", alignItems: "center", justifyContent: "center", background: "color-mix(in oklab, var(--sev-ok) 14%, transparent)", color: "var(--sev-ok)" }}><Icon name="circle-check" size={24} /></div>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 14.5, fontWeight: 650 }}>Crawled {done.crawled.toLocaleString()} URLs in {fmt(done.durationSec)}</div>
+                <div style={{ fontSize: 14.5, fontWeight: 650 }}>Found {(done.total || done.crawled).toLocaleString()} URLs in {fmt(done.durationSec)}</div>
                 <div style={{ fontSize: 12.5, color: "var(--ink-2)", marginTop: 3, display: "flex", gap: 16 }}>
                   {done.analyzed ? <span className="muted">analysis complete — issues evaluated, link scores computed</span> : <span className="muted">analysis pending</span>}
                   {done.error && <span style={{ color: "var(--s-4xx)" }}>{done.error}</span>}

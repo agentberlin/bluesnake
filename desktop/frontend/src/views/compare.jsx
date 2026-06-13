@@ -158,7 +158,7 @@ function CrawlPick({ label, value, options, onChange }) {
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ fontSize: 10.5, fontWeight: 600, color: "var(--ink-faint)", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>{label}</div>
       <select className="input mono" value={value} onChange={(e) => onChange(e.target.value)} style={{ fontSize: 12, fontWeight: 500 }}>
-        {options.map((o) => <option key={o.id} value={o.id}>{urlShort(o.seed)} · {(o.started || "").split(" ")[0]} · {o.crawled.toLocaleString()} URLs</option>)}
+        {options.map((o) => <option key={o.id} value={o.id}>{urlShort(o.seed)} · {(o.started || "").split(" ")[0]} · {(o.total || o.crawled).toLocaleString()} URLs</option>)}
       </select>
     </div>
   );

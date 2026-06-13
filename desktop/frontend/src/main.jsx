@@ -186,7 +186,7 @@ function App() {
                   <BrandMark seed={c.seed} size={26} dot={dotc} />
                   <div className="meta">
                     <div className="host">{host}</div>
-                    <div className="sub">{c.crawled.toLocaleString()} URLs{c.started ? " · " + c.started.split(" ")[0] : ""}</div>
+                    <div className="sub">{(c.total || c.crawled).toLocaleString()} URLs{c.started ? " · " + c.started.split(" ")[0] : ""}</div>
                   </div>
                 </div>
               );

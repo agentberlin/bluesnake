@@ -133,7 +133,7 @@ func (w *world) storedInterruptedCrawl(pages, interruptAfter int) error {
 	if !res.Interrupted {
 		return fmt.Errorf("crawl was not interrupted")
 	}
-	return store.SetStatus(w.storeDirPath(), st.ID, store.StatusInterrupted, res.Crawled)
+	return store.SetStatus(w.storeDirPath(), st.ID, store.StatusInterrupted, res.Crawled, res.Total)
 }
 
 func (w *world) resumeFromStore() error {

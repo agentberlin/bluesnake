@@ -40,10 +40,14 @@ func newCrawlsCmd() *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tPROJECT\tMODE\tSTATUS\tCRAWLED\tSEED")
+			fmt.Fprintln(w, "ID\tPROJECT\tMODE\tSTATUS\tURLS\tCRAWLED\tSEED")
 			for _, in := range infos {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\n",
-					in.ID, in.Project, in.Mode, in.Status, in.Crawled, in.Seed)
+				total := in.Total
+				if total == 0 {
+					total = in.Crawled
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\t%s\n",
+					in.ID, in.Project, in.Mode, in.Status, total, in.Crawled, in.Seed)
 			}
 			return w.Flush()
 		},
@@ -167,7 +171,7 @@ func finishCrawl(cmd *cobra.Command, st *store.Crawl, storeDir string, res *craw
 		status = store.StatusInterrupted
 		fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", st.ID, storeDir)
 	}
-	if err := store.SetStatus(storeDir, st.ID, status, res.Crawled); err != nil {
+	if err := store.SetStatus(storeDir, st.ID, status, res.Crawled, res.Total); err != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning:", err)
 	}
 }
