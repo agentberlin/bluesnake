@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/agentberlin/bluesnake/internal/config"
@@ -325,7 +326,7 @@ func (p *parser) handleElement(n *html.Node, path string) {
 			if href := attr(n, "href"); href != "" {
 				f.Links = append(f.Links, Link{
 					Type: Uncrawlable, Raw: href,
-					ElemPath: path, Position: p.position(path),
+					ElemPath: p.elemPath(n, path), Position: p.position(path),
 				})
 			}
 		}
@@ -450,7 +451,7 @@ func (p *parser) handleAnchor(n *html.Node, path string) {
 		if p.cfg.Links.Uncrawlable.Store {
 			p.facts.Links = append(p.facts.Links, Link{
 				Type: Uncrawlable, Raw: href,
-				Anchor: collapseSpace(subtreeText(n)), ElemPath: path, Position: p.position(path),
+				Anchor: collapseSpace(subtreeText(n)), ElemPath: p.elemPath(n, path), Position: p.position(path),
 			})
 		}
 		return
@@ -505,7 +506,7 @@ func parseSrcset(srcset string) []string {
 }
 
 // addLink resolves, classifies and appends a link edge.
-func (p *parser) addLink(_ *html.Node, path string, l Link) {
+func (p *parser) addLink(n *html.Node, path string, l Link) {
 	if l.URL == "" && l.Raw != "" {
 		l.URL = p.resolve(l.Raw)
 	}
@@ -513,9 +514,72 @@ func (p *parser) addLink(_ *html.Node, path string, l Link) {
 		return
 	}
 	l.PathType = urlutil.ClassifyPathType(l.Raw).String()
-	l.ElemPath = path
+	l.ElemPath = p.elemPath(n, path)
 	l.Position = p.position(path)
 	p.facts.Links = append(p.facts.Links, l)
+}
+
+// elemPath returns the stored DOM path for a link's element: Screaming Frog's
+// //body-rooted XPath (see sfElemPath), falling back to the structural walk
+// path only when the node is unavailable. Position classification still runs
+// off the structural path, so this is presentation-only.
+func (p *parser) elemPath(n *html.Node, structural string) string {
+	if sf := sfElemPath(n); sf != "" {
+		return sf
+	}
+	return structural
+}
+
+// sfElemPath builds the Screaming-Frog "Link Path" for an element: a //body-
+// rooted XPath where each step is the tag plus a 1-based positional [k] among
+// same-tag siblings (emitted only when there is more than one such sibling),
+// else the bare tag. Reverse-engineered from 52,531 real SF link paths on
+// trigger.dev: the index is same-tag (child-position scored 0%). SF also
+// sometimes qualifies a step with [@id='x'] or [@class='x'], but does so
+// INCONSISTENTLY (e.g. div[@id='content-area'] on one page yet a bare nav for
+// an id="sidebar" on another) — reproducing either qualifier measurably LOWERS
+// aggregate path agreement (over 400 real pages: pure-positional 37% vs
+// id-qualified 17%), so neither is emitted. The remaining divergence is
+// DOM-tree construction differences between parsers, which positional indices
+// are inherently sensitive to.
+func sfElemPath(n *html.Node) string {
+	if n == nil || n.Type != html.ElementNode {
+		return ""
+	}
+	var segs []string
+	for cur := n; cur != nil && cur.Type == html.ElementNode; cur = cur.Parent {
+		if cur.Data == "html" {
+			break
+		}
+		segs = append(segs, sfSegment(cur))
+		if cur.Data == "body" {
+			break
+		}
+	}
+	slices.Reverse(segs)
+	return "//" + strings.Join(segs, "/")
+}
+
+// sfSegment renders one step of an sfElemPath: tag + 1-based same-tag-sibling
+// index (omitted when the element is the only one of its tag among siblings).
+func sfSegment(n *html.Node) string {
+	tag := n.Data
+	if n.Parent == nil {
+		return tag
+	}
+	idx, count := 0, 0
+	for sib := n.Parent.FirstChild; sib != nil; sib = sib.NextSibling {
+		if sib.Type == html.ElementNode && sib.Data == tag {
+			count++
+			if sib == n {
+				idx = count
+			}
+		}
+	}
+	if count > 1 {
+		return tag + "[" + strconv.Itoa(idx) + "]"
+	}
+	return tag
 }
 
 // position applies the ordered link-position rules (first match wins).
@@ -598,8 +662,14 @@ func subtreeText(n *html.Node) string {
 		if n.Type == html.ElementNode && slices.Contains(nonTextElements, n.Data) {
 			return
 		}
+		// Element-text EXTRACTION (titles, H1/H2, anchor text) joins inline
+		// elements with no synthetic space — including same-tag-adjacent ones:
+		// SF extracts `<span>Run</span><span>Execute</span>` as "RunExecute"
+		// (probe + infisical.com tripled-<h1>). Only block boundaries separate.
+		// (Word COUNTING is the opposite — it breaks at same-tag adjacency — but
+		// that lives in content.go, which keeps sameTagAdjacent.)
 		boundary := n.Type == html.ElementNode && !inlineElements[n.Data]
-		if boundary || sameTagAdjacent(n) {
+		if boundary {
 			b.WriteString(" ")
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {

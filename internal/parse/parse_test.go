@@ -165,6 +165,49 @@ func TestBaseHref(t *testing.T) {
 	}
 }
 
+// Screaming-Frog-style link paths: //body-rooted, [@id] when present, 1-based
+// positional [k] among same-tag siblings (only when >1), bare for singletons.
+func TestElemPathSFStyle(t *testing.T) {
+	f := parseHTML(t, "https://ex.com/p", `
+		<html><body>
+			<header><nav><a id="home" href="/a">a</a></nav></header>
+			<main id="mn">
+				<div><a href="/d1">d1</a></div>
+				<div><a href="/d2">d2</a></div>
+			</main>
+		</body></html>`, nil, nil)
+	check := func(dst, want string) {
+		t.Helper()
+		l := findLink(f, Hyperlink, dst)
+		if l == nil {
+			t.Fatalf("missing link %s", dst)
+		}
+		if l.ElemPath != want {
+			t.Errorf("%s elem path = %q, want %q", dst, l.ElemPath, want)
+		}
+	}
+	check("https://ex.com/a", "//body/header/nav/a")  // singletons -> bare (no @id qualifier)
+	check("https://ex.com/d1", "//body/main/div[1]/a") // 1st of 2 sibling divs
+	check("https://ex.com/d2", "//body/main/div[2]/a") // 2nd of 2 sibling divs
+}
+
+// Element-text EXTRACTION joins same-tag-adjacent inline elements with NO
+// synthetic space: SF extracts `<span>Run</span><span>Execute</span>` as
+// "RunExecute" (probe + infisical.com's three zero-whitespace-adjacent <span>s
+// in its <h1> → 129 chars, no spaces). This is the opposite of word COUNTING,
+// which breaks at same-tag adjacency (content_parity_test.go).
+func TestHeadingSameTagAdjacentJoin(t *testing.T) {
+	f := parseHTML(t, "https://ex.com/p",
+		`<html><body><h1><span>Run</span><span>Execute</span></h1>`+
+			`<h2><span>AaA</span><span>BbB</span><span>CcC</span></h2></body></html>`, nil, nil)
+	if len(f.H1s) != 1 || f.H1s[0] != "RunExecute" {
+		t.Errorf("H1s = %q, want [RunExecute]", f.H1s)
+	}
+	if len(f.H2s) != 1 || f.H2s[0] != "AaABbBCcC" {
+		t.Errorf("H2s = %q, want [AaABbBCcC]", f.H2s)
+	}
+}
+
 func TestAnchorEdgeData(t *testing.T) {
 	f := parseHTML(t, "https://ex.com/p", `
 		<html><body>
