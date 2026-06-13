@@ -31,7 +31,8 @@ type apiCrawl struct {
 	Seed    string `json:"seed"`
 	Mode    string `json:"mode"`
 	Status  string `json:"status"`
-	Crawled int    `json:"crawled"`
+	Crawled int    `json:"crawled"` // URLs fetched
+	Total   int    `json:"total"`   // URLs encountered (fetched + robots-blocked + errored)
 }
 
 type apiIssue struct {
@@ -95,9 +96,13 @@ func (h *handler) crawls(w http.ResponseWriter, r *http.Request) {
 	}
 	entries := make([]apiCrawl, 0, len(infos))
 	for _, in := range infos {
+		total := in.Total
+		if total == 0 {
+			total = in.Crawled
+		}
 		entries = append(entries, apiCrawl{
 			ID: in.ID, Project: in.Project, Seed: in.Seed,
-			Mode: in.Mode, Status: in.Status, Crawled: in.Crawled,
+			Mode: in.Mode, Status: in.Status, Crawled: in.Crawled, Total: total,
 		})
 	}
 	writeJSON(w, http.StatusOK, entries)

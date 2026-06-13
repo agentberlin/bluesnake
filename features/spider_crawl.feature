@@ -103,4 +103,5 @@ Feature: Spider mode crawl
     And a site page "/a" linking to ""
     When I run "bluesnake crawl <serverurl>/"
     Then the exit code is 0
-    And the output contains "Crawled 2 URLs"
+    And the output contains "Found 2 URLs"
+    And the output contains "2 crawled"

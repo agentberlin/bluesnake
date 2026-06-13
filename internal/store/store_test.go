@@ -101,11 +101,11 @@ func TestCrawlLifecycle(t *testing.T) {
 	if len(infos) != 1 || infos[0].ID != c.ID || infos[0].Project != "proj" || infos[0].Status != StatusRunning {
 		t.Errorf("registry = %+v", infos)
 	}
-	if err := SetStatus(dir, c.ID, StatusCompleted, 42); err != nil {
+	if err := SetStatus(dir, c.ID, StatusCompleted, 42, 50); err != nil {
 		t.Fatal(err)
 	}
 	infos, _ = ListCrawls(dir)
-	if infos[0].Status != StatusCompleted || infos[0].Crawled != 42 {
+	if infos[0].Status != StatusCompleted || infos[0].Crawled != 42 || infos[0].Total != 50 {
 		t.Errorf("after SetStatus: %+v", infos[0])
 	}
 

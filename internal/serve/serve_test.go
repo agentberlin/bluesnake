@@ -74,7 +74,7 @@ func servedStore(t *testing.T) (dir, id string) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetStatus(dir, id, store.StatusCompleted, 2); err != nil {
+	if err := store.SetStatus(dir, id, store.StatusCompleted, 2, 2); err != nil {
 		t.Fatal(err)
 	}
 	return dir, id

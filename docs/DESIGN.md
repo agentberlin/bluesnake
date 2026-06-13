@@ -362,7 +362,7 @@ docs/
 
 ### 5.3 Storage schema (SQLite, one DB file per crawl)
 
-`~/.bluesnake/crawls/<crawl-id>.db`, plus a tiny registry DB `~/.bluesnake/registry.db` (crawl id, project, task name, seed, mode, started/finished, status, counts). Crawl ID = `<yyyymmdd-hhmmss>-<short-rand>`.
+`~/.bluesnake/crawls/<crawl-id>.db`, plus a tiny registry DB `~/.bluesnake/registry.db` (crawl id, project, task name, seed, mode, started/finished, status, and two URL counts: `crawled` = fetched and `total` = encountered — Screaming Frog's "URLs Crawled" vs "URLs Encountered" split, where encountered also covers robots-blocked/errored URLs). `total` is the headline count shown across the CLI, desktop and MCP (`crawled` is reported alongside as the fetched subset); crawls finished before `total` existed are backfilled lazily from a `COUNT(*)` over `pages`. Crawl ID = `<yyyymmdd-hhmmss>-<short-rand>`.
 
 ```sql
 -- meta

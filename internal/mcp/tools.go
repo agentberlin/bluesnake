@@ -514,6 +514,13 @@ func runQuery(ctx context.Context, db *sql.DB, crawlID, query string, maxRows in
 }
 
 func crawlInfoJSON(in store.Info) map[string]any {
+	// total is "URLs encountered" (fetched + robots-blocked + errored), the
+	// headline count; crawled is the fetched subset. Older crawls predate the
+	// total column (0) — fall back to crawled so the headline is never blank.
+	total := in.Total
+	if total == 0 {
+		total = in.Crawled
+	}
 	m := map[string]any{
 		"crawl_id": in.ID,
 		"project":  in.Project,
@@ -521,6 +528,7 @@ func crawlInfoJSON(in store.Info) map[string]any {
 		"mode":     in.Mode,
 		"status":   in.Status,
 		"crawled":  in.Crawled,
+		"total":    total,
 	}
 	if !in.Started.IsZero() {
 		m["started"] = in.Started.Format(time.RFC3339)

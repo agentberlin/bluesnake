@@ -34,7 +34,7 @@ type ProgressSnapshot struct {
 	CrawlID    string     `json:"crawlId"`
 	Seed       string     `json:"seed"`
 	State      string     `json:"state"` // running | done
-	Crawled    int        `json:"crawled"`
+	Total      int        `json:"total"` // URLs processed so far (fetched + robots-blocked + errored)
 	Discovered int        `json:"discovered"`
 	Queue      int        `json:"queue"`
 	S2xx       int        `json:"s2xx"`
@@ -53,8 +53,9 @@ type ProgressSnapshot struct {
 // DoneEvent is the payload of the "crawl:done" event.
 type DoneEvent struct {
 	CrawlID     string `json:"crawlId"`
-	Status      string `json:"status"` // completed | interrupted
-	Crawled     int    `json:"crawled"`
+	Status      string `json:"status"`  // completed | interrupted
+	Crawled     int    `json:"crawled"` // URLs fetched
+	Total       int    `json:"total"`   // URLs encountered (fetched + blocked + errored)
 	DurationSec int    `json:"durationSec"`
 	Analyzed    bool   `json:"analyzed"`
 	Error       string `json:"error,omitempty"`
@@ -73,7 +74,7 @@ type crawlSession struct {
 	mu         sync.Mutex
 	stopMode   string // "" | "pause" | "stop"
 	done       bool
-	crawled    int
+	total      int
 	discovered int
 	doneFront  int
 	s2, s3     int
@@ -93,7 +94,7 @@ func newCrawlSession(a *App, st *store.Crawl, cfg *config.Config, seeds []string
 		started: time.Now(),
 		doneCh:  make(chan struct{}),
 		// resumed crawls start from what is already on disk
-		crawled:    len(processed),
+		total:      len(processed),
 		discovered: len(processed) + len(pending),
 	}
 	opts := []crawler.Option{crawler.WithSink(&uiSink{inner: st, s: s})}
@@ -143,6 +144,7 @@ func (s *crawlSession) run() {
 	}
 	if res != nil {
 		done.Crawled = res.Crawled
+		done.Total = res.Total
 		done.DurationSec = int(res.Duration.Seconds())
 		if err := s.st.UpdateInlinks(res.Pages); err != nil && done.Error == "" {
 			done.Error = err.Error()
@@ -151,7 +153,7 @@ func (s *crawlSession) run() {
 		if res.Interrupted && mode != "stop" {
 			done.Status = store.StatusInterrupted
 		}
-		_ = store.SetStatus(s.app.storeDir, s.st.ID, done.Status, res.Crawled)
+		_ = store.SetStatus(s.app.storeDir, s.st.ID, done.Status, res.Crawled, res.Total)
 		if done.Status == store.StatusCompleted && s.cfg.Analysis.Auto {
 			if err := reanalyze(s.st); err == nil {
 				done.Analyzed = true
@@ -202,7 +204,7 @@ func (s *crawlSession) snapshot() ProgressSnapshot {
 	if s.done {
 		state = "done"
 	}
-	queue := s.discovered - s.crawled
+	queue := s.discovered - s.total
 	if queue < 0 {
 		queue = 0
 	}
@@ -210,7 +212,7 @@ func (s *crawlSession) snapshot() ProgressSnapshot {
 	copy(feed, s.feed)
 	return ProgressSnapshot{
 		CrawlID: s.st.ID, Seed: s.seeds[0], State: state,
-		Crawled: s.crawled, Discovered: s.discovered, Queue: queue,
+		Total: s.total, Discovered: s.discovered, Queue: queue,
 		S2xx: s.s2, S3xx: s.s3, S4xx: s.s4, S5xx: s.s5,
 		Blocked: s.blocked, NoResp: s.noresp, Indexable: s.indexable,
 		Rate: rate, ElapsedSec: int(time.Since(s.started).Seconds()),
@@ -221,7 +223,7 @@ func (s *crawlSession) snapshot() ProgressSnapshot {
 func (s *crawlSession) onPage(rec *crawler.PageRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.crawled++
+	s.total++
 	s.recent = append(s.recent, time.Now())
 
 	notable := false

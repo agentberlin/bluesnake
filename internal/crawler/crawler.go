@@ -129,7 +129,8 @@ func WithResume(processed []string, pending []frontier.Item) Option {
 // Result is the outcome of a crawl.
 type Result struct {
 	Pages       map[string]*PageRecord
-	Crawled     int
+	Crawled     int // URLs fetched (state == crawled); excludes robots-blocked/errored
+	Total       int // all URLs recorded (crawled + robots-blocked + errored): SF's "URLs Encountered"
 	Interrupted bool
 	Duration    time.Duration
 }
@@ -309,6 +310,7 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 			res.Crawled++
 		}
 	}
+	res.Total = len(c.pages)
 	return res, c.sinkErr
 }
 

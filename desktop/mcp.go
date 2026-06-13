@@ -286,7 +286,7 @@ func (b *desktopBackend) Progress() *mcp.Progress {
 	}
 	return &mcp.Progress{
 		CrawlID: p.CrawlID, Seed: p.Seed, State: p.State,
-		Crawled: p.Crawled, Discovered: p.Discovered, Queue: p.Queue,
+		Total: p.Total, Discovered: p.Discovered, Queue: p.Queue,
 		S2xx: p.S2xx, S3xx: p.S3xx, S4xx: p.S4xx, S5xx: p.S5xx,
 		Blocked: p.Blocked, NoResponse: p.NoResp, Indexable: p.Indexable,
 		RatePerSec: p.Rate, ElapsedSec: p.ElapsedSec,

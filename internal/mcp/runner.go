@@ -157,7 +157,7 @@ type runnerSession struct {
 	mu         sync.Mutex
 	stopMode   string // "" | "pause" | "stop"
 	done       bool
-	crawled    int
+	total      int
 	discovered int
 	s2, s3     int
 	s4, s5     int
@@ -174,7 +174,7 @@ func newRunnerSession(storeDir string, st *store.Crawl, cfg *config.Config, seed
 		started: time.Now(),
 		doneCh:  make(chan struct{}),
 		// resumed crawls start from what is already on disk
-		crawled:    len(processed),
+		total:      len(processed),
 		discovered: len(processed) + len(pending),
 	}
 	opts := []crawler.Option{crawler.WithSink(&runnerSink{inner: st, s: s})}
@@ -211,7 +211,7 @@ func (s *runnerSession) run() {
 	if res.Interrupted && mode != "stop" {
 		status = store.StatusInterrupted
 	}
-	_ = store.SetStatus(s.storeDir, s.st.ID, status, res.Crawled)
+	_ = store.SetStatus(s.storeDir, s.st.ID, status, res.Crawled, res.Total)
 	if status == store.StatusCompleted && s.cfg.Analysis.Auto {
 		_ = reanalyze(s.st, s.cfg)
 	}
@@ -262,13 +262,13 @@ func (s *runnerSession) snapshot() Progress {
 	}
 	s.recent = s.recent[i:]
 
-	queue := s.discovered - s.crawled
+	queue := s.discovered - s.total
 	if queue < 0 {
 		queue = 0
 	}
 	return Progress{
 		CrawlID: s.st.ID, Seed: s.seeds[0], State: "running",
-		Crawled: s.crawled, Discovered: s.discovered, Queue: queue,
+		Total: s.total, Discovered: s.discovered, Queue: queue,
 		S2xx: s.s2, S3xx: s.s3, S4xx: s.s4, S5xx: s.s5,
 		Blocked: s.blocked, NoResponse: s.noresp, Indexable: s.indexable,
 		RatePerSec: float64(len(s.recent)) / 4.0,
@@ -279,7 +279,7 @@ func (s *runnerSession) snapshot() Progress {
 func (s *runnerSession) onPage(rec *crawler.PageRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.crawled++
+	s.total++
 	s.recent = append(s.recent, time.Now())
 	switch rec.State {
 	case crawler.StateBlockedRobots:
