@@ -26,23 +26,34 @@ type PageData struct {
 }
 
 // requirements: Google rich-results required/recommended properties for the
-// curated feature subset.
-var requirements = map[string]struct{ required, recommended []string }{
-	"Product": {[]string{"name"}, []string{"image", "offers", "review", "aggregateRating"}},
+// curated feature subset. `trigger` props gate feature eligibility: Google's
+// Rich Results Test only validates a type for a feature when the feature's
+// trigger properties are present (e.g. Organization is a "Logo" candidate only
+// when it carries a logo). An item missing any trigger property is not a
+// rich-result candidate at all and emits no errors/warnings — matching
+// Screaming Frog, which on bare boilerplate Organization markup (logo absent)
+// reports feat=None / 0 warnings. An empty trigger means always-validate.
+var requirements = map[string]struct{ required, recommended, trigger []string }{
+	"Product": {[]string{"name"}, []string{"image", "offers", "review", "aggregateRating"}, nil},
 	// headline is recommended, not required: Google's Article rich result
 	// has no required properties, and SF reports a missing headline as a
 	// Rich Result Validation *Warning* (measured on yonedalabs.com)
-	"Article":        {nil, []string{"headline", "image", "datePublished", "author"}},
-	"NewsArticle":    {nil, []string{"headline", "image", "datePublished", "author"}},
-	"BlogPosting":    {nil, []string{"headline", "image", "datePublished", "author"}},
-	"BreadcrumbList": {[]string{"itemListElement"}, nil},
-	"FAQPage":        {[]string{"mainEntity"}, nil},
-	"Recipe":         {[]string{"name", "image"}, []string{"recipeIngredient", "recipeInstructions"}},
-	"Event":          {[]string{"name", "startDate", "location"}, []string{"image", "offers"}},
-	"JobPosting":     {[]string{"title", "datePosted", "description", "hiringOrganization", "jobLocation"}, nil},
-	"LocalBusiness":  {[]string{"name", "address"}, []string{"telephone", "openingHours"}},
-	"Organization":   {[]string{"name"}, []string{"logo", "url"}},
-	"VideoObject":    {[]string{"name", "thumbnailUrl", "uploadDate"}, []string{"description"}},
+	"Article":        {nil, []string{"headline", "image", "datePublished", "author"}, nil},
+	"NewsArticle":    {nil, []string{"headline", "image", "datePublished", "author"}, nil},
+	"BlogPosting":    {nil, []string{"headline", "image", "datePublished", "author"}, nil},
+	"BreadcrumbList": {[]string{"itemListElement"}, nil, nil},
+	"FAQPage":        {[]string{"mainEntity"}, nil, nil},
+	"Recipe":         {[]string{"name", "image"}, []string{"recipeIngredient", "recipeInstructions"}, nil},
+	"Event":          {[]string{"name", "startDate", "location"}, []string{"image", "offers"}, nil},
+	"JobPosting":     {[]string{"title", "datePosted", "description", "hiringOrganization", "jobLocation"}, nil, nil},
+	"LocalBusiness":  {[]string{"name", "address"}, []string{"telephone", "openingHours"}, nil},
+	// Organization's Logo rich result is keyed on `logo`: SF only validates
+	// (and warns on a missing recommended `url`) when a logo is present; without
+	// a logo it is not a Logo candidate and emits nothing. `name` is therefore
+	// not flagged as a hard requirement here (SF reports 0 errors on every
+	// Organization page measured on infisical.com / trigger.dev).
+	"Organization": {nil, []string{"url"}, []string{"logo"}},
+	"VideoObject":  {[]string{"name", "thumbnailUrl", "uploadDate"}, []string{"description"}, nil},
 }
 
 // Extract parses the enabled formats and validates the curated requirements.
@@ -103,8 +114,23 @@ func extractJSONLD(root *html.Node, data *PageData) {
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
 			raw.WriteString(c.Data)
 		}
+		rawStr := raw.String()
 		var parsed any
-		if err := json.Unmarshal([]byte(raw.String()), &parsed); err != nil {
+		if err := json.Unmarshal([]byte(rawStr), &parsed); err != nil {
+			// Google's (and Screaming Frog's) JSON-LD parser tolerates raw
+			// unescaped control characters inside string literals — common on
+			// real sites (e.g. a newline in a clinic address). Go's
+			// encoding/json rejects them ("invalid control character"). Retry
+			// once with control chars escaped before reporting a parse error,
+			// so we extract the structured data SF/Google extract instead of
+			// dropping the whole block. (modernanimal.com clinic pages.)
+			if cleaned := escapeJSONControlChars(rawStr); cleaned != rawStr {
+				if err2 := json.Unmarshal([]byte(cleaned), &parsed); err2 == nil {
+					found = true
+					walkJSONLD(parsed, data)
+					return
+				}
+			}
 			data.ParseErrors = append(data.ParseErrors, "jsonld: "+err.Error())
 			return
 		}
@@ -114,6 +140,49 @@ func extractJSONLD(root *html.Node, data *PageData) {
 	if found {
 		data.Formats = append(data.Formats, "jsonld")
 	}
+}
+
+// escapeJSONControlChars escapes raw control characters (U+0000–U+001F) that
+// appear INSIDE JSON string literals — unescaped newlines/tabs that Google's
+// and Screaming Frog's lenient JSON-LD parsers accept but encoding/json
+// rejects. Structural characters and whitespace between tokens are untouched
+// (a control char outside a string is left as-is). Returns the input unchanged
+// when there is nothing inside-string to escape.
+func escapeJSONControlChars(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inString, escaped, changed := false, false, false
+	for _, r := range s {
+		switch {
+		case escaped:
+			b.WriteRune(r)
+			escaped = false
+		case r == '\\' && inString:
+			b.WriteRune(r)
+			escaped = true
+		case r == '"':
+			inString = !inString
+			b.WriteRune(r)
+		case inString && r < 0x20:
+			changed = true
+			switch r {
+			case '\n':
+				b.WriteString(`\n`)
+			case '\r':
+				b.WriteString(`\r`)
+			case '\t':
+				b.WriteString(`\t`)
+			default:
+				fmt.Fprintf(&b, `\u%04x`, r)
+			}
+		default:
+			b.WriteRune(r)
+		}
+	}
+	if !changed {
+		return s
+	}
+	return b.String()
 }
 
 // walkJSONLD handles objects, arrays and @graph containers.
@@ -241,6 +310,13 @@ func validateProps(typ string, has func(string) bool, data *PageData) {
 	req, ok := requirements[typ]
 	if !ok {
 		return
+	}
+	// Feature-eligibility gate: not a rich-result candidate unless every
+	// trigger property is present (no trigger ⇒ always eligible).
+	for _, p := range req.trigger {
+		if !has(p) {
+			return
+		}
 	}
 	for _, p := range req.required {
 		if !has(p) {
