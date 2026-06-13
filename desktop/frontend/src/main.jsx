@@ -19,6 +19,26 @@ import { SettingsView } from "./views/settings";
 import { CompareView } from "./views/compare";
 import { RobotsTester } from "./views/robots";
 
+/* Windows caption buttons. The window is frameless on Windows (desktop/main.go),
+   so we drive minimise/maximise/close through the Wails runtime ourselves. The
+   container is no-drag so clicks aren't swallowed by the draggable title bar. */
+function WinControls() {
+  const rt = () => window.runtime || {};
+  return (
+    <div className="win-controls">
+      <button title="Minimise" onClick={() => rt().WindowMinimise && rt().WindowMinimise()}>
+        <Icon name="minus" size={15} />
+      </button>
+      <button title="Maximise" onClick={() => rt().WindowToggleMaximise && rt().WindowToggleMaximise()}>
+        <Icon name="square" size={12} />
+      </button>
+      <button className="close" title="Close" onClick={() => rt().Quit && rt().Quit()}>
+        <Icon name="x" size={16} />
+      </button>
+    </div>
+  );
+}
+
 function App() {
   const [dark, setDark] = useState(() => localStorage.getItem("bluesnake-theme") === "dark");
   const [view, setView] = useState("home");
@@ -35,6 +55,17 @@ function App() {
   const [mcp, setMcp] = useState(null); // MCPStatus
   const [settingsFocus, setSettingsFocus] = useState(null); // {section} -> open Settings on it
   const [settingsBack, setSettingsBack] = useState(null); // {view,label} -> show a "back" button in Settings
+  const [platform, setPlatform] = useState(""); // "windows" | "darwin" | "linux" — drives window-chrome layout
+
+  // The Windows window is frameless (see desktop/main.go), so we draw our own
+  // caption buttons; macOS keeps its native traffic lights. Resolve the host OS
+  // once from the Wails runtime.
+  useEffect(() => {
+    if (window.runtime && window.runtime.Environment) {
+      window.runtime.Environment().then((e) => setPlatform(e.platform)).catch(() => {});
+    }
+  }, []);
+  const isWindows = platform === "windows";
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
@@ -123,8 +154,13 @@ function App() {
 
   return (
     <div className="win">
-      {/* title bar (native traffic lights sit in the left inset) */}
-      <div className="titlebar">
+      {/* title bar — macOS hosts the native traffic lights in the left inset;
+          Windows is frameless, so the left inset collapses and we draw our own
+          caption buttons (WinControls) on the right. */}
+      <div
+        className={"titlebar" + (isWindows ? " win" : "")}
+        onDoubleClick={isWindows ? () => window.runtime && window.runtime.WindowToggleMaximise() : undefined}
+      >
         <span className="tb-nodrag">
           <IconBtn icon={collapsed ? "panel-left-open" : "panel-left-close"} title={collapsed ? "Show sidebar" : "Hide sidebar"} onClick={() => setCollapsed((c) => !c)} />
         </span>
@@ -150,6 +186,7 @@ function App() {
           </button>
           <IconBtn icon={dark ? "sun" : "moon"} title="Toggle theme" onClick={() => setDark((d) => !d)} />
         </div>
+        {isWindows && <WinControls />}
       </div>
 
       {/* body */}

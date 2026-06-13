@@ -1,0 +1,327 @@
+name: release
+
+# Releases are cut by pushing a version tag `v<X.Y.Z>`. The TAG is authoritative:
+# CI derives the version from it and stamps internal/version/VERSION before
+# building, so the binary/frontend report the tag's version. (The committed
+# VERSION is just a "0.0.0-dev" placeholder for local builds.) On a tag this
+# builds all artifacts and publishes a GitHub Release named for that version,
+# marked as the repo's latest, so:
+#   https://github.com/<repo>/releases/latest/download/<asset>
+# always resolves to the newest released version. Does NOT run on pull requests
+# or on plain pushes to main. workflow_dispatch builds everything without
+# releasing (a manual smoke test). No external storage and no signing — unsigned
+# binaries are expected (see docs/PACKAGING.md).
+#
+#   Linux  : CLI only  -> .deb (amd64 + arm64) + .tar.gz + raw binary + install.sh
+#   macOS  : desktop .app + .dmg (universal: Apple Silicon + Intel), CLI embedded
+#   Windows: frameless desktop .exe (+ NSIS installer), amd64; no CLI shipped
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # release job needs this to create the GitHub Release
+
+concurrency:
+  # Distinct tags are distinct refs (never cancel each other); only cancel a
+  # superseded non-tag run (e.g. re-triggered workflow_dispatch). A real release
+  # build is never cancelled mid-flight.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  WAILS_VERSION: v2.11.0
+
+jobs:
+  # ----------------------------------------------------------- resolve version
+  # The git tag is authoritative. On a `v*` tag the version is `${tag#v}`; on a
+  # non-tag run (workflow_dispatch smoke test) it's the dev placeholder. The only
+  # failure here is a malformed tag (not vX.Y.Z) — caught in seconds before the
+  # heavy builds. Each build job stamps this value into internal/version/VERSION.
+  resolve-version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            v="${GITHUB_REF_NAME#v}"
+            if ! printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'; then
+              echo "::error::tag ${GITHUB_REF_NAME} is not v<semver> (expected e.g. v1.2.3)"; exit 1
+            fi
+            echo "version=$v" >> "$GITHUB_OUTPUT"
+            echo "Release version: $v (from tag ${GITHUB_REF_NAME})"
+          else
+            echo "version=0.0.0-dev" >> "$GITHUB_OUTPUT"
+            echo "Build-only run (not a tag) — version 0.0.0-dev"
+          fi
+
+  # ---------------------------------------------------------------- Linux CLI
+  cli-linux:
+    name: CLI + .deb (linux/${{ matrix.arch }})
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stamp version (tag is authoritative)
+        run: echo "$VERSION" > internal/version/VERSION
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build CLI (pure Go, CGO disabled)
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w" -o dist/bluesnake ./cmd/bluesnake
+          tar -C dist -czf "dist/bluesnake-${VERSION}-linux-${{ matrix.arch }}.tar.gz" bluesnake
+
+      - name: Package .deb (nfpm)
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          "$(go env GOPATH)/bin/nfpm" package --config packaging/nfpm.yaml --packager deb --target dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-linux-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+          if-no-files-found: error
+
+  # ------------------------------------------------------------- macOS desktop
+  desktop-macos:
+    name: Desktop .app + .dmg (universal) + embedded CLI
+    needs: resolve-version
+    runs-on: macos-14
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stamp version (tag is authoritative)
+        run: echo "$VERSION" > internal/version/VERSION
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails CLI + create-dmg
+        run: |
+          go install "github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}"
+          brew install create-dmg
+
+      - name: Build universal CLI
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/bluesnake-amd64 ./cmd/bluesnake
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/bluesnake-arm64 ./cmd/bluesnake
+          lipo -create -output dist/bluesnake dist/bluesnake-amd64 dist/bluesnake-arm64
+          rm -f dist/bluesnake-amd64 dist/bluesnake-arm64
+
+      - name: Build desktop app (universal)
+        run: |
+          GOBIN="$(go env GOPATH)/bin"
+          export PATH="$GOBIN:$PATH"
+          cd desktop && wails build -clean -platform darwin/universal
+
+      - name: Embed CLI into the .app bundle
+        run: |
+          APP=desktop/build/bin/bluesnake.app
+          mkdir -p "$APP/Contents/Resources/bin"
+          cp dist/bluesnake "$APP/Contents/Resources/bin/bluesnake"
+          chmod +x "$APP/Contents/Resources/bin/bluesnake"
+
+      - name: Create DMG (app + CLI installer)
+        run: |
+          STAGE="$(mktemp -d)"
+          cp -R desktop/build/bin/bluesnake.app "$STAGE/"
+          cp packaging/macos/install-cli.command "$STAGE/Install bluesnake CLI.command"
+          chmod +x "$STAGE/Install bluesnake CLI.command"
+          DMG="dist/bluesnake-${VERSION}-darwin-universal.dmg"
+          create-dmg \
+            --volname "bluesnake ${VERSION}" \
+            --window-size 560 400 \
+            --icon-size 100 \
+            --icon "bluesnake.app" 140 170 \
+            --app-drop-link 420 170 \
+            --icon "Install bluesnake CLI.command" 280 320 \
+            "$DMG" "$STAGE" \
+          || hdiutil create -volname "bluesnake ${VERSION}" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+
+      - name: Zip the .app (alternative to the DMG)
+        run: ditto -c -k --keepParent desktop/build/bin/bluesnake.app "dist/bluesnake-${VERSION}-darwin-universal-app.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos
+          path: |
+            dist/*.dmg
+            dist/*-app.zip
+          if-no-files-found: error
+
+  # ----------------------------------------------------------- Windows desktop
+  desktop-windows:
+    name: Desktop .exe (frameless) + installer
+    needs: resolve-version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stamp version (tag is authoritative)
+        run: echo "$VERSION" > internal/version/VERSION
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails CLI + NSIS
+        run: |
+          go install "github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}"
+          choco install nsis -y --no-progress
+          echo "C:\Program Files (x86)\NSIS" >> "$GITHUB_PATH"
+
+      - name: Build desktop app (frameless portable .exe)
+        run: |
+          GOBIN="$(go env GOPATH)/bin"
+          export PATH="$GOBIN:$PATH"
+          cd desktop && wails build -clean -platform windows/amd64
+
+      - name: Build NSIS installer (best effort)
+        run: |
+          GOBIN="$(go env GOPATH)/bin"
+          export PATH="$GOBIN:$PATH"
+          cd desktop && wails build -platform windows/amd64 -nsis \
+            || echo "::warning::NSIS installer build failed — shipping the portable .exe only"
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p dist
+          cp desktop/build/bin/bluesnake.exe "dist/bluesnake-${VERSION}-windows-amd64.exe"
+          if ls desktop/build/bin/*installer*.exe >/dev/null 2>&1; then
+            cp desktop/build/bin/*installer*.exe "dist/bluesnake-${VERSION}-windows-amd64-installer.exe"
+          fi
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows
+          path: dist/*.exe
+          if-no-files-found: error
+
+  # ----------------------------------------------------- GitHub Release (tags)
+  release:
+    name: Publish GitHub Release
+    needs: [resolve-version, cli-linux, desktop-macos, desktop-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name '*.deb' -o -name '*.tar.gz' -o -name '*.dmg' \
+            -o -name '*.zip' -o -name '*.exe' \) -exec cp {} dist/ \;
+          # Ship the installer as a release asset so the website can stream the
+          # released copy from a stable URL:
+          #   https://github.com/<repo>/releases/latest/download/install.sh
+          cp packaging/install.sh dist/install.sh
+          ls -la dist
+
+      # Version-less aliases so the website / installer can use stable URLs like
+      #   https://github.com/<repo>/releases/latest/download/bluesnake-<os>-<arch>
+      # GitHub's "latest" redirect needs a fixed asset name (no API call). The
+      # Linux binaries also get a .sha256 sidecar the curl installer verifies.
+      - name: Stable-named assets + checksums (for latest-download links)
+        run: |
+          cd dist
+          # Linux: extract the raw binary from each tarball and checksum it.
+          for arch in amd64 arm64; do
+            tarball="bluesnake-${VERSION}-linux-${arch}.tar.gz"
+            if [ ! -f "$tarball" ]; then echo "::warning::missing $tarball"; continue; fi
+            tar -xzf "$tarball" bluesnake
+            mv -f bluesnake "bluesnake-linux-${arch}"
+            chmod +x "bluesnake-linux-${arch}"
+            sha256sum "bluesnake-linux-${arch}" > "bluesnake-linux-${arch}.sha256"
+          done
+          # macOS + Windows: copy the versioned artifact to a stable name.
+          for pair in \
+            "bluesnake-${VERSION}-darwin-universal.dmg:bluesnake-darwin-universal.dmg" \
+            "bluesnake-${VERSION}-windows-amd64.exe:bluesnake-windows-amd64.exe" \
+            "bluesnake-${VERSION}-windows-amd64-installer.exe:bluesnake-windows-amd64-installer.exe"; do
+            src="${pair%%:*}"; dst="${pair##*:}"
+            if [ -f "$src" ]; then cp "$src" "$dst"; else echo "::warning::missing $src (no stable alias $dst)"; fi
+          done
+          # combined checksum manifest over every artifact (humans / auditing)
+          : > SHA256SUMS
+          for f in bluesnake*; do
+            case "$f" in *.sha256|SHA256SUMS) continue;; esac
+            sha256sum "$f" >> SHA256SUMS
+          done
+          ls -la
+
+      # Fail the release (loudly) if any version-less alias the website deep-links
+      # is missing — otherwise softprops publishes a partial release and a stable
+      #   releases/latest/download/<asset>
+      # link silently 404s. In particular this catches a best-effort NSIS build
+      # that failed to produce bluesnake-windows-amd64-installer.exe.
+      - name: Verify all stable-named assets are present
+        run: |
+          cd dist
+          missing=0
+          for asset in \
+            bluesnake-linux-amd64 \
+            bluesnake-linux-arm64 \
+            bluesnake-darwin-universal.dmg \
+            bluesnake-windows-amd64.exe \
+            bluesnake-windows-amd64-installer.exe \
+            install.sh; do
+            if [ ! -f "$asset" ]; then
+              echo "::error::required release asset missing: $asset (releases/latest/download/$asset would 404)"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          make_latest: 'true'      # mark as the repo's latest -> releases/latest/download/...
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          body: |
+            Unsigned binaries — see [docs/PACKAGING.md](docs/PACKAGING.md) for checksum verification and the macOS Gatekeeper / Windows SmartScreen first-run steps.
+
+            **Linux CLI:** `curl -fsSL https://snake.blue/install.sh | bash`

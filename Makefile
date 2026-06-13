@@ -10,7 +10,7 @@ APP_NAME := bluesnake.app
 APP_BUNDLE := desktop/build/bin/$(APP_NAME)
 APP_INSTALL_DIR ?= $(HOME)/Applications
 
-.PHONY: build tunnel-server test unit acceptance cover lint clean desktop desktop-build desktop-dev
+.PHONY: build tunnel-server test unit acceptance cover lint clean desktop desktop-build desktop-dev dist-cli package-deb
 
 build:
 	$(GO) build -o bin/bluesnake ./cmd/bluesnake
@@ -54,3 +54,28 @@ lint:
 
 clean:
 	rm -rf bin coverage.out
+
+# ---- distribution artifacts -------------------------------------------------
+# These mirror .github/workflows/release.yml for local builds. The CLI is pure
+# Go (modernc sqlite), so it cross-compiles with CGO disabled; the Wails desktop
+# app must be built natively per-OS (macOS .app/.dmg here, Windows on CI).
+DIST ?= dist
+VERSION := $(shell cat internal/version/VERSION)
+DIST_LDFLAGS := -s -w
+
+# Cross-compile the CLI for every shipped target into $(DIST).
+dist-cli:
+	@mkdir -p $(DIST)
+	CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 $(GO) build -trimpath -ldflags "$(DIST_LDFLAGS)" -o $(DIST)/bluesnake-linux-amd64  ./cmd/bluesnake
+	CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 $(GO) build -trimpath -ldflags "$(DIST_LDFLAGS)" -o $(DIST)/bluesnake-linux-arm64  ./cmd/bluesnake
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build -trimpath -ldflags "$(DIST_LDFLAGS)" -o $(DIST)/bluesnake-darwin-amd64 ./cmd/bluesnake
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -trimpath -ldflags "$(DIST_LDFLAGS)" -o $(DIST)/bluesnake-darwin-arm64 ./cmd/bluesnake
+	@echo "CLI binaries in $(DIST)/"
+
+# Build a Debian .deb for the host arch (override with `make package-deb ARCH=arm64`).
+# Requires nfpm: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+package-deb:
+	@mkdir -p $(DIST)
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(or $(ARCH),amd64) $(GO) build -trimpath -ldflags "$(DIST_LDFLAGS)" -o $(DIST)/bluesnake ./cmd/bluesnake
+	VERSION=$(VERSION) ARCH=$(or $(ARCH),amd64) nfpm package --config packaging/nfpm.yaml --packager deb --target $(DIST)/
+	@echo "Debian package in $(DIST)/"
