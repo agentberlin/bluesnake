@@ -1,0 +1,28 @@
+# nfpm config for the Debian (.deb) package of the bluesnake CLI.
+# https://nfpm.goreleaser.com/configuration/
+#
+# Debian ships the CLI only (no desktop app). VERSION and ARCH are supplied by
+# the environment (nfpm expands ${VAR}); the binary is expected at
+# ./dist/bluesnake — see the cli-linux job in .github/workflows/release.yml or
+# `make package-deb`.
+name: "bluesnake"
+arch: "${ARCH}"            # amd64 | arm64 (matches GOARCH and dpkg arch names)
+platform: "linux"
+version: "${VERSION}"
+version_schema: "none"      # VERSION is already a clean semver string
+section: "web"
+priority: "optional"
+maintainer: "agentberlin <oss@agentberlin.dev>"
+description: |
+  Modern, headless website crawler and SEO auditor.
+  bluesnake crawls a site and reports SEO issues with Screaming Frog parity,
+  driven entirely from the command line.
+vendor: "agentberlin"
+homepage: "https://github.com/agentberlin/bluesnake"
+license: "Proprietary"
+
+contents:
+  - src: ./dist/bluesnake
+    dst: /usr/bin/bluesnake
+    file_info:
+      mode: 0755

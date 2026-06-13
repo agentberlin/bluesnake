@@ -1,4 +1,5 @@
 bin/
+dist/
 /bluesnake
 coverage.out
 *.db

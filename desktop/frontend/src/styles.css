@@ -138,6 +138,18 @@ input, textarea{ user-select: text; cursor: text; }
 .tb-actions{ display:flex; align-items:center; gap:4px; --wails-draggable:no-drag; }
 .tb-nodrag{ --wails-draggable:no-drag; }
 
+/* Windows: frameless window, so there are no native traffic lights to clear —
+   drop the left inset and let our own caption buttons hug the right edge. */
+.titlebar.win{ padding:0 0 0 14px; }
+.win-controls{ display:flex; align-items:stretch; align-self:stretch; margin-left:6px; --wails-draggable:no-drag; }
+.win-controls button{
+  width:46px; display:flex; align-items:center; justify-content:center;
+  border:0; background:transparent; color:var(--ink-2); cursor:pointer;
+  transition: background .12s ease, color .12s ease;
+}
+.win-controls button:hover{ background:var(--surface-hover); color:var(--ink); }
+.win-controls button.close:hover{ background:#e81123; color:#fff; }
+
 /* =========================== app body ================================== */
 .body{ flex:1; display:flex; min-height:0; }
 
