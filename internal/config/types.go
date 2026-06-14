@@ -192,9 +192,15 @@ type AdvancedConfig struct {
 	CrawlFragments                    bool   `yaml:"crawl_fragments"`
 	HTMLValidation                    bool   `yaml:"html_validation"`
 	AssumePagesAreHTML                bool   `yaml:"assume_pages_are_html"`
-	ResponseTimeoutSec                int    `yaml:"response_timeout_sec"`
-	Retry5xx                          int    `yaml:"retry_5xx"`
-	PercentEncoding                   string `yaml:"percent_encoding"` // upper | lower
+	// SkipIdenticalContentLinks: when a fetched page's RAW body is byte-identical
+	// (same content hash) to one already crawled, record it but do not render or
+	// expand its outlinks. Stops client-routed SPA shells and query-string twins
+	// from ballooning the frontier (Screaming Frog parity; see R8 / sweetgreen
+	// order.*). Only full byte identity short-circuits, never a near-duplicate.
+	SkipIdenticalContentLinks bool   `yaml:"skip_identical_content_links"`
+	ResponseTimeoutSec        int    `yaml:"response_timeout_sec"`
+	Retry5xx                  int    `yaml:"retry_5xx"`
+	PercentEncoding           string `yaml:"percent_encoding"` // upper | lower
 }
 
 type WidthThreshold struct {

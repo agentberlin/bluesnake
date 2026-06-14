@@ -59,6 +59,7 @@ type PageRecord struct {
 	Inlinks            int
 	DiscoveredFrom     string // first discovering page
 	OutsideStartFolder bool
+	DuplicateOf        string // canonical URL when this page's raw body was byte-identical to an already-crawled one (not rendered/expanded)
 
 	// analysis outputs (populated when loaded from a store after analyze)
 	LinkScore         float64
@@ -164,6 +165,9 @@ type Crawler struct {
 	mu      sync.Mutex
 	pages   map[string]*PageRecord
 	inlinks map[string]inlinkInfo
+
+	hashMu      sync.Mutex
+	seenContent map[string]string // raw-body content hash -> first (canonical) URL
 }
 
 type inlinkInfo struct {
@@ -215,6 +219,7 @@ func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
 	c.sem = make(chan struct{}, cfg.Speed.MaxThreads)
 	c.pages = make(map[string]*PageRecord)
 	c.inlinks = make(map[string]inlinkInfo)
+	c.seenContent = make(map[string]string)
 	return c, nil
 }
 
@@ -529,12 +534,33 @@ func (c *Crawler) handleContent(it frontier.Item, scopeClass urlutil.ScopeClass,
 	if parseable {
 		facts := parse.Parse(it.URL, res.Body, res.Headers, c.cfg)
 		rec.Facts = facts
+
+		// Identical-content short-circuit (Screaming Frog parity + frontier-RAM
+		// guard). A client-routed SPA serves the SAME raw shell at thousands of
+		// URLs; only after rendering does each shell mint a different per-URL
+		// link set (sweetgreen order.* = 3,424 byte-identical shells, R8). Hash
+		// the RAW body — the shells are byte-identical there and diverge only
+		// once rendered, so a rendered-DOM hash would never match. When a
+		// parseable page's body is byte-identical to one already crawled, record
+		// it but neither render nor expand it: re-rendering only balloons the
+		// frontier (and RAM) with more identical shells. Only FULL byte identity
+		// triggers this — never a near-duplicate — so no reachable URL is lost,
+		// since an identical body carries identical links the canonical page
+		// already contributed.
+		dup := false
+		if c.cfg.Advanced.SkipIdenticalContentLinks {
+			if canonical, first := c.firstWithContent(facts.Hash, it.URL); !first {
+				dup = true
+				rec.DuplicateOf = canonical
+			}
+		}
+
 		if c.cfg.Extraction.StoreHTML {
 			if bs, ok := c.sink.(BlobSink); ok && c.sink != nil {
 				c.noteSinkErr(bs.Blob(it.URL, "html", res.Body))
 			}
 		}
-		if c.renderer != nil {
+		if c.renderer != nil && !dup {
 			c.renderAndDiff(it.URL, rec, facts, res)
 		}
 		if c.extractEngine != nil {
@@ -555,7 +581,7 @@ func (c *Crawler) handleContent(it frontier.Item, scopeClass urlutil.ScopeClass,
 
 		outside := c.outsideStartFolder(it.URL)
 		rec.OutsideStartFolder = outside
-		discover := !outside || c.cfg.Scope.CrawlOutsideStartFolder
+		discover := (!outside || c.cfg.Scope.CrawlOutsideStartFolder) && !dup
 		if discover {
 			discoveries = append(discoveries, c.discoverLinks(it, facts)...)
 		}
@@ -843,6 +869,20 @@ func (c *Crawler) rateWait(ctx context.Context) {
 	case <-c.tokens:
 	case <-ctx.Done():
 	}
+}
+
+// firstWithContent claims a raw-body content hash for url and reports whether
+// url is the first page seen with that exact hash. Byte-identical pages racing
+// through the worker pool resolve deterministically: whichever takes the lock
+// first owns the hash as the canonical page; the rest are duplicates of it.
+func (c *Crawler) firstWithContent(hash, url string) (canonical string, first bool) {
+	c.hashMu.Lock()
+	defer c.hashMu.Unlock()
+	if existing, ok := c.seenContent[hash]; ok {
+		return existing, false
+	}
+	c.seenContent[hash] = url
+	return url, true
 }
 
 func (c *Crawler) record(rec *PageRecord) {

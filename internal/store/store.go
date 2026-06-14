@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS pages(
   inlinks INT DEFAULT 0, discovered_from TEXT, outside_start_folder INT,
   link_score REAL DEFAULT 0, unique_inlinks INT DEFAULT 0, unique_outlinks INT DEFAULT 0,
   closest_similarity REAL DEFAULT 0, near_dup_count INT DEFAULT 0,
+  duplicate_of TEXT,
   headers JSON, structured JSON, jsdiff JSON, facts JSON
 );
 CREATE TABLE IF NOT EXISTS links(
@@ -224,9 +225,10 @@ func openCrawlDB(dir, id string) (*Crawl, error) {
 		db.Close()
 		return nil, err
 	}
-	// migration for crawl DBs created before the column existed; the error
+	// migrations for crawl DBs created before a column existed; the error
 	// ("duplicate column") is the normal case and deliberately ignored
 	db.Exec(`ALTER TABLE pages ADD COLUMN http_version TEXT`)
+	db.Exec(`ALTER TABLE pages ADD COLUMN duplicate_of TEXT`)
 	return &Crawl{ID: id, dir: dir, db: db}, nil
 }
 
@@ -340,13 +342,13 @@ func (c *Crawl) Page(rec *crawler.PageRecord) error {
 		(url, scope, state, depth, status_code, status, content_type, http_version,
 		 response_time_ms, size, fetch_error, redirect_url, redirect_type,
 		 matched_robots_line, indexable, indexability_status,
-		 discovered_from, outside_start_folder, headers, structured, jsdiff, facts)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 discovered_from, outside_start_folder, duplicate_of, headers, structured, jsdiff, facts)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rec.URL, rec.Scope, rec.State, rec.Depth, rec.StatusCode, rec.Status,
 		rec.ContentType, rec.HTTPVersion, rec.ResponseTimeMs, rec.Size, rec.FetchError,
 		rec.RedirectURL, rec.RedirectType, rec.MatchedRobotsLine,
 		boolInt(rec.Indexable), rec.IndexabilityStatus,
-		rec.DiscoveredFrom, boolInt(rec.OutsideStartFolder), headersJSON, structuredJSON, jsdiffJSON, factsJSON)
+		rec.DiscoveredFrom, boolInt(rec.OutsideStartFolder), rec.DuplicateOf, headersJSON, structuredJSON, jsdiffJSON, factsJSON)
 	if err != nil {
 		return err
 	}
@@ -466,7 +468,7 @@ func (c *Crawl) LoadPages() (map[string]*crawler.PageRecord, error) {
 		redirect_type, matched_robots_line, indexable, indexability_status,
 		inlinks, COALESCE(discovered_from,''), outside_start_folder,
 		link_score, unique_inlinks, unique_outlinks, closest_similarity,
-		headers, structured, jsdiff, facts FROM pages`)
+		COALESCE(duplicate_of,''), headers, structured, jsdiff, facts FROM pages`)
 	if err != nil {
 		return nil, err
 	}
@@ -482,7 +484,7 @@ func (c *Crawl) LoadPages() (map[string]*crawler.PageRecord, error) {
 			&rec.MatchedRobotsLine, &indexable, &rec.IndexabilityStatus,
 			&rec.Inlinks, &rec.DiscoveredFrom, &outside,
 			&rec.LinkScore, &rec.UniqueInlinks, &rec.UniqueOutlinks, &rec.ClosestSimilarity,
-			&headersJSON, &structuredJSON, &jsdiffJSON, &factsJSON); err != nil {
+			&rec.DuplicateOf, &headersJSON, &structuredJSON, &jsdiffJSON, &factsJSON); err != nil {
 			return nil, err
 		}
 		rec.Indexable = indexable == 1
