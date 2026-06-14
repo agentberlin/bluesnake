@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"golang.org/x/net/html"
@@ -131,7 +132,9 @@ const forcedBreakChars = 85
 // countSentences counts sentences the way Screaming Frog does: block
 // boundaries (the \n markers collectText emits) end a sentence, runs of
 // [.!?] split within a block, and every 85 characters of block text force
-// an extra break so punctuation-free pages still score sensibly.
+// an extra break so punctuation-free pages still score sensibly. The forced
+// break counts runes, not bytes, so multi-byte (non-ASCII) prose is not
+// over-split — len() would count one accented or CJK character as 2–3.
 func countSentences(raw string) int {
 	n := 0
 	for block := range strings.SplitSeq(raw, "\n") {
@@ -144,7 +147,7 @@ func countSentences(raw string) int {
 				n++
 			}
 		}
-		n += len(text) / forcedBreakChars
+		n += utf8.RuneCountInString(text) / forcedBreakChars
 	}
 	if n == 0 {
 		return 1

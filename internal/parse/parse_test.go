@@ -186,9 +186,28 @@ func TestElemPathSFStyle(t *testing.T) {
 			t.Errorf("%s elem path = %q, want %q", dst, l.ElemPath, want)
 		}
 	}
-	check("https://ex.com/a", "//body/header/nav/a")  // singletons -> bare (no @id qualifier)
+	check("https://ex.com/a", "//body/header/nav/a")   // singletons -> bare (no @id qualifier)
 	check("https://ex.com/d1", "//body/main/div[1]/a") // 1st of 2 sibling divs
 	check("https://ex.com/d2", "//body/main/div[2]/a") // 2nd of 2 sibling divs
+}
+
+// TestSFElemPathHead pins that head links (canonical/stylesheet/hreflang/amp)
+// are //head-rooted by the same positional scheme as body links — the walk
+// stops at <head> and excludes <html>, mirroring the //body rooting.
+func TestSFElemPathHead(t *testing.T) {
+	f := parseHTML(t, "https://ex.com/p", `
+		<html><head>
+			<link rel="stylesheet" href="/a.css">
+			<link rel="canonical" href="/canon">
+		</head><body></body></html>`, nil, nil)
+	l := findLink(f, Canonical, "https://ex.com/canon")
+	if l == nil {
+		t.Fatal("missing canonical link")
+	}
+	// two <link> siblings in <head> -> 1-based same-tag index; canonical is 2nd
+	if l.ElemPath != "//head/link[2]" {
+		t.Errorf("canonical elem path = %q, want //head/link[2]", l.ElemPath)
+	}
 }
 
 // Element-text EXTRACTION joins same-tag-adjacent inline elements with NO

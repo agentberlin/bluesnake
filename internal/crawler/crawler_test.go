@@ -802,6 +802,31 @@ func TestIdenticalContentShortCircuit(t *testing.T) {
 	}
 }
 
+// TestFirstWithContentClaimGating pins that a page only claims a content hash
+// as its canonical when it will actually expand (claim=true). A non-expanding
+// page (outside the start folder, no link discovery) must NOT become canonical
+// for a hash, otherwise it could shadow a later in-folder byte-identical twin
+// and suppress that twin's in-scope outlinks. This is deterministic where the
+// end-to-end crawl order is not.
+func TestFirstWithContentClaimGating(t *testing.T) {
+	c := &Crawler{seenContent: map[string]string{}}
+	const h = "deadbeef"
+
+	// An outside-folder page sees the hash first but does NOT claim it.
+	if canon, first := c.firstWithContent(h, "http://x/outside", false); !first || canon != "http://x/outside" {
+		t.Fatalf("non-expanding first call: canon=%q first=%v, want itself + true", canon, first)
+	}
+	// Because the outside page never claimed it, an in-folder page with the
+	// same body is still treated as first and claims the hash now.
+	if canon, first := c.firstWithContent(h, "http://x/in-folder", true); !first || canon != "http://x/in-folder" {
+		t.Fatalf("in-folder claim: canon=%q first=%v, want itself + true (outside page must not have claimed)", canon, first)
+	}
+	// A subsequent identical page is now a duplicate of the in-folder canonical.
+	if canon, first := c.firstWithContent(h, "http://x/twin", true); first || canon != "http://x/in-folder" {
+		t.Fatalf("later twin: canon=%q first=%v, want canonical=in-folder + false", canon, first)
+	}
+}
+
 // TestDistinctContentNotDeduped guards against false dedup: pages that share a
 // layout/nav shell but differ in content are NOT byte-identical, so every one
 // must be crawled AND expanded (only full byte identity short-circuits, never

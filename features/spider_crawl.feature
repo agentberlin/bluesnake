@@ -18,6 +18,31 @@ Feature: Spider mode crawl
     And the crawl page "/b" has depth 1
     And the page "/b" was requested exactly 1 times
 
+  # Depth is the shortest path over edges the crawler actually follows, not
+  # only hyperlinks: a page reachable solely via a crawl-enabled canonical (or
+  # pagination/hreflang/amp) edge still gets a real depth, not blank.
+  Scenario: Depth follows crawl-enabled non-hyperlink edges
+    Given a site page "/" with body:
+      """
+      <html><head><link rel="canonical" href="/canon-target"></head><body><h1>home</h1></body></html>
+      """
+    And a site page "/canon-target" linking to ""
+    And the crawl config override "links.canonicals.crawl=true"
+    When I crawl the site
+    Then the crawl page "/canon-target" has crawl state "crawled"
+    And the crawl page "/canon-target" has depth 1
+
+  # An outside-start-folder page that is byte-identical to an in-folder page
+  # must not claim the content hash (it never discovers its links), so the
+  # in-folder twin still expands and its in-scope outlink is not lost.
+  Scenario: An outside-folder twin does not suppress an in-folder page's outlinks
+    Given a site page "/blog/" with body "<html><body><a href='/about'>out</a> <a href='/blog/twin'>in</a></body></html>"
+    And a site page "/about" with body "<html><body><a href='/blog/deep'>deep</a></body></html>"
+    And a site page "/blog/twin" with body "<html><body><a href='/blog/deep'>deep</a></body></html>"
+    And a site page "/blog/deep" linking to ""
+    When I crawl the site starting at "/blog/"
+    Then the crawl page "/blog/deep" has crawl state "crawled"
+
   Scenario: A page reachable only via a sitemap has no crawl depth
     Given a site page "/" linking to "/linked"
     And a site page "/linked" linking to ""

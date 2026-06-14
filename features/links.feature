@@ -65,6 +65,8 @@ Feature: Link extraction
     Then the link to "https://ex.com/home" has position "header"
     And the link to "https://ex.com/article" has position "content"
     And the link to "https://ex.com/canonical" has position "head"
+    # head links are //head-rooted by the same positional scheme as body links
+    And the link to "https://ex.com/canonical" has element path "//head/link"
 
   # Screaming-Frog-style element paths: //body-rooted, 1-based same-tag
   # positional [k] indices, no id/class qualifiers.
