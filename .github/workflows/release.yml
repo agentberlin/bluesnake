@@ -60,10 +60,21 @@ jobs:
             echo "Build-only run (not a tag) — version 0.0.0-dev"
           fi
 
+  # ----------------------------------------------------------------- test gate
+  # Run the full suite (lint + unit + acceptance) before building any artifact.
+  # A tagged release must never ship code that fails tests, so every build job
+  # below depends on this. Reuses the exact workflow that guards PRs to main, so
+  # the release gate and the PR gate can never drift apart.
+  test:
+    name: Test
+    uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
+
   # ---------------------------------------------------------------- Linux CLI
   cli-linux:
     name: CLI + .deb (linux/${{ matrix.arch }})
-    needs: resolve-version
+    needs: [resolve-version, test]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.resolve-version.outputs.version }}
@@ -108,7 +119,7 @@ jobs:
   # ------------------------------------------------------------- macOS desktop
   desktop-macos:
     name: Desktop .app + .dmg (universal) + embedded CLI
-    needs: resolve-version
+    needs: [resolve-version, test]
     runs-on: macos-14
     env:
       VERSION: ${{ needs.resolve-version.outputs.version }}
@@ -181,7 +192,7 @@ jobs:
   # ----------------------------------------------------------- Windows desktop
   desktop-windows:
     name: Desktop .exe (frameless) + installer
-    needs: resolve-version
+    needs: [resolve-version, test]
     runs-on: windows-latest
     env:
       VERSION: ${{ needs.resolve-version.outputs.version }}

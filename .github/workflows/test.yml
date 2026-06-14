@@ -1,0 +1,52 @@
+name: test
+
+# The project's test suite (lint + unit + acceptance). Runs on every pull
+# request to main and every push to main, and is reused by the release workflow
+# (workflow_call) so a tagged release can never ship code that fails tests.
+#
+# Pure Go: no CGO and no Chrome (the @chrome acceptance scenarios are opt-in and
+# skipped here), so a bare ubuntu runner is enough — the whole suite is ~1 min.
+# The desktop (Wails) package is deliberately outside `make test`: it needs the
+# platform GUI toolchain and is built/tested per-OS by release.yml. This mirrors
+# the Makefile's `unit` scope exactly.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Cancel superseded runs of the same PR; never cancel a push/release run.
+  group: test-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Lint + unit + acceptance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet
+        # Scoped to the packages `make test` covers; the desktop (Wails) package
+        # needs the GUI toolchain and is built/tested per-OS in release.yml.
+        run: go vet ./internal/... ./cmd/... ./tunnelserver/... ./test/...
+
+      - name: Unit + acceptance tests
+        run: make test
