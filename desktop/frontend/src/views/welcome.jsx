@@ -14,7 +14,7 @@ const WELCOME_POINTS = [
   { tag: "lightweight", body: "Opens instantly. Crawls half a million pages on a laptop — modern engine, no clunky Java app, nothing to tune." },
   { tag: "plain-files", body: "Every crawl config is a readable file. Edit it anywhere, diff it, share it." },
   { tag: "agent-native", body: "One CLI, every control. Claude Code or Codex can run whole audits for you." },
-  { tag: "mcp", body: "Built-in MCP server for Claude and other AI assistants — click MCP in the title bar to switch it on, shareable public link included.", isNew: true },
+  { tag: "mcp", body: "Built-in MCP server for Claude and other AI assistants — flip the MCP switch in the title bar to turn it on, shareable public link included.", isNew: true },
 ];
 
 export function Welcome({ onStart, onConfigure, onMcp }) {

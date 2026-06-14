@@ -141,6 +141,22 @@ input, textarea{ user-select: text; cursor: text; }
 .tb-actions{ display:flex; align-items:center; gap:4px; --wails-draggable:no-drag; }
 .tb-nodrag{ --wails-draggable:no-drag; }
 
+/* MCP inline controls — a grouped switch + copy + settings cluster.
+   Squared, surface-2 lift so it reads as one unit beside the theme button. */
+.tb-mcp{
+  display:inline-flex; align-items:center; gap:5px; height:26px; padding:0 4px 0 9px;
+  border:1px solid var(--border-soft); background:var(--surface-2);
+}
+.tb-mcp-label{
+  display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:600;
+  color:var(--ink-2); letter-spacing:.01em; user-select:none;
+}
+.tb-mcp-label svg{ width:12px; height:12px; }
+.tb-mcp-btn{ width:24px; height:24px; }
+.tb-mcp-btn svg{ width:14px; height:14px; }
+.tb-mcp-btn:disabled{ opacity:.35; cursor:default; }
+.tb-mcp-btn:disabled:hover{ background:transparent; color:var(--ink-2); }
+
 /* Windows: frameless window, so there are no native traffic lights to clear —
    drop the left inset and let our own caption buttons hug the right edge. */
 .titlebar.win{ padding:0 0 0 14px; }
