@@ -336,19 +336,17 @@ func (c *Crawler) recomputeDepths(seeds []string) {
 		}
 		if rec.Facts != nil {
 			for _, l := range rec.Facts.Links {
-				switch l.Type {
-				case parse.Hyperlink:
-					if l.Nofollow && !c.cfg.Scope.FollowInternalNofollow {
-						continue
-					}
-				case parse.IFrame:
-					if !c.cfg.Links.IFrames.Crawl {
-						continue
-					}
-				default:
+				if l.URL == "" || l.URL == url {
 					continue
 				}
-				if l.URL == "" || l.URL == url {
+				// A link contributes to depth iff the crawler would actually
+				// follow it — reuse the same crawl gate discoverLinks applied
+				// (typeFlags by link type + scope, plus the per-scope nofollow
+				// rule) rather than hardcoding a subset. This keeps depth
+				// correct for canonical/pagination/hreflang/amp/mobile-alternate
+				// edges when their crawling is enabled, instead of leaving those
+				// pages blank.
+				if !c.followsForDepth(l) {
 					continue
 				}
 				out = append(out, l.URL)
@@ -377,6 +375,26 @@ func (c *Crawler) recomputeDepths(seeds []string) {
 			}
 		}
 	}
+}
+
+// followsForDepth reports whether a parsed link is a followed edge for the
+// depth BFS — the same predicate discoverLinks uses to enqueue it (the link
+// type's crawl flag for its scope, gated by the per-scope nofollow rule).
+func (c *Crawler) followsForDepth(l parse.Link) bool {
+	targetScope := c.classify(l.URL)
+	if _, crawl := c.typeFlags(l.Type, targetScope); !crawl {
+		return false
+	}
+	if l.Nofollow {
+		follow := c.cfg.Scope.FollowInternalNofollow
+		if targetScope == urlutil.External {
+			follow = c.cfg.Scope.FollowExternalNofollow
+		}
+		if !follow {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Crawler) process(ctx context.Context, wg *sync.WaitGroup, it frontier.Item) {
@@ -535,6 +553,14 @@ func (c *Crawler) handleContent(it frontier.Item, scopeClass urlutil.ScopeClass,
 		facts := parse.Parse(it.URL, res.Body, res.Headers, c.cfg)
 		rec.Facts = facts
 
+		// A page expands (discovers and contributes its outlinks) only when it
+		// is inside the start folder or outside-folder crawling is enabled.
+		// Compute it up front: it gates both the content-hash claim below and
+		// link discovery further down.
+		outside := c.outsideStartFolder(it.URL)
+		rec.OutsideStartFolder = outside
+		willExpand := !outside || c.cfg.Scope.CrawlOutsideStartFolder
+
 		// Identical-content short-circuit (Screaming Frog parity + frontier-RAM
 		// guard). A client-routed SPA serves the SAME raw shell at thousands of
 		// URLs; only after rendering does each shell mint a different per-URL
@@ -544,12 +570,18 @@ func (c *Crawler) handleContent(it frontier.Item, scopeClass urlutil.ScopeClass,
 		// parseable page's body is byte-identical to one already crawled, record
 		// it but neither render nor expand it: re-rendering only balloons the
 		// frontier (and RAM) with more identical shells. Only FULL byte identity
-		// triggers this — never a near-duplicate — so no reachable URL is lost,
-		// since an identical body carries identical links the canonical page
-		// already contributed.
+		// triggers this — never a near-duplicate.
+		//
+		// A page may claim a content hash as its canonical only when it will
+		// actually expand. Otherwise an undiscovered outside-start-folder page
+		// could become canonical for a hash without contributing its links,
+		// then shadow a later in-folder byte-identical twin — suppressing that
+		// twin's in-scope outlinks and breaking the "no reachable URL is lost"
+		// invariant. A non-expanding page may still be marked a duplicate of an
+		// existing canonical, which only skips its (useless) re-render.
 		dup := false
 		if c.cfg.Advanced.SkipIdenticalContentLinks {
-			if canonical, first := c.firstWithContent(facts.Hash, it.URL); !first {
+			if canonical, first := c.firstWithContent(facts.Hash, it.URL, willExpand); !first {
 				dup = true
 				rec.DuplicateOf = canonical
 			}
@@ -579,10 +611,7 @@ func (c *Crawler) handleContent(it frontier.Item, scopeClass urlutil.ScopeClass,
 			rec.RedirectType = "meta_refresh"
 		}
 
-		outside := c.outsideStartFolder(it.URL)
-		rec.OutsideStartFolder = outside
-		discover := (!outside || c.cfg.Scope.CrawlOutsideStartFolder) && !dup
-		if discover {
+		if willExpand && !dup {
 			discoveries = append(discoveries, c.discoverLinks(it, facts)...)
 		}
 	}
@@ -875,13 +904,19 @@ func (c *Crawler) rateWait(ctx context.Context) {
 // url is the first page seen with that exact hash. Byte-identical pages racing
 // through the worker pool resolve deterministically: whichever takes the lock
 // first owns the hash as the canonical page; the rest are duplicates of it.
-func (c *Crawler) firstWithContent(hash, url string) (canonical string, first bool) {
+// firstWithContent reports whether url is the first page crawled with this raw
+// body hash. claim records url as the canonical for the hash; callers that will
+// not expand the page (outside-folder, not crawled) pass claim=false so they
+// never become canonical for content whose links they did not contribute.
+func (c *Crawler) firstWithContent(hash, url string, claim bool) (canonical string, first bool) {
 	c.hashMu.Lock()
 	defer c.hashMu.Unlock()
 	if existing, ok := c.seenContent[hash]; ok {
 		return existing, false
 	}
-	c.seenContent[hash] = url
+	if claim {
+		c.seenContent[hash] = url
+	}
 	return url, true
 }
 

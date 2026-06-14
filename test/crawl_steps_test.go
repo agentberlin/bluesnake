@@ -20,15 +20,19 @@ func (w *world) registerCrawlSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a site page "([^"]*)" with body:$`, w.sitePageBody)
 	sc.Step(`^a site page "([^"]*)" with body "([^"]*)"$`, w.sitePageBodyInline)
 	sc.Step(`^a site page "([^"]*)" with a script that injects a link to "([^"]*)"$`, w.sitePageInjectedLink)
+	sc.Step(`^a site page "([^"]*)" with a script that injects an image "([^"]*)"$`, w.sitePageInjectedImage)
+	sc.Step(`^a site page "([^"]*)" with a script that fetches "([^"]*)"$`, w.sitePageFetchScript)
 	sc.Step(`^a site page "([^"]*)" with (\d+) generated links$`, w.sitePageGenerated)
 	sc.Step(`^a site page "([^"]*)" with (\d+) generated links under "([^"]*)" and (\d+) under "([^"]*)"$`, w.sitePageGeneratedSplit)
 	sc.Step(`^a site page "([^"]*)" linking to a path of (\d+) characters$`, w.sitePageLongLink)
 	sc.Step(`^a second test server page "([^"]*)" linking onward to "([^"]*)"$`, w.secondServerPage)
+	sc.Step(`^a site page "([^"]*)" redirecting to the external page "([^"]*)"$`, w.sitePageRedirectExternal)
 	sc.Step(`^a test server redirect chain from "(/[^"]*)" of length (\d+)$`, w.redirectChain)
 	sc.Step(`^the crawl config override "([^"]*)"(?: is set)?$`, w.addCrawlOverride)
 	sc.Step(`^a path limit of (\d+) for "([^"]*)"$`, w.addPathLimit)
 	sc.Step(`^a custom robots\.txt for the test server:$`, w.customRobots)
 	sc.Step(`^the test server serves the background robots\.txt$`, w.serveBackgroundRobots)
+	sc.Step(`^the test server serves the background robots\.txt behind a redirect$`, w.serveRedirectedRobots)
 	sc.Step(`^I crawl the site$`, w.crawlSite)
 	sc.Step(`^I crawl the site starting at "([^"]*)"$`, w.crawlSiteAt)
 
@@ -40,6 +44,12 @@ func (w *world) registerCrawlSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the crawl page "([^"]*)" has redirect type "([^"]*)"$`, w.crawlPageRedirectType)
 	sc.Step(`^the crawl page "([^"]*)" is non-indexable in the crawl$`, w.crawlPageNonIndexable)
 	sc.Step(`^the crawl page "([^"]*)" has matched robots line (\d+)$`, w.crawlPageRobotsLine)
+	sc.Step(`^the crawl page "([^"]*)" is a duplicate of "([^"]*)"$`, w.crawlPageDuplicateOf)
+	sc.Step(`^the crawl page "([^"]*)" is not a content duplicate$`, w.crawlPageNotDuplicate)
+	sc.Step(`^the crawl page "([^"]*)" has no depth$`, w.crawlPageNoDepth)
+	sc.Step(`^the crawl page "([^"]*)" has (\d+) inlinks?$`, w.crawlPageInlinks)
+	sc.Step(`^the crawl page "([^"]*)" was discovered from "([^"]*)"$`, w.crawlPageDiscoveredFrom)
+	sc.Step(`^the crawl has no page record for "([^"]*)"$`, w.crawlNoPageRecord)
 	sc.Step(`^the page "([^"]*)" was not requested$`, w.pageNotRequested)
 	sc.Step(`^the page "([^"]*)" was requested exactly (\d+) times$`, w.pageRequestedTimes)
 	sc.Step(`^the external page "([^"]*)" has status code (\d+)$`, w.externalPageStatus)
@@ -91,6 +101,31 @@ document.addEventListener('DOMContentLoaded', function () {
   var a = document.createElement('a');
   a.href = %q; a.textContent = 'js link';
   document.body.appendChild(a);
+});
+</script></body></html>`, target))
+}
+
+// sitePageInjectedImage serves a page whose script injects an <img> (not a
+// hyperlink) on load — used to prove js_contains_links counts rendered-only
+// hyperlinks, not injected resources.
+func (w *world) sitePageInjectedImage(path, target string) error {
+	return w.sitePageBodyInline(path, fmt.Sprintf(`<html><head><title>js image page</title></head>
+<body><h1>js</h1><script>
+document.addEventListener('DOMContentLoaded', function () {
+  var img = document.createElement('img');
+  img.src = %q; document.body.appendChild(img);
+});
+</script></body></html>`, target))
+}
+
+// sitePageFetchScript serves a page that issues a fetch() to target on load —
+// used to prove XHR/fetch endpoints observed during rendering are governed by
+// resources.javascript and not enqueued as pages.
+func (w *world) sitePageFetchScript(path, target string) error {
+	return w.sitePageBodyInline(path, fmt.Sprintf(`<html><head><title>fetch page</title></head>
+<body><h1>fetch</h1><script>
+document.addEventListener('DOMContentLoaded', function () {
+  fetch(%q);
 });
 </script></body></html>`, target))
 }
@@ -155,6 +190,27 @@ func (w *world) secondServerPage(path, onward string) error {
 	return nil
 }
 
+// sitePageRedirectExternal stands up an external server serving extPath and
+// makes the internal page redirect (301) to it, so the redirect TARGET is
+// external. Used to prove external redirect targets obey links.external.crawl.
+func (w *world) sitePageRedirectExternal(path, extPath string) error {
+	w.extHits = map[string]int{}
+	w.extServer = httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		w.extMu.Lock()
+		w.extHits[r.URL.Path]++
+		w.extMu.Unlock()
+		if r.URL.Path == extPath {
+			rw.Header().Set("Content-Type", "text/html")
+			fmt.Fprint(rw, "<html><body><p>external target</p></body></html>")
+			return
+		}
+		rw.WriteHeader(404)
+	}))
+	r := w.route(path)
+	r.status, r.redirectTo = 301, w.extServer.URL+extPath
+	return nil
+}
+
 func (w *world) redirectChain(prefix string, length int) error {
 	for i := range length {
 		next := fmt.Sprintf("%s%d", prefix, i+1)
@@ -187,6 +243,17 @@ func (w *world) customRobots(doc *godog.DocString) error {
 func (w *world) serveBackgroundRobots() error {
 	r := w.route("/robots.txt")
 	r.status, r.body = 200, w.robotsContent
+	return nil
+}
+
+// serveRedirectedRobots serves /robots.txt as a 308 to /real-robots.txt, which
+// then carries the rules. Pins that robots fetching follows redirects (Google
+// REP): without it the 308 would read as allow-all and skip rule enforcement.
+func (w *world) serveRedirectedRobots() error {
+	r := w.route("/robots.txt")
+	r.status, r.redirectTo = 308, "/real-robots.txt"
+	real := w.route("/real-robots.txt")
+	real.status, real.body = 200, w.robotsContent
 	return nil
 }
 
@@ -311,6 +378,75 @@ func (w *world) crawlPageRobotsLine(path string, line int) error {
 	}
 	if rec.MatchedRobotsLine != line {
 		return fmt.Errorf("%s matched line = %d, want %d", path, rec.MatchedRobotsLine, line)
+	}
+	return nil
+}
+
+// crawlPageDuplicateOf asserts the identical-content short-circuit recorded
+// this page as a byte-for-byte duplicate of the given canonical page (which is
+// the first page crawled with that raw-body hash).
+func (w *world) crawlPageDuplicateOf(path, canonical string) error {
+	rec := w.crawlPage(path)
+	if rec == nil {
+		return fmt.Errorf("no record for %s", path)
+	}
+	want := w.server.URL + canonical
+	if rec.DuplicateOf != want {
+		return fmt.Errorf("%s duplicate_of = %q, want %q", path, rec.DuplicateOf, want)
+	}
+	return nil
+}
+
+func (w *world) crawlPageNotDuplicate(path string) error {
+	rec := w.crawlPage(path)
+	if rec == nil {
+		return fmt.Errorf("no record for %s", path)
+	}
+	if rec.DuplicateOf != "" {
+		return fmt.Errorf("%s is a duplicate of %q, want none", path, rec.DuplicateOf)
+	}
+	return nil
+}
+
+// crawlPageNoDepth asserts the page has no followed-link path from a seed
+// (NoDepth sentinel, exported blank) — e.g. a sitemap-only discovery.
+func (w *world) crawlPageNoDepth(path string) error {
+	rec := w.crawlPage(path)
+	if rec == nil {
+		return fmt.Errorf("no record for %s", path)
+	}
+	if rec.Depth != crawler.NoDepth {
+		return fmt.Errorf("%s depth = %d, want no depth (%d)", path, rec.Depth, crawler.NoDepth)
+	}
+	return nil
+}
+
+func (w *world) crawlNoPageRecord(path string) error {
+	if rec := w.crawlPage(path); rec != nil {
+		return fmt.Errorf("unexpected crawl page record for %s (state %q)", path, rec.State)
+	}
+	return nil
+}
+
+func (w *world) crawlPageInlinks(path string, count int) error {
+	rec := w.crawlPage(path)
+	if rec == nil {
+		return fmt.Errorf("no record for %s", path)
+	}
+	if rec.Inlinks != count {
+		return fmt.Errorf("%s inlinks = %d, want %d", path, rec.Inlinks, count)
+	}
+	return nil
+}
+
+func (w *world) crawlPageDiscoveredFrom(path, from string) error {
+	rec := w.crawlPage(path)
+	if rec == nil {
+		return fmt.Errorf("no record for %s", path)
+	}
+	want := w.server.URL + from
+	if rec.DiscoveredFrom != want {
+		return fmt.Errorf("%s discovered_from = %q, want %q", path, rec.DiscoveredFrom, want)
 	}
 	return nil
 }

@@ -20,6 +20,7 @@ func (w *world) registerIssuesSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^I crawl the site into a store$`, w.crawlIntoStore)
 	sc.Step(`^issues are evaluated$`, w.evaluateIssues)
 	sc.Step(`^the page "([^"]*)" has issue "([^"]*)"$`, w.pageHasIssue)
+	sc.Step(`^the page "([^"]*)" has issue "([^"]*)" with detail "([^"]*)"$`, w.pageHasIssueDetail)
 	sc.Step(`^the page "([^"]*)" does not have issue "([^"]*)"$`, w.pageHasNoIssue)
 }
 
@@ -139,6 +140,24 @@ func (w *world) pageHasIssue(path, id string) error {
 		return fmt.Errorf("%s does not have issue %s", path, id)
 	}
 	return nil
+}
+
+// pageHasIssueDetail asserts the issue fired with an exact detail string. Used
+// to pin measured values (e.g. SERP pixel widths) that a plain has-issue check
+// cannot distinguish — a regression that changes the measurement still fires
+// the issue but with a different detail.
+func (w *world) pageHasIssueDetail(path, id, detail string) error {
+	url := w.server.URL + path
+	var seen []string
+	for _, o := range w.issueOccs {
+		if o.URL == url && o.IssueID == id {
+			if o.Detail == detail {
+				return nil
+			}
+			seen = append(seen, o.Detail)
+		}
+	}
+	return fmt.Errorf("%s issue %s detail = %v, want %q", path, id, seen, detail)
 }
 
 func (w *world) pageHasNoIssue(path, id string) error {

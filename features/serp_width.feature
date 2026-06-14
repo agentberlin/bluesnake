@@ -46,6 +46,20 @@ Feature: SERP pixel widths
     And the page "/thin" has issue "description_below_pixels"
     And the page "/thin" does not have issue "description_below_chars"
 
+  # Pin the description font size (13.9px). The plain over-pixels check stays
+  # green even if the size regresses to 13.0px, so assert the measured width:
+  # 100 'W' glyphs measure differently at 13.9px than at any other size.
+  Scenario: The description pixel width is measured at the 13.9px description font
+    Given a site page "/" with body:
+      """
+      <html><head><title>A page with an entirely ordinary title</title>
+      <meta name="description" content="WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW">
+      </head><body><h1>w</h1><h2>sub</h2></body></html>
+      """
+    When I crawl the site into a store
+    And issues are evaluated
+    Then the page "/" has issue "description_over_pixels" with detail "1338px"
+
   Scenario: A normal title and description raise no pixel issues
     Given a site page "/" with body:
       """

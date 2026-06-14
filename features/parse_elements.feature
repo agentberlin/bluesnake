@@ -109,6 +109,65 @@ Feature: On-page element extraction
       """
     Then the word count is 5
 
+  # Element-text extraction joins same-tag-adjacent inline elements with no
+  # synthetic space (matching SF's heading/title/anchor extraction), so two
+  # adjacent spans read as one run.
+  Scenario: Heading text joins same-tag-adjacent inline elements without a space
+    Given a page at URL "https://ex.com/p" with HTML "<html><body><h1><span>Run</span><span>Execute</span></h1></body></html>"
+    Then the page has 1 h1 and h1 1 is "RunExecute"
+
+  # Word counting has the opposite rule from extraction: it joins a text node
+  # with an adjacent inline element ("one"+"two" = "onetwo") but BREAKS between
+  # same-tag-adjacent elements, so the two spans below count as two words.
+  Scenario: Word counting joins inline text but breaks same-tag-adjacent elements
+    Given a page at URL "https://ex.com/p" with HTML "<html><body><p>one<span>two</span><span>three</span></p></body></html>"
+    Then the word count is 2
+
+  Scenario: SVG and select internals are never counted as page prose
+    Given a page at URL "https://ex.com/p" with HTML:
+      """
+      <html><body>
+        <p>visible words here now</p>
+        <svg><text>hidden svg text</text></svg>
+        <select><option>hidden option text</option></select>
+      </body></html>
+      """
+    Then the word count is 4
+
+  # Zero-width characters (U+200B and U+FEFF below, between the letters) are
+  # stripped from both subtree-extracted text (the h1) and attribute-derived
+  # text (the meta description) so they never inflate pixel/char/dup checks.
+  Scenario: Zero-width characters are stripped from subtree and attribute text
+    Given a page at URL "https://ex.com/p" with HTML:
+      """
+      <html><head><meta name="description" content="X​Y﻿Z"></head>
+      <body><h1>A​B﻿C</h1></body></html>
+      """
+    Then the page has 1 h1 and h1 1 is "ABC"
+    And the page has 1 meta description and description 1 is "XYZ"
+
+  # Readability: sentences split on [.!?] runs, and the Flesch score is clamped
+  # to [0,100] so extreme inputs never escape the range.
+  Scenario: The Flesch reading-ease score is clamped to the 0 to 100 range
+    Given a page at URL "https://ex.com/easy" with HTML "<html><body><p>The cat sat. The dog ran. We go to the park.</p></body></html>"
+    Then the flesch score is 100
+    Given a page at URL "https://ex.com/hard" with HTML:
+      """
+      <html><body><p>Extraordinarily sophisticated multidimensional reconfiguration necessitates comprehensive institutional reorganization throughout.</p></body></html>
+      """
+    Then the flesch score is 0
+
+  Scenario: Average words per sentence splits on sentence punctuation
+    Given a page at URL "https://ex.com/p" with HTML "<html><body><p>One two three. Four five six.</p></body></html>"
+    Then the average words per sentence is 3
+
+  # The 85-char forced sentence break counts runes, not bytes. The single
+  # sentence below is 11 accented words (~55 runes but ~99 bytes); counting
+  # bytes would force a phantom break and halve the average words/sentence.
+  Scenario: The forced sentence break counts runes, not bytes
+    Given a page at URL "https://ex.com/p" with HTML "<html><body><p>éééé éééé éééé éééé éééé éééé éééé éééé éééé éééé éééé.</p></body></html>"
+    Then the average words per sentence is 11
+
   Scenario: Identical bodies hash identically
     Given a page at URL "https://ex.com/a" with HTML "<html><body>same</body></html>"
     And another page at URL "https://ex.com/b" with HTML "<html><body>same</body></html>"

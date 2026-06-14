@@ -40,6 +40,8 @@ func (w *world) registerParseSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^rel prev is "([^"]*)"$`, w.checkRelPrev)
 	sc.Step(`^the meta refresh target is "([^"]*)"$`, w.checkMetaRefresh)
 	sc.Step(`^the word count is (\d+)$`, w.checkWordCount)
+	sc.Step(`^the flesch score is (\d+)$`, w.checkFlesch)
+	sc.Step(`^the average words per sentence is (\d+)$`, w.checkAvgWordsPerSentence)
 	sc.Step(`^both pages have the same hash$`, w.checkSameHash)
 	sc.Step(`^the page language is "([^"]*)"$`, w.checkLang)
 
@@ -50,6 +52,7 @@ func (w *world) registerParseSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the link to "([^"]*)" is followed$`, w.checkLinkFollowed)
 	sc.Step(`^a link of type "([^"]*)" to "([^"]*)" exists$`, w.checkTypedLink)
 	sc.Step(`^the link to "([^"]*)" has position "([^"]*)"$`, w.checkLinkPosition)
+	sc.Step(`^the link to "([^"]*)" has element path "([^"]*)"$`, w.checkLinkElemPath)
 	sc.Step(`^the link to "([^"]*)" has path type "([^"]*)"$`, w.checkLinkPathType)
 	sc.Step(`^the link to "([^"]*)" has target "([^"]*)"$`, w.checkLinkTarget)
 	sc.Step(`^the link to "([^"]*)" has rel "([^"]*)"$`, w.checkLinkRel)
@@ -255,6 +258,22 @@ func (w *world) checkWordCount(want int) error {
 	return nil
 }
 
+// checkFlesch compares the (truncated) Flesch reading-ease score. Used to pin
+// the [0,100] clamp at its boundaries.
+func (w *world) checkFlesch(want int) error {
+	if got := int(w.facts.Flesch); got != want {
+		return fmt.Errorf("flesch score = %v (int %d), want %d", w.facts.Flesch, got, want)
+	}
+	return nil
+}
+
+func (w *world) checkAvgWordsPerSentence(want int) error {
+	if got := int(w.facts.AvgWordsPerSentence); got != want {
+		return fmt.Errorf("avg words/sentence = %v (int %d), want %d", w.facts.AvgWordsPerSentence, got, want)
+	}
+	return nil
+}
+
 func (w *world) checkSameHash() error {
 	if w.facts == nil || w.facts2 == nil || w.facts.Hash != w.facts2.Hash {
 		return fmt.Errorf("hashes differ")
@@ -359,6 +378,17 @@ func (w *world) checkLinkPosition(url, want string) error {
 	}
 	if l.Position != want {
 		return fmt.Errorf("position = %q (path %s), want %q", l.Position, l.ElemPath, want)
+	}
+	return nil
+}
+
+func (w *world) checkLinkElemPath(url, want string) error {
+	l, err := w.mustFindLink(url)
+	if err != nil {
+		return err
+	}
+	if l.ElemPath != want {
+		return fmt.Errorf("element path = %q, want %q", l.ElemPath, want)
 	}
 	return nil
 }

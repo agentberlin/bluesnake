@@ -339,14 +339,18 @@ func (p *parser) handleMeta(n *html.Node, path string) {
 	content := attr(n, "content")
 	switch name {
 	case "description":
-		f.Descriptions = append(f.Descriptions, content)
+		// Attribute-derived text goes through the same collapseSpace chokepoint
+		// as subtree-extracted text, so zero-width characters are stripped and
+		// whitespace normalised here too (a zero-width char in a description
+		// must not survive into the pixel/char/duplicate checks).
+		f.Descriptions = append(f.Descriptions, collapseSpace(content))
 		if !inHead(path) {
 			f.DescriptionsOutsideHead++
 		}
 	case "keywords":
-		f.Keywords = append(f.Keywords, content)
+		f.Keywords = append(f.Keywords, collapseSpace(content))
 	case "robots":
-		f.MetaRobots = append(f.MetaRobots, content)
+		f.MetaRobots = append(f.MetaRobots, collapseSpace(content))
 		if !inHead(path) {
 			f.MetaRobotsOutsideHead++
 		}
@@ -542,6 +546,14 @@ func (p *parser) elemPath(n *html.Node, structural string) string {
 // id-qualified 17%), so neither is emitted. The remaining divergence is
 // DOM-tree construction differences between parsers, which positional indices
 // are inherently sensitive to.
+//
+// The same scheme covers head elements (canonical/stylesheet/hreflang/amp
+// links live in <head>): the walk stops at the nearest of <body>/<head> and
+// excludes <html>, so a head link is rooted at //head (e.g. //head/link[2]),
+// mirroring the //body rooting. The measured agreement above is for body
+// links — the //head rooting is the same scheme applied consistently, pinned
+// by TestSFElemPathHead, and is the best-effort format pending a head-link
+// reference sample from SF.
 func sfElemPath(n *html.Node) string {
 	if n == nil || n.Type != html.ElementNode {
 		return ""

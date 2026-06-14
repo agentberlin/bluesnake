@@ -50,6 +50,34 @@ Feature: Link extraction
     And the link to "https://ex.com/imprint" has position "footer"
     And the link to "https://ex.com/dir/next-page" has position "content"
 
+  # The default link_positions use SF's decoded search terms: "header" is its
+  # own segment ("/head/" only matches the document <head>). A <header> link
+  # must classify as "header", not "head".
+  Scenario: A header link is classified as header, not head
+    Given a page at URL "https://ex.com/p" with HTML:
+      """
+      <html><head><link rel="canonical" href="/canonical"></head>
+      <body>
+        <header><a href="/home">Home</a></header>
+        <main><a href="/article">Article</a></main>
+      </body></html>
+      """
+    Then the link to "https://ex.com/home" has position "header"
+    And the link to "https://ex.com/article" has position "content"
+    And the link to "https://ex.com/canonical" has position "head"
+    # head links are //head-rooted by the same positional scheme as body links
+    And the link to "https://ex.com/canonical" has element path "//head/link"
+
+  # Screaming-Frog-style element paths: //body-rooted, 1-based same-tag
+  # positional [k] indices, no id/class qualifiers.
+  Scenario: Links carry Screaming-Frog-style positional element paths
+    Given a page at URL "https://ex.com/p" with HTML:
+      """
+      <html><body><main><a href="/one">1</a><a href="/two">2</a></main></body></html>
+      """
+    Then the link to "https://ex.com/one" has element path "//body/main/a[1]"
+    And the link to "https://ex.com/two" has element path "//body/main/a[2]"
+
   Scenario: Path types record how the href was written
     Then the link to "https://ex.com/about" has path type "root_relative"
     And the link to "https://ex.com/dir/next-page" has path type "path_relative"
