@@ -4,7 +4,7 @@
    =========================================================================== */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Icon, Btn, IconBtn, Search, Toggle, Seg, Empty, Toast, Modal } from "../ui";
-import { api, on } from "../api";
+import { api, on, openURL } from "../api";
 
 /* schema: every key is a verified dotted yaml path in internal/config */
 const tg = (key, label, hint, adv) => ({ key, label, type: "toggle", hint, advanced: adv });
@@ -137,6 +137,7 @@ export function SettingsView({ profileName, focus, onBack, backLabel }) {
   const [dupName, setDupName] = useState("");
   const [yamlMode, setYamlMode] = useState(false);
   const [yamlText, setYamlText] = useState("");
+  const [cliAvail, setCliAvail] = useState(false); // CLI install panel only shows when an embedded CLI exists (macOS app)
   const fireToast = (msg, icon = "check") => { setToast({ msg, icon }); setTimeout(() => setToast(null), 2600); };
 
   const reload = (p) => {
@@ -145,6 +146,7 @@ export function SettingsView({ profileName, focus, onBack, backLabel }) {
     setPending({});
   };
   useEffect(() => { api.listProfiles().then((p) => p && p.length && setProfiles(p)).catch(() => {}); }, []);
+  useEffect(() => { api.cliInfo().then((s) => setCliAvail(!!(s && s.available))).catch(() => {}); }, []);
   useEffect(() => { reload(profile); }, [profile]);
   // deep-link from the titlebar MCP pill (and anywhere else)
   useEffect(() => { if (focus && focus.section) { setActive(focus.section); setQ(""); setYamlMode(false); } }, [focus]);
@@ -155,6 +157,9 @@ export function SettingsView({ profileName, focus, onBack, backLabel }) {
   const sec = SECTIONS.find((s) => s.id === active);
   const valOf = (f) => (f.key in pending ? pending[f.key] : getPath(cfg, f.key));
   const changedCount = Object.keys(pending).length;
+  // app-level panels (MCP, CLI, Updates) aren't crawl profiles — they hide the
+  // profile chrome (search, advanced, save) and don't load profile config.
+  const appSection = active === "mcp" || active === "cli" || active === "updates";
 
   async function save() {
     try {
@@ -207,6 +212,14 @@ export function SettingsView({ profileName, focus, onBack, backLabel }) {
             <div className={"sb-item" + (active === "mcp" ? " active" : "")} onClick={() => { setActive("mcp"); setQ(""); }} style={{ height: 30 }}>
               <Icon name="plug-zap" size={15} /><span style={{ flex: 1 }}>MCP Server</span>
             </div>
+            {cliAvail && (
+              <div className={"sb-item" + (active === "cli" ? " active" : "")} onClick={() => { setActive("cli"); setQ(""); }} style={{ height: 30 }}>
+                <Icon name="terminal" size={15} /><span style={{ flex: 1 }}>Command-line tool</span>
+              </div>
+            )}
+            <div className={"sb-item" + (active === "updates" ? " active" : "")} onClick={() => { setActive("updates"); setQ(""); }} style={{ height: 30 }}>
+              <Icon name="refresh-cw" size={15} /><span style={{ flex: 1 }}>Updates</span>
+            </div>
           </div>
         )}
       </div>
@@ -216,9 +229,9 @@ export function SettingsView({ profileName, focus, onBack, backLabel }) {
         <div className="toolbar">
           {onBack && <Btn size="sm" variant="ghost" icon="arrow-left" onClick={onBack} style={{ marginRight: 2 }}>{backLabel || "Back"}</Btn>}
           <span className="title" style={{ fontSize: 13.5 }}>Settings</span>
-          <span className="sub">{active === "mcp" && !yamlMode ? "Application" : profile}</span>
+          <span className="sub">{appSection && !yamlMode ? "Application" : profile}</span>
           <div style={{ flex: 1 }} />
-          {!yamlMode && active !== "mcp" && <>
+          {!yamlMode && !appSection && <>
             <Search value={q} onChange={setQ} placeholder="Search all settings…" width={230} />
             <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--ink-2)" }}>
               <Toggle on={advanced} onChange={setAdvanced} /> Advanced
@@ -246,15 +259,17 @@ export function SettingsView({ profileName, focus, onBack, backLabel }) {
           <div className="scroll" style={{ padding: "20px 24px" }}>
             <div style={{ maxWidth: 720 }} className="fade">
               {active === "mcp" && !q && <MCPPanel onToast={fireToast} />}
-              {active !== "mcp" && !cfg && <Empty icon="sliders-horizontal" title="Loading profile…"> </Empty>}
-              {cfg && q && searchHits && (
+              {active === "cli" && <CLIPanel onToast={fireToast} />}
+              {active === "updates" && <UpdatesPanel onToast={fireToast} />}
+              {!appSection && !cfg && <Empty icon="sliders-horizontal" title="Loading profile…"> </Empty>}
+              {!appSection && cfg && q && searchHits && (
                 <>
                   <div style={{ fontSize: 12, color: "var(--ink-faint)", marginBottom: 14 }}>{searchHits.length} settings match “{q}”</div>
                   {searchHits.map((f) => <SettingField key={f.key} f={f} val={valOf(f)} changed={f.key in pending} section={f.section} onChange={(v) => setPending((p) => ({ ...p, [f.key]: v }))} onReset={() => setPending((p) => { const n = { ...p }; delete n[f.key]; return n; })} />)}
                   {searchHits.length === 0 && <Empty icon="search-x" title="No settings found">Nothing matches “{q}”.</Empty>}
                 </>
               )}
-              {active !== "mcp" && cfg && !q && sec && (
+              {!appSection && cfg && !q && sec && (
                 <>
                   <div style={{ marginBottom: 18 }}>
                     <h2 style={{ margin: 0, fontSize: 16, fontWeight: 650, display: "flex", alignItems: "center", gap: 9 }}><Icon name={sec.icon} size={18} style={{ color: "var(--ink-3)" }} />{sec.label}</h2>
@@ -461,6 +476,212 @@ function MCPPanel({ onToast }) {
         <div className="hint" style={{ marginTop: 8 }}>
           Without the app running, the CLI serves the same endpoint: <span className="mono">bluesnake mcp</span>
         </div>
+      </div>
+    </>
+  );
+}
+
+/* ---- command-line tool panel (app-level) ------------------------------
+   Installs the CLI embedded in the .app bundle by symlinking it onto PATH —
+   the same job the old "Install bluesnake CLI.command" did, now in-app. */
+function CLIPanel({ onToast }) {
+  const [st, setSt] = useState(null);   // CLIStatus
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { api.cliInfo().then(setSt).catch(() => {}); }, []);
+
+  async function install() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const next = await api.installCLI();
+      setSt(next);
+      if (next && next.error) onToast(next.error, "circle-alert");
+      else onToast("Command-line tool installed", "terminal");
+    } catch (e) {
+      onToast(String(e), "circle-alert");
+    } finally { setBusy(false); }
+  }
+  async function copy(text) {
+    try {
+      if (window.runtime && window.runtime.ClipboardSetText) await window.runtime.ClipboardSetText(text);
+      else await navigator.clipboard.writeText(text);
+      onToast("Copied to clipboard", "copy");
+    } catch { onToast("Copy failed", "circle-alert"); }
+  }
+
+  if (!st) return <Empty icon="terminal" title="Loading…"> </Empty>;
+
+  return (
+    <>
+      <div style={{ marginBottom: 18 }}>
+        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 650, display: "flex", alignItems: "center", gap: 9 }}>
+          <Icon name="terminal" size={18} style={{ color: "var(--ink-3)" }} />Command-line tool
+        </h2>
+        <div className="hint" style={{ marginTop: 6 }}>
+          Run bluesnake straight from your terminal — script crawls, wire audits into CI, and pipe results into
+          other tools. This adds the <span className="mono">bluesnake</span> command to your PATH; it’s the same
+          engine the app uses, and it also serves the MCP endpoint with <span className="mono">bluesnake mcp</span>.
+        </div>
+      </div>
+
+      {!st.available ? (
+        <Note>The command-line tool isn’t bundled with this build, so it can’t be installed from here.</Note>
+      ) : (
+        <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
+          <div style={{ display: "flex", gap: 16, padding: "14px 16px", alignItems: "center" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 650, display: "flex", alignItems: "center", gap: 8 }}>
+                <span className="statusdot" style={{ background: st.installed ? "var(--sev-ok)" : "var(--ink-faint)" }} />
+                {st.installed ? "Installed" : "Not installed"}
+              </div>
+              <div className="hint" style={{ marginTop: 4 }}>
+                {st.installed
+                  ? <>Linked at <span className="mono">{st.target}</span></>
+                  : "Symlinks bluesnake into /usr/local/bin, /opt/homebrew/bin, or ~/.local/bin (whichever is writable)."}
+              </div>
+            </div>
+            <Btn icon={st.installed ? "rotate-ccw" : "download"} variant="primary" disabled={busy} onClick={install}>
+              {busy ? "Installing…" : st.installed ? "Reinstall" : "Install"}
+            </Btn>
+          </div>
+        </div>
+      )}
+
+      {st.available && (
+        <div style={{ padding: "4px 0" }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>Try it</div>
+          <Snippet label="Check the version" text="bluesnake version" onCopy={copy} />
+          <Snippet label="Crawl a site" text="bluesnake crawl https://example.com" onCopy={copy} />
+          <div className="hint" style={{ marginTop: 8 }}>Open a new terminal after installing so it picks up the command.</div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ---- updates panel (app-level) ----------------------------------------
+   Current version, manual check, auto-check toggle, and the in-place install.
+   The proactive surface is the title-bar pill (see main.jsx); this is the
+   always-available home and where you land after dismissing the pill. */
+function UpdatesPanel({ onToast }) {
+  const [st, setSt] = useState(null);       // UpdateStatus
+  const [prefs, setPrefs] = useState(null); // UpdatePrefs
+  const [busy, setBusy] = useState(false);  // checking
+  const [installing, setInstalling] = useState(false);
+  const [prog, setProg] = useState(null);   // {phase, done, total}
+
+  useEffect(() => {
+    api.getUpdatePrefs().then(setPrefs).catch(() => {});
+    api.checkForUpdate().then(setSt).catch(() => {});
+    const off = on("update:progress", (e) => { if (e) setProg(e); });
+    return () => off();
+  }, []);
+
+  async function check() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await api.refreshUpdate();
+      setSt(r);
+      if (r.error) onToast(r.error, "circle-alert");
+      else if (r.isDev) onToast("Development build — updates are disabled", "info");
+      else if (r.available) onToast(`Update available — v${r.latest}`, "arrow-up-circle");
+      else onToast("You’re up to date", "check");
+      api.getUpdatePrefs().then(setPrefs).catch(() => {});
+    } finally { setBusy(false); }
+  }
+
+  async function install() {
+    if (installing) return;
+    setInstalling(true);
+    setProg({ phase: "downloading", done: 0, total: 0 });
+    try {
+      const r = await api.applyUpdate();
+      if (r && r.error) { onToast(r.error, "circle-alert"); setInstalling(false); }
+      // on success the app downloads, installs, and restarts itself
+    } catch (e) { onToast(String(e), "circle-alert"); setInstalling(false); }
+  }
+
+  async function toggleAuto(v) {
+    setPrefs((p) => ({ ...(p || {}), autoCheck: v }));
+    await api.setUpdateAutoCheck(v);
+  }
+
+  if (!st) return <Empty icon="refresh-cw" title="Loading…"> </Empty>;
+
+  const current = st.current || "—";
+  const lastChecked = prefs && prefs.lastCheck ? new Date(prefs.lastCheck).toLocaleString() : null;
+  const pct = prog && prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : null;
+  const canUpdate = st.available && st.platformSupported;
+
+  return (
+    <>
+      <div style={{ marginBottom: 18 }}>
+        <h2 style={{ margin: 0, fontSize: 16, fontWeight: 650, display: "flex", alignItems: "center", gap: 9 }}>
+          <Icon name="refresh-cw" size={18} style={{ color: "var(--ink-3)" }} />Updates
+        </h2>
+        <div className="hint" style={{ marginTop: 6 }}>
+          bluesnake checks GitHub for new releases and can update itself in place. Downloads are
+          checksum-verified before they’re installed.
+        </div>
+      </div>
+
+      <div className="card" style={{ padding: 0, overflow: "hidden", marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 16, padding: "14px 16px", alignItems: "center" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 650, display: "flex", alignItems: "center", gap: 8 }}>
+              <span className="statusdot" style={{ background: canUpdate ? "var(--accent)" : "var(--sev-ok)" }} />
+              Current version <span className="mono" style={{ color: "var(--ink-2)" }}>v{current}</span>
+            </div>
+            <div className="hint" style={{ marginTop: 4 }}>
+              {st.isDev ? "Development build — updates are disabled."
+                : st.error ? st.error
+                : canUpdate ? <>Version <span className="mono">v{st.latest}</span> is available.</>
+                : !st.platformSupported && st.latest ? "In-app updates aren’t available on this platform — download from the release page."
+                : "You’re running the latest version."}
+            </div>
+          </div>
+          {canUpdate
+            ? <Btn icon="download" variant="primary" disabled={installing} onClick={install}>{installing ? "Updating…" : `Update to v${st.latest}`}</Btn>
+            : <Btn icon="refresh-cw" disabled={busy || st.isDev} onClick={check}>{busy ? "Checking…" : "Check for updates"}</Btn>}
+        </div>
+
+        {installing && (
+          <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border-soft)", background: "var(--surface-2)" }}>
+            <div style={{ fontSize: 12, marginBottom: 8 }}>
+              {prog && prog.phase === "applying" ? "Installing & restarting…" : pct != null ? `Downloading… ${pct}%` : "Downloading…"}
+            </div>
+            <div style={{ height: 6, background: "var(--border-soft)", borderRadius: 4, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: (pct != null ? pct : 15) + "%", background: "var(--accent)", transition: "width .2s ease" }} />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {canUpdate && st.notes && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>What’s new in v{st.latest}</div>
+          <div style={{ maxHeight: 220, overflowY: "auto", fontSize: 11.5, lineHeight: 1.6, color: "var(--ink-2)", background: "var(--sidebar)", border: "1px solid var(--border-soft)", borderRadius: 8, padding: "10px 12px", whiteSpace: "pre-wrap" }}>
+            {st.notes}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 16, padding: "13px 0", borderBottom: "1px solid var(--border-soft)", alignItems: "center" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600 }}>Check automatically on launch</div>
+          <div className="hint" style={{ marginTop: 4 }}>Show a notification in the title bar when a new version is available.</div>
+        </div>
+        <Toggle on={!!(prefs && prefs.autoCheck)} onChange={toggleAuto} />
+      </div>
+
+      <div style={{ display: "flex", gap: 12, padding: "13px 0", alignItems: "center" }}>
+        <div style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: "var(--ink-faint)" }}>
+          {lastChecked ? <>Last checked {lastChecked}</> : "Not checked yet"}
+        </div>
+        {st.url && <Btn size="sm" variant="ghost" icon="external-link" onClick={() => openURL(st.url)}>Release page</Btn>}
+        {canUpdate && <Btn size="sm" variant="ghost" icon="refresh-cw" disabled={busy} onClick={check}>{busy ? "Checking…" : "Re-check"}</Btn>}
       </div>
     </>
   );

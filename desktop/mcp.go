@@ -64,6 +64,16 @@ type appSettings struct {
 	Tunnel struct {
 		Enabled bool `json:"enabled"`
 	} `json:"tunnel"`
+	CLI struct {
+		// Prompted records that the first-launch "install the CLI?" prompt has
+		// been shown and dismissed once, so it never reappears.
+		Prompted bool `json:"prompted"`
+	} `json:"cli"`
+	Updates struct {
+		AutoCheck      bool   `json:"autoCheck"`      // check GitHub on launch (default true)
+		SkippedVersion string `json:"skippedVersion"` // pill ×-dismissed for this version
+		LastCheck      string `json:"lastCheck"`      // RFC3339 of the last successful network check
+	} `json:"updates"`
 }
 
 func (a *App) settingsPath() string { return filepath.Join(a.storeDir, "desktop.json") }
@@ -71,6 +81,7 @@ func (a *App) settingsPath() string { return filepath.Join(a.storeDir, "desktop.
 func (a *App) loadSettings() appSettings {
 	var s appSettings
 	s.MCP.Port = defaultMCPPort
+	s.Updates.AutoCheck = true // default on; an explicit false in the file overrides
 	if data, err := os.ReadFile(a.settingsPath()); err == nil {
 		_ = json.Unmarshal(data, &s)
 	}

@@ -7,8 +7,8 @@ import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import "@fontsource/jetbrains-mono/600.css";
 import "./styles.css";
-import { api, on, urlShort, hostOf } from "./api";
-import { Icon, IconBtn, BrandMark } from "./ui";
+import { api, on, urlShort, hostOf, openURL } from "./api";
+import { Icon, IconBtn, BrandMark, Modal, Btn } from "./ui";
 import { CrawlManager } from "./views/home";
 import { Welcome } from "./views/welcome";
 import { NewCrawl } from "./views/newcrawl";
@@ -56,6 +56,9 @@ function App() {
   const [settingsFocus, setSettingsFocus] = useState(null); // {section} -> open Settings on it
   const [settingsBack, setSettingsBack] = useState(null); // {view,label} -> show a "back" button in Settings
   const [platform, setPlatform] = useState(""); // "windows" | "darwin" | "linux" — drives window-chrome layout
+  const [showCliPrompt, setShowCliPrompt] = useState(false); // first-launch "install the CLI?" prompt (shown once)
+  const [update, setUpdate] = useState(null); // UpdateStatus from the launch check
+  const [showUpdate, setShowUpdate] = useState(false); // update modal open
 
   // The Windows window is frameless (see desktop/main.go), so we draw our own
   // caption buttons; macOS keeps its native traffic lights. Resolve the host OS
@@ -66,6 +69,37 @@ function App() {
     }
   }, []);
   const isWindows = platform === "windows";
+
+  // First launch only: offer to install the CLI when an embedded one exists
+  // (macOS app), it isn't already on PATH, and we haven't asked before.
+  useEffect(() => {
+    let alive = true;
+    Promise.all([api.cliInfo(), api.cliPromptSeen()]).then(([info, seen]) => {
+      if (alive && info && info.available && !info.installed && !seen) setShowCliPrompt(true);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  // Any dismissal (install, "not now", esc, backdrop) marks it seen for good.
+  const dismissCliPrompt = useCallback(() => {
+    setShowCliPrompt(false);
+    api.markCliPromptSeen().catch(() => {});
+  }, []);
+
+  // Background update check on launch (respects the auto-check preference; the
+  // backend skips dev builds and caches the result for this session).
+  useEffect(() => {
+    let alive = true;
+    api.getUpdatePrefs().then((p) => {
+      if (!alive || !p || !p.autoCheck) return;
+      api.checkForUpdate().then((st) => { if (alive) setUpdate(st); }).catch(() => {});
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  // × on the pill: hide it and don't surface this version again.
+  const dismissUpdate = useCallback((version) => {
+    setUpdate((u) => (u ? { ...u, skipped: true } : u));
+    api.skipUpdate(version).catch(() => {});
+  }, []);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
@@ -172,6 +206,17 @@ function App() {
         </div>
         <div className="tb-spacer" />
         <div className="tb-actions">
+          {update && update.available && !update.skipped && (
+            <span className="pill tb-nodrag" title={`Update to v${update.latest}`}
+              style={{ height: 22, gap: 5, fontSize: 11, color: "var(--accent)", borderColor: "var(--accent)" }}>
+              <span onClick={() => setShowUpdate(true)} style={{ display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+                <Icon name="arrow-up-circle" size={12} />Update v{update.latest}
+              </span>
+              <button className="iconbtn" style={{ width: 15, height: 15 }} title="Dismiss this version" onClick={() => dismissUpdate(update.latest)}>
+                <Icon name="x" size={11} />
+              </button>
+            </span>
+          )}
           <MCPControls onOpenSettings={() => { setSettingsFocus({ section: "mcp" }); setSettingsBack(null); setView("settings"); }} />
           <IconBtn icon={dark ? "sun" : "moon"} title="Toggle theme" onClick={() => setDark((d) => !d)} />
         </div>
@@ -263,8 +308,122 @@ function App() {
           onClose={() => setDetail(null)}
           onFilterByIssue={(f) => { setDetail(null); openDataset("internal", f); }} />
       )}
+
+      {/* first-launch CLI install prompt */}
+      {showCliPrompt && <CliPrompt onClose={dismissCliPrompt} />}
+
+      {/* self-update flow (opened from the title-bar pill) */}
+      {showUpdate && update && <UpdatePrompt status={update} onClose={() => setShowUpdate(false)} />}
     </div>
   );
+}
+
+/* The self-update flow: confirm → download (with progress) → install & restart.
+   On success the app quits and relaunches mid-install, so the promise from
+   applyUpdate typically never resolves; we only ever return here on error. */
+function UpdatePrompt({ status, onClose }) {
+  const [phase, setPhase] = useState("ready"); // ready | working | error
+  const [prog, setProg] = useState({ phase: "", done: 0, total: 0 });
+  const [err, setErr] = useState("");
+  const [crawlRunning, setCrawlRunning] = useState(false);
+
+  useEffect(() => {
+    api.activeProgress().then((p) => setCrawlRunning(!!(p && p.state === "running"))).catch(() => {});
+    const off = on("update:progress", (e) => { if (e) setProg(e); });
+    return () => off();
+  }, []);
+
+  async function go() {
+    setPhase("working");
+    try {
+      const st = await api.applyUpdate();
+      if (st && st.error) { setErr(st.error); setPhase("error"); }
+    } catch (e) { setErr(String(e)); setPhase("error"); }
+  }
+
+  if (phase === "error") {
+    return <Modal icon="circle-alert" danger title="Update failed" onClose={onClose}
+      body={<>{err || "Something went wrong."} You can download the update manually from the release page instead.</>}
+      actions={<>
+        <Btn onClick={onClose}>Close</Btn>
+        <Btn variant="primary" icon="external-link" onClick={() => { openURL(status.url); onClose(); }}>Open release page</Btn>
+      </>} />;
+  }
+
+  if (phase === "working") {
+    const pct = prog.total > 0 ? Math.round((prog.done / prog.total) * 100) : null;
+    const label = prog.phase === "applying"
+      ? "Installing & restarting…"
+      : pct != null ? `Downloading… ${pct}%` : "Downloading…";
+    return <Modal icon="download" title={`Updating to v${status.latest}`} onClose={() => {}}
+      body={<div>
+        <div style={{ marginBottom: 10 }}>{label}</div>
+        <div style={{ height: 6, background: "var(--border-soft)", borderRadius: 4, overflow: "hidden" }}>
+          <div style={{ height: "100%", width: (pct != null ? pct : 15) + "%", background: "var(--accent)", transition: "width .2s ease" }} />
+        </div>
+        <div className="hint" style={{ marginTop: 10 }}>bluesnake will restart automatically when the update is ready — don’t quit it.</div>
+      </div>}
+      actions={null} />;
+  }
+
+  return <Modal icon="arrow-up-circle" title={`Update available — v${status.latest}`} onClose={onClose}
+    body={<div>
+      <div style={{ marginBottom: status.notes ? 10 : 0 }}>
+        You’re on <span className="mono">v{status.current}</span>. Update to <span className="mono">v{status.latest}</span>? bluesnake will download, verify, install, and restart itself.
+      </div>
+      {status.notes && (
+        <div style={{ maxHeight: 150, overflowY: "auto", fontSize: 11.5, lineHeight: 1.55, color: "var(--ink-2)", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8, padding: "9px 11px", whiteSpace: "pre-wrap" }}>
+          {status.notes}
+        </div>
+      )}
+      {crawlRunning && (
+        <div className="hint" style={{ marginTop: 10, color: "var(--sev-warn)", display: "flex", alignItems: "center", gap: 6 }}>
+          <Icon name="triangle-alert" size={13} />A crawl is running — it will be paused and can be resumed after the restart.
+        </div>
+      )}
+    </div>}
+    actions={<>
+      <Btn onClick={onClose}>Later</Btn>
+      <Btn variant="primary" icon="download" onClick={go}>Update now</Btn>
+    </>} />;
+}
+
+/* First-launch prompt offering to install the command-line tool. Self-contained
+   state machine (ask → installing → done/error); every exit calls onClose, which
+   records that we've asked so it never shows again. */
+function CliPrompt({ onClose }) {
+  const [phase, setPhase] = useState("ask"); // ask | installing | done | error
+  const [result, setResult] = useState(null);
+
+  async function install() {
+    setPhase("installing");
+    try {
+      const st = await api.installCLI();
+      setResult(st);
+      setPhase(st && st.error ? "error" : "done");
+    } catch (e) {
+      setResult({ error: String(e) });
+      setPhase("error");
+    }
+  }
+
+  if (phase === "done") {
+    return <Modal icon="circle-check" title="Command-line tool installed" onClose={onClose}
+      body={<>You can now run <span className="mono">bluesnake</span> from any terminal{result && result.target ? <> (linked at <span className="mono">{result.target}</span>)</> : null}. Open a new terminal and try <span className="mono">bluesnake version</span>.</>}
+      actions={<Btn variant="primary" onClick={onClose}>Done</Btn>} />;
+  }
+  if (phase === "error") {
+    return <Modal icon="circle-alert" danger title="Couldn’t install the command-line tool" onClose={onClose}
+      body={<>{(result && result.error) || "Something went wrong."} You can try again anytime from <b>Settings → Command-line tool</b>.</>}
+      actions={<Btn variant="primary" onClick={onClose}>Close</Btn>} />;
+  }
+  const busy = phase === "installing";
+  return <Modal icon="terminal" title="Install the command-line tool?" onClose={busy ? () => {} : onClose}
+    body={<>bluesnake also works from your terminal — script crawls, run audits in CI, and pipe results into other tools. Install it to add the <span className="mono">bluesnake</span> command to your PATH. You can always do this later from <b>Settings → Command-line tool</b>.</>}
+    actions={<>
+      <Btn onClick={onClose} disabled={busy}>Not now</Btn>
+      <Btn variant="primary" icon="download" onClick={install} disabled={busy}>{busy ? "Installing…" : "Install"}</Btn>
+    </>} />;
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);

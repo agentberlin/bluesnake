@@ -27,6 +27,7 @@ type App struct {
 	storeDir string
 	mcp      *mcpManager    // localhost MCP server (settings toggle)
 	tunnel   *tunnelManager // optional public HTTPS URL for the MCP server
+	upd      *updateManager // self-update checker / installer
 
 	mu      sync.Mutex
 	session *crawlSession // at most one live crawl
@@ -46,6 +47,7 @@ func NewApp() *App {
 	}
 	a.mcp = newMCPManager(a)
 	a.tunnel = newTunnelManager(a)
+	a.upd = newUpdateManager(a)
 	return a
 }
 
