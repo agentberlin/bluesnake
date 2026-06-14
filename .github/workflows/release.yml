@@ -161,20 +161,21 @@ jobs:
           cp dist/bluesnake "$APP/Contents/Resources/bin/bluesnake"
           chmod +x "$APP/Contents/Resources/bin/bluesnake"
 
-      - name: Create DMG (app + CLI installer)
+      - name: Create DMG (drag app to Applications)
         run: |
+          # Just the app + an Applications drop link — the classic clean layout.
+          # The CLI is embedded in the .app and installed from inside the app
+          # (Settings → Command-line tool, or the first-launch prompt), so no
+          # loose installer script ships in the DMG window.
           STAGE="$(mktemp -d)"
           cp -R desktop/build/bin/bluesnake.app "$STAGE/"
-          cp packaging/macos/install-cli.command "$STAGE/Install bluesnake CLI.command"
-          chmod +x "$STAGE/Install bluesnake CLI.command"
           DMG="dist/bluesnake-${VERSION}-darwin-universal.dmg"
           create-dmg \
             --volname "bluesnake ${VERSION}" \
-            --window-size 560 400 \
+            --window-size 500 340 \
             --icon-size 100 \
-            --icon "bluesnake.app" 140 170 \
-            --app-drop-link 420 170 \
-            --icon "Install bluesnake CLI.command" 280 320 \
+            --icon "bluesnake.app" 130 160 \
+            --app-drop-link 370 160 \
             "$DMG" "$STAGE" \
           || hdiutil create -volname "bluesnake ${VERSION}" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 

@@ -55,11 +55,14 @@ be public for the unauthenticated download to work.
 ### macOS → DMG (app *and* CLI from one install)
 We ship a single artifact, the DMG, and it carries both the GUI and the CLI. The
 `bluesnake` CLI is embedded inside the app bundle at
-`bluesnake.app/Contents/Resources/bin/bluesnake`, and the DMG also contains an
-`Install bluesnake CLI.command`. The user drags the app to Applications, then
-double-clicks that script to symlink the CLI onto their `PATH` (`/usr/local/bin`,
-`/opt/homebrew/bin`, or `~/.local/bin` — whichever is writable). That satisfies
-"the macOS install gives both the app and the CLI" without a package manager.
+`bluesnake.app/Contents/Resources/bin/bluesnake`. The DMG is a clean drag-to-
+Applications layout (app + Applications alias only); the CLI is installed **from
+inside the app** — a first-launch prompt offers it, and Settings → Command-line
+tool installs/reinstalls it anytime (see [desktop/cli.go](../desktop/cli.go)).
+"Install" symlinks the embedded binary onto the user's `PATH` (`/usr/local/bin`,
+`/opt/homebrew/bin`, or `~/.local/bin` — whichever is writable), the same job the
+old loose `Install bluesnake CLI.command` script did. That satisfies "the macOS
+install gives both the app and the CLI" without a package manager.
 
 The app is built **universal** (`wails build -platform darwin/universal`), as is
 the embedded CLI (`lipo` of amd64 + arm64).
@@ -77,6 +80,33 @@ and draw our own min/max/close caption buttons in the frontend (`WinControls` in
 [styles.css](../desktop/frontend/src/styles.css)). The frontend detects the OS at
 startup via the Wails runtime `Environment()`. We ship the portable `.exe` and an
 NSIS installer; the CLI is intentionally not distributed on Windows.
+
+### Self-update (desktop, macOS + Windows)
+The desktop app updates itself in place. The OS-agnostic core
+([internal/selfupdate](../internal/selfupdate/selfupdate.go)) reads the
+**latest** release from the GitHub API, compares semver, and — for the running
+`GOOS`/`GOARCH` — picks the right asset and verifies the download against the
+release's `SHA256SUMS` (the only integrity guarantee for unsigned builds: a
+missing/mismatched checksum is a hard failure). The platform-specific install
+lives in [desktop/update_*.go](../desktop/update_darwin.go):
+
+- **macOS** — download the universal `…-darwin-universal-app.zip`, extract with
+  `ditto`, strip `com.apple.quarantine` (Ventura 13.1+ re-adds it on unpack;
+  Sparkle does the same), swap the `/Applications` bundle with same-volume
+  renames, and relaunch via a detached helper. Refuses to run from a translocated
+  (quarantined) copy — the app must be in Applications. The in-app CLI symlink
+  points at the stable bundle path, so it updates transparently with the app.
+- **Windows** — download the `…-windows-amd64-installer.exe` and run it from a
+  detached helper batch (a running `.exe` can't be overwritten in place); the NSIS
+  installer handles replacement, UAC elevation, and relaunch. Windows arm64 uses
+  the amd64 installer under emulation.
+- **Linux** — no desktop app ships, so the feature is hidden.
+
+Surfaced as a dismissible title-bar pill plus a **Settings → Updates** panel
+(current version, manual check, auto-check toggle). Dev builds (`0.0.0-dev`) and
+the usual unsigned Gatekeeper/SmartScreen first-run prompts apply as on first
+install. No `release.yml` change was needed — the updater reads the live asset
+names and `SHA256SUMS` straight from the published release.
 
 ## CI/CD
 

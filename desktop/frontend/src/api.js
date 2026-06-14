@@ -47,7 +47,27 @@ export const api = {
 
   getTunnelStatus: () => call("GetTunnelStatus"),
   setTunnelEnabled: (enabled) => call("SetTunnelEnabled", enabled),
+
+  cliInfo: () => call("CLIInfo"),
+  installCLI: () => call("InstallCLI"),
+  cliPromptSeen: () => call("CLIPromptSeen"),
+  markCliPromptSeen: () => call("MarkCLIPromptSeen"),
+
+  appVersion: () => call("AppVersion"),
+  checkForUpdate: () => call("CheckForUpdate"), // cached per session
+  refreshUpdate: () => call("RefreshUpdate"),   // forces a fresh network check
+  applyUpdate: () => call("ApplyUpdate"),
+  skipUpdate: (version) => call("SkipUpdate", version),
+  getUpdatePrefs: () => call("GetUpdatePrefs"),
+  setUpdateAutoCheck: (enabled) => call("SetUpdateAutoCheck", enabled),
 };
+
+/* Open a URL in the user's default browser (Wails runtime), falling back to a
+   normal window.open outside the app. */
+export function openURL(url) {
+  if (window.runtime && window.runtime.BrowserOpenURL) window.runtime.BrowserOpenURL(url);
+  else window.open(url, "_blank");
+}
 
 /* runtime events — returns an unsubscribe function for THIS listener only
    (EventsOn returns a cancel fn; EventsOff would drop every listener) */
