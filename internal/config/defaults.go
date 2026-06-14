@@ -70,6 +70,7 @@ func Default() *Config {
 			CookieStorage:                     "session",
 			RespectHSTS:                       true,
 			RespectSelfReferencingMetaRefresh: true,
+			SkipIdenticalContentLinks:         true,
 			ResponseTimeoutSec:                20,
 			PercentEncoding:                   "upper",
 		},

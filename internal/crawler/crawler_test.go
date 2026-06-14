@@ -737,3 +737,99 @@ func TestInlinksCountHyperlinksOnly(t *testing.T) {
 		t.Errorf("/final discovered-from = %q, want the redirect source", final.DiscoveredFrom)
 	}
 }
+
+// TestIdenticalContentShortCircuit pins the identical-content crawl
+// short-circuit (R8 / sweetgreen order.* SPA-shell balloon). Every path the
+// maze serves returns BYTE-IDENTICAL HTML whose two links are RELATIVE
+// ("a/", "b/"), so each URL resolves them to a different child pair — the
+// renderer-free analogue of a client-routed shell that injects a different
+// per-URL link set from one identical body. Without the short-circuit this
+// fans out as an unbounded binary tree of identical pages; with it, only the
+// first identical body is ever expanded.
+func TestIdenticalContentShortCircuit(t *testing.T) {
+	const body = `<html><body><a href="a/">A</a><a href="b/">B</a></body></html>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/robots.txt" {
+			w.WriteHeader(404)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	run := func(skip bool) *Result {
+		t.Helper()
+		cfg := config.Default()
+		cfg.Advanced.SkipIdenticalContentLinks = skip
+		cfg.Limits.MaxDepth = 3 // bounds the control crawl; the fix needs no bound
+		c, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := c.Run(context.Background(), srv.URL+"/")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+
+	on := run(true)
+	if on.Crawled != 3 {
+		t.Fatalf("with short-circuit: crawled = %d, want 3 (seed + 2 identical children, no further expansion)", on.Crawled)
+	}
+	if rec := on.Pages[srv.URL+"/"]; rec == nil || rec.DuplicateOf != "" {
+		t.Errorf("seed must be the canonical page (DuplicateOf empty), got %+v", rec)
+	}
+	for _, child := range []string{"/a/", "/b/"} {
+		rec := on.Pages[srv.URL+child]
+		if rec == nil {
+			t.Fatalf("%s not recorded", child)
+		}
+		if rec.DuplicateOf != srv.URL+"/" {
+			t.Errorf("%s DuplicateOf = %q, want the seed URL", child, rec.DuplicateOf)
+		}
+	}
+	for _, grandchild := range []string{"/a/a/", "/a/b/", "/b/a/", "/b/b/"} {
+		if on.Pages[srv.URL+grandchild] != nil {
+			t.Errorf("%s was crawled — a byte-identical shell was expanded", grandchild)
+		}
+	}
+
+	off := run(false)
+	if off.Crawled < 15 {
+		t.Fatalf("control (short-circuit off, depth<=3): crawled = %d, want the identical-body maze to balloon (>=15)", off.Crawled)
+	}
+}
+
+// TestDistinctContentNotDeduped guards against false dedup: pages that share a
+// layout/nav shell but differ in content are NOT byte-identical, so every one
+// must be crawled AND expanded (only full byte identity short-circuits, never
+// a near-duplicate).
+func TestDistinctContentNotDeduped(t *testing.T) {
+	shell := func(name, extra string) string {
+		return `<html><body><nav><a href="/">home</a></nav><h1>` + name + `</h1>` + extra + `</body></html>`
+	}
+	s := newSite(t, map[string]string{
+		"/":      shell("Home", link("/p1")+link("/p2")),
+		"/p1":    shell("Page One", link("/leaf1")),
+		"/p2":    shell("Page Two", link("/leaf2")),
+		"/leaf1": shell("Leaf One", ""),
+		"/leaf2": shell("Leaf Two", ""),
+	})
+	res := crawl(t, s, nil) // default config: short-circuit ON
+
+	for _, p := range []string{"/", "/p1", "/p2", "/leaf1", "/leaf2"} {
+		rec := s.page(res, p)
+		if rec == nil || rec.State != StateCrawled {
+			t.Errorf("%s not crawled (false dedup of distinct content?): %+v", p, rec)
+			continue
+		}
+		if rec.DuplicateOf != "" {
+			t.Errorf("%s wrongly marked duplicate of %s", p, rec.DuplicateOf)
+		}
+	}
+	if res.Crawled != 5 {
+		t.Errorf("crawled = %d, want 5 (leaves reachable only by expanding distinct pages)", res.Crawled)
+	}
+}
