@@ -75,6 +75,22 @@ Feature: Robots.txt handling
     And the page "/private/x" was not requested
     And the crawl page "/ok" has crawl state "crawled"
 
+  Scenario: A robots.txt served behind a redirect is followed
+    Given a robots.txt file:
+      """
+      User-agent: *
+      Disallow: /private/
+      """
+    And the test server serves the background robots.txt behind a redirect
+    And a site page "/" linking to "/private/x,/ok"
+    And a site page "/private/x" linking to ""
+    And a site page "/ok" linking to ""
+    And the crawl config override "http.robots_user_agent=somebot"
+    When I crawl the site
+    Then the crawl page "/private/x" has crawl state "blocked_robots"
+    And the page "/private/x" was not requested
+    And the crawl page "/ok" has crawl state "crawled"
+
   Scenario: Ignore mode never fetches robots.txt
     Given the test server serves the background robots.txt
     And a site page "/" linking to "/private/x"
