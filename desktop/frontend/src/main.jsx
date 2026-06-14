@@ -18,6 +18,7 @@ import { UrlDetail } from "./views/detail";
 import { SettingsView } from "./views/settings";
 import { CompareView } from "./views/compare";
 import { RobotsTester } from "./views/robots";
+import { MCPControls } from "./mcp-controls";
 
 /* Windows caption buttons. The window is frameless on Windows (desktop/main.go),
    so we drive minimise/maximise/close through the Wails runtime ourselves. The
@@ -52,7 +53,6 @@ function App() {
   const [issueFilter, setIssueFilter] = useState(null); // {id, name}
   const [collapsed, setCollapsed] = useState(false);
   const [storage, setStorage] = useState(null);
-  const [mcp, setMcp] = useState(null); // MCPStatus
   const [settingsFocus, setSettingsFocus] = useState(null); // {section} -> open Settings on it
   const [settingsBack, setSettingsBack] = useState(null); // {view,label} -> show a "back" button in Settings
   const [platform, setPlatform] = useState(""); // "windows" | "darwin" | "linux" — drives window-chrome layout
@@ -83,12 +83,10 @@ function App() {
     api.activeProgress().then((p) => {
       if (p && p.state === "running") { setLiveCrawlId(p.crawlId); setView("progress"); }
     }).catch(() => {});
-    api.getMCPStatus().then(setMcp).catch(() => {});
     const offDone = on("crawl:done", () => refresh());
-    const offMcp = on("mcp:status", setMcp);
     // crawls started over MCP (by an LLM) take over the screen like any other
     const offStarted = on("crawl:started", (id) => { setLiveCrawlId(id); setView("progress"); refresh(); });
-    return () => { offDone(); offMcp(); offStarted(); };
+    return () => { offDone(); offStarted(); };
   }, [refresh]);
 
   async function startCrawl(req) {
@@ -174,16 +172,7 @@ function App() {
         </div>
         <div className="tb-spacer" />
         <div className="tb-actions">
-          <button
-            className="pill tb-nodrag"
-            title={mcp && mcp.running ? `MCP server running — ${mcp.endpoint}` : "MCP server off — click to set up LLM access"}
-            onClick={() => { setSettingsFocus({ section: "mcp" }); setSettingsBack(null); setView("settings"); }}
-            style={{ height: 22, cursor: "pointer", gap: 6, fontSize: 11, color: "var(--ink-2)", background: "transparent" }}
-          >
-            <Icon name="plug-zap" size={12} />
-            MCP
-            <span className="statusdot" style={{ background: mcp && mcp.running ? "var(--sev-ok)" : "var(--ink-faint)" }} />
-          </button>
+          <MCPControls onOpenSettings={() => { setSettingsFocus({ section: "mcp" }); setSettingsBack(null); setView("settings"); }} />
           <IconBtn icon={dark ? "sun" : "moon"} title="Toggle theme" onClick={() => setDark((d) => !d)} />
         </div>
         {isWindows && <WinControls />}
