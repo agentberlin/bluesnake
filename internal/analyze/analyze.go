@@ -572,6 +572,15 @@ func (a *analyzer) sitemaps(index SitemapIndex) {
 		if !rec.Indexable && rec.State == crawler.StateCrawled {
 			a.add(url, "sitemap_non_indexable", strings.Join(listedIn, ", "))
 		}
+		// A <urlset> must list crawlable page URLs. An entry that is itself an
+		// XML sitemap means the site listed a child sitemap as a <url> instead
+		// of declaring it in a <sitemapindex>/<sitemap> — the child's URLs are
+		// then not properly declared. bluesnake (unlike SF, which silently
+		// re-parses it) stays spec-correct AND surfaces the malformation.
+		if rec.Scope == "internal" && rec.State == crawler.StateCrawled &&
+			isSitemapContentType(rec.ContentType) {
+			a.add(url, "sitemap_nested_as_url", strings.Join(listedIn, ", "))
+		}
 		// discovered only via the sitemap: no inlinks and no followed-link
 		// path from a seed (depth 0 covers resumed crawls, which keep
 		// admit-time depths)
@@ -592,4 +601,15 @@ func (a *analyzer) sitemaps(index SitemapIndex) {
 			a.add(url, "sitemap_not_in_sitemap", "")
 		}
 	}
+}
+
+// isSitemapContentType reports whether a content type is generic XML as served
+// for XML sitemaps (application/xml, text/xml). RSS/Atom feeds also carry "xml"
+// but are not sitemaps, so they're excluded.
+func isSitemapContentType(ct string) bool {
+	ct = strings.ToLower(ct)
+	if !strings.Contains(ct, "xml") {
+		return false
+	}
+	return !strings.Contains(ct, "rss") && !strings.Contains(ct, "atom")
 }

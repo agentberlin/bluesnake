@@ -314,10 +314,13 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 	smNoindex := add(covPage(ks + "/sm-noindex"))
 	smNoindex.Indexable, smNoindex.IndexabilityStatus = false, "Noindex"
 	add(covPage(ks + "/sm-multi"))
+	smNested := add(covPage(ks + "/docs/sitemap.xml")) // child sitemap listed as a <url> -> sitemap_nested_as_url
+	smNested.ContentType = "text/xml"
 	sitemaps := SitemapIndex{
-		ks + "/sm-orphan":  {ks + "/sitemap.xml"},
-		ks + "/sm-noindex": {ks + "/sitemap.xml"},
-		ks + "/sm-multi":   {ks + "/sitemap.xml", ks + "/sitemap2.xml"},
+		ks + "/sm-orphan":        {ks + "/sitemap.xml"},
+		ks + "/sm-noindex":       {ks + "/sitemap.xml"},
+		ks + "/sm-multi":         {ks + "/sitemap.xml", ks + "/sitemap2.xml"},
+		ks + "/docs/sitemap.xml": {ks + "/sitemap.xml"},
 	}
 	for i := 0; i <= 50000; i++ { // 50001 entries -> sitemap_over_50k
 		sitemaps[fmt.Sprintf("%s/sm-gen/%d", ks, i)] = []string{ks + "/sitemap-big.xml"}
@@ -327,6 +330,7 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 	sd := add(covPage(ks + "/sd"))
 	sd.StructuredData = &structured.PageData{
 		ParseErrors: []string{"bad json-ld"},
+		Recovered:   []string{"jsonld: invalid raw control characters escaped to recover"},
 		Errors:      []string{"Product: missing name"},
 		Warnings:    []string{"Product: missing image"},
 	}

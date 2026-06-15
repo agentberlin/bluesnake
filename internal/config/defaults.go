@@ -125,7 +125,7 @@ func Default() *Config {
 			{Name: "head", Match: "/head/"},
 			{Name: "nav", Match: "nav"},
 			{Name: "header", Match: "header"},
-			{Name: "sidebar", Match: "aside"},
+			{Name: "aside", Match: "aside"},
 			{Name: "footer", Match: "footer"},
 			{Name: "content", Match: "/"},
 		},

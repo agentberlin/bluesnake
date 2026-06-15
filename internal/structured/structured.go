@@ -21,8 +21,13 @@ type PageData struct {
 	Formats     []string `json:"formats,omitempty"` // jsonld | microdata | rdfa
 	Types       []string `json:"types,omitempty"`
 	ParseErrors []string `json:"parse_errors,omitempty"`
-	Errors      []string `json:"errors,omitempty"`   // missing required properties
-	Warnings    []string `json:"warnings,omitempty"` // missing recommended properties
+	// Recovered notes blocks that were syntactically invalid but salvaged by a
+	// lenient retry (e.g. raw control chars escaped). The data IS extracted, but
+	// the source is technically invalid — Google/SF tolerate this silently;
+	// bluesnake surfaces it so the owner can fix the source.
+	Recovered []string `json:"recovered,omitempty"`
+	Errors    []string `json:"errors,omitempty"`   // missing required properties
+	Warnings  []string `json:"warnings,omitempty"` // missing recommended properties
 }
 
 // requirements: Google rich-results required/recommended properties for the
@@ -127,6 +132,8 @@ func extractJSONLD(root *html.Node, data *PageData) {
 			if cleaned := escapeJSONControlChars(rawStr); cleaned != rawStr {
 				if err2 := json.Unmarshal([]byte(cleaned), &parsed); err2 == nil {
 					found = true
+					data.Recovered = append(data.Recovered,
+						"jsonld: invalid raw control characters escaped to recover")
 					walkJSONLD(parsed, data)
 					return
 				}

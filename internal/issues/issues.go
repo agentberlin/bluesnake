@@ -164,9 +164,14 @@ var catalogue = []Def{
 	{"sitemap_non_indexable", "sitemaps", "Non-Indexable URLs In Sitemap", Issue, Medium},
 	{"sitemap_in_multiple", "sitemaps", "URLs In Multiple Sitemaps", Warning, Low},
 	{"sitemap_not_in_sitemap", "sitemaps", "URLs Not In Sitemap", Issue, Medium},
+	{"sitemap_nested_as_url", "sitemaps", "Nested Sitemap Listed As Page URL", Warning, Medium},
 	// Structured data
 	{"structured_missing", "structured_data", "Missing", Opportunity, Low},
 	{"structured_parse_error", "structured_data", "Parse Errors", Issue, High},
+	// bluesnake-original: data was extracted but the source was invalid and
+	// salvaged by a lenient retry. Google/SF tolerate this silently; we warn so
+	// the owner fixes the source (strict consumers would drop it).
+	{"structured_invalid_recovered", "structured_data", "Invalid JSON-LD Recovered", Warning, Medium},
 	// our validator checks Google rich-result property requirements
 	// (internal/structured.requirements), which is SF's "Rich Result
 	// Validation" bucket — schema.org vocabulary validation (SF's plain
@@ -410,12 +415,21 @@ var internalSearchParams = map[string]bool{
 	"keyword": true, "keywords": true,
 }
 
+// hasRepeatedSegment flags a path that reuses any non-empty segment, matching
+// Screaming Frog's "URL: Repetitive Path" check. SF flags a repeat anywhere in
+// the path (e.g. /sdk/typescript/3.17.0/typescript), not just adjacent repeats
+// (/docs/docs/) — verified exactly on braintrust.dev: any-segment yields SF's
+// 118, adjacent-only only 2.
 func hasRepeatedSegment(path string) bool {
-	segs := strings.Split(strings.Trim(path, "/"), "/")
-	for i := 1; i < len(segs); i++ {
-		if segs[i] != "" && segs[i] == segs[i-1] {
+	seen := map[string]bool{}
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "" {
+			continue
+		}
+		if seen[seg] {
 			return true
 		}
+		seen[seg] = true
 	}
 	return false
 }
@@ -808,6 +822,9 @@ func (e *evaluator) structuredData(rec *crawler.PageRecord) {
 	}
 	for _, p := range sd.ParseErrors {
 		e.add(rec.URL, "structured_parse_error", p)
+	}
+	for _, p := range sd.Recovered {
+		e.add(rec.URL, "structured_invalid_recovered", p)
 	}
 	for _, p := range sd.Errors {
 		e.add(rec.URL, "structured_validation_error", p)
