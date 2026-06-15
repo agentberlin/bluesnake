@@ -122,6 +122,25 @@ func TestJSONLDLenientControlChars(t *testing.T) {
 	if !ok {
 		t.Errorf("types = %v, want VeterinaryCare extracted", d.Types)
 	}
+	// The data is recovered, but the source JSON-LD is technically invalid —
+	// surface that to the owner (Google/SF tolerate it silently; we don't).
+	if len(d.Recovered) == 0 {
+		t.Error("Recovered = empty, want a note that invalid JSON-LD was leniently recovered")
+	}
+}
+
+// Valid JSON-LD must NOT be flagged as recovered.
+func TestJSONLDValidNotMarkedRecovered(t *testing.T) {
+	body := `<html><head><script type="application/ld+json">
+	{"@context":"https://schema.org","@type":"Article","headline":"Hi","author":"x"}
+	</script></head><body></body></html>`
+	d := extract(t, body, func(s *config.StructuredDataConfig) { s.JSONLD = true })
+	if d == nil {
+		t.Fatal("nil data")
+	}
+	if len(d.Recovered) != 0 {
+		t.Errorf("Recovered = %v, want none for valid JSON-LD", d.Recovered)
+	}
 }
 
 func TestJSONLDGraphAndMissingRequired(t *testing.T) {

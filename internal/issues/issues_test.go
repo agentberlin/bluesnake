@@ -198,6 +198,8 @@ func TestURLIssues(t *testing.T) {
 		mkURL("https://ex.com/p?utm_source=x"),
 		mkURL("https://ex.com/a//b"),
 		mkURL("https://ex.com/repeat/repeat/x"),
+		mkURL("https://ex.com/sdk/typescript/3.17.0/typescript"),
+		mkURL("https://ex.com/one/two/three"),
 	)
 	for url, ids := range map[string][]string{
 		"https://ex.com/Upper/Case":      {"url_uppercase"},
@@ -205,12 +207,22 @@ func TestURLIssues(t *testing.T) {
 		"https://ex.com/p?utm_source=x":  {"url_parameters", "url_ga_params"},
 		"https://ex.com/a//b":            {"url_multiple_slashes"},
 		"https://ex.com/repeat/repeat/x": {"url_repetitive_path"},
+		// non-adjacent repeated segment ("typescript") — SF flags it too.
+		"https://ex.com/sdk/typescript/3.17.0/typescript": {"url_repetitive_path"},
 	} {
 		for _, id := range ids {
 			if !has(occs, url, id) {
 				t.Errorf("missing %s on %s", id, url)
 			}
 		}
+	}
+	// guard against over-flagging: distinct segments and an empty //
+	// segment must NOT count as a repeated path.
+	if has(occs, "https://ex.com/one/two/three", "url_repetitive_path") {
+		t.Error("url_repetitive_path must not fire on all-distinct segments")
+	}
+	if has(occs, "https://ex.com/a//b", "url_repetitive_path") {
+		t.Error("empty segments from // must not count as a repeated path")
 	}
 }
 

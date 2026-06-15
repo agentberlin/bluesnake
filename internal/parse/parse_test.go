@@ -404,6 +404,7 @@ func TestLinkPositionHeaderNotHead(t *testing.T) {
 	f := parseHTML(t, "https://ex.com/p", `
 		<html><body>
 			<header><a href="/from-header">x</a></header>
+			<aside><a href="/from-aside">z</a></aside>
 			<footer><a href="/from-footer">y</a></footer>
 		</body></html>`, nil, nil)
 	if l := findLink(f, Hyperlink, "https://ex.com/from-header"); l == nil || l.Position != "header" {
@@ -411,5 +412,11 @@ func TestLinkPositionHeaderNotHead(t *testing.T) {
 	}
 	if l := findLink(f, Hyperlink, "https://ex.com/from-footer"); l == nil || l.Position != "footer" {
 		t.Errorf("footer link position = %+v, want footer", l)
+	}
+	// SF labels the <aside> region "Aside" (its decoded default config names
+	// position #4 "Aside"); bluesnake must emit "aside", not "sidebar", so
+	// parity diffs of Link Position match. braintrust.dev: 10100 such links.
+	if l := findLink(f, Hyperlink, "https://ex.com/from-aside"); l == nil || l.Position != "aside" {
+		t.Errorf("aside link position = %+v, want aside", l)
 	}
 }

@@ -233,13 +233,19 @@ func TestSitemapSetOps(t *testing.T) {
 	noindexed.Inlinks = 1
 	notListed := page("https://ex.com/unlisted")
 	notListed.Inlinks = 1
+	// a child sitemap malformed-listed as a <url> entry in a <urlset>
+	// (should be a <sitemapindex>/<sitemap>): crawled, served as XML.
+	nestedSitemap := page("https://ex.com/docs/sitemap.xml")
+	nestedSitemap.ContentType = "text/xml"
+	nestedSitemap.Inlinks = 1
 
 	index := SitemapIndex{
-		"https://ex.com/linked":    {"https://ex.com/sitemap.xml"},
-		"https://ex.com/orphan":    {"https://ex.com/sitemap.xml"},
-		"https://ex.com/noindexed": {"https://ex.com/sitemap.xml", "https://ex.com/sitemap2.xml"},
+		"https://ex.com/linked":           {"https://ex.com/sitemap.xml"},
+		"https://ex.com/orphan":           {"https://ex.com/sitemap.xml"},
+		"https://ex.com/noindexed":        {"https://ex.com/sitemap.xml", "https://ex.com/sitemap2.xml"},
+		"https://ex.com/docs/sitemap.xml": {"https://ex.com/sitemap.xml"},
 	}
-	r := Run(toMap(inSitemapLinked, orphan, noindexed, notListed), index, config.Default())
+	r := Run(toMap(inSitemapLinked, orphan, noindexed, notListed, nestedSitemap), index, config.Default())
 	if !hasOcc(r, "https://ex.com/orphan", "sitemap_orphan") {
 		t.Error("missing sitemap_orphan")
 	}
@@ -254,5 +260,13 @@ func TestSitemapSetOps(t *testing.T) {
 	}
 	if hasOcc(r, "https://ex.com/linked", "sitemap_orphan") {
 		t.Error("linked page flagged as orphan")
+	}
+	// the XML child sitemap listed as a <url> must be flagged; a normal HTML
+	// page in the sitemap must not.
+	if !hasOcc(r, "https://ex.com/docs/sitemap.xml", "sitemap_nested_as_url") {
+		t.Error("missing sitemap_nested_as_url for a sitemap listed as a <url> entry")
+	}
+	if hasOcc(r, "https://ex.com/linked", "sitemap_nested_as_url") {
+		t.Error("HTML page wrongly flagged sitemap_nested_as_url")
 	}
 }
