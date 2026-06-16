@@ -28,7 +28,7 @@ func TestUISinkImplementsArchiveSink(t *testing.T) {
 // sitemap analyses — orphans, in-sitemap set ops — silently do nothing).
 func TestUISinkForwardsSitemapEntryToStore(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.CreateCrawl(dir, "", "http://ex.com/", "spider", config.Default())
+	st, err := store.CreateCrawl(dir, "", []string{"http://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatalf("CreateCrawl: %v", err)
 	}

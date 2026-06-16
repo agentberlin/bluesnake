@@ -17,7 +17,7 @@ import (
 
 func seededStore(t *testing.T) *store.Crawl {
 	t.Helper()
-	st, err := store.CreateCrawl(t.TempDir(), "", "https://ex.com/", "spider", config.Default())
+	st, err := store.CreateCrawl(t.TempDir(), "", []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

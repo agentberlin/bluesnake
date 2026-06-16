@@ -12,7 +12,7 @@ import (
 
 func TestPageDetailHTTPVersion(t *testing.T) {
 	a := testApp(t)
-	st, err := store.CreateCrawl(a.storeDir, "", "https://ex.com/", "spider", config.Default())
+	st, err := store.CreateCrawl(a.storeDir, "", []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

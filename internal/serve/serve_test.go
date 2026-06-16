@@ -47,7 +47,7 @@ type issueEntry struct {
 func servedStore(t *testing.T) (dir, id string) {
 	t.Helper()
 	dir = t.TempDir()
-	st, err := store.CreateCrawl(dir, "proj", "https://ex.com/", "spider", config.Default())
+	st, err := store.CreateCrawl(dir, "proj", []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -133,9 +133,15 @@ func newCrawlID() string {
 	return time.Now().Format("20060102-150405") + "-" + hex.EncodeToString(b)
 }
 
-// CreateCrawl registers a new crawl and opens its database, freezing the
-// config into it (resume refuses a different config unless forced).
-func CreateCrawl(dir, project, seed, mode string, cfg *config.Config) (*Crawl, error) {
+// CreateCrawl registers a new crawl and opens its database, freezing the config
+// and the full seed set into it. A list crawl uploads many seeds (all depth 0);
+// a spider crawl has exactly one. seeds must be non-empty; resume restores every
+// seed so host classification and the depth BFS root from all of them. seeds[0]
+// is the registry's representative seed for `crawls ls`.
+func CreateCrawl(dir, project string, seeds []string, mode string, cfg *config.Config) (*Crawl, error) {
+	if len(seeds) == 0 {
+		return nil, fmt.Errorf("crawl needs at least one seed")
+	}
 	reg, err := registryDB(dir)
 	if err != nil {
 		return nil, err
@@ -144,7 +150,7 @@ func CreateCrawl(dir, project, seed, mode string, cfg *config.Config) (*Crawl, e
 
 	id := newCrawlID()
 	_, err = reg.Exec(`INSERT INTO crawls(id, project, seed, mode, status, started) VALUES(?,?,?,?,?,?)`,
-		id, project, seed, mode, StatusRunning, time.Now().Unix())
+		id, project, seeds[0], mode, StatusRunning, time.Now().Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -156,8 +162,12 @@ func CreateCrawl(dir, project, seed, mode string, cfg *config.Config) (*Crawl, e
 	if err != nil {
 		return nil, err
 	}
+	seedsJSON, err := json.Marshal(seeds)
+	if err != nil {
+		return nil, err
+	}
 	for key, value := range map[string]string{
-		"config": string(cfgYAML), "seed": seed, "mode": mode,
+		"config": string(cfgYAML), "seeds": string(seedsJSON), "mode": mode,
 	} {
 		if _, err := c.db.Exec(`INSERT OR REPLACE INTO meta(key, value) VALUES(?,?)`, key, value); err != nil {
 			return nil, err
@@ -306,6 +316,25 @@ func (c *Crawl) Meta(key string) (string, error) {
 func (c *Crawl) SetMeta(key, value string) error {
 	_, err := c.db.Exec(`INSERT OR REPLACE INTO meta(key, value) VALUES(?,?)`, key, value)
 	return err
+}
+
+// Seeds returns the crawl's seed URLs, as frozen by CreateCrawl: every uploaded
+// URL for a list crawl, the single start URL for a spider crawl. Resume restores
+// the whole set so seed-host classification and the depth BFS root from every
+// seed.
+func (c *Crawl) Seeds() ([]string, error) {
+	raw, err := c.Meta("seeds")
+	if err != nil {
+		return nil, err
+	}
+	if raw == "" {
+		return nil, nil
+	}
+	var seeds []string
+	if err := json.Unmarshal([]byte(raw), &seeds); err != nil {
+		return nil, err
+	}
+	return seeds, nil
 }
 
 // --- crawler.Sink implementation ---

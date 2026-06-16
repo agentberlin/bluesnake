@@ -56,7 +56,7 @@ func callTool(t *testing.T, s *Server, name string, args any) (string, bool) {
 
 func seedCrawl(t *testing.T, dir string) string {
 	t.Helper()
-	st, err := store.CreateCrawl(dir, "proj", "https://example.com/", "spider", config.Default())
+	st, err := store.CreateCrawl(dir, "proj", []string{"https://example.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
