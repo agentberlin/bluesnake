@@ -858,3 +858,67 @@ func TestDistinctContentNotDeduped(t *testing.T) {
 		t.Errorf("crawled = %d, want 5 (leaves reachable only by expanding distinct pages)", res.Crawled)
 	}
 }
+
+// TestRecomputeDepthsReconstructsFreshDepths verifies the exported recompute
+// (used by the resume finalize) reproduces a fresh crawl's shortest-path depths
+// when run over the full graph — even when the records arrive with stale depths,
+// as they do when reloaded from the store on resume. This is the SF-parity
+// invariant for resume: resume depth == fresh depth == Screaming Frog depth.
+func TestRecomputeDepthsReconstructsFreshDepths(t *testing.T) {
+	// /e is reachable by a short path (/->/c->/e = 2) and a long one
+	// (/->/a->/b->/d->/e = 4); the shortest must win regardless of how the
+	// records were discovered.
+	s := newSite(t, map[string]string{
+		"/":  link("/a") + link("/c"),
+		"/a": link("/b"),
+		"/b": link("/d"),
+		"/c": link("/e"),
+		"/d": link("/e"),
+		"/e": "<p>leaf</p>",
+	})
+	cfg := config.Default()
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := s.server.URL + "/"
+	res, err := c.Run(context.Background(), seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Baseline: a fresh crawl already computes shortest-path depths.
+	for path, d := range map[string]int{"/": 0, "/a": 1, "/c": 1, "/b": 2, "/e": 2, "/d": 3} {
+		if rec := s.page(res, path); rec == nil || rec.Depth != d {
+			t.Fatalf("fresh %s depth = %v, want %d", path, rec, d)
+		}
+	}
+	want := map[string]int{}
+	for url, rec := range res.Pages {
+		want[url] = rec.Depth
+	}
+
+	// Simulate the resume state: the full two-session graph reloaded from the
+	// store, but with stale/admit-time depths (here scrambled to a wrong value).
+	// This is exactly what the resume finalize feeds RecomputeDepths.
+	merged := map[string]*PageRecord{}
+	for url, rec := range res.Pages {
+		cp := *rec
+		cp.Depth = 999
+		merged[url] = &cp
+	}
+	// An orphan with no followed-link path must end up NoDepth, not 999.
+	orphan := s.server.URL + "/orphan"
+	merged[orphan] = &PageRecord{URL: orphan, Depth: 999}
+
+	c.RecomputeDepths(merged, seed)
+
+	for url, w := range want {
+		if got := merged[url].Depth; got != w {
+			t.Errorf("recomputed %s depth = %d, want %d", url, got, w)
+		}
+	}
+	if got := merged[orphan].Depth; got != NoDepth {
+		t.Errorf("orphan depth = %d, want NoDepth (%d)", got, NoDepth)
+	}
+}

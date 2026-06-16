@@ -151,6 +151,31 @@ func newResumeCmd() *cobra.Command {
 				return exitErr{3, errors.New("interrupted")}
 			}
 			printSummary(cmd, res)
+			// resume rewrote depth only for this session's pages; recompute it
+			// over the full two-session graph so depths match a fresh crawl (SF
+			// parity) instead of the original run's pages keeping stale
+			// admit-time depths. Must precede analysis (links_high_crawl_depth
+			// reads depth). List mode is excluded: every uploaded URL is a depth-0
+			// seed but only seeds[0] is persisted, so a whole-graph recompute from
+			// one seed would wrongly NULL the other seeds' depths.
+			if cfg.Mode != "list" {
+				if all, err := st.LoadPages(); err != nil {
+					fmt.Fprintln(cmd.ErrOrStderr(), "depth recompute:", err)
+				} else {
+					c.RecomputeDepths(all, seed)
+					if err := st.SaveDepths(all); err != nil {
+						fmt.Fprintln(cmd.ErrOrStderr(), "depth recompute:", err)
+					}
+				}
+			}
+			// a resumed crawl that drains to completion is finalised exactly
+			// like a fresh crawl — otherwise its issues/analysis tables stay
+			// empty and the site looks clean (see crawl.go).
+			if cfg.Analysis.Auto {
+				if err := runAnalysis(cmd, st, cfg, false); err != nil {
+					fmt.Fprintln(cmd.ErrOrStderr(), "analysis:", err)
+				}
+			}
 			return nil
 		},
 	}

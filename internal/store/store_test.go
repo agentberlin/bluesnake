@@ -474,3 +474,68 @@ func TestCustomResultsPersistence(t *testing.T) {
 		t.Errorf("structured = %+v", got.StructuredData)
 	}
 }
+
+// TestSaveDepths verifies the resume depth fix's persistence step: it rewrites
+// only the depth column for every supplied page (NoDepth -> NULL), leaving other
+// columns untouched.
+func TestSaveDepths(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, "proj", "https://ex.com/", "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// seed three pages with stale depths and a non-zero inlink count
+	seeded := map[string]*crawler.PageRecord{}
+	for _, p := range []struct {
+		url   string
+		depth int
+	}{{"https://ex.com/", 0}, {"https://ex.com/a", 5}, {"https://ex.com/b", 5}} {
+		rec := &crawler.PageRecord{
+			URL: p.url, Scope: "internal", State: crawler.StateCrawled,
+			StatusCode: 200, Depth: p.depth, Inlinks: 7,
+		}
+		if err := c.Page(rec); err != nil {
+			t.Fatal(err)
+		}
+		seeded[p.url] = rec
+	}
+	// inlinks are persisted by UpdateInlinks, not Page; set the baseline so the
+	// "SaveDepths must not disturb inlinks" assertion below is meaningful.
+	if err := c.UpdateInlinks(seeded); err != nil {
+		t.Fatal(err)
+	}
+
+	// recomputed depths: /a corrected to 1, /b has no path (NoDepth -> NULL)
+	corrected := map[string]*crawler.PageRecord{
+		"https://ex.com/":  {URL: "https://ex.com/", Depth: 0},
+		"https://ex.com/a": {URL: "https://ex.com/a", Depth: 1},
+		"https://ex.com/b": {URL: "https://ex.com/b", Depth: crawler.NoDepth},
+	}
+	if err := c.SaveDepths(corrected); err != nil {
+		t.Fatal(err)
+	}
+
+	pages, err := c.LoadPages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for url, want := range map[string]int{
+		"https://ex.com/": 0, "https://ex.com/a": 1, "https://ex.com/b": crawler.NoDepth,
+	} {
+		if got := pages[url].Depth; got != want {
+			t.Errorf("%s depth = %d, want %d", url, got, want)
+		}
+		// depth-only update must not disturb inlinks
+		if got := pages[url].Inlinks; got != 7 {
+			t.Errorf("%s inlinks = %d, want 7 (SaveDepths must touch only depth)", url, got)
+		}
+	}
+	// NoDepth must be stored as SQL NULL, not -1
+	var nullCount int
+	c.db.QueryRow(`SELECT COUNT(*) FROM pages WHERE depth IS NULL`).Scan(&nullCount)
+	if nullCount != 1 {
+		t.Errorf("NULL depths = %d, want 1", nullCount)
+	}
+}

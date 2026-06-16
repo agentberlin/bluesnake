@@ -452,6 +452,31 @@ func (c *Crawl) UpdateInlinks(pages map[string]*crawler.PageRecord) error {
 	return tx.Commit()
 }
 
+// SaveDepths rewrites only the crawl-depth column for every supplied page
+// (NULL when no followed-link path reaches the URL). Resume uses it to persist
+// depths recomputed over the full two-session graph — UpdateInlinks alone
+// touches only the resumed session's pages, leaving the original run's depths
+// stale. Inlinks/discovered_from are intentionally left untouched here.
+func (c *Crawl) SaveDepths(pages map[string]*crawler.PageRecord) error {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`UPDATE pages SET depth = ? WHERE url = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for url, rec := range pages {
+		depth := sql.NullInt64{Int64: int64(rec.Depth), Valid: rec.Depth != crawler.NoDepth}
+		if _, err := stmt.Exec(depth, url); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // LoadPages reconstructs every PageRecord (including parsed facts) from the
 // crawl database, keyed by URL.
 // PageCount returns the number of URLs recorded for this crawl (every state) —

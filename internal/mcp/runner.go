@@ -150,6 +150,7 @@ type runnerSession struct {
 	cfg      *config.Config
 	c        *crawler.Crawler
 	seeds    []string
+	resumed  bool
 	cancel   context.CancelFunc
 	ctx      context.Context
 	doneCh   chan struct{}
@@ -171,6 +172,7 @@ type runnerSession struct {
 func newRunnerSession(storeDir string, st *store.Crawl, cfg *config.Config, seeds []string, processed []string, pending []frontier.Item) (*runnerSession, error) {
 	s := &runnerSession{
 		storeDir: storeDir, st: st, cfg: cfg, seeds: seeds,
+		resumed: processed != nil,
 		started: time.Now(),
 		doneCh:  make(chan struct{}),
 		// resumed crawls start from what is already on disk
@@ -212,6 +214,17 @@ func (s *runnerSession) run() {
 		status = store.StatusInterrupted
 	}
 	_ = store.SetStatus(s.storeDir, s.st.ID, status, res.Crawled, res.Total)
+	// resume rewrote depth only for this session's pages; recompute over the
+	// full two-session graph so depths match a fresh crawl (SF parity). Must
+	// precede reanalyze (the depth-keyed issue reads it). List mode is excluded:
+	// only seeds[0] is persisted, so a whole-graph recompute from one seed would
+	// wrongly NULL the other uploaded URLs' depth-0.
+	if status == store.StatusCompleted && s.resumed && s.cfg.Mode != "list" {
+		if all, err := s.st.LoadPages(); err == nil {
+			s.c.RecomputeDepths(all, s.seeds...)
+			_ = s.st.SaveDepths(all)
+		}
+	}
 	if status == store.StatusCompleted && s.cfg.Analysis.Auto {
 		_ = reanalyze(s.st, s.cfg)
 	}
