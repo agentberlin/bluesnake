@@ -4,6 +4,7 @@ dist/
 coverage.out
 *.db
 .DS_Store
+/desktop/desktop
 desktop/build/*
 !desktop/build/appicon.png
 desktop/frontend/node_modules/
