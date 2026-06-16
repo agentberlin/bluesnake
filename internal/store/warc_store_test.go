@@ -60,7 +60,7 @@ func parseWARC(t *testing.T, data []byte) []warcRecord {
 
 func TestArchiveWARC(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", "https://ex.com/", "spider", config.Default())
+	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestArchiveWARC(t *testing.T) {
 
 func TestArchivePathEmptyWithoutArchive(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", "https://ex.com/", "spider", config.Default())
+	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

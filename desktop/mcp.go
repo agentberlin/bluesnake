@@ -250,7 +250,7 @@ func (b *desktopBackend) StartCrawl(ctx context.Context, req mcp.StartRequest) (
 	if err != nil {
 		return "", err
 	}
-	st, err := store.CreateCrawl(a.storeDir, mcp.DefaultProject(req.Project, seeds), seeds[0], mode, cfg)
+	st, err := store.CreateCrawl(a.storeDir, mcp.DefaultProject(req.Project, seeds), seeds, mode, cfg)
 	if err != nil {
 		return "", err
 	}

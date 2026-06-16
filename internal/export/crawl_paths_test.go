@@ -17,7 +17,7 @@ import (
 // never stored — the shapes the crawl_paths walker must survive.
 func pathStore(t *testing.T) *store.Crawl {
 	t.Helper()
-	st, err := store.CreateCrawl(t.TempDir(), "", "https://ex.com/", "spider", config.Default())
+	st, err := store.CreateCrawl(t.TempDir(), "", []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestCrawlPathsReport(t *testing.T) {
 // TestCrawlPathsDeepChain pins that a discovery chain longer than the old
 // 25-hop guard still reports the true hop count and roots at the seed.
 func TestCrawlPathsDeepChain(t *testing.T) {
-	st, err := store.CreateCrawl(t.TempDir(), "", "https://ex.com/p0", "spider", config.Default())
+	st, err := store.CreateCrawl(t.TempDir(), "", []string{"https://ex.com/p0"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

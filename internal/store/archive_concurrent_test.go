@@ -20,7 +20,7 @@ import (
 // (plus the single warcinfo). Run with -race to catch the data race.
 func TestArchiveConcurrent(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", "https://ex.com/", "spider", config.Default())
+	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestArchiveConcurrent(t *testing.T) {
 // instead of truncating it.
 func TestArchiveAppendsAcrossReopen(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", "https://ex.com/", "spider", config.Default())
+	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

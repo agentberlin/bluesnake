@@ -40,9 +40,9 @@ Feature: Storage, pause and resume (partial crawling)
     And the stored crawl page "/shortcut" has depth 1
 
   Scenario: List-mode resume keeps uploaded seeds at depth 0
-    # Every uploaded URL is a depth-0 seed, but only one is persisted as the
-    # crawl seed. The depth recompute must be skipped in list mode, or resuming
-    # would reroot from that single seed and wrongly NULL the others' depths.
+    # Every uploaded URL is a depth-0 seed. The full seed set is persisted, so
+    # resume re-roots the depth recompute from every seed and each stays at
+    # depth 0 — instead of rerooting from a single seed and NULLing the others.
     Given a stored list-mode crawl with one seed pending
     When I run "bluesnake resume <crawlid> --store-dir <storedir>"
     Then the exit code is 0

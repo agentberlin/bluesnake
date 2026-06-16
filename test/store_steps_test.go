@@ -119,7 +119,7 @@ func (w *world) storedInterruptedCrawl(pages, interruptAfter int) error {
 	cfg := config.Default()
 	cfg.Speed.MaxThreads = 2
 
-	st, err := store.CreateCrawl(w.storeDirPath(), "resumetest", srv.URL+"/", "spider", cfg)
+	st, err := store.CreateCrawl(w.storeDirPath(), "resumetest", []string{srv.URL + "/"}, "spider", cfg)
 	if err != nil {
 		return err
 	}
@@ -158,7 +158,7 @@ func (w *world) storedCrossLinkedCrawl() error {
 	r := w.route("/shortcut")
 	r.status, r.body = 200, `<a href="/deep">d</a>`
 
-	st, err := store.CreateCrawl(w.storeDirPath(), "depthtest", abs("/"), "spider", config.Default())
+	st, err := store.CreateCrawl(w.storeDirPath(), "depthtest", []string{abs("/")}, "spider", config.Default())
 	if err != nil {
 		return err
 	}
@@ -197,9 +197,9 @@ func (w *world) storedCrossLinkedCrawl() error {
 
 // storedListModeCrawl builds an interrupted list-mode crawl with two uploaded
 // seeds (/ and /b, neither linking the other) where / was crawled and /b is
-// still pending. Both are depth-0 list seeds. Resume must NOT recompute depth
-// from the single persisted seed (which would orphan /b to NULL); list mode is
-// excluded from the recompute, so /b keeps depth 0.
+// still pending. Both are depth-0 list seeds. CreateCrawl freezes the full seed
+// set, so resume re-roots the depth BFS from every seed and both keep depth 0 —
+// rather than rerooting from a single seed and NULLing /b.
 func (w *world) storedListModeCrawl() error {
 	srv := w.ensureServer()
 	abs := func(p string) string { return srv.URL + p }
@@ -210,7 +210,7 @@ func (w *world) storedListModeCrawl() error {
 	cfg.Mode = "list"
 	cfg.Limits.MaxDepth = 0 // list default: don't follow links
 
-	st, err := store.CreateCrawl(w.storeDirPath(), "listtest", abs("/"), "list", cfg)
+	st, err := store.CreateCrawl(w.storeDirPath(), "listtest", []string{abs("/"), abs("/b")}, "list", cfg)
 	if err != nil {
 		return err
 	}
@@ -266,7 +266,7 @@ func (w *world) resumeFromStore() error {
 	if err != nil {
 		return err
 	}
-	seed, err := st.Meta("seed")
+	seeds, err := st.Seeds()
 	if err != nil {
 		return err
 	}
@@ -282,7 +282,7 @@ func (w *world) resumeFromStore() error {
 	if err != nil {
 		return err
 	}
-	_, err = c.Run(context.Background(), seed)
+	_, err = c.Run(context.Background(), seeds...)
 	return err
 }
 

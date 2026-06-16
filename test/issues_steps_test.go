@@ -36,7 +36,7 @@ func (w *world) crawlIntoStore() error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	st, err := store.CreateCrawl(w.storeDirPath(), "", srv.URL+"/", "spider", cfg)
+	st, err := store.CreateCrawl(w.storeDirPath(), "", []string{srv.URL + "/"}, "spider", cfg)
 	if err != nil {
 		return err
 	}

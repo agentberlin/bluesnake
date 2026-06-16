@@ -82,7 +82,7 @@ func newListCmd() *cobra.Command {
 			}
 			fmt.Fprintf(cmd.ErrOrStderr(), "list mode: %d URLs\n", len(seeds))
 
-			st, err := store.CreateCrawl(storeDir, project, seeds[0], "list", cfg)
+			st, err := store.CreateCrawl(storeDir, project, seeds, "list", cfg)
 			if err != nil {
 				return exitErr{1, err}
 			}

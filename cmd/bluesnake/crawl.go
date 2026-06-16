@@ -70,7 +70,7 @@ func newCrawlCmd() *cobra.Command {
 				return exitErr{2, err}
 			}
 
-			st, err := store.CreateCrawl(storeDir, project, args[0], "spider", cfg)
+			st, err := store.CreateCrawl(storeDir, project, []string{args[0]}, "spider", cfg)
 			if err != nil {
 				return exitErr{1, err}
 			}

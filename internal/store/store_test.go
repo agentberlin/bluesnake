@@ -23,7 +23,7 @@ func TestCrawlLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 
-	c, err := CreateCrawl(dir, "proj", "https://ex.com/", "spider", cfg)
+	c, err := CreateCrawl(dir, "proj", []string{"https://ex.com/"}, "spider", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestInterruptAndResume(t *testing.T) {
 	cfg.Speed.MaxThreads = 2
 
 	// phase 1: crawl, interrupted after ~15 pages
-	st, err := CreateCrawl(dir, "proj", srv.URL+"/", "spider", cfg)
+	st, err := CreateCrawl(dir, "proj", []string{srv.URL + "/"}, "spider", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,12 +211,12 @@ func TestInterruptAndResume(t *testing.T) {
 	defer st2.Close()
 	processed, _ = st2.ProcessedURLs()
 	pending, _ = st2.PendingFrontier()
-	seed, _ := st2.Meta("seed")
+	seeds, _ := st2.Seeds()
 	c2, err := crawler.New(cfg, crawler.WithSink(st2), crawler.WithResume(processed, pending))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c2.Run(context.Background(), seed); err != nil {
+	if _, err := c2.Run(context.Background(), seeds...); err != nil {
 		t.Fatal(err)
 	}
 
@@ -240,7 +240,7 @@ func TestInterruptAndResume(t *testing.T) {
 
 func TestLoadPagesAndIssues(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", "https://ex.com/", "spider", config.Default())
+	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestLoadPagesAndIssues(t *testing.T) {
 
 func TestAnalysisPersistence(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", "https://ex.com/", "spider", config.Default())
+	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +416,7 @@ func TestAnalysisPersistence(t *testing.T) {
 
 func TestBlobStorage(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", "https://ex.com/", "spider", config.Default())
+	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +439,7 @@ func TestBlobStorage(t *testing.T) {
 
 func TestCustomResultsPersistence(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", "https://ex.com/", "spider", config.Default())
+	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,12 +475,184 @@ func TestCustomResultsPersistence(t *testing.T) {
 	}
 }
 
+// TestSeedsRoundTrip covers the seed set CreateCrawl freezes into a crawl: a
+// list crawl records every uploaded seed in order, a spider crawl records its
+// one seed, the registry's representative seed is seeds[0], and an empty seed
+// set is rejected.
+func TestSeedsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+
+	// list crawl: the full ordered set round-trips
+	full := []string{"https://a.example/", "https://b.example/", "https://c.example/p"}
+	c, err := CreateCrawl(dir, "proj", full, "list", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	seeds, err := c.Seeds()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seeds) != len(full) {
+		t.Fatalf("Seeds() = %v, want %v", seeds, full)
+	}
+	for i := range full {
+		if seeds[i] != full[i] {
+			t.Errorf("Seeds()[%d] = %q, want %q (order must be preserved)", i, seeds[i], full[i])
+		}
+	}
+	// the registry lists the representative seed (seeds[0]) for `crawls ls`
+	infos, err := ListCrawls(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 1 || infos[0].Seed != full[0] {
+		t.Errorf("registry seed = %q, want %q", infos[0].Seed, full[0])
+	}
+
+	// spider crawl: a single seed round-trips as a one-element set
+	c2, err := CreateCrawl(dir, "proj", []string{"https://solo.example/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+	if got, err := c2.Seeds(); err != nil || len(got) != 1 || got[0] != "https://solo.example/" {
+		t.Fatalf("spider Seeds() = %v, %v", got, err)
+	}
+
+	// an empty seed set is rejected up front
+	if _, err := CreateCrawl(dir, "proj", nil, "list", config.Default()); err == nil {
+		t.Error("CreateCrawl with no seeds must error")
+	}
+}
+
+// TestListModeResumeRestoresAllSeeds is the multi-seed list-mode resume case the
+// single-seed restore got wrong. An interrupted list crawl has two uploaded
+// seeds on different hosts: seedA crawled, seedB still pending. On resume the
+// full seed set is restored, so seedB's host is classified internal (seedAuth
+// covers every seed) and the full-graph depth recompute keeps both at depth 0.
+// The contrast subtest restores only seedA — the old behaviour — and shows seedB
+// falling out of scope (external) and losing its depth.
+func TestListModeResumeRestoresAllSeeds(t *testing.T) {
+	html := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "<p>seed</p>")
+	}
+	srvA := httptest.NewServer(http.HandlerFunc(html))
+	defer srvA.Close()
+	srvB := httptest.NewServer(http.HandlerFunc(html))
+	defer srvB.Close()
+	seedA, seedB := srvA.URL+"/", srvB.URL+"/"
+
+	cfg := config.Default()
+	cfg.Mode = "list"
+	cfg.Limits.MaxDepth = 0    // list default: audit exactly the uploaded URLs
+	cfg.Robots.Mode = "ignore" // list default: don't gate the audited URLs
+
+	// setup writes an interrupted list crawl with both seeds frozen in:
+	// seedA already crawled at depth 0, seedB still pending at depth 0.
+	setup := func(dir string) string {
+		st, err := CreateCrawl(dir, "listtest", []string{seedA, seedB}, "list", cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Page(&crawler.PageRecord{
+			URL: seedA, Scope: "internal", State: crawler.StateCrawled,
+			StatusCode: 200, Depth: 0, Facts: &parse.Facts{},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.FrontierAdd(frontier.Item{URL: seedB, Depth: 0}); err != nil {
+			t.Fatal(err)
+		}
+		if err := SetStatus(dir, st.ID, StatusInterrupted, 1, 1); err != nil {
+			t.Fatal(err)
+		}
+		id := st.ID
+		st.Close()
+		return id
+	}
+
+	// resume drains the crawl like the real resume path: it restores the seeds
+	// (every stored seed when override is nil, the way the CLI/MCP/desktop resume
+	// paths do via st.Seeds), reruns the crawl, then recomputes depth over the
+	// full two-session graph and persists it — the resume branch of
+	// finalize.Crawl, inlined to avoid an import cycle (finalize imports store).
+	resume := func(dir, id string, override []string) map[string]*crawler.PageRecord {
+		st, err := OpenCrawl(dir, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		seeds := override
+		if seeds == nil {
+			if seeds, err = st.Seeds(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		processed, _ := st.ProcessedURLs()
+		pending, _ := st.PendingFrontier()
+		c, err := crawler.New(cfg, crawler.WithSink(st), crawler.WithResume(processed, pending))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		if _, err := c.Run(context.Background(), seeds...); err != nil {
+			t.Fatal(err)
+		}
+		all, err := st.LoadPages()
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.RecomputeDepths(all, seeds...)
+		if err := st.SaveDepths(all); err != nil {
+			t.Fatal(err)
+		}
+		pages, err := st.LoadPages()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pages
+	}
+
+	// the real path: resume restores every stored seed via st.Seeds
+	t.Run("all seeds restored", func(t *testing.T) {
+		dir := t.TempDir()
+		pages := resume(dir, setup(dir), nil)
+		b := pages[seedB]
+		if b == nil {
+			t.Fatal("seedB not crawled on resume")
+		}
+		if b.Scope != "internal" {
+			t.Errorf("seedB scope = %q, want internal (seedAuth must cover every stored seed)", b.Scope)
+		}
+		if pages[seedA].Depth != 0 || b.Depth != 0 {
+			t.Errorf("depths = {A:%d, B:%d}, want both 0", pages[seedA].Depth, b.Depth)
+		}
+	})
+
+	t.Run("single seed restored (regression contrast)", func(t *testing.T) {
+		dir := t.TempDir()
+		pages := resume(dir, setup(dir), []string{seedA})
+		b := pages[seedB]
+		if b == nil {
+			t.Fatal("seedB not crawled on resume")
+		}
+		if b.Scope != "external" {
+			t.Errorf("seedB scope = %q, want external under single-seed restore", b.Scope)
+		}
+		if b.Depth != crawler.NoDepth {
+			t.Errorf("seedB depth = %d, want NoDepth (%d) under single-seed restore", b.Depth, crawler.NoDepth)
+		}
+	})
+}
+
 // TestSaveDepths verifies the resume depth fix's persistence step: it rewrites
 // only the depth column for every supplied page (NoDepth -> NULL), leaving other
 // columns untouched.
 func TestSaveDepths(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "proj", "https://ex.com/", "spider", config.Default())
+	c, err := CreateCrawl(dir, "proj", []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

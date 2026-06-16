@@ -30,7 +30,7 @@ type Outcome struct {
 type Params struct {
 	StoreDir  string
 	Cfg       *config.Config
-	Seeds     []string // the seeds Run() was given (resume depth re-root)
+	Seeds     []string // every seed Run() was given (resume re-roots depth from all)
 	Resumed   bool     // this run resumed a stored crawl
 	Completed bool     // caller resolves pause-vs-stop into completed/interrupted
 }
@@ -65,10 +65,12 @@ func Crawl(c *crawler.Crawler, st *store.Crawl, res *crawler.Result, p Params) (
 
 	// On resume this session rewrote depth only for its own pages; recompute it
 	// over the full two-session graph so depths match a fresh crawl (Screaming
-	// Frog parity). List mode is excluded: only seeds[0] is persisted, so a
-	// whole-graph recompute from one seed would wrongly NULL the other uploaded
-	// seeds' depth-0. Fresh crawls already hold shortest-path depths from Run().
-	if p.Resumed && p.Cfg.Mode != "list" {
+	// Frog parity). The BFS re-roots from every seed Run() was given — all of
+	// them, including each uploaded list seed — so list and spider resumes alike
+	// land on shortest-path depths. Guard on a non-empty seed set: rooting from
+	// nothing would NULL every page's depth. Fresh crawls already hold those
+	// depths from Run().
+	if p.Resumed && len(p.Seeds) > 0 {
 		if all, err := st.LoadPages(); err != nil {
 			note(err)
 		} else {

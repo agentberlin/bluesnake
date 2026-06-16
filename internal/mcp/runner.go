@@ -42,7 +42,7 @@ func (r *Runner) StartCrawl(ctx context.Context, req StartRequest) (string, erro
 	if err != nil {
 		return "", err
 	}
-	st, err := store.CreateCrawl(r.storeDir, DefaultProject(req.Project, seeds), seeds[0], mode, cfg)
+	st, err := store.CreateCrawl(r.storeDir, DefaultProject(req.Project, seeds), seeds, mode, cfg)
 	if err != nil {
 		return "", err
 	}
@@ -76,8 +76,12 @@ func (r *Runner) ResumeCrawl(id string) (string, error) {
 		st.Close()
 		return "", err
 	}
-	seed, err := st.Meta("seed")
-	if err != nil || seed == "" {
+	seeds, err := st.Seeds()
+	if err != nil {
+		st.Close()
+		return "", err
+	}
+	if len(seeds) == 0 {
 		st.Close()
 		return "", fmt.Errorf("crawl %s has no stored seed", id)
 	}
@@ -91,7 +95,7 @@ func (r *Runner) ResumeCrawl(id string) (string, error) {
 		st.Close()
 		return "", err
 	}
-	s, err := newRunnerSession(r.storeDir, st, cfg, []string{seed}, processed, pending)
+	s, err := newRunnerSession(r.storeDir, st, cfg, seeds, processed, pending)
 	if err != nil {
 		st.Close()
 		return "", err

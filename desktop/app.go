@@ -234,7 +234,7 @@ func (a *App) StartCrawl(req StartRequest) (string, error) {
 		}
 	}
 
-	st, err := store.CreateCrawl(a.storeDir, project, seeds[0], mode, cfg)
+	st, err := store.CreateCrawl(a.storeDir, project, seeds, mode, cfg)
 	if err != nil {
 		return "", err
 	}
@@ -268,8 +268,12 @@ func (a *App) ResumeCrawl(id string) (string, error) {
 		st.Close()
 		return "", err
 	}
-	seed, err := st.Meta("seed")
-	if err != nil || seed == "" {
+	seeds, err := st.Seeds()
+	if err != nil {
+		st.Close()
+		return "", err
+	}
+	if len(seeds) == 0 {
 		st.Close()
 		return "", fmt.Errorf("crawl %s has no stored seed", id)
 	}
@@ -284,7 +288,7 @@ func (a *App) ResumeCrawl(id string) (string, error) {
 		return "", err
 	}
 	a.invalidate(id)
-	s, err := newCrawlSession(a, st, cfg, []string{seed}, processed, pending)
+	s, err := newCrawlSession(a, st, cfg, seeds, processed, pending)
 	if err != nil {
 		st.Close()
 		return "", err

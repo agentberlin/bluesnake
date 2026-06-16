@@ -122,8 +122,11 @@ func newResumeCmd() *cobra.Command {
 				}
 			}
 
-			seed, err := st.Meta("seed")
-			if err != nil || seed == "" {
+			seeds, err := st.Seeds()
+			if err != nil {
+				return err
+			}
+			if len(seeds) == 0 {
 				return fmt.Errorf("crawl %s has no stored seed", args[0])
 			}
 			processed, err := st.ProcessedURLs()
@@ -143,7 +146,7 @@ func newResumeCmd() *cobra.Command {
 			defer c.Close()
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-			res, err := c.Run(ctx, seed)
+			res, err := c.Run(ctx, seeds...)
 			if err != nil {
 				return exitErr{1, err}
 			}
@@ -152,7 +155,7 @@ func newResumeCmd() *cobra.Command {
 			// original run's pages don't keep stale admit-time depths), and
 			// analysis — all via the shared finalize path.
 			out, ferr := finalize.Crawl(c, st, res, finalize.Params{
-				StoreDir: storeDir, Cfg: cfg, Seeds: []string{seed}, Resumed: true, Completed: !res.Interrupted,
+				StoreDir: storeDir, Cfg: cfg, Seeds: seeds, Resumed: true, Completed: !res.Interrupted,
 			})
 			if res.Interrupted {
 				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", st.ID, storeDir)
