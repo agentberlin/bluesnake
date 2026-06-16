@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/agentberlin/bluesnake/internal/analyze"
 	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -21,17 +21,15 @@ func newAnalyzeCmd() *cobra.Command {
 				return exitErr{2, err}
 			}
 			defer st.Close()
-			cfgYAML, err := st.Meta("config")
+			cfg, err := storedConfig(st)
 			if err != nil {
 				return err
 			}
-			cfg, err := config.Load([]byte(cfgYAML))
+			out, err := finalize.Analyze(st, cfg)
 			if err != nil {
 				return err
 			}
-			if err := runAnalysis(cmd, st, cfg, false); err != nil {
-				return err
-			}
+			printAnalysis(cmd, st.ID, out)
 			return nil
 		},
 	}
@@ -39,37 +37,23 @@ func newAnalyzeCmd() *cobra.Command {
 	return cmd
 }
 
-// runAnalysis runs the post-crawl phases: issue evaluation, then the graph
-// analyses, persisting everything back into the crawl database.
-func runAnalysis(cmd *cobra.Command, st *store.Crawl, cfg *config.Config, quiet bool) error {
-	if err := evaluateIssues(st); err != nil {
-		return err
-	}
-	pages, err := st.LoadPages()
+// storedConfig loads the config frozen into a crawl at start.
+func storedConfig(st *store.Crawl) (*config.Config, error) {
+	cfgYAML, err := st.Meta("config")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	sitemaps, err := st.SitemapIndex()
-	if err != nil {
-		return err
+	return config.Load([]byte(cfgYAML))
+}
+
+// printAnalysis renders the post-analysis summary lines shared by the crawl,
+// resume, list and analyze commands.
+func printAnalysis(cmd *cobra.Command, id string, o finalize.Outcome) {
+	if !o.Analyzed {
+		return
 	}
-	results := analyze.Run(pages, sitemaps, cfg)
-	if err := st.SaveAnalysis(results); err != nil {
-		return err
-	}
-	if !quiet {
-		counts, err := st.IssueCounts()
-		if err != nil {
-			return err
-		}
-		total := 0
-		for _, n := range counts {
-			total += n
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Analysis: %d chains, %d near-duplicate pages\n",
-			len(results.Chains), len(results.NearDups))
-		fmt.Fprintf(cmd.OutOrStdout(), "Issues: %d occurrences across %d checks (bluesnake issues %s)\n",
-			total, len(counts), st.ID)
-	}
-	return nil
+	fmt.Fprintf(cmd.OutOrStdout(), "Analysis: %d chains, %d near-duplicate pages\n",
+		o.Chains, o.NearDups)
+	fmt.Fprintf(cmd.OutOrStdout(), "Issues: %d occurrences across %d checks (bluesnake issues %s)\n",
+		o.IssueTotal, o.IssueChecks, id)
 }

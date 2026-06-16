@@ -8,6 +8,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/fetch"
+	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/frontier"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -148,31 +149,20 @@ func (s *crawlSession) run() {
 		done.Crawled = res.Crawled
 		done.Total = res.Total
 		done.DurationSec = int(res.Duration.Seconds())
-		if err := s.st.UpdateInlinks(res.Pages); err != nil && done.Error == "" {
-			done.Error = err.Error()
-		}
-		// Pause keeps the crawl resumable; Stop finalises early as completed.
-		if res.Interrupted && mode != "stop" {
-			done.Status = store.StatusInterrupted
-		}
-		_ = store.SetStatus(s.app.storeDir, s.st.ID, done.Status, res.Crawled, res.Total)
-		// resume rewrote depth only for this session's pages; recompute over the
-		// full two-session graph so depths match a fresh crawl (SF parity). Must
-		// precede reanalyze (the depth-keyed issue reads it). List mode is
-		// excluded: only seeds[0] is persisted, so a whole-graph recompute from
-		// one seed would wrongly NULL the other uploaded URLs' depth-0.
-		if done.Status == store.StatusCompleted && s.resumed && s.cfg.Mode != "list" {
-			if all, err := s.st.LoadPages(); err == nil {
-				s.c.RecomputeDepths(all, s.seeds...)
-				_ = s.st.SaveDepths(all)
-			}
-		}
-		if done.Status == store.StatusCompleted && s.cfg.Analysis.Auto {
-			if err := reanalyze(s.st); err == nil {
-				done.Analyzed = true
-			} else if done.Error == "" {
-				done.Error = "analysis: " + err.Error()
-			}
+		// Pause keeps the crawl resumable; Stop finalises early as completed. The
+		// shared finalize path persists aggregates + status and, when completed,
+		// recomputes depth over the full graph (resume) and runs analysis.
+		out, ferr := finalize.Crawl(s.c, s.st, res, finalize.Params{
+			StoreDir:  s.app.storeDir,
+			Cfg:       s.cfg,
+			Seeds:     s.seeds,
+			Resumed:   s.resumed,
+			Completed: !res.Interrupted || mode == "stop",
+		})
+		done.Status = out.Status
+		done.Analyzed = out.Analyzed
+		if ferr != nil && done.Error == "" {
+			done.Error = ferr.Error()
 		}
 	}
 	s.app.invalidate(s.st.ID)

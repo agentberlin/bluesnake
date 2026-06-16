@@ -6,12 +6,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agentberlin/bluesnake/internal/analyze"
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/fetch"
+	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/frontier"
-	"github.com/agentberlin/bluesnake/internal/issues"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
@@ -207,44 +206,16 @@ func (s *runnerSession) run() {
 	if res == nil {
 		return
 	}
-	_ = s.st.UpdateInlinks(res.Pages)
-	status := store.StatusCompleted
-	// Pause keeps the crawl resumable; stop finalises early as completed.
-	if res.Interrupted && mode != "stop" {
-		status = store.StatusInterrupted
-	}
-	_ = store.SetStatus(s.storeDir, s.st.ID, status, res.Crawled, res.Total)
-	// resume rewrote depth only for this session's pages; recompute over the
-	// full two-session graph so depths match a fresh crawl (SF parity). Must
-	// precede reanalyze (the depth-keyed issue reads it). List mode is excluded:
-	// only seeds[0] is persisted, so a whole-graph recompute from one seed would
-	// wrongly NULL the other uploaded URLs' depth-0.
-	if status == store.StatusCompleted && s.resumed && s.cfg.Mode != "list" {
-		if all, err := s.st.LoadPages(); err == nil {
-			s.c.RecomputeDepths(all, s.seeds...)
-			_ = s.st.SaveDepths(all)
-		}
-	}
-	if status == store.StatusCompleted && s.cfg.Analysis.Auto {
-		_ = reanalyze(s.st, s.cfg)
-	}
-}
-
-// reanalyze re-runs issue evaluation and the graph analyses (same phases as
-// the CLI's runAnalysis / the desktop's reanalyze).
-func reanalyze(st *store.Crawl, cfg *config.Config) error {
-	pages, err := st.LoadPages()
-	if err != nil {
-		return err
-	}
-	if err := st.SaveIssues(issues.Evaluate(pages, cfg)); err != nil {
-		return err
-	}
-	sitemaps, err := st.SitemapIndex()
-	if err != nil {
-		return err
-	}
-	return st.SaveAnalysis(analyze.Run(pages, sitemaps, cfg))
+	// Pause keeps the crawl resumable; stop finalises early as completed. The
+	// shared finalize path persists aggregates + status and, when completed,
+	// recomputes depth over the full graph (resume) and runs analysis.
+	_, _ = finalize.Crawl(s.c, s.st, res, finalize.Params{
+		StoreDir:  s.storeDir,
+		Cfg:       s.cfg,
+		Seeds:     s.seeds,
+		Resumed:   s.resumed,
+		Completed: !res.Interrupted || mode == "stop",
+	})
 }
 
 func (s *runnerSession) stop(mode string) {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -146,35 +147,22 @@ func newResumeCmd() *cobra.Command {
 			if err != nil {
 				return exitErr{1, err}
 			}
-			finishCrawl(cmd, st, storeDir, res)
+			// A resumed crawl that drains to completion is finalised exactly like
+			// a fresh one: aggregates, status, full-graph depth recompute (so the
+			// original run's pages don't keep stale admit-time depths), and
+			// analysis — all via the shared finalize path.
+			out, ferr := finalize.Crawl(c, st, res, finalize.Params{
+				StoreDir: storeDir, Cfg: cfg, Seeds: []string{seed}, Resumed: true, Completed: !res.Interrupted,
+			})
 			if res.Interrupted {
+				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", st.ID, storeDir)
 				return exitErr{3, errors.New("interrupted")}
 			}
 			printSummary(cmd, res)
-			// resume rewrote depth only for this session's pages; recompute it
-			// over the full two-session graph so depths match a fresh crawl (SF
-			// parity) instead of the original run's pages keeping stale
-			// admit-time depths. Must precede analysis (links_high_crawl_depth
-			// reads depth). List mode is excluded: every uploaded URL is a depth-0
-			// seed but only seeds[0] is persisted, so a whole-graph recompute from
-			// one seed would wrongly NULL the other seeds' depths.
-			if cfg.Mode != "list" {
-				if all, err := st.LoadPages(); err != nil {
-					fmt.Fprintln(cmd.ErrOrStderr(), "depth recompute:", err)
-				} else {
-					c.RecomputeDepths(all, seed)
-					if err := st.SaveDepths(all); err != nil {
-						fmt.Fprintln(cmd.ErrOrStderr(), "depth recompute:", err)
-					}
-				}
-			}
-			// a resumed crawl that drains to completion is finalised exactly
-			// like a fresh crawl — otherwise its issues/analysis tables stay
-			// empty and the site looks clean (see crawl.go).
-			if cfg.Analysis.Auto {
-				if err := runAnalysis(cmd, st, cfg, false); err != nil {
-					fmt.Fprintln(cmd.ErrOrStderr(), "analysis:", err)
-				}
+			if ferr != nil {
+				fmt.Fprintln(cmd.ErrOrStderr(), "finalize:", ferr)
+			} else {
+				printAnalysis(cmd, st.ID, out)
 			}
 			return nil
 		},
@@ -184,19 +172,4 @@ func newResumeCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&sets, "set", nil, "config override (requires --force)")
 	cmd.Flags().BoolVar(&force, "force", false, "allow resuming with a different config")
 	return cmd
-}
-
-// finishCrawl writes aggregates and the final registry status.
-func finishCrawl(cmd *cobra.Command, st *store.Crawl, storeDir string, res *crawler.Result) {
-	if err := st.UpdateInlinks(res.Pages); err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), "warning:", err)
-	}
-	status := store.StatusCompleted
-	if res.Interrupted {
-		status = store.StatusInterrupted
-		fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", st.ID, storeDir)
-	}
-	if err := store.SetStatus(storeDir, st.ID, status, res.Crawled, res.Total); err != nil {
-		fmt.Fprintln(cmd.ErrOrStderr(), "warning:", err)
-	}
 }

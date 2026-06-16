@@ -922,3 +922,33 @@ func TestRecomputeDepthsReconstructsFreshDepths(t *testing.T) {
 		t.Errorf("orphan depth = %d, want NoDepth (%d)", got, NoDepth)
 	}
 }
+
+// TestResumePreservesDiscoveredFrom verifies a page first linked before an
+// interrupt keeps its original discoverer on resume: the crawler seeds the
+// first-discoverer from the stored frontier Source, since the page that linked
+// it is not re-processed this session.
+func TestResumePreservesDiscoveredFrom(t *testing.T) {
+	s := newSite(t, map[string]string{
+		"/pending": "<p>leaf</p>",
+	})
+	seed := s.server.URL + "/"
+	cfg := config.Default()
+	c, err := New(cfg, WithResume(
+		[]string{seed}, // already processed: the seed is not re-crawled
+		[]frontier.Item{{URL: s.server.URL + "/pending", Depth: 1, Source: seed}},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := c.Run(context.Background(), seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := s.page(res, "/pending")
+	if rec == nil {
+		t.Fatal("/pending was not crawled on resume")
+	}
+	if rec.DiscoveredFrom != seed {
+		t.Errorf("DiscoveredFrom = %q, want the stored frontier source %q", rec.DiscoveredFrom, seed)
+	}
+}

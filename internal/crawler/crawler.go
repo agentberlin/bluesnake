@@ -288,6 +288,24 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 			spawn(item)
 		}
 	}
+	// On resume, preserve each pending URL's original (session-1) discoverer,
+	// captured in the frontier when it was first admitted, so a page first
+	// linked before the interrupt keeps its true DiscoveredFrom instead of
+	// whichever this-session page happens to re-link it first. Seed before any
+	// pending spawn so the first-wins rule in noteInlink respects it.
+	if len(c.resumePending) > 0 {
+		c.mu.Lock()
+		for _, item := range c.resumePending {
+			if item.Source == "" {
+				continue
+			}
+			if info := c.inlinks[item.URL]; info.first == "" {
+				info.first = item.Source
+				c.inlinks[item.URL] = info
+			}
+		}
+		c.mu.Unlock()
+	}
 	for _, item := range c.resumePending {
 		spawn(item)
 	}
