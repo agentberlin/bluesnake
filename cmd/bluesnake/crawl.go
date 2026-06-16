@@ -7,6 +7,7 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -89,18 +90,21 @@ func newCrawlCmd() *cobra.Command {
 			if err != nil {
 				return exitErr{1, err}
 			}
-			finishCrawl(cmd, st, storeDir, res)
+			out, ferr := finalize.Crawl(c, st, res, finalize.Params{
+				StoreDir: storeDir, Cfg: cfg, Seeds: []string{args[0]}, Completed: !res.Interrupted,
+			})
 			if !quiet {
 				printSummary(cmd, res)
 				fmt.Fprintf(cmd.OutOrStdout(), "Crawl ID: %s\n", st.ID)
 			}
 			if res.Interrupted {
+				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", st.ID, storeDir)
 				return exitErr{3, fmt.Errorf("interrupted")}
 			}
-			if cfg.Analysis.Auto {
-				if err := runAnalysis(cmd, st, cfg, quiet); err != nil {
-					fmt.Fprintln(cmd.ErrOrStderr(), "analysis:", err)
-				}
+			if ferr != nil {
+				fmt.Fprintln(cmd.ErrOrStderr(), "finalize:", ferr)
+			} else if !quiet {
+				printAnalysis(cmd, st.ID, out)
 			}
 			return nil
 		},

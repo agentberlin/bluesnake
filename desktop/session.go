@@ -8,6 +8,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/fetch"
+	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/frontier"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -62,14 +63,15 @@ type DoneEvent struct {
 }
 
 type crawlSession struct {
-	app    *App
-	st     *store.Crawl
-	cfg    *config.Config
-	c      *crawler.Crawler
-	seeds  []string
-	cancel context.CancelFunc
-	ctx    context.Context
-	doneCh chan struct{}
+	app     *App
+	st      *store.Crawl
+	cfg     *config.Config
+	c       *crawler.Crawler
+	seeds   []string
+	resumed bool
+	cancel  context.CancelFunc
+	ctx     context.Context
+	doneCh  chan struct{}
 
 	mu         sync.Mutex
 	stopMode   string // "" | "pause" | "stop"
@@ -91,6 +93,7 @@ type crawlSession struct {
 func newCrawlSession(a *App, st *store.Crawl, cfg *config.Config, seeds []string, processed []string, pending []frontier.Item) (*crawlSession, error) {
 	s := &crawlSession{
 		app: a, st: st, cfg: cfg, seeds: seeds,
+		resumed: processed != nil,
 		started: time.Now(),
 		doneCh:  make(chan struct{}),
 		// resumed crawls start from what is already on disk
@@ -146,20 +149,20 @@ func (s *crawlSession) run() {
 		done.Crawled = res.Crawled
 		done.Total = res.Total
 		done.DurationSec = int(res.Duration.Seconds())
-		if err := s.st.UpdateInlinks(res.Pages); err != nil && done.Error == "" {
-			done.Error = err.Error()
-		}
-		// Pause keeps the crawl resumable; Stop finalises early as completed.
-		if res.Interrupted && mode != "stop" {
-			done.Status = store.StatusInterrupted
-		}
-		_ = store.SetStatus(s.app.storeDir, s.st.ID, done.Status, res.Crawled, res.Total)
-		if done.Status == store.StatusCompleted && s.cfg.Analysis.Auto {
-			if err := reanalyze(s.st); err == nil {
-				done.Analyzed = true
-			} else if done.Error == "" {
-				done.Error = "analysis: " + err.Error()
-			}
+		// Pause keeps the crawl resumable; Stop finalises early as completed. The
+		// shared finalize path persists aggregates + status and, when completed,
+		// recomputes depth over the full graph (resume) and runs analysis.
+		out, ferr := finalize.Crawl(s.c, s.st, res, finalize.Params{
+			StoreDir:  s.app.storeDir,
+			Cfg:       s.cfg,
+			Seeds:     s.seeds,
+			Resumed:   s.resumed,
+			Completed: !res.Interrupted || mode == "stop",
+		})
+		done.Status = out.Status
+		done.Analyzed = out.Analyzed
+		if ferr != nil && done.Error == "" {
+			done.Error = ferr.Error()
 		}
 	}
 	s.app.invalidate(s.st.ID)

@@ -5,7 +5,7 @@ import (
 	"sort"
 	"text/tabwriter"
 
-	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/issues"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/spf13/cobra"
@@ -36,7 +36,11 @@ func newIssuesCmd() *cobra.Command {
 				return nil
 			}
 
-			if err := evaluateIssues(st); err != nil {
+			cfg, err := storedConfig(st)
+			if err != nil {
+				return err
+			}
+			if err := finalize.Issues(st, cfg); err != nil {
 				return err
 			}
 			counts, err := st.IssueCounts()
@@ -71,21 +75,4 @@ func newIssuesCmd() *cobra.Command {
 	cmd.Flags().StringVar(&storeDir, "store-dir", defaultStoreDir(), "crawl storage directory")
 	cmd.Flags().StringVar(&showURLs, "urls", "", "list URLs affected by the given issue id")
 	return cmd
-}
-
-// evaluateIssues loads pages, runs the catalogue, and stores occurrences.
-func evaluateIssues(st *store.Crawl) error {
-	cfgYAML, err := st.Meta("config")
-	if err != nil {
-		return err
-	}
-	cfg, err := config.Load([]byte(cfgYAML))
-	if err != nil {
-		return err
-	}
-	pages, err := st.LoadPages()
-	if err != nil {
-		return err
-	}
-	return st.SaveIssues(issues.Evaluate(pages, cfg))
 }

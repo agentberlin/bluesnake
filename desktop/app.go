@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agentberlin/bluesnake/internal/analyze"
 	"github.com/agentberlin/bluesnake/internal/compare"
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/issues"
 	"github.com/agentberlin/bluesnake/internal/robots"
 	"github.com/agentberlin/bluesnake/internal/store"
@@ -442,14 +442,6 @@ func (a *App) Reanalyze(id string) error {
 		return err
 	}
 	defer st.Close()
-	if err := reanalyze(st); err != nil {
-		return err
-	}
-	a.invalidate(id)
-	return nil
-}
-
-func reanalyze(st *store.Crawl) error {
 	cfgYAML, err := st.Meta("config")
 	if err != nil {
 		return err
@@ -458,16 +450,9 @@ func reanalyze(st *store.Crawl) error {
 	if err != nil {
 		return err
 	}
-	pages, err := st.LoadPages()
-	if err != nil {
+	if _, err := finalize.Analyze(st, cfg); err != nil {
 		return err
 	}
-	if err := st.SaveIssues(issues.Evaluate(pages, cfg)); err != nil {
-		return err
-	}
-	sitemaps, err := st.SitemapIndex()
-	if err != nil {
-		return err
-	}
-	return st.SaveAnalysis(analyze.Run(pages, sitemaps, cfg))
+	a.invalidate(id)
+	return nil
 }

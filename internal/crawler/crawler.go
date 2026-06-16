@@ -288,6 +288,24 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 			spawn(item)
 		}
 	}
+	// On resume, preserve each pending URL's original (session-1) discoverer,
+	// captured in the frontier when it was first admitted, so a page first
+	// linked before the interrupt keeps its true DiscoveredFrom instead of
+	// whichever this-session page happens to re-link it first. Seed before any
+	// pending spawn so the first-wins rule in noteInlink respects it.
+	if len(c.resumePending) > 0 {
+		c.mu.Lock()
+		for _, item := range c.resumePending {
+			if item.Source == "" {
+				continue
+			}
+			if info := c.inlinks[item.URL]; info.first == "" {
+				info.first = item.Source
+				c.inlinks[item.URL] = info
+			}
+		}
+		c.mu.Unlock()
+	}
 	for _, item := range c.resumePending {
 		spawn(item)
 	}
@@ -328,8 +346,31 @@ const NoDepth = -1
 // depth: URLs reachable only that way keep NoDepth, as do their descendants.
 // Redirects (HTTP, meta refresh, JS) count as a hop, like a link.
 func (c *Crawler) recomputeDepths(seeds []string) {
-	adj := make(map[string][]string, len(c.pages))
-	for url, rec := range c.pages {
+	c.recomputeDepthsOver(c.pages, seeds)
+}
+
+// RecomputeDepths reruns the depth BFS over an externally supplied page set —
+// used on resume, where the full two-session graph (this session's pages plus
+// the previously-processed pages reloaded from the store) is needed for the
+// shortest-path search to root from the already-crawled seed. Seeds are raw
+// (un-normalised) URLs, matching Run's inputs; it mutates each record's Depth.
+// A fresh crawl recomputes internally over c.pages, so a resumed crawl that
+// recomputes over the merged graph yields identical depths (SF parity).
+func (c *Crawler) RecomputeDepths(pages map[string]*PageRecord, seedsRaw ...string) {
+	seeds := make([]string, 0, len(seedsRaw))
+	for _, raw := range seedsRaw {
+		if s, err := urlutil.Normalize(raw, c.opts); err == nil {
+			seeds = append(seeds, s)
+		}
+	}
+	c.recomputeDepthsOver(pages, seeds)
+}
+
+// recomputeDepthsOver assigns the shortest-followed-link-path depth from a seed
+// to every page in pages. Seeds must already be normalised (page-map keys are).
+func (c *Crawler) recomputeDepthsOver(pages map[string]*PageRecord, seeds []string) {
+	adj := make(map[string][]string, len(pages))
+	for url, rec := range pages {
 		var out []string
 		if rec.RedirectURL != "" && rec.RedirectURL != url {
 			out = append(out, rec.RedirectURL)
@@ -354,12 +395,12 @@ func (c *Crawler) recomputeDepths(seeds []string) {
 		}
 		adj[url] = out
 	}
-	for _, rec := range c.pages {
+	for _, rec := range pages {
 		rec.Depth = NoDepth
 	}
 	queue := make([]string, 0, len(seeds))
 	for _, s := range seeds {
-		if rec, ok := c.pages[s]; ok && rec.Depth == NoDepth {
+		if rec, ok := pages[s]; ok && rec.Depth == NoDepth {
 			rec.Depth = 0
 			queue = append(queue, s)
 		}
@@ -367,9 +408,9 @@ func (c *Crawler) recomputeDepths(seeds []string) {
 	for len(queue) > 0 {
 		u := queue[0]
 		queue = queue[1:]
-		d := c.pages[u].Depth
+		d := pages[u].Depth
 		for _, v := range adj[u] {
-			if rec, ok := c.pages[v]; ok && rec.Depth == NoDepth {
+			if rec, ok := pages[v]; ok && rec.Depth == NoDepth {
 				rec.Depth = d + 1
 				queue = append(queue, v)
 			}

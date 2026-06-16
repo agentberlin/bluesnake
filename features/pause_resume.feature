@@ -21,6 +21,34 @@ Feature: Storage, pause and resume (partial crawling)
     And the stored frontier is empty
     And no fixture page was fetched twice
 
+  Scenario: Resuming to completion finalises issues and analysis like a fresh crawl
+    Given a stored crawl of a 40-page fixture site interrupted after 10 pages
+    When I run "bluesnake resume <crawlid> --store-dir <storedir>"
+    Then the exit code is 0
+    And the stored crawl has issues recorded
+
+  Scenario: Resuming recomputes crawl depth over the full two-session graph
+    # /deep is crawled in the first session at admit-time depth 3 (via /a -> /b);
+    # the shorter path / -> /shortcut -> /deep (depth 2) is only completed on
+    # resume. The resumed crawl must recompute depths over both sessions so
+    # /deep ends at 2, matching a fresh crawl (Screaming Frog parity), instead
+    # of keeping the stale depth 3.
+    Given a stored cross-linked crawl interrupted before the shortcut page
+    When I run "bluesnake resume <crawlid> --store-dir <storedir>"
+    Then the exit code is 0
+    And the stored crawl page "/deep" has depth 2
+    And the stored crawl page "/shortcut" has depth 1
+
+  Scenario: List-mode resume keeps uploaded seeds at depth 0
+    # Every uploaded URL is a depth-0 seed, but only one is persisted as the
+    # crawl seed. The depth recompute must be skipped in list mode, or resuming
+    # would reroot from that single seed and wrongly NULL the others' depths.
+    Given a stored list-mode crawl with one seed pending
+    When I run "bluesnake resume <crawlid> --store-dir <storedir>"
+    Then the exit code is 0
+    And the stored crawl page "/" has depth 0
+    And the stored crawl page "/b" has depth 0
+
   Scenario: Resume with a changed config is refused without --force
     Given a stored crawl of a 40-page fixture site interrupted after 10 pages
     When I run "bluesnake resume <crawlid> --store-dir <storedir> --set speed.max_threads=9"
