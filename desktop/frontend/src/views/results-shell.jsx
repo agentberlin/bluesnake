@@ -1,11 +1,12 @@
 /* ===========================================================================
    Results workspace shell — dataset rail, toolbar, overview, export
    =========================================================================== */
-import React, { useEffect, useMemo, useState } from "react";
-import { Icon, Btn, IconBtn, SevDot, SEV, PRIO, Empty, StatusBar, Ring, Modal, Toast, Toggle } from "../ui";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Icon, Btn, IconBtn, SevDot, SEV, PRIO, Empty, StatusBar, Ring, Modal, Toast, Toggle, Seg } from "../ui";
 import { api, urlShort } from "../api";
 import { DataTable } from "./results";
 import { IssuesBrowser } from "./issues";
+import { CrawlProgress } from "./progress";
 
 /* rail metadata for the export tabs (label + icon per backend tab name) */
 const DATASETS = [
@@ -25,7 +26,7 @@ const DATASETS = [
 
 const ROW_LIMIT = 2000;
 
-export function ResultsWorkspace({ crawl, tab, setTab, issueFilter, setIssueFilter, onOpenDetail, onFilterByIssue }) {
+export function ResultsWorkspace({ crawl, live, tab, setTab, issueFilter, setIssueFilter, onOpenDetail, onFilterByIssue, onResume }) {
   const [toast, setToast] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [analyseMenu, setAnalyseMenu] = useState(false);
@@ -34,6 +35,30 @@ export function ResultsWorkspace({ crawl, tab, setTab, issueFilter, setIssueFilt
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const fireToast = (msg, icon = "check") => { setToast({ msg, icon }); setTimeout(() => setToast(null), 2600); };
+
+  // The Overview tab doubles as the live-crawl page: while this crawl is running
+  // it shows realtime progress, with a toggle to peek at the partial dashboard.
+  // `ovMode` is "progress" | "static": default to progress when the crawl is
+  // live. We adjust it during render (React's "store info from previous renders"
+  // pattern) so switching crawls or resuming flips the view with no flash:
+  //   • different crawl  → progress if it's live, else the static dashboard
+  //   • this crawl becomes live (e.g. resume) → progress
+  //   • this crawl finishes mid-view → leave ovMode as-is, so the completion
+  //     summary stays until the user toggles to the dashboard or navigates away.
+  const [ovMode, setOvMode] = useState(live ? "progress" : "static");
+  const prev = useRef({ id: crawl.id, live });
+  if (prev.current.id !== crawl.id) {
+    prev.current = { id: crawl.id, live };
+    setOvMode(live ? "progress" : "static");
+  } else if (prev.current.live !== live) {
+    if (live) setOvMode("progress");
+    prev.current.live = live;
+  }
+  const showProgress = tab === "overview" && ovMode === "progress";
+  const ovToggle = (
+    <Seg value={ovMode} onChange={setOvMode}
+      options={[{ value: "progress", label: "Progress" }, { value: "static", label: "Overview" }]} />
+  );
 
   useEffect(() => {
     api.datasetCounts(crawl.id).then((c) => setCounts(c || {})).catch(() => {});
@@ -80,9 +105,9 @@ export function ResultsWorkspace({ crawl, tab, setTab, issueFilter, setIssueFilt
       <div style={{ width: 210, flex: "0 0 210px", borderRight: "1px solid var(--border-soft)", background: "var(--sidebar)", display: "flex", flexDirection: "column", minHeight: 0 }}>
         <div style={{ padding: "11px 12px 7px" }}>
           <div className="mono" style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{urlShort(crawl.seed)}</div>
-          <div style={{ fontSize: 10.5, color: "var(--ink-faint)", marginTop: 2, display: "flex", alignItems: "center", gap: 5 }}>
-            <span className="statusdot" style={{ background: crawl.status === "interrupted" ? "var(--sev-warn)" : "var(--sev-ok)" }} />
-            {(crawl.total || crawl.crawled).toLocaleString()} URLs{crawl.started ? " · " + crawl.started.split(" ")[0] : ""}
+          <div style={{ fontSize: 10.5, color: live ? "var(--accent)" : "var(--ink-faint)", marginTop: 2, display: "flex", alignItems: "center", gap: 5 }}>
+            <span className="statusdot" style={{ background: live ? "var(--accent)" : crawl.status === "interrupted" ? "var(--sev-warn)" : "var(--sev-ok)", animation: live ? "pulse 1.4s infinite" : undefined }} />
+            {live ? "crawling…" : `${(crawl.total || crawl.crawled).toLocaleString()} URLs${crawl.started ? " · " + crawl.started.split(" ")[0] : ""}`}
           </div>
         </div>
         <div className="sb-nav" style={{ paddingTop: 2 }}>
@@ -105,44 +130,55 @@ export function ResultsWorkspace({ crawl, tab, setTab, issueFilter, setIssueFilt
         </div>
       </div>
 
-      {/* content */}
+      {/* content — the Overview tab renders live progress while crawling
+          (CrawlProgress brings its own toolbar with the crawl controls);
+          everything else uses the standard dataset toolbar. */}
       <div className="main" style={{ minWidth: 0 }}>
-        <div className="toolbar">
-          <span className="title" style={{ fontSize: 13.5 }}>{datasetName}</span>
-          {data && <span className="pill mono" style={{ height: 20, fontSize: 11 }}>{data.total.toLocaleString()}</span>}
-          <div style={{ flex: 1 }} />
-          <div style={{ position: "relative" }}>
-            <Btn icon="git-compare" onClick={() => setAnalyseMenu((v) => !v)}>Re-analyse</Btn>
-            {analyseMenu && <>
-              <div style={{ position: "fixed", inset: 0, zIndex: 30 }} onClick={() => setAnalyseMenu(false)} />
-              <div className="card fade" style={{ position: "absolute", right: 0, top: 36, zIndex: 31, width: 280, padding: 6, boxShadow: "var(--shadow-lg)" }}>
-                <MenuItem icon="git-compare" title="Re-run analysis" sub="Issues, link scores, chains, duplicates, hreflang — no recrawl needed" onClick={reanalyse} />
+        {showProgress ? (
+          <CrawlProgress crawlId={crawl.id} headerExtra={ovToggle}
+            onResume={onResume} onOpenResults={() => setOvMode("static")} />
+        ) : (
+          <>
+            <div className="toolbar">
+              <span className="title" style={{ fontSize: 13.5 }}>{datasetName}</span>
+              {data && <span className="pill mono" style={{ height: 20, fontSize: 11 }}>{data.total.toLocaleString()}</span>}
+              {tab === "overview" && live && <span style={{ marginLeft: 4 }}>{ovToggle}</span>}
+              <div style={{ flex: 1 }} />
+              {crawl.status === "interrupted" && onResume && <Btn icon="play" variant="primary" onClick={onResume}>Resume crawl</Btn>}
+              <div style={{ position: "relative" }}>
+                <Btn icon="git-compare" onClick={() => setAnalyseMenu((v) => !v)}>Re-analyse</Btn>
+                {analyseMenu && <>
+                  <div style={{ position: "fixed", inset: 0, zIndex: 30 }} onClick={() => setAnalyseMenu(false)} />
+                  <div className="card fade" style={{ position: "absolute", right: 0, top: 36, zIndex: 31, width: 280, padding: 6, boxShadow: "var(--shadow-lg)" }}>
+                    <MenuItem icon="git-compare" title="Re-run analysis" sub="Issues, link scores, chains, duplicates, hreflang — no recrawl needed" onClick={reanalyse} />
+                  </div>
+                </>}
               </div>
-            </>}
-          </div>
-          <Btn icon="map" onClick={sitemap}>Sitemap</Btn>
-          <Btn icon="download" variant="primary" onClick={() => setExporting(true)}>Export</Btn>
-        </div>
+              <Btn icon="map" onClick={sitemap}>Sitemap</Btn>
+              <Btn icon="download" variant="primary" onClick={() => setExporting(true)}>Export</Btn>
+            </div>
 
-        {issueFilter && (
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", background: "color-mix(in oklab, var(--sev-issue) 6%, var(--bg))", borderBottom: "1px solid var(--border-soft)" }}>
-            <Icon name="filter" size={14} style={{ color: "var(--ink-3)" }} />
-            <span style={{ fontSize: 12, color: "var(--ink-2)" }}>Filtered to URLs affected by</span>
-            <span className="pill" style={{ height: 22, borderColor: "color-mix(in oklab, var(--sev-issue) 30%, transparent)" }}><SevDot severity="issue" />{issueFilter.name}</span>
-            {data && <span className="mono" style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>{data.total.toLocaleString()} affected</span>}
-            <IconBtn icon="x" title="Clear filter" onClick={() => setIssueFilter(null)} />
-          </div>
-        )}
+            {issueFilter && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", background: "color-mix(in oklab, var(--sev-issue) 6%, var(--bg))", borderBottom: "1px solid var(--border-soft)" }}>
+                <Icon name="filter" size={14} style={{ color: "var(--ink-3)" }} />
+                <span style={{ fontSize: 12, color: "var(--ink-2)" }}>Filtered to URLs affected by</span>
+                <span className="pill" style={{ height: 22, borderColor: "color-mix(in oklab, var(--sev-issue) 30%, transparent)" }}><SevDot severity="issue" />{issueFilter.name}</span>
+                {data && <span className="mono" style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>{data.total.toLocaleString()} affected</span>}
+                <IconBtn icon="x" title="Clear filter" onClick={() => setIssueFilter(null)} />
+              </div>
+            )}
 
-        {tab === "overview" && <ResultsOverview crawl={crawl} setTab={setTab} onFilterByIssue={onFilterByIssue} />}
-        {tab === "issues" && <IssuesBrowser crawlId={crawl.id} onFilterByIssue={onFilterByIssue} />}
-        {tab !== "overview" && tab !== "issues" && (
-          loading ? <Loading />
-            : error ? <Empty icon="circle-alert" title="Couldn't load dataset">{error}</Empty>
-              : data && data.total === 0 && tab === "custom" ? <CustomExtractionEmpty />
-                : data ? <DataTable header={data.header} rows={data.rows || []} total={data.total} truncated={data.truncated}
-                  onRowClick={urlColIdx >= 0 ? (row) => onOpenDetail(row[urlColIdx]) : null} />
-                  : null
+            {tab === "overview" && <ResultsOverview crawl={crawl} setTab={setTab} onFilterByIssue={onFilterByIssue} />}
+            {tab === "issues" && <IssuesBrowser crawlId={crawl.id} onFilterByIssue={onFilterByIssue} />}
+            {tab !== "overview" && tab !== "issues" && (
+              loading ? <Loading />
+                : error ? <Empty icon="circle-alert" title="Couldn't load dataset">{error}</Empty>
+                  : data && data.total === 0 && tab === "custom" ? <CustomExtractionEmpty />
+                    : data ? <DataTable header={data.header} rows={data.rows || []} total={data.total} truncated={data.truncated}
+                      onRowClick={urlColIdx >= 0 ? (row) => onOpenDetail(row[urlColIdx]) : null} />
+                      : null
+            )}
+          </>
         )}
       </div>
 

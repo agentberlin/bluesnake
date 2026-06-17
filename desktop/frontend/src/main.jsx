@@ -12,7 +12,6 @@ import { Icon, IconBtn, BrandMark, Modal, Btn } from "./ui";
 import { CrawlManager } from "./views/home";
 import { Welcome } from "./views/welcome";
 import { NewCrawl } from "./views/newcrawl";
-import { CrawlProgress } from "./views/progress";
 import { ResultsWorkspace } from "./views/results-shell";
 import { UrlDetail } from "./views/detail";
 import { SettingsView } from "./views/settings";
@@ -113,20 +112,43 @@ function App() {
 
   useEffect(() => {
     refresh();
-    // a crawl may already be running (e.g. after a frontend reload)
+    // A crawl may already be running (e.g. after a frontend reload). Open it the
+    // same way any crawl opens — on its Overview, which renders live progress
+    // while the crawl is running (see results-shell.jsx).
     api.activeProgress().then((p) => {
-      if (p && p.state === "running") { setLiveCrawlId(p.crawlId); setView("progress"); }
+      if (p && p.state === "running") openLive(p.crawlId, p.seed);
     }).catch(() => {});
-    const offDone = on("crawl:done", () => refresh());
+    const offDone = on("crawl:done", (d) => {
+      refresh();
+      // The session has ended: stop treating it as live (its Overview falls back
+      // to the static dashboard) and fold the final status into what we're showing.
+      setLiveCrawlId((cur) => (d && d.crawlId === cur ? null : cur));
+      setActiveCrawl((cur) => (cur && d && cur.id === d.crawlId
+        ? { ...cur, status: d.status, crawled: d.crawled, total: d.total } : cur));
+    });
     // crawls started over MCP (by an LLM) take over the screen like any other
-    const offStarted = on("crawl:started", (id) => { setLiveCrawlId(id); setView("progress"); refresh(); });
+    const offStarted = on("crawl:started", (id) => {
+      refresh();
+      api.activeProgress().then((p) => openLive(id, p && p.seed)).catch(() => openLive(id, ""));
+    });
     return () => { offDone(); offStarted(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refresh]);
+
+  // Open a live crawl on its Overview tab; the Overview renders the live progress
+  // view while liveCrawlId matches, so it's reachable like any other crawl page.
+  function openLive(id, seed) {
+    setLiveCrawlId(id);
+    setActiveCrawl((cur) => (cur && cur.id === id ? { ...cur, status: "running" }
+      : { id, seed: seed || "", status: "running", crawled: 0, total: 0 }));
+    setResultsTab("overview");
+    setIssueFilter(null);
+    setView("results");
+  }
 
   async function startCrawl(req) {
     const id = await api.startCrawl(req);
-    setLiveCrawlId(id);
-    setView("progress");
+    openLive(id, req.url || req.sitemapUrl || (req.listUrls && req.listUrls[0]) || "");
     refresh();
   }
   // first-run welcome: a bare domain → a sensible default spider crawl
@@ -140,23 +162,15 @@ function App() {
   }
   async function resumeCrawl(c) {
     const id = await api.resumeCrawl(c.id);
-    setLiveCrawlId(id);
-    setView("progress");
+    setActiveCrawl({ ...c, id, status: "running" });
+    openLive(id, c.seed);
     refresh();
   }
   function openCrawl(c) {
     setActiveCrawl(c);
-    setResultsTab("internal");
-    setIssueFilter(null);
-    setView("results");
-  }
-  function finishToResults(crawlId) {
-    const c = crawls.find((x) => x.id === crawlId);
-    setActiveCrawl(c || { id: crawlId, seed: "", crawled: 0 });
     setResultsTab("overview");
     setIssueFilter(null);
     setView("results");
-    refresh();
   }
   async function deleteCrawl(c) {
     await api.deleteCrawl(c.id);
@@ -176,13 +190,12 @@ function App() {
     { id: "settings", label: "Settings & Profiles", icon: "sliders-horizontal" },
   ];
 
-  // Titlebar host follows what's on screen: the live crawl while one is
-  // running (so a fresh crawl's domain shows immediately, not the last one
-  // you opened), otherwise the crawl whose results you're viewing.
+  // Titlebar host follows what's on screen: the crawl whose results (or live
+  // progress) you're viewing, falling back to the running crawl's domain.
   const liveCrawl = crawls.find((c) => c.id === liveCrawlId);
-  const titleHost = view === "progress"
-    ? (liveCrawl ? hostOf(liveCrawl.seed) : "crawling…")
-    : (activeCrawl ? hostOf(activeCrawl.seed) : "no crawl");
+  const titleHost = activeCrawl
+    ? (hostOf(activeCrawl.seed) || (liveCrawl ? hostOf(liveCrawl.seed) : "crawling…"))
+    : (liveCrawl ? hostOf(liveCrawl.seed) : "no crawl");
 
   return (
     <div className="win">
@@ -245,19 +258,22 @@ function App() {
           <div className="sb-recents">
             {crawls.map((c) => {
               const active = view === "results" && activeCrawl && activeCrawl.id === c.id;
-              const dotc = c.status === "completed" ? "var(--sev-ok)" : c.status === "interrupted" ? "var(--sev-warn)" : "var(--accent)";
+              const live = c.id === liveCrawlId || c.status === "running";
+              const dotc = live ? "var(--accent)" : c.status === "interrupted" ? "var(--sev-warn)" : "var(--sev-ok)";
               const host = hostOf(c.seed);
               if (collapsed) return (
-                <button key={c.id} className="sb-monogram" title={host + " · " + c.crawled.toLocaleString() + " URLs"} onClick={() => openCrawl(c)}>
-                  <BrandMark seed={c.seed} size={34} dot={dotc} active={active} />
+                <button key={c.id} className="sb-monogram" title={host + (live ? " · crawling…" : " · " + c.crawled.toLocaleString() + " URLs")} onClick={() => openCrawl(c)}>
+                  <BrandMark seed={c.seed} size={34} dot={dotc} live={live} active={active} />
                 </button>
               );
               return (
                 <div key={c.id} className={"sb-crawl" + (active ? " active" : "")} onClick={() => openCrawl(c)}>
-                  <BrandMark seed={c.seed} size={26} dot={dotc} />
+                  <BrandMark seed={c.seed} size={26} dot={dotc} live={live} />
                   <div className="meta">
                     <div className="host">{host}</div>
-                    <div className="sub">{(c.total || c.crawled).toLocaleString()} URLs{c.started ? " · " + c.started.split(" ")[0] : ""}</div>
+                    <div className="sub" style={live ? { color: "var(--accent)" } : null}>
+                      {live ? "crawling…" : `${(c.total || c.crawled).toLocaleString()} URLs${c.started ? " · " + c.started.split(" ")[0] : ""}`}
+                    </div>
                   </div>
                 </div>
               );
@@ -284,16 +300,17 @@ function App() {
             : <CrawlManager crawls={crawls} onOpen={openCrawl} onResume={resumeCrawl} onCompare={() => setView("compare")} onNew={() => setView("new")} onDelete={deleteCrawl} storage={storage} />
         )}
         {view === "new" && <NewCrawl onStart={startCrawl} onOpenSettings={(p) => { setSettingsProfile(p); setSettingsBack({ view: "new", label: "New Crawl" }); setView("settings"); }} />}
-        {view === "progress" && <CrawlProgress crawlId={liveCrawlId} onOpenResults={finishToResults} />}
         {view === "results" && activeCrawl && (
           <ResultsWorkspace
             crawl={activeCrawl}
+            live={liveCrawlId === activeCrawl.id}
             tab={resultsTab}
             setTab={(id) => { setResultsTab(id); setIssueFilter(null); }}
             issueFilter={issueFilter}
             setIssueFilter={setIssueFilter}
             onOpenDetail={(url) => setDetail({ crawlId: activeCrawl.id, url })}
             onFilterByIssue={openDataset}
+            onResume={() => resumeCrawl(activeCrawl)}
           />
         )}
         {view === "settings" && <SettingsView profileName={settingsProfile} focus={settingsFocus}

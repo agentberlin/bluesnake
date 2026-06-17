@@ -6,7 +6,7 @@ import React, { useEffect, useState } from "react";
 import { Icon, Btn, StatusBadge, StatusBar, Ring } from "../ui";
 import { api, on, urlShort } from "../api";
 
-export function CrawlProgress({ crawlId, onOpenResults }) {
+export function CrawlProgress({ crawlId, onOpenResults, onResume, headerExtra }) {
   const [snap, setSnap] = useState(null);
   const [done, setDone] = useState(null);
   const [state, setState] = useState("running"); // running | paused | done
@@ -31,7 +31,10 @@ export function CrawlProgress({ crawlId, onOpenResults }) {
   async function resume() {
     setDone(null);
     setState("running");
-    await api.resumeCrawl(crawlId);
+    // Delegate to the app shell when embedded so liveCrawlId/activeCrawl stay in
+    // sync; otherwise resume directly.
+    if (onResume) onResume();
+    else await api.resumeCrawl(crawlId);
   }
 
   const s = snap || { total: 0, discovered: 1, queue: 0, s2xx: 0, s3xx: 0, s4xx: 0, s5xx: 0, blocked: 0, noresp: 0, indexable: 0, rate: 0, elapsedSec: 0, threads: 0, feed: [], seed: "" };
@@ -57,6 +60,7 @@ export function CrawlProgress({ crawlId, onOpenResults }) {
         <span className="title">{state === "done" ? "Crawl complete" : state === "paused" ? "Crawl paused" : "Crawling"}</span>
         <span className="mono sub">{host}</span>
         <div style={{ flex: 1 }} />
+        {headerExtra}
         {state === "running" && <><Btn icon="pause" onClick={pause}>Pause</Btn><Btn icon="square" onClick={stop}>Stop</Btn></>}
         {state === "paused" && <><Btn icon="play" variant="primary" onClick={resume}>Resume</Btn><Btn icon="arrow-right" onClick={() => onOpenResults(crawlId)}>View partial results</Btn></>}
         {state === "done" && <Btn icon="arrow-right" variant="primary" onClick={() => onOpenResults(crawlId)}>View results</Btn>}
