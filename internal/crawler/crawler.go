@@ -82,6 +82,11 @@ type JSDiff struct {
 	NoindexOnlyRaw     bool     `json:"noindex_only_raw,omitempty"`
 	JSLinks            int      `json:"js_links,omitempty"` // links only in the rendered DOM
 	ConsoleErrors      []string `json:"console_errors,omitempty"`
+	// StructuredJSOnly lists schema.org types present in the rendered DOM but
+	// absent from the raw HTML — structured data injected by JavaScript. It is
+	// invisible to consumers that don't render (most crawlers and LLMs), so it
+	// is surfaced as a warning even though bluesnake itself recovers it (R18).
+	StructuredJSOnly []string `json:"structured_js_only,omitempty"`
 }
 
 // Sink receives crawl output as it is produced (the store implements this).
@@ -168,6 +173,9 @@ type Crawler struct {
 
 	hashMu      sync.Mutex
 	seenContent map[string]string // raw-body content hash -> first (canonical) URL
+
+	sitemapMu    sync.Mutex
+	sitemapHosts map[string]bool // authority -> sitemap auto-discovery already run (R17)
 }
 
 type inlinkInfo struct {
@@ -220,6 +228,7 @@ func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
 	c.pages = make(map[string]*PageRecord)
 	c.inlinks = make(map[string]inlinkInfo)
 	c.seenContent = make(map[string]string)
+	c.sitemapHosts = make(map[string]bool)
 	return c, nil
 }
 
@@ -551,6 +560,15 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) []frontier.Ite
 		discoveries = c.handleContent(it, scopeClass, res, rec)
 	}
 
+	// The first time the crawl reaches an in-scope host, discover that host's
+	// own sitemaps (R17). Sitemap auto-discovery is otherwise seed-host-only, so
+	// sitemap-only pages on other in-scope hosts (additional subdomains under
+	// crawl_all_subdomains) would be missed. Gated to a real HTTP response and
+	// run once per host; the seed host was already claimed at startup.
+	if scopeClass == urlutil.Internal && res.FetchError == "" {
+		discoveries = append(discoveries, c.discoverHostSitemaps(ctx, it.URL)...)
+	}
+
 	c.record(rec)
 	return discoveries
 }
@@ -633,15 +651,24 @@ func (c *Crawler) handleContent(it frontier.Item, scopeClass urlutil.ScopeClass,
 				c.noteSinkErr(bs.Blob(it.URL, "html", res.Body))
 			}
 		}
+		renderedOK := false
 		if c.renderer != nil && !dup {
-			c.renderAndDiff(it.URL, rec, facts, res)
+			renderedOK = c.renderAndDiff(it.URL, rec, facts, res)
 		}
 		if c.extractEngine != nil {
 			// append, not assign: renderAndDiff may already have stored
 			// custom JS (kind=js) results on this record
 			rec.CustomResults = append(rec.CustomResults, c.extractEngine.Run(res.Body, facts.ContentText)...)
 		}
-		rec.StructuredData = structured.Extract(res.Body, c.cfg)
+		// Structured data reflects what Google (and Screaming Frog) see — the
+		// rendered DOM when rendering is on. renderAndDiff already extracted it
+		// from the rendered HTML, where JS-injected JSON-LD (e.g. FAQ blocks) is
+		// visible but the raw body is not (R16). Fall back to the raw body only
+		// when rendering didn't run: rendering off, a duplicate shell, or a
+		// render failure.
+		if !renderedOK {
+			rec.StructuredData = structured.Extract(res.Body, c.cfg)
+		}
 		idxInput.MetaRobots = facts.MetaRobots
 		idxInput.XRobotsTag = facts.XRobotsTag
 		idxInput.Canonicals = append(append([]string{}, facts.CanonicalHTML...), facts.CanonicalHTTP...)
@@ -670,13 +697,15 @@ func (c *Crawler) Close() {
 	}
 }
 
-// renderAndDiff renders the page in Chrome, parses the rendered DOM, merges
-// rendered-only links into the link set (origin=rendered) and records the
-// raw-vs-rendered element differences.
-func (c *Crawler) renderAndDiff(url string, rec *PageRecord, facts *parse.Facts, res *fetch.Result) {
+// renderAndDiff renders the page in Chrome, parses the rendered DOM, extracts
+// structured data from it, merges rendered-only links into the link set
+// (origin=rendered) and records the raw-vs-rendered element differences. It
+// returns true when rendering succeeded — the caller then trusts the
+// rendered-DOM structured data instead of re-extracting from the raw body.
+func (c *Crawler) renderAndDiff(url string, rec *PageRecord, facts *parse.Facts, res *fetch.Result) bool {
 	rendered, err := c.renderer.Render(context.Background(), url)
 	if err != nil {
-		return // rendering failure degrades to raw-HTML behaviour
+		return false // rendering failure degrades to raw-HTML behaviour
 	}
 
 	// persist the rendered DOM / screenshot to the assets dir when asked
@@ -691,6 +720,12 @@ func (c *Crawler) renderAndDiff(url string, rec *PageRecord, facts *parse.Facts,
 	}
 
 	rFacts := parse.Parse(url, []byte(rendered.HTML), res.Headers, c.cfg)
+
+	// Structured data is extracted from the rendered DOM (R16): JSON-LD,
+	// microdata and RDFa injected by JavaScript are absent from the raw body
+	// but are what Google and Screaming Frog read. The raw-body extraction in
+	// crawlOne runs only when this render path doesn't.
+	rec.StructuredData = structured.Extract([]byte(rendered.HTML), c.cfg)
 
 	first := func(v []string) string {
 		if len(v) > 0 {
@@ -752,7 +787,29 @@ func (c *Crawler) renderAndDiff(url string, rec *PageRecord, facts *parse.Facts,
 		seen["xhr|"+u] = true
 		facts.Links = append(facts.Links, parse.Link{Type: parse.XHR, URL: u, Origin: "xhr"})
 	}
+
+	// Flag schema.org types that exist only after rendering — structured data
+	// injected by JavaScript, invisible to non-rendering crawlers and LLMs even
+	// though bluesnake now recovers it (R18). Compare the rendered types against
+	// the raw body's types; anything rendered-only is render-dependent.
+	if rec.StructuredData != nil && len(rec.StructuredData.Types) > 0 {
+		rawTypes := map[string]bool{}
+		if rawSD := structured.Extract(res.Body, c.cfg); rawSD != nil {
+			for _, t := range rawSD.Types {
+				rawTypes[t] = true
+			}
+		}
+		seenType := map[string]bool{}
+		for _, t := range rec.StructuredData.Types {
+			if !rawTypes[t] && !seenType[t] {
+				seenType[t] = true
+				diff.StructuredJSOnly = append(diff.StructuredJSOnly, t)
+			}
+		}
+	}
+
 	rec.JSDiff = diff
+	return true
 }
 
 // customJSApplies checks a snippet's content_types filter against the page.

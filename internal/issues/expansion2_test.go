@@ -44,6 +44,7 @@ func TestExpansion2Catalogue(t *testing.T) {
 		{"canonical_invalid_attribute", "canonicals", "Invalid Attribute In Annotation", Issue, High},
 		{"validation_resource_over_2mb", "validation", "Resource Over 2MB", Issue, High},
 		{"js_description_updated", "javascript", "Meta Description Updated by JavaScript", Warning, Medium},
+		{"js_structured_data_only", "javascript", "Structured Data Only in Rendered HTML", Warning, Medium},
 		{"image_missing_alt_attribute", "images", "Missing Alt Attribute", Issue, Low},
 		{"h1_alt_text", "h1", "Alt Text in h1", Warning, Low},
 		{"sitemap_over_50k", "sitemaps", "XML Sitemap With Over 50k URLs", Issue, High},
@@ -359,6 +360,23 @@ func TestJSDescriptionUpdated(t *testing.T) {
 	}
 	if has(occs, "https://ex.com/same", "js_description_updated") {
 		t.Error("unchanged description flagged")
+	}
+}
+
+func TestJSStructuredDataOnly(t *testing.T) {
+	// a page whose FAQ schema only appears after JS render is flagged...
+	jsOnly := htmlPage("https://ex.com/js-only", expansionFacts())
+	jsOnly.JSDiff = &crawler.JSDiff{StructuredJSOnly: []string{"FAQPage", "Question"}}
+	// ...while a page whose structured data is already in the raw HTML is not
+	rawOK := htmlPage("https://ex.com/raw-ok", expansionFacts())
+	rawOK.JSDiff = &crawler.JSDiff{}
+
+	occs := eval(jsOnly, rawOK)
+	if !has(occs, "https://ex.com/js-only", "js_structured_data_only") {
+		t.Error("missing js_structured_data_only when structured data is render-only")
+	}
+	if has(occs, "https://ex.com/raw-ok", "js_structured_data_only") {
+		t.Error("page with no render-only structured data was flagged")
 	}
 }
 
