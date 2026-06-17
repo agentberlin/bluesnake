@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/frontier"
@@ -994,5 +995,140 @@ func TestResumePreservesDiscoveredFrom(t *testing.T) {
 	}
 	if rec.DiscoveredFrom != seed {
 		t.Errorf("DiscoveredFrom = %q, want the stored frontier source %q", rec.DiscoveredFrom, seed)
+	}
+}
+
+// TestResumeRespectsMaxURLs pins that the crawl-total budget (limits.max_urls)
+// is cumulative across a resume: a resumed session must not be granted a fresh
+// MaxURLs budget, or a paused-then-resumed crawl would fetch more pages than a
+// straight one. With 3 URLs already fetched and MaxURLs=4, a resume with two
+// pending pages may fetch only ONE more — not both.
+func TestResumeRespectsMaxURLs(t *testing.T) {
+	s := newSite(t, map[string]string{
+		"/p1": "<p>one</p>",
+		"/p2": "<p>two</p>",
+	})
+	seed := s.server.URL + "/"
+	cfg := config.Default()
+	cfg.Speed.MaxThreads = 1
+	cfg.Limits.MaxURLs = 4
+
+	// Simulate a paused crawl that already fetched 3 URLs, with two pages still
+	// pending. The fetch counter resumes at len(processed)=3, so the remaining
+	// budget is 4-3 = 1: exactly one pending page may be fetched.
+	processed := []string{seed, s.server.URL + "/old1", s.server.URL + "/old2"}
+	pending := []frontier.Item{
+		{URL: s.server.URL + "/p1", Depth: 1, Source: seed},
+		{URL: s.server.URL + "/p2", Depth: 1, Source: seed},
+	}
+	c, err := New(cfg, WithResume(processed, pending))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := c.Run(context.Background(), seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Crawled != 1 {
+		t.Errorf("resumed session fetched %d pages, want 1 (MaxURLs=4 minus 3 already fetched) — the budget must span sessions", res.Crawled)
+	}
+}
+
+// pauseSink captures which URLs were persisted (and in what state) and which
+// frontier items were marked done, so a test can assert what a pause did.
+type pauseSink struct {
+	mu    sync.Mutex
+	pages map[string]string // url -> state
+	done  map[string]bool   // url -> FrontierDone called
+}
+
+func (s *pauseSink) Page(rec *PageRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pages == nil {
+		s.pages = map[string]string{}
+	}
+	s.pages[rec.URL] = rec.State
+	return nil
+}
+func (s *pauseSink) FrontierAdd(frontier.Item) error { return nil }
+func (s *pauseSink) FrontierDone(url string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done == nil {
+		s.done = map[string]bool{}
+	}
+	s.done[url] = true
+	return nil
+}
+
+// TestPauseLeavesInflightPagePending pins that a URL whose fetch is in flight
+// when the crawl is paused/stopped is NOT recorded as a terminal error and NOT
+// marked done in the frontier — it stays pending so a resume re-fetches it
+// (matching a straight crawl), instead of being stranded as a permanent error.
+func TestPauseLeavesInflightPagePending(t *testing.T) {
+	hit := make(chan struct{}, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(404) }) // allow all
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, `<a href="/slow">s</a>`)
+	})
+	mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
+		// /slow blocks until the crawl context is cancelled (the pause).
+		select {
+		case hit <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	seed := srv.URL + "/"
+	slow := srv.URL + "/slow"
+
+	sink := &pauseSink{}
+	cfg := config.Default()
+	cfg.Speed.MaxThreads = 2
+	c, err := New(cfg, WithSink(sink))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	doneCh := make(chan struct{})
+	go func() { _, _ = c.Run(ctx, seed); close(doneCh) }()
+
+	<-hit    // /slow's fetch is now in flight
+	cancel() // pause: cancels the crawl context mid-fetch
+	select {
+	case <-doneCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("crawl did not finish after pause")
+	}
+
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if st, ok := sink.pages[slow]; ok {
+		t.Errorf("/slow was recorded as %q after a pause; an in-flight page must not be persisted", st)
+	}
+	if sink.done[slow] {
+		t.Error("/slow was marked done in the frontier after a pause; it must stay pending for resume")
+	}
+	// No page may be left as a terminal error by the pause itself, and the crawl
+	// must have made real progress (the seed crawled before the pause).
+	crawled := 0
+	for url, st := range sink.pages {
+		if st == StateError {
+			t.Errorf("%s recorded as error after a pause; a cancelled in-flight fetch must not become an error", url)
+		}
+		if st == StateCrawled {
+			crawled++
+		}
+	}
+	if crawled == 0 {
+		t.Error("no page was crawled; the crawl did not make progress before the pause")
 	}
 }

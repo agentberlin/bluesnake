@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
@@ -94,7 +95,7 @@ func newCrawlCmd() *cobra.Command {
 				StoreDir: storeDir, Cfg: cfg, Seeds: []string{args[0]}, Completed: !res.Interrupted,
 			})
 			if !quiet {
-				printSummary(cmd, res)
+				printSummary(cmd, res.Pages, out.Crawled, out.Total, res.Duration)
 				fmt.Fprintf(cmd.OutOrStdout(), "Crawl ID: %s\n", st.ID)
 			}
 			if res.Interrupted {
@@ -125,9 +126,13 @@ func newCrawlCmd() *cobra.Command {
 	return cmd
 }
 
-func printSummary(cmd *cobra.Command, res *crawler.Result) {
+// printSummary renders the post-crawl tally. crawled/total are the authoritative
+// full-graph counts (from finalize's Outcome), and pages is the full stored page
+// set to break down — on resume the caller passes the merged two-session graph
+// (st.LoadPages()), not the per-session res.Pages, so every line is cumulative.
+func printSummary(cmd *cobra.Command, pages map[string]*crawler.PageRecord, crawled, total int, dur time.Duration) {
 	var s2, s3, s4, s5, blocked, errs, indexable, nonIndexable, internal, external int
-	for _, p := range res.Pages {
+	for _, p := range pages {
 		switch p.Scope {
 		case "internal":
 			internal++
@@ -160,7 +165,7 @@ func printSummary(cmd *cobra.Command, res *crawler.Result) {
 	}
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Found %d URLs (%d internal, %d external) — %d crawled in %s\n",
-		res.Total, internal, external, res.Crawled, res.Duration.Round(res.Duration/100+1))
+		total, internal, external, crawled, dur.Round(dur/100+1))
 	fmt.Fprintf(out, "  2xx: %d  3xx: %d  4xx: %d  5xx: %d  blocked: %d  no-response: %d\n",
 		s2, s3, s4, s5, blocked, errs)
 	fmt.Fprintf(out, "  indexable: %d  non-indexable: %d\n", indexable, nonIndexable)

@@ -27,6 +27,16 @@ Feature: Storage, pause and resume (partial crawling)
     Then the exit code is 0
     And the stored crawl has issues recorded
 
+  Scenario: A resumed crawl reports the same final URL counts as a straight crawl
+    # The 41-page fixture has no blocked or errored URLs, so a straight crawl
+    # reports 41 crawled / 41 total. Resuming to completion must report the same
+    # cumulative counts in the registry — over the full stored graph — not just
+    # the resumed session's slice (the bug: counts came from the per-session run).
+    Given a stored crawl of a 40-page fixture site interrupted after 10 pages
+    When I run "bluesnake resume <crawlid> --store-dir <storedir>"
+    Then the exit code is 0
+    And the registry reports 41 crawled and 41 total for the resumed crawl
+
   Scenario: Resuming recomputes crawl depth over the full two-session graph
     # /deep is crawled in the first session at admit-time depth 3 (via /a -> /b);
     # the shorter path / -> /shortcut -> /deep (depth 2) is only completed on

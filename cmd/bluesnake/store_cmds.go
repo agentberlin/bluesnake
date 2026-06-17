@@ -161,7 +161,13 @@ func newResumeCmd() *cobra.Command {
 				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", st.ID, storeDir)
 				return exitErr{3, errors.New("interrupted")}
 			}
-			printSummary(cmd, res)
+			// Break down the full two-session graph, not just this session's pages
+			// (res.Pages), so the summary is cumulative like the registry counts.
+			pages := res.Pages
+			if all, lerr := st.LoadPages(); lerr == nil {
+				pages = all
+			}
+			printSummary(cmd, pages, out.Crawled, out.Total, res.Duration)
 			if ferr != nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), "finalize:", ferr)
 			} else {

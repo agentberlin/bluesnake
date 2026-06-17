@@ -146,12 +146,10 @@ func (s *crawlSession) run() {
 		done.Error = runErr.Error()
 	}
 	if res != nil {
-		done.Crawled = res.Crawled
-		done.Total = res.Total
 		done.DurationSec = int(res.Duration.Seconds())
 		// Pause keeps the crawl resumable; Stop finalises early as completed. The
 		// shared finalize path persists aggregates + status and, when completed,
-		// recomputes depth over the full graph (resume) and runs analysis.
+		// recomputes depth + inlinks over the full graph (resume) and runs analysis.
 		out, ferr := finalize.Crawl(s.c, s.st, res, finalize.Params{
 			StoreDir:  s.app.storeDir,
 			Cfg:       s.cfg,
@@ -161,6 +159,11 @@ func (s *crawlSession) run() {
 		})
 		done.Status = out.Status
 		done.Analyzed = out.Analyzed
+		// Counts come from finalize's full-graph tally (Outcome), not res, so a
+		// resumed crawl reports the cumulative two-session totals, not this
+		// session's slice.
+		done.Crawled = out.Crawled
+		done.Total = out.Total
 		if ferr != nil && done.Error == "" {
 			done.Error = ferr.Error()
 		}

@@ -511,6 +511,45 @@ func (c *Crawl) SaveDepths(pages map[string]*crawler.PageRecord) error {
 	return tx.Commit()
 }
 
+// SaveInlinks rewrites only the inlinks column for every supplied page. Resume
+// uses it to persist inlink counts recomputed over the full two-session graph
+// (crawler.RecomputeInlinks); UpdateInlinks alone counts a resumed session's
+// own edges, under-reporting pages linked across the interrupt boundary. depth
+// and discovered_from are owned by SaveDepths and the preserved per-session
+// discoverer, so they are left untouched here.
+func (c *Crawl) SaveInlinks(pages map[string]*crawler.PageRecord) error {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`UPDATE pages SET inlinks = ? WHERE url = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for url, rec := range pages {
+		if _, err := stmt.Exec(rec.Inlinks, url); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// Counts returns the authoritative URL tallies over the full stored graph:
+// total = every recorded URL (the "encountered" count, incl. robots-blocked and
+// errored — identical to PageCount), crawled = the fetched subset (state ==
+// "crawled"). These mirror the crawler's per-run Result.Total (len(c.pages)) and
+// Result.Crawled (state==crawled) exactly, but read from the store so they stay
+// correct across a resume, where the per-session Result sees only its own pages.
+// finalize derives the registry counts from this, never from the Result.
+func (c *Crawl) Counts() (crawled, total int, err error) {
+	err = c.db.QueryRow(
+		`SELECT COUNT(*), COUNT(*) FILTER (WHERE state = ?) FROM pages`,
+		crawler.StateCrawled).Scan(&total, &crawled)
+	return crawled, total, err
+}
+
 // LoadPages reconstructs every PageRecord (including parsed facts) from the
 // crawl database, keyed by URL.
 // PageCount returns the number of URLs recorded for this crawl (every state) —

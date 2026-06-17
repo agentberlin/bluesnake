@@ -785,6 +785,19 @@ is honoured, but its `content` and `structured_data` entries have no detector,
 and `compare.content_change_threshold` is unread (it pairs with the unbuilt
 `content` similarity delta).
 
+**`limits.max_urls` on resume — cumulative, with one residual (2026-06-17):**
+the crawl-total budget is a per-session fetch counter (`crawler.fetched`); a
+resumed session now seeds it from the already-recorded pages
+(`len(resumeProcessed)`), so a paused-then-resumed crawl honours the same total
+budget as a straight crawl instead of being granted a fresh `max_urls` each
+session (which previously let it fetch well past the cap). **TODO (minor):** the
+seed counts *every* recorded page including robots-blocked ones, whereas the
+live counter only increments for URLs that pass the robots gate — so a resumed
+crawl that actually hits `max_urls` while having robots-blocked pages may fetch
+a handful fewer than a straight crawl. Exact parity needs seeding from the
+non-robots-blocked page count (`COUNT(*) WHERE state != 'blocked_robots'`),
+threaded through the resume call sites. Negligible at the default cap (5M).
+
 ### 9.2 Backlog prioritization matrix (2026-06-12)
 
 Pending items ranked after the 5-domain Screaming Frog comparison

@@ -23,6 +23,7 @@ func (w *world) registerStoreSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a stored list-mode crawl with one seed pending$`, w.storedListModeCrawl)
 	sc.Step(`^all (\d+) pages are processed in the store$`, w.storeProcessedCount)
 	sc.Step(`^the stored crawl has issues recorded$`, w.storeHasIssues)
+	sc.Step(`^the registry reports (\d+) crawled and (\d+) total for the resumed crawl$`, w.registryReportsCounts)
 	sc.Step(`^the stored crawl page "([^"]*)" has depth (\d+)$`, w.storedPageDepth)
 	sc.Step(`^the stored frontier is empty$`, w.storeFrontierEmpty)
 	sc.Step(`^no fixture page was fetched twice$`, w.noDoubleFetch)
@@ -323,6 +324,25 @@ func (w *world) storeHasIssues() error {
 		return fmt.Errorf("no issues recorded after resume — analysis did not run")
 	}
 	return nil
+}
+
+// registryReportsCounts asserts the registry's crawled/total for the resumed
+// crawl — the authoritative full-graph counts finalize persists, which must
+// equal a straight crawl's (the resume-count-equivalence contract).
+func (w *world) registryReportsCounts(crawled, total int) error {
+	infos, err := store.ListCrawls(w.storeDirPath())
+	if err != nil {
+		return err
+	}
+	for _, in := range infos {
+		if in.ID == w.storedCrawlID {
+			if in.Crawled != crawled || in.Total != total {
+				return fmt.Errorf("registry crawled=%d total=%d, want %d/%d", in.Crawled, in.Total, crawled, total)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("crawl %s not in registry", w.storedCrawlID)
 }
 
 func (w *world) storeFrontierEmpty() error {
