@@ -247,6 +247,16 @@ var catalogue = []Def{
 	{"hreflang_noindex_return", "hreflang", "Noindex Return Links", Issue, High},
 	{"hreflang_unlinked", "hreflang", "Unlinked Hreflang URLs", Issue, Medium},
 	{"sitemap_over_50k", "sitemaps", "XML Sitemap With Over 50k URLs", Issue, High},
+	// llms.txt (llmstxt.org) — site-level file audit + curated-link checks,
+	// computed in the analyze package (file records + provenance links)
+	{"llms_txt_missing", "llms_txt", "Missing /llms.txt", Opportunity, Low},
+	{"llms_txt_invalid_format", "llms_txt", "Invalid /llms.txt Format", Issue, Medium},
+	{"llms_txt_missing_summary", "llms_txt", "Missing Summary", Warning, Low},
+	{"llms_txt_malformed_link_list", "llms_txt", "Malformed Link List", Warning, Low},
+	{"llms_full_txt_missing", "llms_txt", "Missing /llms-full.txt", Opportunity, Low},
+	{"llms_txt_broken_link", "llms_txt", "Broken Curated Link", Issue, High},
+	{"llms_txt_link_non_indexable", "llms_txt", "Non-Indexable Curated Link", Warning, Medium},
+	{"llms_txt_link_unverified", "llms_txt", "Unverified Curated Link", Warning, Low},
 }
 
 var defByID = func() map[string]Def {

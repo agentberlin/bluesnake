@@ -46,7 +46,7 @@ func TestLinkScoreAndAggregates(t *testing.T) {
 		page("https://ex.com/b", "https://ex.com/popular"),
 		page("https://ex.com/popular", "https://ex.com/a"),
 	)
-	r := Run(pages, nil, config.Default())
+	r := Run(pages, nil, nil, config.Default())
 	if r.LinkScores["https://ex.com/popular"] != 100 {
 		t.Errorf("most-linked page must score 100, got %v", r.LinkScores["https://ex.com/popular"])
 	}
@@ -73,7 +73,7 @@ func TestRedirectChainsAndLoops(t *testing.T) {
 		redirect("https://ex.com/l1", "https://ex.com/l2"),
 		redirect("https://ex.com/l2", "https://ex.com/l1"),
 	)
-	r := Run(pages, nil, config.Default())
+	r := Run(pages, nil, nil, config.Default())
 	if !hasOcc(r, "https://ex.com/a", "redirect_chain") {
 		t.Error("missing redirect_chain on /a")
 	}
@@ -105,7 +105,7 @@ func TestCanonicalChains(t *testing.T) {
 		canon("https://ex.com/b", "https://ex.com/c"),
 		page("https://ex.com/c"),
 	)
-	r := Run(pages, nil, config.Default())
+	r := Run(pages, nil, nil, config.Default())
 	if !hasOcc(r, "https://ex.com/a", "canonical_chain") {
 		t.Error("missing canonical_chain")
 	}
@@ -140,7 +140,7 @@ func TestNearDuplicates(t *testing.T) {
 		mk("https://ex.com/b", similar, "h2"),
 		mk("https://ex.com/c", different, "h3"),
 	)
-	r := Run(pages, nil, cfg)
+	r := Run(pages, nil, nil, cfg)
 	nd, ok := r.NearDups["https://ex.com/a"]
 	if !ok || nd.ClosestMatch != "https://ex.com/b" {
 		t.Fatalf("near dup for /a = %+v", nd)
@@ -179,7 +179,7 @@ func TestHreflangReciprocity(t *testing.T) {
 		),
 		mk(fr), // no hreflang at all: missing return
 	)
-	r := Run(pages, nil, config.Default())
+	r := Run(pages, nil, nil, config.Default())
 	if !hasOcc(r, en, "hreflang_invalid_code") {
 		t.Error("missing hreflang_invalid_code")
 	}
@@ -215,7 +215,7 @@ func TestPagination(t *testing.T) {
 		mk(p2, []string{p3}, []string{p1}),
 		mk(p3, nil, nil), // broken: doesn't point back to p2
 	)
-	r := Run(pages, nil, config.Default())
+	r := Run(pages, nil, nil, config.Default())
 	if !hasOcc(r, p2, "pagination_sequence_error") {
 		t.Error("missing pagination_sequence_error on p2 (p3 lacks prev)")
 	}
@@ -245,7 +245,7 @@ func TestSitemapSetOps(t *testing.T) {
 		"https://ex.com/noindexed":        {"https://ex.com/sitemap.xml", "https://ex.com/sitemap2.xml"},
 		"https://ex.com/docs/sitemap.xml": {"https://ex.com/sitemap.xml"},
 	}
-	r := Run(toMap(inSitemapLinked, orphan, noindexed, notListed, nestedSitemap), index, config.Default())
+	r := Run(toMap(inSitemapLinked, orphan, noindexed, notListed, nestedSitemap), index, nil, config.Default())
 	if !hasOcc(r, "https://ex.com/orphan", "sitemap_orphan") {
 		t.Error("missing sitemap_orphan")
 	}

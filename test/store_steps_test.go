@@ -345,7 +345,7 @@ func (w *world) noDoubleFetch() error {
 	w.hitsMu.Lock()
 	defer w.hitsMu.Unlock()
 	for path, n := range w.hits {
-		if path != "/robots.txt" && n > 1 {
+		if !wellKnownSiteFile(path) && n > 1 {
 			return fmt.Errorf("%s fetched %d times", path, n)
 		}
 	}

@@ -297,6 +297,14 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 			spawn(item)
 		}
 	}
+	// /llms.txt is a site-level file (like robots.txt) fetched once for the seed
+	// host; its curated links are validated against the crawl in analysis. List
+	// mode audits exactly the supplied URLs, so it is skipped there.
+	if c.cfg.LlmsTxt.Check && c.cfg.Mode != "list" {
+		for _, item := range c.crawlLlmsTxt(ctx, seeds[0]) {
+			spawn(item)
+		}
+	}
 	// On resume, preserve each pending URL's original (session-1) discoverer,
 	// captured in the frontier when it was first admitted, so a page first
 	// linked before the interrupt keeps its true DiscoveredFrom instead of

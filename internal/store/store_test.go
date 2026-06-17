@@ -231,8 +231,14 @@ func TestInterruptAndResume(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	for path, n := range hits {
-		// robots.txt is re-fetched on resume by design (fresh policy check)
-		if path != "/robots.txt" && n > 1 {
+		// Site-level well-known files (robots.txt, llms.txt) are re-fetched on
+		// resume by design — a fresh policy/validation check, idempotent in the
+		// store — so they are exempt from the no-re-fetch rule for pages.
+		switch path {
+		case "/robots.txt", "/llms.txt", "/llms-full.txt":
+			continue
+		}
+		if n > 1 {
 			t.Errorf("%s fetched %d times — resume must not re-fetch", path, n)
 		}
 	}

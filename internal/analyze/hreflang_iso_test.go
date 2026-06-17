@@ -32,7 +32,7 @@ func TestHreflangISORegistryValidation(t *testing.T) {
 		{Lang: "qq-US", URL: self},
 		{Lang: "zz-!!", URL: self},
 	}
-	r := Run(toMap(p), nil, config.Default())
+	r := Run(toMap(p), nil, nil, config.Default())
 
 	for _, bad := range []string{"zz", "en-ZZ", "qq-US", "zz-!!"} {
 		if !hasOccDetail(r, self, "hreflang_invalid_code", bad) {

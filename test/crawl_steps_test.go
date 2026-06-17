@@ -493,13 +493,24 @@ func (w *world) secondServerNotRequested(path string) error {
 	return nil
 }
 
-// requestedCount counts distinct requested paths, excluding robots.txt.
+// wellKnownSiteFile reports whether a path is a site-level well-known file
+// fetched out-of-band for every crawl (robots.txt, llms.txt) — never a crawled
+// "page", so it's excluded from page-request counts.
+func wellKnownSiteFile(path string) bool {
+	switch path {
+	case "/robots.txt", "/llms.txt", "/llms-full.txt":
+		return true
+	}
+	return false
+}
+
+// requestedCount counts distinct requested paths, excluding well-known files.
 func (w *world) requestedCount() int {
 	w.hitsMu.Lock()
 	defer w.hitsMu.Unlock()
 	n := 0
 	for path, hits := range w.hits {
-		if hits > 0 && path != "/robots.txt" {
+		if hits > 0 && !wellKnownSiteFile(path) {
 			n++
 		}
 	}
@@ -525,7 +536,7 @@ func (w *world) chainURLsRequested(count int, prefix string) error {
 	defer w.hitsMu.Unlock()
 	got := 0
 	for path, hits := range w.hits {
-		if hits > 0 && strings.HasPrefix(path, prefix) && path != "/robots.txt" {
+		if hits > 0 && strings.HasPrefix(path, prefix) && !wellKnownSiteFile(path) {
 			got++
 		}
 	}

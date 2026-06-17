@@ -7,6 +7,7 @@ package analyze
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/agentberlin/bluesnake/internal/config"
@@ -48,8 +49,35 @@ type Results struct {
 // crawling was off).
 type SitemapIndex map[string][]string
 
+// LlmsTxtFile is one fetched /llms.txt (or /llms-full.txt) record with its
+// structural-validation outcome.
+type LlmsTxtFile struct {
+	URL       string
+	Kind      string // llms_txt | llms_full_txt
+	Status    int
+	Found     bool
+	Title     string
+	Summary   string
+	Malformed bool
+}
+
+// LlmsTxtLink is one curated link listed in an llms.txt file, to be resolved
+// against the crawl graph.
+type LlmsTxtLink struct {
+	Src     string // the llms.txt URL that listed it
+	URL     string // normalized target URL
+	Section string
+	Anchor  string
+}
+
+// LlmsTxtData is the stored llms.txt audit input (files + curated links).
+type LlmsTxtData struct {
+	Files []LlmsTxtFile
+	Links []LlmsTxtLink
+}
+
 // Run executes every enabled analysis over the crawl's pages.
-func Run(pages map[string]*crawler.PageRecord, sitemaps SitemapIndex, cfg *config.Config) *Results {
+func Run(pages map[string]*crawler.PageRecord, sitemaps SitemapIndex, llmstxt *LlmsTxtData, cfg *config.Config) *Results {
 	r := &Results{
 		LinkScores: map[string]float64{},
 		UniqueIn:   map[string]int{},
@@ -74,6 +102,9 @@ func Run(pages map[string]*crawler.PageRecord, sitemaps SitemapIndex, cfg *confi
 	}
 	if cfg.Analysis.Sitemaps && len(sitemaps) > 0 {
 		a.sitemaps(sitemaps)
+	}
+	if cfg.Analysis.LlmsTxt && llmstxt != nil && len(llmstxt.Files) > 0 {
+		a.llmsTxt(llmstxt)
 	}
 	return r
 }
@@ -599,6 +630,76 @@ func (a *analyzer) sitemaps(index SitemapIndex) {
 		}
 		if _, listed := index[url]; !listed {
 			a.add(url, "sitemap_not_in_sitemap", "")
+		}
+	}
+}
+
+// llmsTxt audits the /llms.txt site files: structural validation of each file
+// (per host) plus cross-validation of its curated links against the crawl
+// graph. Like the sitemap analyzer it keys every issue on the relevant URL —
+// the llms.txt URL for file-level checks, the curated target for link checks —
+// so the issues table needs no synthetic page rows.
+func (a *analyzer) llmsTxt(d *LlmsTxtData) {
+	type group struct{ primary, full *LlmsTxtFile }
+	hostOf := func(u string) string {
+		if p, err := url.Parse(u); err == nil {
+			return p.Host
+		}
+		return u
+	}
+	byHost := map[string]*group{}
+	for i := range d.Files {
+		f := &d.Files[i]
+		g := byHost[hostOf(f.URL)]
+		if g == nil {
+			g = &group{}
+			byHost[hostOf(f.URL)] = g
+		}
+		switch f.Kind {
+		case "llms_txt":
+			g.primary = f
+		case "llms_full_txt":
+			g.full = f
+		}
+	}
+	for _, g := range byHost {
+		if g.primary == nil {
+			continue
+		}
+		if !g.primary.Found {
+			a.add(g.primary.URL, "llms_txt_missing", "")
+			continue // nothing else to validate when the file is absent
+		}
+		if g.primary.Title == "" {
+			a.add(g.primary.URL, "llms_txt_invalid_format", "missing H1 title")
+		}
+		if g.primary.Summary == "" {
+			a.add(g.primary.URL, "llms_txt_missing_summary", "")
+		}
+		if g.primary.Malformed {
+			a.add(g.primary.URL, "llms_txt_malformed_link_list", "")
+		}
+		if g.full != nil && !g.full.Found {
+			a.add(g.full.URL, "llms_full_txt_missing", "")
+		}
+	}
+
+	// Cross-validate curated links against the crawl. A link absent from the
+	// page set (external with externals off, out of scope, or never reached)
+	// can't be judged broken — it surfaces as "unverified" instead.
+	for _, l := range d.Links {
+		detail := "listed in " + l.Src
+		if l.Section != "" {
+			detail += " §" + l.Section
+		}
+		rec, ok := a.pages[l.URL]
+		switch {
+		case !ok:
+			a.add(l.URL, "llms_txt_link_unverified", detail)
+		case rec.State == crawler.StateError || rec.StatusCode < 200 || rec.StatusCode >= 400:
+			a.add(l.URL, "llms_txt_broken_link", fmt.Sprintf("status %d; %s", rec.StatusCode, detail))
+		case !rec.Indexable:
+			a.add(l.URL, "llms_txt_link_non_indexable", strings.TrimSpace(rec.IndexabilityStatus+"; "+detail))
 		}
 	}
 }
