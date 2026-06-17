@@ -184,6 +184,7 @@ var catalogue = []Def{
 	{"js_title_updated", "javascript", "Page Title Updated by JavaScript", Warning, Medium},
 	{"js_h1_updated", "javascript", "H1 Updated by JavaScript", Warning, Medium},
 	{"js_contains_links", "javascript", "Contains JavaScript Links", Warning, Medium},
+	{"js_structured_data_only", "javascript", "Structured Data Only in Rendered HTML", Warning, Medium},
 	{"js_console_errors", "javascript", "Pages With JavaScript Errors", Warning, Low},
 	// Validation (HTML parseability for search bots)
 	{"validation_missing_head", "validation", "Missing <head> Tag", Issue, High},
@@ -856,6 +857,9 @@ func (e *evaluator) javascript(rec *crawler.PageRecord) {
 	}
 	if d.JSLinks > 0 {
 		e.add(rec.URL, "js_contains_links", fmt.Sprintf("%d rendered-only links", d.JSLinks))
+	}
+	if len(d.StructuredJSOnly) > 0 {
+		e.add(rec.URL, "js_structured_data_only", strings.Join(d.StructuredJSOnly, ", "))
 	}
 	if len(d.ConsoleErrors) > 0 {
 		e.add(rec.URL, "js_console_errors", strings.Join(d.ConsoleErrors, "; "))

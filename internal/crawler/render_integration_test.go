@@ -122,3 +122,81 @@ func TestCrawlerRenderingIntegration(t *testing.T) {
 		t.Error("POST XHR must not be discovered")
 	}
 }
+
+// R16: in JS-rendering mode structured data must be extracted from the rendered
+// DOM, not the raw body. A JSON-LD block injected by JavaScript (the common
+// Webflow/CMS FAQ pattern — zenskar.com lost FAQPage/Question/Answer on 67 blog
+// pages this way) is absent from the raw HTML and was previously missed. Types
+// present in the raw HTML must still survive.
+const jsStructuredPage = `<html><head><title>SD</title>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"Acme","logo":"/l.png","url":"https://acme.example/"}</script>
+<script>
+  window.addEventListener('DOMContentLoaded', function() {
+    var s = document.createElement('script');
+    s.type = 'application/ld+json';
+    s.textContent = JSON.stringify({"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":"Q?","acceptedAnswer":{"@type":"Answer","text":"A."}}]});
+    document.head.appendChild(s);
+  });
+</script>
+</head><body><h1>h</h1><p>hello world</p></body></html>`
+
+func TestRenderedStructuredDataFromDOM(t *testing.T) {
+	cfg := config.Default()
+	cfg.Rendering.Mode = "javascript"
+	cfg.Rendering.AjaxTimeoutSec = 1
+	cfg.Extraction.StructuredData.JSONLD = true // structured-data extraction must be on
+	if render.ChromePath(cfg) == "" {
+		t.Skip("no Chrome/Chromium found; skipping rendering integration test")
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, jsStructuredPage)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	res, err := c.Run(context.Background(), srv.URL+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := res.Pages[srv.URL+"/"]
+	if root == nil || root.StructuredData == nil {
+		t.Fatalf("root/StructuredData missing: %+v", root)
+	}
+	have := map[string]bool{}
+	for _, ty := range root.StructuredData.Types {
+		have[ty] = true
+	}
+	// JS-injected FAQ types — the regression this fix prevents
+	for _, want := range []string{"FAQPage", "Question", "Answer"} {
+		if !have[want] {
+			t.Errorf("rendered structured data missing JS-injected %q; got %v", want, root.StructuredData.Types)
+		}
+	}
+	// raw-HTML type must still be present
+	if !have["Organization"] {
+		t.Errorf("rendered structured data dropped raw-HTML Organization; got %v", root.StructuredData.Types)
+	}
+	// R18: the JS-injected types are flagged as render-only; the raw type is not
+	if root.JSDiff == nil {
+		t.Fatal("JSDiff missing")
+	}
+	jsOnly := map[string]bool{}
+	for _, ty := range root.JSDiff.StructuredJSOnly {
+		jsOnly[ty] = true
+	}
+	for _, want := range []string{"FAQPage", "Question", "Answer"} {
+		if !jsOnly[want] {
+			t.Errorf("StructuredJSOnly missing JS-injected %q; got %v", want, root.JSDiff.StructuredJSOnly)
+		}
+	}
+	if jsOnly["Organization"] {
+		t.Errorf("raw-HTML Organization wrongly flagged as render-only; got %v", root.JSDiff.StructuredJSOnly)
+	}
+}

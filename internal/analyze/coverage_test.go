@@ -342,6 +342,7 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 		TitleChanged: true, RenderedTitle: "rendered", H1Changed: true,
 		DescriptionChanged: true,
 		JSLinks:            2, ConsoleErrors: []string{"boom"},
+		StructuredJSOnly: []string{"FAQPage"},
 	}
 
 	// --- validation ---
