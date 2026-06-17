@@ -1,11 +1,9 @@
 package parse
 
 import (
-	"math"
-	"regexp"
 	"slices"
+	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"golang.org/x/net/html"
@@ -15,6 +13,12 @@ import (
 // option labels are not page prose either)
 var nonTextElements = []string{"script", "style", "noscript", "template",
 	"svg", "select", "textarea"}
+
+// wordSepElements separate words but do NOT start a new line/sentence: a table
+// cell joins its row's text with a space, while the row (<tr>) is the logical
+// line. Screaming Frog counts a two-cell row as one sentence whose cells are
+// space-joined words; only <tr> (and other block elements) end a sentence.
+var wordSepElements = map[string]bool{"td": true, "th": true}
 
 // collectContentMetrics computes word count, readability and text ratio.
 // Word count and readability use the configured content area (nav/footer
@@ -26,21 +30,19 @@ func collectContentMetrics(root *html.Node, body []byte, cfg *config.Config, fac
 	}
 
 	area := &cfg.Content.Area
-	rawContent := collectText(bodyNode, area, hasIncludeRules(area), false)
-	contentText := collapseSpace(rawContent)
-	fullText := collapseSpace(collectText(bodyNode, nil, false, false))
+	blocks := extractBlocks(bodyNode, area, hasIncludeRules(area), true)
+	facts.ContentText = strings.Join(blocks, " ")
 
-	facts.ContentText = contentText
-	words := strings.Fields(contentText)
-	facts.WordCount = len(words)
+	stats := computeStats(blocks)
+	facts.WordCount = stats.words
+	facts.AvgWordsPerSentence = stats.avgWordsPerSentence
+	facts.Flesch = stats.flesch
+
 	if len(body) > 0 {
+		// Text ratio is whole-page visible text vs total bytes — no content-area
+		// exclusion and no synthetic list markers.
+		fullText := strings.Join(extractBlocks(bodyNode, nil, false, false), " ")
 		facts.TextRatio = float64(len(fullText)) / float64(len(body)) * 100
-	}
-
-	sentences := countSentences(rawContent)
-	if len(words) > 0 {
-		facts.AvgWordsPerSentence = float64(len(words)) / float64(sentences)
-		facts.Flesch = fleschScore(words, sentences)
 	}
 }
 
@@ -48,48 +50,143 @@ func hasIncludeRules(area *config.ContentAreaConfig) bool {
 	return len(area.IncludeElements)+len(area.IncludeClasses)+len(area.IncludeIDs) > 0
 }
 
-// collectText walks the subtree gathering text. With include rules, only
-// subtrees rooted at a matching element contribute (inIncluded tracks that);
-// exclude rules always prune. Words join across inline elements and break
-// at every other element boundary, matching rendered text.
-func collectText(n *html.Node, area *config.ContentAreaConfig, includeMode, inIncluded bool) string {
-	var b strings.Builder
-	collectTextInto(&b, n, area, includeMode, inIncluded)
-	return b.String()
+// extractBlocks walks the subtree and returns the visible text split into blocks
+// (logical lines). The split is structural, not textual: every non-inline
+// element except table cells starts a new block, and so does <br> — but literal
+// whitespace inside a text node (including newlines) is just a word break, never
+// a sentence break. Inline elements join their text with no space (except an
+// immediately same-tag-adjacent sibling, which breaks a word); table cells
+// (<td>/<th>) insert a word space without ending the block. With include rules,
+// only subtrees rooted at a matching element contribute (inIncluded tracks
+// that); exclude rules always prune. List markers are synthesised when
+// withMarkers is set (off for the text-ratio pass).
+func extractBlocks(root *html.Node, area *config.ContentAreaConfig, includeMode, withMarkers bool) []string {
+	e := &blockExtractor{area: area, includeMode: includeMode, withMarkers: withMarkers}
+	e.walk(root, false, false)
+	e.flush()
+	return e.blocks
 }
 
-func collectTextInto(b *strings.Builder, n *html.Node, area *config.ContentAreaConfig, includeMode, inIncluded bool) {
+type blockExtractor struct {
+	area          *config.ContentAreaConfig
+	includeMode   bool
+	withMarkers   bool
+	blocks        []string
+	cur           strings.Builder
+	pendingMarker string // list marker waiting to prefix the item's first line
+}
+
+func (e *blockExtractor) flush() {
+	if t := collapseSpace(e.cur.String()); t != "" {
+		// A list marker renders on the same line as the item's first content,
+		// even when that content is wrapped in block elements
+		// (<li><div>text</div></li> reads "• text", not "•" then "text").
+		if e.pendingMarker != "" {
+			t = e.pendingMarker + " " + t
+			e.pendingMarker = ""
+		}
+		e.blocks = append(e.blocks, t)
+	}
+	e.cur.Reset()
+}
+
+func (e *blockExtractor) walk(n *html.Node, inIncluded, inPre bool) {
 	if n.Type == html.ElementNode {
 		if slices.Contains(nonTextElements, n.Data) {
 			return
 		}
-		if area != nil {
-			if matchesRules(n, area.ExcludeElements, area.ExcludeClasses, area.ExcludeIDs) {
+		if e.area != nil {
+			if matchesRules(n, e.area.ExcludeElements, e.area.ExcludeClasses, e.area.ExcludeIDs) {
 				return
 			}
-			if includeMode && !inIncluded &&
-				matchesRules(n, area.IncludeElements, area.IncludeClasses, area.IncludeIDs) {
+			if e.includeMode && !inIncluded &&
+				matchesRules(n, e.area.IncludeElements, e.area.IncludeClasses, e.area.IncludeIDs) {
 				inIncluded = true
 			}
 		}
+		if n.Data == "pre" {
+			inPre = true
+		}
 	}
-	if n.Type == html.TextNode && (!includeMode || inIncluded) {
-		b.WriteString(n.Data)
+	if n.Type == html.TextNode && (!e.includeMode || inIncluded) {
+		e.writeText(n.Data, inPre)
 	}
-	// the newline boundary marker doubles as a sentence break for
-	// countSentences; collapseSpace turns it into a plain word break
-	boundary := n.Type == html.ElementNode && !inlineElements[n.Data]
-	if boundary {
-		b.WriteString("\n")
-	} else if sameTagAdjacent(n) {
-		b.WriteString(" ") // word break without a sentence break
+
+	isBlock := n.Type == html.ElementNode && !inlineElements[n.Data] && !wordSepElements[n.Data]
+	isWordSep := n.Type == html.ElementNode && wordSepElements[n.Data]
+	switch {
+	case isBlock:
+		e.flush()
+		if e.withMarkers && n.Data == "li" {
+			e.pendingMarker = listMarker(n)
+		}
+	case isWordSep:
+		e.cur.WriteByte(' ')
+	case sameTagAdjacent(n):
+		e.cur.WriteByte(' ') // word break without a sentence break
 	}
+
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		collectTextInto(b, c, area, includeMode, inIncluded)
+		e.walk(c, inIncluded, inPre)
 	}
-	if boundary {
-		b.WriteString("\n")
+
+	if isWordSep {
+		e.cur.WriteByte(' ')
 	}
+	if isBlock {
+		e.flush()
+		if n.Data == "li" {
+			e.pendingMarker = "" // drop an unconsumed marker (empty item)
+		}
+	}
+}
+
+// writeText appends a text node's data to the current block. Inside <pre>,
+// whitespace is significant: a newline is a line break, so it ends the block
+// (a preformatted code/ascii line is its own line, the way browsers and
+// Screaming Frog treat it). Elsewhere, all whitespace — including source
+// newlines — collapses to a single word break at flush time.
+func (e *blockExtractor) writeText(s string, inPre bool) {
+	if !inPre || !strings.ContainsRune(s, '\n') {
+		e.cur.WriteString(s)
+		return
+	}
+	for i, line := range strings.Split(s, "\n") {
+		if i > 0 {
+			e.flush()
+		}
+		e.cur.WriteString(line)
+	}
+}
+
+// listMarker returns the rendered marker for a list item: a bullet for <ul>
+// items and the ordinal "N." for <ol> items (honouring the list's start
+// attribute), matching the visible text Screaming Frog counts. The bullet is a
+// single word; "N." is a number word that also ends a sentence. Items whose
+// parent is not a list, and definition lists, have no marker.
+func listMarker(li *html.Node) string {
+	p := li.Parent
+	if p == nil || p.Type != html.ElementNode {
+		return ""
+	}
+	switch p.Data {
+	case "ul":
+		return "•"
+	case "ol":
+		idx := 1
+		if s := strings.TrimSpace(attr(p, "start")); s != "" {
+			if v, err := strconv.Atoi(s); err == nil {
+				idx = v
+			}
+		}
+		for sib := p.FirstChild; sib != nil && sib != li; sib = sib.NextSibling {
+			if sib.Type == html.ElementNode && sib.Data == "li" {
+				idx++
+			}
+		}
+		return strconv.Itoa(idx) + "."
+	}
+	return ""
 }
 
 func matchesRules(n *html.Node, elements, classes, ids []string) bool {
@@ -119,76 +216,4 @@ func findElement(n *html.Node, tag string) *html.Node {
 		}
 	}
 	return nil
-}
-
-var sentenceEnd = regexp.MustCompile(`[.!?]+`)
-
-// forcedBreakChars splits very long unpunctuated prose into multiple
-// sentences for readability scoring: each block contributes one extra
-// sentence per this many characters (Screaming Frog behaviour, measured
-// against controlled pages — see the parity notes).
-const forcedBreakChars = 85
-
-// countSentences counts sentences the way Screaming Frog does: block
-// boundaries (the \n markers collectText emits) end a sentence, runs of
-// [.!?] split within a block, and every 85 characters of block text force
-// an extra break so punctuation-free pages still score sensibly. The forced
-// break counts runes, not bytes, so multi-byte (non-ASCII) prose is not
-// over-split — len() would count one accented or CJK character as 2–3.
-func countSentences(raw string) int {
-	n := 0
-	for block := range strings.SplitSeq(raw, "\n") {
-		text := collapseSpace(block)
-		if text == "" {
-			continue
-		}
-		for _, segment := range sentenceEnd.Split(text, -1) {
-			if strings.TrimSpace(segment) != "" {
-				n++
-			}
-		}
-		n += utf8.RuneCountInString(text) / forcedBreakChars
-	}
-	if n == 0 {
-		return 1
-	}
-	return n
-}
-
-// fleschScore computes the Flesch Reading Ease score with a vowel-group
-// syllable approximation, clamped to [0, 100] (Screaming Frog parity).
-func fleschScore(words []string, sentences int) float64 {
-	syllables := 0
-	for _, w := range words {
-		syllables += syllableEstimate(w)
-	}
-	wordCount := float64(len(words))
-	score := 206.835 - 1.015*(wordCount/float64(sentences)) - 84.6*(float64(syllables)/wordCount)
-	return math.Min(100, math.Max(0, score))
-}
-
-// syllableEstimate counts vowel groups (y included), treating the silent
-// endings -e, -ed and -es as non-syllabic — except -le/-les, where the e is
-// sounded ("table"). Tokens keep whatever punctuation they were written
-// with, and vowel-less tokens ("$49") count zero syllables.
-func syllableEstimate(word string) int {
-	w := strings.ToLower(word)
-	count := 0
-	prevVowel := false
-	for _, r := range w {
-		isVowel := strings.ContainsRune("aeiouy", r)
-		if isVowel && !prevVowel {
-			count++
-		}
-		prevVowel = isVowel
-	}
-	if count > 1 {
-		switch {
-		case strings.HasSuffix(w, "le") || strings.HasSuffix(w, "les"):
-			// sounded e
-		case strings.HasSuffix(w, "e") || strings.HasSuffix(w, "ed") || strings.HasSuffix(w, "es"):
-			count--
-		}
-	}
-	return count
 }

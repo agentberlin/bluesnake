@@ -9,6 +9,67 @@ Status: living document — **all milestones M0–M14 implemented** (2026-06-10)
 
 ---
 
+## 0. Engineering quality bar (the change standard)
+
+bluesnake is an open-source tool used by a real community; we are responsible to
+them for its correctness. Identifying a gap is cheap; **changing the engine is
+not, and every production change clears a high bar.** Making one diff disappear is
+never the goal — leaving the product *holistically* correct is. There are **no
+ad-hoc, patch-it-and-move-on fixes.** This bar governs every engine change
+(features, parity fixes, bug fixes) and is the operational contract behind Goal #9
+(§1) and the testing strategy (§6).
+
+1. **Architect first, code second.** Understand how the change fits the product as
+   a whole and design the *right* shape before writing anything — not the smallest
+   local patch that silences a symptom. If correctness means redesigning an
+   internal, moving responsibilities between packages, or reshaping a data flow,
+   do that. We carry **no legacy code or backward-compatibility debt for its own
+   sake**: the right design wins over the smaller diff. A narrow hack that leaves
+   the architecture worse is unacceptable even when it makes a number match.
+
+2. **Ground the change in correct behaviour — not in matching a reference tool's
+   output.** Our parity target is Screaming Frog (§1), but we cannot see its
+   source, so every "what does SF do here" is a best-judgement inference. Anchor
+   it in what crawling/auditing is actually *supposed* to do — HTTP / HTML / SEO
+   semantics, the relevant spec, REP / Google docs — and research to confirm the
+   correct behaviour when needed. **Matching SF's number is necessary but not
+   sufficient:** a change that lines the number up without being grounded in
+   correct behaviour is a liability that resurfaces as a new defect on the next
+   site. Where SF is demonstrably legacy/ambiguous or simply wrong, we
+   deliberately diverge and record why.
+
+3. **Read the history first — and suspect past fixes.** Before touching anything,
+   read the implementation-status deltas (§9 / §9.1) and the parity comparison
+   decision log kept with the SF-comparison harness (every divergence ever ruled
+   on, *including the ones we chose not to fix*). A new symptom is often a side
+   effect of a previous best-guess fix; knowing the history is how we catch "the
+   number matches now, but we quietly broke something we fixed before."
+
+4. **Test-first, TDD and BDD — the suite is the regression net.** For each change,
+   decide whether the behaviour is already covered by a unit/behavioural test,
+   folds into one, or needs a new one. **Write or extend that test first and watch
+   it fail**, then implement until it passes. These pinned tests exist precisely
+   *because* each parity inference is a best guess — they must fail loudly when a
+   future change accidentally undoes a past one. **No engine change lands without a
+   test that pins the intended behaviour.**
+
+5. **Every surface, not just the one you measured.** A change to crawler / parser
+   / analysis logic must be correct and consistent across **all** surfaces — the
+   CLI, the MCP server (`internal/mcp`), and the desktop UI (`desktop/`). A
+   behaviour fixed in one path but wrong in another is not fixed.
+
+6. **When in doubt, ask.** If the right design, the test boundary, the intended
+   semantics, or even whether a gap is worth fixing is unclear, stop and ask
+   rather than guess. A wrong change shipped to the community is far worse than a
+   question asked.
+
+Parity gaps themselves are discovered through the SF-comparison harness, whose
+loop is *compare → rank → triage → **log every decision** (including won't-fix) →
+record the domain*, so the same divergence is never investigated twice; §9.2
+mirrors the current backlog distilled from that log.
+
+---
+
 ## 1. Goals and non-goals
 
 ### Goals
@@ -592,6 +653,38 @@ JS-updated description, the Missing Alt Attribute vs Alt Text split, and Alt
 Text in h1. Carried by three new parse facts: `Link.NoAltAttr`,
 `Facts.H1AltText`, `Facts.CanonicalInvalidAttrs`.
 
+**2026-06-17 — tokenization parity (word count / sentences / Flesch, was the
+§9.2 #1 backlog row).** Reverse-engineered Screaming Frog v24.1's content
+tokenization against ~100 controlled probe pages (crawled with SF headless) and
+rebuilt it grounded in correct behaviour. The content text is now extracted as
+**logical-line blocks** (`internal/parse.extractBlocks`) and the readability
+metrics from a pure stats module (`internal/parse/readability.go`,
+`computeStats`/`blockSentences`), replacing the old single-pass walker and the
+guessed `floor(chars/85)` sentence heuristic. Fixes, each pinned by a probe
+measured against SF (`content_parity_test.go`, `readability_test.go`):
+table cells (`<td>/<th>`) separate words but the **row** (`<tr>`) is the
+sentence/line; **list markers are rendered text** — `<ul>`→`•` (a word), `<ol>`→
+`N.` (a number word **and** a terminating period), attached to the item's first
+line even through wrapped block children, nested per level, `<dl>` none;
+**sentence segmentation** = greedy ≤80-char run packing **plus** a split at every
+`.!?` terminator (including mid-word, e.g. `3.14`), deduplicated against run
+boundaries; literal newlines in text collapse to a word break, **except inside
+`<pre>`** where a newline is a line/sentence boundary (HTML-correct). Word/
+sentence parity is exact on **95/101 probes**; on a real 400-page site word-count
+exact-match rose 42%→79%. The *readability-bucket* half of R5/G7 did **not**
+materially improve, though (Flesch median |diff| only 2.66→2.40; bucket agreement
+~flat at 89%→86%): with word and sentence counts now matching, the residual Flesch
+error is dominated by the **syllable-estimation heuristic**, tracked as its own
+§9.2 row and the R5/G7 readability-half FIX-LATER. The six residual
+probes are documented SF artifacts or separate gaps (see §9.2): SF's `<main>`-
+present content-area heuristic, SF counting a `<pre>` ASCII-art symbol line and a
+bare `<hr>` as words, an SF off-by-one when a terminator lands exactly on the
+80-char run edge, and Flesch divergence from the **syllable-estimation
+heuristic** on vocabulary-dense pages (identical word+sentence counts, different
+syllables) — the last is the main remaining readability-bucket limiter and needs
+a pronunciation dictionary. The §9.2 backlog row is retired; these residuals are
+tracked as their own rows.
+
 **2026-06-17 — llms.txt as a first-class audit (+8 checks, new `llms_txt`
 tab).** A new `internal/llmstxt` parser/validator and an `llms_txt:` config
 block (`check`/`fetch_full`/`crawl_linked`, plus `analysis.llms_txt`). The seed
@@ -706,7 +799,9 @@ uncertainty.
 
 | Item | Parity gain | Real-world use | Risk | Notes |
 |---|---|---|---|---|
-| Tokenization parity (G7/G21) — word count, sentences, Flesch | High | High | Med | Largest remaining numeric divergence (hundreds of word-count diffs per site); readability buckets flip issue lists. Pin SF's rules with probe pages first (td/tr sentence semantics, inline joins without spaces) |
+| Readability syllable precision (Flesch/buckets) | Low-Med | Med | Med | Residual of the 2026-06-17 tokenization fix: word & sentence counts now match SF, but the vowel-group syllable heuristic diverges on vocabulary-dense pages (identical words+sentences, Flesch off by enough to flip a readability bucket). The remaining readability-bucket gap. A pronunciation dictionary (CMUdict-style, embedded) is the real fix; large and overlaps the cut spelling/dictionary work |
+| Content-area `<main>`/sectioning heuristic | Low-Med | Low-Med | Med | When a page has `<main>`, SF appears to drop some sibling sectioning content (`<header>`/`<aside>`) from the content area; bluesnake counts all non-nav/footer text. Surfaced as probe `d02`. Needs a dedicated content-area probe sweep before changing extraction |
+| `<pre>` ASCII-art symbol word counting | Low | Near-zero | Low | Inside `<pre>`, SF counts box-drawing/symbol lines as fewer "words" than bluesnake (probe `pre03`). Newlines-as-lines already match; only pure-symbol token counting differs. Niche (ascii diagrams); quirky SF rule |
 | Issues catalogue 164 → ~300 (residual tail) | Med | Med | Low-Med | 27 checks shipped 2026-06-12 (directives/pagination/hreflang/links complete for native data, §9). What remains needs new infrastructure per check — rendering-mode JS filters, Bad Content Type sniffing, Broken Bookmark (G28-entangled), HTTP Refresh header, sitemap >50MB — or is a11y/spelling/AMP-validator work tracked in its own rows |
 | `respect_noindex/canonical/next_prev` wiring | Med | High | Med | Real SF workflow knobs ("crawl as Google indexes"). Today they parse and silently do nothing. Defaults off, so no default-behavior risk |
 | SF-style elem paths `[n]`/`[@class]` (G10) | High | Med | Med | Kills ~12k cosmetic path diffs/site and unlocks SF's class-driven Navigation position matches. Exact qualifier rules need probes (SF emits [n] only for same-tag siblings, sometimes [@class] instead) |
