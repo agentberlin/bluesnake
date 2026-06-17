@@ -78,6 +78,11 @@ CREATE TABLE IF NOT EXISTS frontier(url TEXT PRIMARY KEY, depth INT, redirect_ho
 CREATE TABLE IF NOT EXISTS issues(url TEXT, issue TEXT, detail TEXT, PRIMARY KEY(url, issue));
 CREATE TABLE IF NOT EXISTS custom_results(url TEXT, kind TEXT, name TEXT, value TEXT, PRIMARY KEY(url, kind, name));
 CREATE TABLE IF NOT EXISTS sitemap_entries(sitemap TEXT, url TEXT, PRIMARY KEY(sitemap, url));
+CREATE TABLE IF NOT EXISTS llmstxt(
+  url TEXT PRIMARY KEY, kind TEXT, status INT, found INT,
+  title TEXT, summary TEXT, malformed INT, content TEXT);
+CREATE TABLE IF NOT EXISTS llmstxt_links(
+  src TEXT, url TEXT, section TEXT, anchor TEXT, PRIMARY KEY(src, url));
 CREATE TABLE IF NOT EXISTS analysis(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS blobs(url TEXT, kind TEXT, path TEXT, PRIMARY KEY(url, kind));
 `
@@ -672,6 +677,61 @@ func (c *Crawl) BlobPath(url, kind string) (string, error) {
 func (c *Crawl) SitemapEntry(sitemap, url string) error {
 	_, err := c.db.Exec(`INSERT OR IGNORE INTO sitemap_entries(sitemap, url) VALUES(?,?)`, sitemap, url)
 	return err
+}
+
+// LlmsTxtFile records one fetched /llms.txt (or /llms-full.txt) file and its
+// structural-validation outcome (crawler sink extension).
+func (c *Crawl) LlmsTxtFile(rec crawler.LlmsTxtRecord) error {
+	_, err := c.db.Exec(`INSERT OR REPLACE INTO llmstxt
+		(url, kind, status, found, title, summary, malformed, content) VALUES(?,?,?,?,?,?,?,?)`,
+		rec.URL, rec.Kind, rec.Status, boolInt(rec.Found),
+		rec.Title, rec.Summary, boolInt(rec.Malformed), string(rec.Content))
+	return err
+}
+
+// LlmsTxtLink records one curated link listed in an llms.txt file — provenance
+// that survives independently of the link graph and frontier dedup.
+func (c *Crawl) LlmsTxtLink(src, url, section, anchor string) error {
+	_, err := c.db.Exec(`INSERT OR IGNORE INTO llmstxt_links(src, url, section, anchor) VALUES(?,?,?,?)`,
+		src, url, section, anchor)
+	return err
+}
+
+// LlmsTxt reloads the stored llms.txt audit input (files + curated links) for
+// the analysis phase. Returns an empty (non-nil) set when no file was fetched.
+func (c *Crawl) LlmsTxt() (*analyze.LlmsTxtData, error) {
+	data := &analyze.LlmsTxtData{}
+	rows, err := c.db.Query(`SELECT url, kind, status, found, title, summary, malformed FROM llmstxt`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var f analyze.LlmsTxtFile
+		var found, malformed int
+		if err := rows.Scan(&f.URL, &f.Kind, &f.Status, &found, &f.Title, &f.Summary, &malformed); err != nil {
+			return nil, err
+		}
+		f.Found = found == 1
+		f.Malformed = malformed == 1
+		data.Files = append(data.Files, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	lrows, err := c.db.Query(`SELECT src, url, section, anchor FROM llmstxt_links`)
+	if err != nil {
+		return nil, err
+	}
+	defer lrows.Close()
+	for lrows.Next() {
+		var l analyze.LlmsTxtLink
+		if err := lrows.Scan(&l.Src, &l.URL, &l.Section, &l.Anchor); err != nil {
+			return nil, err
+		}
+		data.Links = append(data.Links, l)
+	}
+	return data, lrows.Err()
 }
 
 // SitemapIndex returns page URL -> sitemaps listing it.

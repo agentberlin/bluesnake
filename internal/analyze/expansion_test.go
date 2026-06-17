@@ -42,7 +42,7 @@ func TestPaginationLoop(t *testing.T) {
 		withNext(page("https://ex.com/p1"), "https://ex.com/p2"),
 		withPrev(page("https://ex.com/p2"), "https://ex.com/p1"),
 	)
-	r := Run(pages, nil, config.Default())
+	r := Run(pages, nil, nil, config.Default())
 	for _, url := range []string{"https://ex.com/l0", "https://ex.com/l1", "https://ex.com/l2"} {
 		if !hasOcc(r, url, "pagination_loop") {
 			t.Errorf("missing pagination_loop on %s", url)
@@ -59,7 +59,7 @@ func TestPaginationSelfLoop(t *testing.T) {
 	pages := toMap(
 		withNext(page("https://ex.com/self"), "https://ex.com/self"),
 	)
-	if r := Run(pages, nil, config.Default()); !hasOcc(r, "https://ex.com/self", "pagination_loop") {
+	if r := Run(pages, nil, nil, config.Default()); !hasOcc(r, "https://ex.com/self", "pagination_loop") {
 		t.Error("missing pagination_loop on a rel=next pointing at the page itself")
 	}
 }
@@ -73,7 +73,7 @@ func TestPaginationUnlinked(t *testing.T) {
 		page("https://ex.com/linker", "https://ex.com/p1"),
 	)
 	pages["https://ex.com/p2"].Facts.NextHTML = []string{"https://ex.com/p3"}
-	r := Run(pages, nil, config.Default())
+	r := Run(pages, nil, nil, config.Default())
 	if !hasOcc(r, "https://ex.com/p2", "pagination_unlinked") {
 		t.Error("missing pagination_unlinked on a pagination URL with no hyperlink inlinks")
 	}
@@ -105,7 +105,7 @@ func TestHreflangInconsistentReturn(t *testing.T) {
 			parse.Hreflang{Lang: "x-default", URL: "https://ex.com/en"},
 		),
 	)
-	r := Run(pages, nil, config.Default())
+	r := Run(pages, nil, nil, config.Default())
 	if !hasOcc(r, "https://ex.com/en", "hreflang_inconsistent_return") {
 		t.Error("missing hreflang_inconsistent_return: annotation code conflicts with the target's self-declaration")
 	}
@@ -139,7 +139,7 @@ func TestHreflangNonCanonicalAndNoindexReturn(t *testing.T) {
 		noidx,
 		page("https://ex.com/master"),
 	)
-	r := Run(pages, nil, config.Default())
+	r := Run(pages, nil, nil, config.Default())
 	if got := occDetails(r, "https://ex.com/en", "hreflang_non_canonical_return"); len(got) != 1 || got[0] != "https://ex.com/dup" {
 		t.Errorf("hreflang_non_canonical_return details = %v, want exactly [https://ex.com/dup]", got)
 	}
@@ -161,7 +161,7 @@ func TestHreflangUnlinked(t *testing.T) {
 		),
 		page("https://ex.com/linker", "https://ex.com/en"),
 	)
-	r := Run(pages, nil, config.Default())
+	r := Run(pages, nil, nil, config.Default())
 	if !hasOcc(r, "https://ex.com/de", "hreflang_unlinked") {
 		t.Error("missing hreflang_unlinked on a page reachable only via hreflang annotations")
 	}
@@ -177,7 +177,7 @@ func TestSitemapOver50k(t *testing.T) {
 	}
 	index["https://ex.com/small"] = append(index["https://ex.com/small"], "https://ex.com/sitemap-small.xml")
 	pages := toMap(page("https://ex.com/"))
-	r := Run(pages, index, config.Default())
+	r := Run(pages, index, nil, config.Default())
 	if got := occDetails(r, "https://ex.com/sitemap-big.xml", "sitemap_over_50k"); len(got) != 1 || got[0] != "50001 URLs" {
 		t.Errorf("sitemap_over_50k details = %v, want exactly [50001 URLs]", got)
 	}

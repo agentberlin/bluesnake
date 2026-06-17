@@ -75,7 +75,11 @@ func (w *world) runAnalysisStep() error {
 	if err != nil {
 		return err
 	}
-	results := analyze.Run(pages, sitemaps, cfg)
+	llmstxt, err := st.LlmsTxt()
+	if err != nil {
+		return err
+	}
+	results := analyze.Run(pages, sitemaps, llmstxt, cfg)
 	w.issueOccs = append(occs, results.Occurrences...)
 	if err := st.SaveIssues(occs); err != nil {
 		return err

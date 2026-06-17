@@ -13,6 +13,7 @@ type Config struct {
 	Resources        ResourcesConfig    `yaml:"resources"`
 	Links            LinksConfig        `yaml:"links"`
 	Sitemaps         SitemapsConfig     `yaml:"sitemaps"`
+	LlmsTxt          LlmsTxtConfig      `yaml:"llms_txt"`
 	Extraction       ExtractionConfig   `yaml:"extraction"`
 	Limits           LimitsConfig       `yaml:"limits"`
 	Rendering        RenderingConfig    `yaml:"rendering"`
@@ -89,6 +90,15 @@ type SitemapsConfig struct {
 	CrawlLinked           bool     `yaml:"crawl_linked"`
 	AutoDiscoverViaRobots bool     `yaml:"auto_discover_via_robots"`
 	URLs                  []string `yaml:"urls"`
+}
+
+// LlmsTxtConfig controls the /llms.txt site audit (llmstxt.org). The file is
+// fetched once per crawled host, out-of-band like robots.txt; its curated links
+// are cross-checked against the crawl during analysis.
+type LlmsTxtConfig struct {
+	Check       bool `yaml:"check"`        // fetch & validate /llms.txt at all
+	FetchFull   bool `yaml:"fetch_full"`   // also fetch /llms-full.txt
+	CrawlLinked bool `yaml:"crawl_linked"` // admit the curated links into the frontier
 }
 
 type PageDetailsConfig struct {
@@ -347,6 +357,7 @@ type AnalysisConfig struct {
 	Canonicals     bool `yaml:"canonicals"`
 	Links          bool `yaml:"links"`
 	Sitemaps       bool `yaml:"sitemaps"`
+	LlmsTxt        bool `yaml:"llms_txt"`
 }
 
 type StorageConfig struct {

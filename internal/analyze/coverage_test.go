@@ -38,7 +38,7 @@ func covRedirect(url, target string) *crawler.PageRecord {
 
 // kitchenSink builds one page set (plus a sitemap index) that collectively
 // trips every issue in the catalogue.
-func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
+func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex, *LlmsTxtData) {
 	const ks = "https://ks.ex"
 	pages := map[string]*crawler.PageRecord{}
 	add := func(p *crawler.PageRecord) *crawler.PageRecord {
@@ -379,7 +379,24 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex) {
 	nd2 := add(covPage(ks + "/nd2"))
 	nd2.Facts = &parse.Facts{ContentText: strings.Join(words, " "), WordCount: 400, Hash: "nd-2", Flesch: 60}
 
-	return pages, sitemaps
+	// --- llms.txt --- two synthetic hosts cover the mutually-exclusive file
+	// states (one absent, one present-but-broken); curated links resolve against
+	// the ks pages above to trip every link bucket.
+	llmstxt := &LlmsTxtData{
+		Files: []LlmsTxtFile{
+			{URL: "https://miss.ex/llms.txt", Kind: "llms_txt", Status: 404, Found: false},
+			{URL: "https://bad.ex/llms.txt", Kind: "llms_txt", Status: 200, Found: true,
+				Title: "", Summary: "", Malformed: true}, // invalid_format + missing_summary + malformed
+			{URL: "https://bad.ex/llms-full.txt", Kind: "llms_full_txt", Status: 404, Found: false},
+		},
+		Links: []LlmsTxtLink{
+			{Src: "https://bad.ex/llms.txt", URL: ks + "/404", Section: "Docs"},           // broken_link
+			{Src: "https://bad.ex/llms.txt", URL: ks + "/sm-noindex", Section: "Docs"},    // non_indexable
+			{Src: "https://bad.ex/llms.txt", URL: "https://absent.ex/x", Section: "Refs"}, // unverified
+		},
+	}
+
+	return pages, sitemaps, llmstxt
 }
 
 // healthyPages is the negative fixture: a fully healthy two-page site that
@@ -433,8 +450,26 @@ func healthyPages() map[string]*crawler.PageRecord {
 	return toMap(a, b)
 }
 
+// healthyLlmsTxt is the negative llms.txt fixture: a present, well-formed file
+// whose curated links all resolve to healthy crawled pages — it must trip
+// nothing in the analyze phase.
+func healthyLlmsTxt() *LlmsTxtData {
+	const host = "https://healthy.ex"
+	return &LlmsTxtData{
+		Files: []LlmsTxtFile{
+			{URL: host + "/llms.txt", Kind: "llms_txt", Status: 200, Found: true,
+				Title: "Healthy Project", Summary: "A perfectly healthy summary."},
+			{URL: host + "/llms-full.txt", Kind: "llms_full_txt", Status: 200, Found: true},
+		},
+		Links: []LlmsTxtLink{
+			{Src: host + "/llms.txt", URL: host + "/", Section: "Docs"},
+			{Src: host + "/llms.txt", URL: host + "/second", Section: "Docs"},
+		},
+	}
+}
+
 func TestCatalogueFixtureCoverage(t *testing.T) {
-	pages, sitemaps := kitchenSink()
+	pages, sitemaps, llmstxt := kitchenSink()
 	cfg := config.Default()
 	cfg.Content.NearDuplicates.Enabled = true
 	cfg.Resources.Images.Store = true           // image checks are storage-gated
@@ -445,7 +480,7 @@ func TestCatalogueFixtureCoverage(t *testing.T) {
 	for _, o := range issues.Evaluate(pages, cfg) {
 		triggered[o.IssueID] = true
 	}
-	for _, o := range Run(pages, sitemaps, cfg).Occurrences {
+	for _, o := range Run(pages, sitemaps, llmstxt, cfg).Occurrences {
 		triggered[o.IssueID] = true
 	}
 
@@ -468,7 +503,7 @@ func TestHealthySiteTriggersNothing(t *testing.T) {
 	for _, o := range issues.Evaluate(pages, cfg) {
 		t.Errorf("healthy page %s unexpectedly has %s (%s)", o.URL, o.IssueID, o.Detail)
 	}
-	for _, o := range Run(pages, nil, cfg).Occurrences {
+	for _, o := range Run(pages, nil, healthyLlmsTxt(), cfg).Occurrences {
 		t.Errorf("healthy page %s unexpectedly has analysis issue %s (%s)", o.URL, o.IssueID, o.Detail)
 	}
 }

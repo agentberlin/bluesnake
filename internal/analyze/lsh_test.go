@@ -215,7 +215,7 @@ func TestNearDuplicateClusterOfThree(t *testing.T) {
 		mk("https://ex.com/c", similarC, "h3"),
 		mk("https://ex.com/d", different, "h4"),
 	)
-	r := Run(pages, nil, cfg)
+	r := Run(pages, nil, nil, cfg)
 
 	cluster := []string{"https://ex.com/a", "https://ex.com/b", "https://ex.com/c"}
 	for _, url := range cluster {

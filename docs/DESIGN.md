@@ -131,6 +131,12 @@ sitemaps:
   auto_discover_via_robots: true # discovered via robots.txt Sitemap: lines
   urls: []
 
+llms_txt:                        # /llms.txt audit (llmstxt.org); site-level file
+  check: true                    # fetch & structurally validate /llms.txt per host
+  fetch_full: true               # also fetch /llms-full.txt
+  crawl_linked: true             # admit the curated links into the frontier
+                                 # (analysis.llms_txt gates the link cross-check)
+
 extraction:
   page_details: {titles: true, meta_descriptions: true, meta_keywords: true,
                  h1: true, h2: true, indexability: true, word_count: true,
@@ -263,6 +269,7 @@ analysis:
   canonicals: true
   links: true
   sitemaps: true
+  llms_txt: true         # cross-check /llms.txt curated links against the crawl
 
 storage:
   dir: ~/.bluesnake       # crawl DBs live here, one SQLite file per crawl
@@ -288,6 +295,8 @@ internal/urlutil/        normalization, resolution, rewriting, include/exclude, 
                          (internal/external, folder depth, path type), fragment & encoding rules
 internal/robots/         REP parser/matcher (Google semantics), per-host cache, custom overrides,
                          matched-line reporting, sitemap discovery
+internal/llmstxt/        /llms.txt parser/validator (llmstxt.org): H1 title, blockquote summary,
+                         H2 section link lists; pure (fetch/admit/issues live in crawler/analyze)
 internal/fetch/          HTTP client: timeouts, retries, HSTS emulation, auth, headers, UA,
                          proxy, cookies, TLS, redirects-as-data (never auto-follow), rate metering
 internal/parse/          HTML tokenization → PageFacts: elements, directives, links (typed edges),
@@ -438,6 +447,9 @@ CREATE TABLE hreflang  (page_id INTEGER, source TEXT, lang TEXT, url TEXT, valid
 CREATE TABLE structured_data (page_id INTEGER, format TEXT, raw JSON, types JSON, errors JSON, warnings JSON);
 CREATE TABLE custom_results (page_id INTEGER, kind TEXT, name TEXT, value TEXT);  -- kind: search|extraction|js
 CREATE TABLE sitemap_entries (sitemap_url TEXT, url TEXT, lastmod TEXT, attrs JSON);
+CREATE TABLE llmstxt       (url TEXT PRIMARY KEY, kind TEXT, status INT, found INT,  -- one row per /llms.txt + /llms-full.txt
+                            title TEXT, summary TEXT, malformed INT, content TEXT);  -- (structural validation outcome)
+CREATE TABLE llmstxt_links (src TEXT, url TEXT, section TEXT, anchor TEXT);          -- curated links (provenance, cross-checked in analysis)
 CREATE TABLE issues (
   page_id INTEGER NOT NULL REFERENCES pages(id),
   issue_id TEXT NOT NULL,    -- stable snake_case id, e.g. title_missing
@@ -475,6 +487,7 @@ Each analyzer reads SQLite, writes back columns/tables; all are idempotent and r
 - **pagination**: sequence reciprocity, loops, unlinked pagination URLs.
 - **canonicals/links**: unlinked-canonical detection, inlink-only-nofollow / non-indexable-inlinks-only flags, aggregates (unique in/outlinks, % of total).
 - **sitemaps**: set ops between sitemap entries and crawled URLs → in/not-in/orphans/non-indexable-in-sitemap/multiple.
+- **llms_txt**: structural validation of each fetched `/llms.txt` (missing / no-H1 / no-summary / malformed list / missing `/llms-full.txt`, keyed on the file URL) plus cross-checking every curated link against the crawl graph: broken (non-200), non-indexable, or unverified (not reached — e.g. external with externals off). The file is fetched out-of-band for the seed host at crawl start (like robots.txt); curated links are admitted to the frontier through the normal discovery filter chain (external links obey the external-crawl gate, unlike sitemap entries) unless `llms_txt.crawl_linked` is off, with provenance recorded in `llmstxt_links` independently of the link graph.
 
 ### 5.7 Compare
 
@@ -578,6 +591,25 @@ canonical fragment/invalid-attribute, CSS/JS resource >2MB, sitemap >50k,
 JS-updated description, the Missing Alt Attribute vs Alt Text split, and Alt
 Text in h1. Carried by three new parse facts: `Link.NoAltAttr`,
 `Facts.H1AltText`, `Facts.CanonicalInvalidAttrs`.
+
+**2026-06-17 — llms.txt as a first-class audit (+8 checks, new `llms_txt`
+tab).** A new `internal/llmstxt` parser/validator and an `llms_txt:` config
+block (`check`/`fetch_full`/`crawl_linked`, plus `analysis.llms_txt`). The seed
+host's `/llms.txt` (and `/llms-full.txt`) is fetched out-of-band at crawl start
+like robots.txt (re-fetched on resume, idempotent), structurally validated, and
+stored in the `llmstxt` table; its curated links are recorded in `llmstxt_links`
+(provenance independent of the link graph) and admitted to the frontier through
+the normal discovery chain — internal links crawled, external links gated by the
+external-crawl flag — unless `crawl_linked` is off. The analyze phase emits the
+file-level checks (`llms_txt_missing`, `llms_txt_invalid_format`,
+`llms_txt_missing_summary`, `llms_txt_malformed_link_list`,
+`llms_full_txt_missing`) and the curated-link checks resolved against the crawl
+graph (`llms_txt_broken_link`, `llms_txt_link_non_indexable`,
+`llms_txt_link_unverified` — the last for links the crawl never reached). All
+surface automatically through `bluesnake issues`, `crawl_overview`, the serve
+`/issues` endpoint and the MCP `issue_summary`/`query` tools. (A bounded
+out-of-band probe of unreached curated links, a dedicated report/export, and a
+`bluesnake llms test` CLI are deliberate follow-ups, not yet built.)
 
 **Implemented but scoped down (extension points exist):**
 - Issues catalogue: **164 = the full issues library computable on the current

@@ -637,6 +637,8 @@ const schemaNotes = `Notes:
 - frontier: URLs discovered but not yet crawled (the pending queue of a paused crawl).
 - custom_results: custom search/extraction hits (kind is 'search'|'extraction').
 - sitemap_entries: URLs listed per sitemap.
+- llmstxt: one row per fetched /llms.txt (and /llms-full.txt); found is 0/1, title/summary/malformed capture structural validation, content holds the raw body.
+- llmstxt_links: curated links listed in llms.txt (src is the llms.txt URL, url the target) — provenance independent of the link graph; the llms_txt_* issues cross-check these against pages.
 - analysis: post-crawl analysis blobs (redirect chains, near-duplicate clusters) keyed by analysis name.
 
 Example queries:

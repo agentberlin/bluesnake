@@ -34,6 +34,11 @@ func Default() *Config {
 			CrawlLinked:           true,
 			AutoDiscoverViaRobots: true,
 		},
+		LlmsTxt: LlmsTxtConfig{
+			Check:       true,
+			FetchFull:   true,
+			CrawlLinked: true,
+		},
 		Extraction: ExtractionConfig{
 			PageDetails: PageDetailsConfig{
 				Titles: true, MetaDescriptions: true, MetaKeywords: true,
@@ -134,7 +139,7 @@ func Default() *Config {
 		Analysis: AnalysisConfig{
 			Auto: true, LinkScore: true, RedirectChains: true,
 			NearDuplicates: true, Pagination: true, Hreflang: true,
-			Canonicals: true, Links: true, Sitemaps: true,
+			Canonicals: true, Links: true, Sitemaps: true, LlmsTxt: true,
 		},
 		Storage: StorageConfig{Dir: "~/.bluesnake"},
 		Compare: CompareConfig{
