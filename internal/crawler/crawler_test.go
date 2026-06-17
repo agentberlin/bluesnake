@@ -12,6 +12,7 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/frontier"
+	"github.com/agentberlin/bluesnake/internal/urlutil"
 )
 
 // site is a tiny declarative fixture server.
@@ -605,6 +606,49 @@ func TestSitemapAutoDiscovery(t *testing.T) {
 	}
 	if rec := s.page(res, "/from-robots"); rec == nil || rec.State != StateCrawled {
 		t.Errorf("robots-discovered sitemap URL must be crawled: %+v", rec)
+	}
+}
+
+// R17: sitemap auto-discovery must run for EACH in-scope host the crawl enters,
+// not just the seed host. A second in-scope host (a subdomain in the wild, e.g.
+// docs.zenskar.com; modelled here as an in-scope CDN host so two httptest servers
+// stay distinct) advertises its sitemap only in its own robots.txt. A page on it
+// is reachable by link, but a sitemap-only page on it is reachable ONLY via that
+// host's sitemap — which the seed host's robots.txt never references. Before this
+// fix the second host's sitemap was never read and its sitemap-only pages were
+// missed (zenskar text pass: 163 docs.zenskar.com/reference/* pages).
+func TestSitemapAutoDiscoveryPerHost(t *testing.T) {
+	// second in-scope host: a linked page + a robots-advertised sitemap + a
+	// sitemap-only orphan that is NOT linked from anywhere.
+	b := newSite(t, map[string]string{
+		"/linked":       "<p>b linked</p>",
+		"/sitemap-only": "<p>b orphan</p>",
+	})
+	b.pages["/robots.txt"] = "User-agent: *\nAllow: /\nSitemap: " + b.server.URL + "/found.xml\n"
+	b.pages["/found.xml"] = `<urlset><url><loc>` + b.server.URL + `/sitemap-only</loc></url></urlset>`
+
+	// seed host links only to the second host's /linked page, so the crawl
+	// enters the second host but never sees its /sitemap-only orphan via a link.
+	s := newSite(t, map[string]string{"/": ""})
+	s.pages["/"] = link(b.server.URL + "/linked")
+
+	cfg := config.Default()
+	cfg.Sitemaps.CrawlLinked = true
+	cfg.Sitemaps.AutoDiscoverViaRobots = true
+	cfg.Scope.CDNs = []string{urlutil.Authority(b.server.URL)} // 2nd host is in-scope
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := c.Run(context.Background(), s.server.URL+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := res.Pages[b.server.URL+"/linked"]; rec == nil || rec.State != StateCrawled {
+		t.Fatalf("second-host linked page must be crawled (host must be entered): %+v", rec)
+	}
+	if rec := res.Pages[b.server.URL+"/sitemap-only"]; rec == nil || rec.State != StateCrawled {
+		t.Errorf("second-host sitemap-only page must be crawled via that host's own sitemap: %+v", rec)
 	}
 }
 
