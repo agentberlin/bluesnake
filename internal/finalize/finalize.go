@@ -19,6 +19,8 @@ import (
 // summary/events without re-querying.
 type Outcome struct {
 	Status      string // store.StatusCompleted | store.StatusInterrupted
+	Crawled     int    // URLs fetched, over the full stored graph (authoritative)
+	Total       int    // URLs encountered, over the full stored graph (authoritative)
 	Analyzed    bool
 	Chains      int
 	NearDups    int
@@ -57,25 +59,39 @@ func Crawl(c *crawler.Crawler, st *store.Crawl, res *crawler.Result, p Params) (
 	if p.Completed {
 		status = store.StatusCompleted
 	}
-	note(store.SetStatus(p.StoreDir, st.ID, status, res.Crawled, res.Total))
-	out := Outcome{Status: status}
+	// The registry counts come from the full stored graph, never the per-session
+	// Result: on resume res counts only this session's pages. Best-effort — fall
+	// back to the Result if the store read fails, consistent with note().
+	crawled, total := res.Crawled, res.Total
+	if c2, t2, err := st.Counts(); err != nil {
+		note(err)
+	} else {
+		crawled, total = c2, t2
+	}
+	note(store.SetStatus(p.StoreDir, st.ID, status, crawled, total))
+	out := Outcome{Status: status, Crawled: crawled, Total: total}
 	if !p.Completed {
 		return out, firstErr
 	}
 
-	// On resume this session rewrote depth only for its own pages; recompute it
-	// over the full two-session graph so depths match a fresh crawl (Screaming
-	// Frog parity). The BFS re-roots from every seed Run() was given — all of
-	// them, including each uploaded list seed — so list and spider resumes alike
-	// land on shortest-path depths. Guard on a non-empty seed set: rooting from
-	// nothing would NULL every page's depth. Fresh crawls already hold those
-	// depths from Run().
+	// On resume this session rewrote depth and inlinks only for its own pages;
+	// recompute both over the full two-session graph so the finalised result
+	// matches a fresh crawl: depth = shortest followed-link path (Screaming Frog
+	// parity), inlinks = full-graph hyperlink count. The BFS re-roots from every
+	// seed Run() was given — all of them, including each uploaded list seed — so
+	// list and spider resumes alike land on shortest-path depths. discovered_from
+	// needs no recompute: it is preserved per-session (frontier-carried) and
+	// seed-locked in the crawler. Guard on a non-empty seed set: rooting from
+	// nothing would NULL every page's depth. Fresh crawls already hold both from
+	// Run().
 	if p.Resumed && len(p.Seeds) > 0 {
 		if all, err := st.LoadPages(); err != nil {
 			note(err)
 		} else {
 			c.RecomputeDepths(all, p.Seeds...)
+			c.RecomputeInlinks(all)
 			note(st.SaveDepths(all))
+			note(st.SaveInlinks(all))
 		}
 	}
 
@@ -124,8 +140,11 @@ func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
 	for _, n := range counts {
 		total += n
 	}
+	crawled, encountered, _ := st.Counts() // informational; re-analysis doesn't change them
 	return Outcome{
 		Status:      store.StatusCompleted,
+		Crawled:     crawled,
+		Total:       encountered,
 		Analyzed:    true,
 		Chains:      len(results.Chains),
 		NearDups:    len(results.NearDups),

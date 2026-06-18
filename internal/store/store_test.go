@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
@@ -130,6 +131,50 @@ func TestCrawlLifecycle(t *testing.T) {
 	}
 }
 
+// TestCounts pins Counts() to the crawler's own tally semantics (crawler.go:
+// Result.Total = len(pages) over every recorded state; Result.Crawled = only
+// state=="crawled"). finalize relies on this to persist authoritative,
+// resume-correct registry counts, so a WHERE-clause drift here would silently
+// regress fresh-crawl counts too.
+func TestCounts(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, "proj", []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	states := map[string]string{
+		"https://ex.com/":      crawler.StateCrawled,
+		"https://ex.com/a":     crawler.StateCrawled,
+		"https://ex.com/b":     crawler.StateCrawled,
+		"https://ex.com/block": crawler.StateBlockedRobots,
+		"https://ex.com/err":   crawler.StateError,
+		"https://ex.com/big":   crawler.StateSkippedTooLarge,
+	}
+	for url, state := range states {
+		if err := c.Page(&crawler.PageRecord{URL: url, Scope: "internal", State: state}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	crawled, total, err := c.Counts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// total counts every recorded URL (encountered); crawled only the fetched.
+	if total != 6 {
+		t.Errorf("total = %d, want 6 (every recorded state)", total)
+	}
+	if crawled != 3 {
+		t.Errorf("crawled = %d, want 3 (only state=crawled)", crawled)
+	}
+	// total must agree with PageCount (the other definition of "encountered").
+	if n, _ := c.PageCount(); n != total {
+		t.Errorf("Counts total %d != PageCount %d", total, n)
+	}
+}
+
 // cancellingSink cancels the context after N pages, simulating an interrupt.
 type cancellingSink struct {
 	*Crawl
@@ -201,6 +246,20 @@ func TestInterruptAndResume(t *testing.T) {
 	if len(processed) >= total+1 {
 		t.Fatalf("interrupt too late: %d processed", len(processed))
 	}
+	// Snapshot what phase 1 actually crawled, and the hit counts so far: a page
+	// recorded in phase 1 must never be re-fetched on resume. A page whose fetch
+	// was aborted mid-flight by the interrupt is NOT recorded (it stays pending),
+	// so it is legitimately fetched again — that re-fetch is correct, not a bug.
+	p1crawled := map[string]bool{}
+	for _, u := range processed {
+		p1crawled[strings.TrimPrefix(u, srv.URL)] = true
+	}
+	mu.Lock()
+	hitsP1 := map[string]int{}
+	for k, v := range hits {
+		hitsP1[k] = v
+	}
+	mu.Unlock()
 	st.Close()
 
 	// phase 2: resume from the stored frontier
@@ -238,8 +297,14 @@ func TestInterruptAndResume(t *testing.T) {
 		case "/robots.txt", "/llms.txt", "/llms-full.txt":
 			continue
 		}
-		if n > 1 {
-			t.Errorf("%s fetched %d times — resume must not re-fetch", path, n)
+		// A page crawled in phase 1 must not be fetched again on resume.
+		if p1crawled[path] && n > hitsP1[path] {
+			t.Errorf("%s was crawled in phase 1 but re-fetched %d more time(s) on resume", path, n-hitsP1[path])
+		}
+		// A page whose in-flight fetch was aborted by the interrupt is legitimately
+		// re-fetched on resume, so at most two hits (one abort + one resume) is ok.
+		if n > 2 {
+			t.Errorf("%s fetched %d times — at most one abort + one resume fetch is expected", path, n)
 		}
 	}
 }

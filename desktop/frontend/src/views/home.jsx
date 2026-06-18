@@ -69,7 +69,7 @@ export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDel
               const sm = statusMeta[c.status] || statusMeta.completed;
               const sev = sevOf(c);
               return (
-                <div key={c.id} className="crawl-row" style={rowGrid()} onClick={() => c.status === "completed" && onOpen(c)}>
+                <div key={c.id} className="crawl-row" style={rowGrid()} onClick={() => onOpen(c)}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span className="statusdot" style={{ background: sm.c, boxShadow: `0 0 0 3px color-mix(in oklab, ${sm.c} 18%, transparent)` }} />
                     <span style={{ fontSize: 12, fontWeight: 600, color: c.status === "interrupted" ? "var(--sev-warn)" : "var(--ink-2)" }}>{sm.label}</span>

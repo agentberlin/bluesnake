@@ -19,7 +19,7 @@ export function Icon({ name, size = 16, stroke = 2, className, style }) {
 /* Shows a site's favicon (fetched + cached by the backend), falling back to the
    domain's initial while it loads or when no logo exists. `dot` draws a small
    status badge in the corner; `active` draws a selection ring. */
-export function BrandMark({ seed, size = 26, dot, active }) {
+export function BrandMark({ seed, size = 26, dot, active, live }) {
   const host = hostOf(seed || "");
   const [logo, setLogo] = useState("");
   useEffect(() => {
@@ -32,7 +32,7 @@ export function BrandMark({ seed, size = 26, dot, active }) {
     <span className={"brandmark" + (active ? " active" : "")}
       style={{ width: size, height: size, fontSize: Math.round(size * 0.42) }}>
       {logo ? <img src={logo} alt="" draggable={false} /> : (host.charAt(0) || "?").toUpperCase()}
-      {dot && <span className="statusdot" style={{ background: dot }} />}
+      {dot && <span className="statusdot" style={{ background: dot, animation: live ? "pulse 1.4s infinite" : undefined }} />}
     </span>
   );
 }

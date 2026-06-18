@@ -102,7 +102,7 @@ func newListCmd() *cobra.Command {
 				StoreDir: storeDir, Cfg: cfg, Seeds: seeds, Completed: !res.Interrupted,
 			})
 			if !quiet {
-				printSummary(cmd, res)
+				printSummary(cmd, res.Pages, out.Crawled, out.Total, res.Duration)
 				fmt.Fprintf(cmd.OutOrStdout(), "Crawl ID: %s\n", st.ID)
 			}
 			if res.Interrupted {

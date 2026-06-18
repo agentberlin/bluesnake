@@ -278,6 +278,12 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 	}
 
 	c.frontier.MarkSeen(c.resumeProcessed)
+	// Resume the crawl-total budget cumulatively: the MaxURLs limit (checked via
+	// c.fetched below) is a fetch counter that starts at zero each session, so
+	// without this seed every resumed session would grant a fresh MaxURLs budget
+	// and a paused-then-resumed crawl could fetch far more than a straight one.
+	// Seeding from the already-recorded pages makes the cap span both sessions.
+	c.fetched.Store(int64(len(c.resumeProcessed)))
 
 	var wg sync.WaitGroup
 	spawn := func(item frontier.Item) {
@@ -339,10 +345,22 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 		Interrupted: ctx.Err() != nil,
 		Duration:    time.Since(start),
 	}
+	seedSet := make(map[string]bool, len(seeds))
+	for _, s := range seeds {
+		seedSet[s] = true
+	}
 	for url, info := range c.inlinks {
 		if rec, ok := c.pages[url]; ok {
 			rec.Inlinks = info.count
-			rec.DiscoveredFrom = info.first
+			// A seed is a discovery root: a backlink to it must not become its
+			// "discovered from" — that both misrepresents provenance and loops the
+			// discovery path. Empty also makes resume match a fresh crawl, where
+			// the seed is processed before any page that could link back to it.
+			if seedSet[url] {
+				rec.DiscoveredFrom = ""
+			} else {
+				rec.DiscoveredFrom = info.first
+			}
 		}
 	}
 	for _, rec := range c.pages {
@@ -435,6 +453,33 @@ func (c *Crawler) recomputeDepthsOver(pages map[string]*PageRecord, seeds []stri
 	}
 }
 
+// RecomputeInlinks recounts the raw hyperlink inlinks for every page over an
+// externally supplied page set, by replaying the exact crawl-time discovery
+// gate (discoverLinks → noteInlink) every crawled page's links pass through.
+// Resume uses it so a resumed crawl's Inlinks equal a fresh crawl's: the
+// per-session count (UpdateInlinks) sees only this session's edges and
+// under-counts pages linked across the interrupt boundary. The count is
+// order-independent, so a replay over the merged two-session graph reproduces
+// the fresh-crawl value. Only the raw inlink count is rewritten on the records;
+// discovered_from (the discovery-tree parent) is preserved per-session and
+// seed-locked in Run, so it is intentionally left untouched here.
+func (c *Crawler) RecomputeInlinks(pages map[string]*PageRecord) {
+	c.mu.Lock()
+	c.inlinks = make(map[string]inlinkInfo)
+	c.mu.Unlock()
+	for url, rec := range pages {
+		if rec.Facts == nil {
+			continue // only crawled pages have parsed outlinks, as during the crawl
+		}
+		c.discoverLinks(frontier.Item{URL: url, Depth: rec.Depth}, rec.Facts)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for url, rec := range pages {
+		rec.Inlinks = c.inlinks[url].count
+	}
+}
+
 // followsForDepth reports whether a parsed link is a followed edge for the
 // depth BFS — the same predicate discoverLinks uses to enqueue it (the link
 // type's crawl flag for its scope, gated by the per-scope nofollow rule).
@@ -462,14 +507,20 @@ func (c *Crawler) process(ctx context.Context, wg *sync.WaitGroup, it frontier.I
 	if ctx.Err() != nil {
 		return
 	}
-	for _, d := range c.crawlOne(ctx, it) {
+	disc, done := c.crawlOne(ctx, it)
+	for _, d := range disc {
 		if c.frontier.Admit(d) {
 			c.sinkFrontierAdd(d)
 			wg.Add(1)
 			go c.process(ctx, wg, d)
 		}
 	}
-	c.sinkFrontierDone(it.URL)
+	// done is false only when a pause/stop aborted this URL's fetch mid-flight:
+	// leave the frontier item pending (don't mark it done) so resume re-fetches
+	// it, instead of stranding it as a permanent error.
+	if done {
+		c.sinkFrontierDone(it.URL)
+	}
 }
 
 func (c *Crawler) noteSinkErr(err error) {
@@ -499,7 +550,11 @@ func (c *Crawler) classify(url string) urlutil.ScopeClass {
 	return c.scope.Classify(url)
 }
 
-func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) []frontier.Item {
+// crawlOne fetches and processes one URL, returning the URLs it discovered and
+// whether the item is "done" (fully processed). done is false only when a
+// pause/stop cancelled the crawl mid-fetch: the caller then leaves the frontier
+// item pending so a resume re-fetches it rather than recording a stale error.
+func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) ([]frontier.Item, bool) {
 	scopeClass := c.classify(it.URL)
 	rec := &PageRecord{URL: it.URL, Depth: it.Depth, Scope: scopeClass.String()}
 
@@ -518,16 +573,23 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) []frontier.Ite
 			}
 			c.record(rec)
 		}
-		return nil
+		return nil, true
 	}
 
 	// crawl-total limit: reserve a fetch slot
 	if c.fetched.Add(1) > int64(c.cfg.Limits.MaxURLs) {
-		return nil
+		return nil, true
 	}
 	c.rateWait(ctx)
 
 	res := c.client.Fetch(ctx, it.URL)
+	// A fetch that failed because the crawl was paused/stopped (parent context
+	// cancelled) is not a real error: abandon the URL without recording it and
+	// leave it pending for resume. A genuine per-request timeout leaves the
+	// parent context live (ctx.Err() == nil), so it still records as an error.
+	if res.FetchError != "" && ctx.Err() != nil {
+		return nil, false
+	}
 	rec.StatusCode = res.StatusCode
 	rec.Status = res.Status
 	rec.ContentType = res.ContentType
@@ -578,7 +640,7 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) []frontier.Ite
 	}
 
 	c.record(rec)
-	return discoveries
+	return discoveries, true
 }
 
 // handleContent parses HTML, evaluates indexability, and produces discoveries.
