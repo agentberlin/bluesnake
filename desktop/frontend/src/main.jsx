@@ -19,24 +19,20 @@ import { CompareView } from "./views/compare";
 import { RobotsTester } from "./views/robots";
 import { MCPControls } from "./mcp-controls";
 
-/* Windows caption buttons. The window is frameless on Windows (desktop/main.go),
-   so we drive minimise/maximise/close through the Wails runtime ourselves. The
-   container is no-drag so clicks aren't swallowed by the draggable title bar. */
-function WinControls() {
-  const rt = () => window.runtime || {};
-  return (
-    <div className="win-controls">
-      <button title="Minimise" onClick={() => rt().WindowMinimise && rt().WindowMinimise()}>
-        <Icon name="minus" size={15} />
-      </button>
-      <button title="Maximise" onClick={() => rt().WindowToggleMaximise && rt().WindowToggleMaximise()}>
-        <Icon name="square" size={12} />
-      </button>
-      <button className="close" title="Close" onClick={() => rt().Quit && rt().Quit()}>
-        <Icon name="x" size={16} />
-      </button>
-    </div>
-  );
+/* Resolve the host OS synchronously from the WebView user agent. The webview
+   engine is OS-bound (WebView2 ⇒ Windows, WKWebView ⇒ macOS, WebKitGTK ⇒ Linux),
+   so this is reliable and — unlike Wails' async window.runtime.Environment() —
+   available on the very first render. Only macOS needs special chrome: its window
+   is borderless (TitleBarHiddenInset) so our custom bar IS the title bar and must
+   leave room for the traffic lights. Windows/Linux use the native title bar
+   (desktop/main.go), so the custom bar is just a toolbar and needs no platform
+   tricks. Environment() still runs as the authoritative refinement (see App). */
+function detectPlatform() {
+  const ua = (typeof navigator !== "undefined" && navigator.userAgent) || "";
+  if (/Windows/i.test(ua)) return "windows";
+  if (/Mac OS X|Macintosh/i.test(ua)) return "darwin";
+  if (/Linux/i.test(ua)) return "linux";
+  return "";
 }
 
 function App() {
@@ -54,20 +50,25 @@ function App() {
   const [storage, setStorage] = useState(null);
   const [settingsFocus, setSettingsFocus] = useState(null); // {section} -> open Settings on it
   const [settingsBack, setSettingsBack] = useState(null); // {view,label} -> show a "back" button in Settings
-  const [platform, setPlatform] = useState(""); // "windows" | "darwin" | "linux" — drives window-chrome layout
+  const [platform, setPlatform] = useState(detectPlatform); // "windows" | "darwin" | "linux" — drives window-chrome layout
   const [showCliPrompt, setShowCliPrompt] = useState(false); // first-launch "install the CLI?" prompt (shown once)
   const [update, setUpdate] = useState(null); // UpdateStatus from the launch check
   const [showUpdate, setShowUpdate] = useState(false); // update modal open
 
-  // The Windows window is frameless (see desktop/main.go), so we draw our own
-  // caption buttons; macOS keeps its native traffic lights. Resolve the host OS
-  // once from the Wails runtime.
+  // platform is seeded synchronously from the user agent (detectPlatform), so the
+  // macOS title-bar inset is correct on the first paint. Refine it with Wails'
+  // authoritative Environment() when it resolves (it wins; an empty result is
+  // ignored so a slow/failed call can't clobber the good seed).
   useEffect(() => {
     if (window.runtime && window.runtime.Environment) {
-      window.runtime.Environment().then((e) => setPlatform(e.platform)).catch(() => {});
+      window.runtime.Environment()
+        .then((e) => { if (e && e.platform) setPlatform(e.platform); })
+        .catch(() => {});
     }
   }, []);
-  const isWindows = platform === "windows";
+  // macOS is the only platform whose custom bar doubles as the OS title bar (it's
+  // draggable and insets for the traffic lights); Windows/Linux keep the native bar.
+  const isMac = platform === "darwin";
 
   // First launch only: offer to install the CLI when an embedded one exists
   // (macOS app), it isn't already on PATH, and we haven't asked before.
@@ -199,20 +200,18 @@ function App() {
 
   return (
     <div className="win">
-      {/* title bar — macOS hosts the native traffic lights in the left inset;
-          Windows is frameless, so the left inset collapses and we draw our own
-          caption buttons (WinControls) on the right. */}
-      <div
-        className={"titlebar" + (isWindows ? " win" : "")}
-        onDoubleClick={isWindows ? () => window.runtime && window.runtime.WindowToggleMaximise() : undefined}
-      >
+      {/* On macOS this bar IS the window title bar: it hosts the native traffic
+          lights in its left inset and shows the bluesnake wordmark. On Windows/
+          Linux the OS draws the real title bar above, so this is just a toolbar —
+          drop the wordmark (the native bar already names the app) and keep the
+          current crawl host + controls. */}
+      <div className={"titlebar" + (isMac ? " mac" : "")}>
         <span className="tb-nodrag">
           <IconBtn icon={collapsed ? "panel-left-open" : "panel-left-close"} title={collapsed ? "Show sidebar" : "Hide sidebar"} onClick={() => setCollapsed((c) => !c)} />
         </span>
         <div className="tb-title">
           <img src="/logo.png" alt="" width={16} height={16} draggable={false} style={{ display: "block", borderRadius: 3 }} />
-          bluesnake
-          <span className="dot" />
+          {isMac && <>bluesnake<span className="dot" /></>}
           <span style={{ color: "var(--ink-faint)", fontWeight: 500, whiteSpace: "nowrap" }} className="mono">
             {titleHost}
           </span>
@@ -233,7 +232,6 @@ function App() {
           <MCPControls onOpenSettings={() => { setSettingsFocus({ section: "mcp" }); setSettingsBack(null); setView("settings"); }} />
           <IconBtn icon={dark ? "sun" : "moon"} title="Toggle theme" onClick={() => setDark((d) => !d)} />
         </div>
-        {isWindows && <WinControls />}
       </div>
 
       {/* body */}

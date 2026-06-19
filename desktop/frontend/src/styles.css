@@ -130,10 +130,10 @@ input, textarea{ user-select: text; cursor: text; }
 .win{ height:100%; display:flex; flex-direction:column; background:var(--bg); overflow:hidden; }
 .titlebar{
   height:42px; flex:0 0 42px; display:flex; align-items:center; gap:14px;
-  padding:0 14px 0 86px; /* left inset clears the native macOS traffic lights */
+  padding:0 14px; /* plain toolbar — Windows/Linux keep the native OS title bar above */
   background:var(--titlebar);
   border-bottom:1px solid var(--border-soft);
-  --wails-draggable: drag; user-select:none;
+  user-select:none;
 }
 .tb-title{ font-size:12.5px; font-weight:600; color:var(--ink-2); letter-spacing:.01em; display:flex; align-items:center; gap:8px; white-space:nowrap; min-width:0; }
 .tb-title .dot{ width:5px;height:5px;border-radius:50%;background:var(--ink-faint); }
@@ -157,17 +157,11 @@ input, textarea{ user-select: text; cursor: text; }
 .tb-mcp-btn:disabled{ opacity:.35; cursor:default; }
 .tb-mcp-btn:disabled:hover{ background:transparent; color:var(--ink-2); }
 
-/* Windows: frameless window, so there are no native traffic lights to clear —
-   drop the left inset and let our own caption buttons hug the right edge. */
-.titlebar.win{ padding:0 0 0 14px; }
-.win-controls{ display:flex; align-items:stretch; align-self:stretch; margin-left:6px; --wails-draggable:no-drag; }
-.win-controls button{
-  width:46px; display:flex; align-items:center; justify-content:center;
-  border:0; background:transparent; color:var(--ink-2); cursor:pointer;
-  transition: background .12s ease, color .12s ease;
-}
-.win-controls button:hover{ background:var(--surface-hover); color:var(--ink); }
-.win-controls button.close:hover{ background:#e81123; color:#fff; }
+/* macOS: this bar doubles as the window title bar (TitleBarHiddenInset). Make it
+   draggable and inset the left edge to clear the native traffic lights. On
+   Windows/Linux the OS title bar handles dragging, so the base rule leaves this
+   as a plain, non-draggable toolbar. */
+.titlebar.mac{ padding-left:86px; --wails-draggable: drag; }
 
 /* =========================== app body ================================== */
 .body{ flex:1; display:flex; min-height:0; }
