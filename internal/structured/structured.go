@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/agentberlin/bluesnake/internal/config"
@@ -30,35 +31,84 @@ type PageData struct {
 	Warnings  []string `json:"warnings,omitempty"` // missing recommended properties
 }
 
+// typeReq encodes one schema.org type's Google rich-result property
+// requirements. A missing `required` prop emits an error; a missing
+// `recommended` prop emits a warning. `anyOf` groups model Google's
+// "at least one of" requirements (e.g. an AggregateRating needs ratingCount OR
+// reviewCount) — a group with none of its members present emits one error.
+// `trigger` props gate feature eligibility: a type is only a rich-result
+// candidate when every trigger prop is present (an empty trigger means
+// always-validate), so bare/incidental markup emits nothing.
+type typeReq struct {
+	required    []string
+	recommended []string
+	trigger     []string
+	anyOf       [][]string
+}
+
+// softwareApp is Google's Software App rich result. MobileApplication and
+// WebApplication are SoftwareApplication subtypes Google validates identically;
+// we match on the leaf @type, so each subtype needs its own row. `offers`
+// (price) and a rating/review are both required for eligibility; the curated
+// engine checks top-level property presence, so we require the `offers` object
+// itself (not the nested `offers.price`). Recommended: applicationCategory,
+// operatingSystem. (Property bucketing is grounded in
+// developers.google.com/search/docs/appearance/structured-data/software-app.)
+var softwareApp = typeReq{
+	required:    []string{"name", "offers"},
+	recommended: []string{"applicationCategory", "operatingSystem"},
+	anyOf:       [][]string{{"aggregateRating", "review"}},
+}
+
 // requirements: Google rich-results required/recommended properties for the
-// curated feature subset. `trigger` props gate feature eligibility: Google's
+// curated feature subset. The validation engine is data-driven, so extending
+// coverage is a table edit. `trigger` props gate feature eligibility: Google's
 // Rich Results Test only validates a type for a feature when the feature's
 // trigger properties are present (e.g. Organization is a "Logo" candidate only
 // when it carries a logo). An item missing any trigger property is not a
 // rich-result candidate at all and emits no errors/warnings — matching
 // Screaming Frog, which on bare boilerplate Organization markup (logo absent)
 // reports feat=None / 0 warnings. An empty trigger means always-validate.
-var requirements = map[string]struct{ required, recommended, trigger []string }{
-	"Product": {[]string{"name"}, []string{"image", "offers", "review", "aggregateRating"}, nil},
+//
+// HowTo is deliberately absent: Google deprecated HowTo rich results in
+// Sep 2023 (no longer shown in Search), so validating it would chase a stale
+// feature rather than correct current behaviour.
+var requirements = map[string]typeReq{
+	"Product": {required: []string{"name"}, recommended: []string{"image", "offers", "review", "aggregateRating"}},
 	// headline is recommended, not required: Google's Article rich result
 	// has no required properties, and SF reports a missing headline as a
 	// Rich Result Validation *Warning* (measured on yonedalabs.com)
-	"Article":        {nil, []string{"headline", "image", "datePublished", "author"}, nil},
-	"NewsArticle":    {nil, []string{"headline", "image", "datePublished", "author"}, nil},
-	"BlogPosting":    {nil, []string{"headline", "image", "datePublished", "author"}, nil},
-	"BreadcrumbList": {[]string{"itemListElement"}, nil, nil},
-	"FAQPage":        {[]string{"mainEntity"}, nil, nil},
-	"Recipe":         {[]string{"name", "image"}, []string{"recipeIngredient", "recipeInstructions"}, nil},
-	"Event":          {[]string{"name", "startDate", "location"}, []string{"image", "offers"}, nil},
-	"JobPosting":     {[]string{"title", "datePosted", "description", "hiringOrganization", "jobLocation"}, nil, nil},
-	"LocalBusiness":  {[]string{"name", "address"}, []string{"telephone", "openingHours"}, nil},
+	"Article":        {recommended: []string{"headline", "image", "datePublished", "author"}},
+	"NewsArticle":    {recommended: []string{"headline", "image", "datePublished", "author"}},
+	"BlogPosting":    {recommended: []string{"headline", "image", "datePublished", "author"}},
+	"BreadcrumbList": {required: []string{"itemListElement"}},
+	"FAQPage":        {required: []string{"mainEntity"}},
+	"Recipe":         {required: []string{"name", "image"}, recommended: []string{"recipeIngredient", "recipeInstructions"}},
+	"Event":          {required: []string{"name", "startDate", "location"}, recommended: []string{"image", "offers"}},
+	"JobPosting":     {required: []string{"title", "datePosted", "description", "hiringOrganization", "jobLocation"}},
+	"LocalBusiness":  {required: []string{"name", "address"}, recommended: []string{"telephone", "openingHours"}},
 	// Organization's Logo rich result is keyed on `logo`: SF only validates
 	// (and warns on a missing recommended `url`) when a logo is present; without
 	// a logo it is not a Logo candidate and emits nothing. `name` is therefore
 	// not flagged as a hard requirement here (SF reports 0 errors on every
 	// Organization page measured on infisical.com / trigger.dev).
-	"Organization": {nil, []string{"url"}, []string{"logo"}},
-	"VideoObject":  {[]string{"name", "thumbnailUrl", "uploadDate"}, []string{"description"}, nil},
+	"Organization": {recommended: []string{"url"}, trigger: []string{"logo"}},
+	"VideoObject":  {required: []string{"name", "thumbnailUrl", "uploadDate"}, recommended: []string{"description"}},
+
+	"SoftwareApplication": softwareApp,
+	"WebApplication":      softwareApp,
+	"MobileApplication":   softwareApp,
+	// Review snippet: a Review is only a candidate when it carries a
+	// reviewRating (the trigger); then `author` is required. `itemReviewed` is
+	// required by Google only for *standalone* reviews ("omit if nested"), and
+	// the vast majority of reviews are nested inside a Product/App where the
+	// parent is the reviewed item — requiring it unconditionally would
+	// reproduce the R6 over-warning regression, so it is deliberately omitted.
+	"Review": {trigger: []string{"reviewRating"}, required: []string{"author"}},
+	// AggregateRating contributes star ratings: ratingValue is required and at
+	// least one of ratingCount / reviewCount. itemReviewed omitted for the same
+	// nesting reason as Review.
+	"AggregateRating": {required: []string{"ratingValue"}, anyOf: [][]string{{"ratingCount", "reviewCount"}}},
 }
 
 // Extract parses the enabled formats and validates the curated requirements.
@@ -85,7 +135,29 @@ func Extract(body []byte, cfg *config.Config) *PageData {
 	if len(data.Formats) == 0 && len(data.ParseErrors) == 0 {
 		return nil
 	}
+	// The same logical entity can appear twice (e.g. a Review both in @graph and
+	// referenced inline), validating to identical messages; collapse them so a
+	// page reports each finding once.
+	data.Errors = dedupStrings(data.Errors)
+	data.Warnings = dedupStrings(data.Warnings)
 	return data
+}
+
+// dedupStrings removes duplicate strings, preserving first-seen order. Returns
+// the input unchanged when there are no duplicates (the common case).
+func dedupStrings(in []string) []string {
+	if len(in) < 2 {
+		return in
+	}
+	seen := make(map[string]bool, len(in))
+	out := in[:0:0]
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func walk(n *html.Node, visit func(*html.Node)) {
@@ -134,7 +206,7 @@ func extractJSONLD(root *html.Node, data *PageData) {
 					found = true
 					data.Recovered = append(data.Recovered,
 						"jsonld: invalid raw control characters escaped to recover")
-					walkJSONLD(parsed, data)
+					walkJSONLD(parsed, data, true)
 					return
 				}
 			}
@@ -142,7 +214,7 @@ func extractJSONLD(root *html.Node, data *PageData) {
 			return
 		}
 		found = true
-		walkJSONLD(parsed, data)
+		walkJSONLD(parsed, data, true)
 	})
 	if found {
 		data.Formats = append(data.Formats, "jsonld")
@@ -192,33 +264,42 @@ func escapeJSONControlChars(s string) string {
 	return b.String()
 }
 
-// walkJSONLD handles objects, arrays and @graph containers.
-func walkJSONLD(v any, data *PageData) {
+// walkJSONLD handles objects, arrays and @graph containers. `validate` is true
+// for the page's primary entities (top-level nodes and @graph members) and
+// false for entities reached as a property value (offers.seller, publisher,
+// author, …): those are reference/identity stubs that legitimately carry only a
+// name/url, so their types are recorded for the type set but never validated —
+// Google scopes a rich-result's required properties to the primary entity, and
+// validating a nested Store/Restaurant for `address` is an R6-class false error.
+func walkJSONLD(v any, data *PageData, validate bool) {
 	switch node := v.(type) {
 	case []any:
 		for _, item := range node {
-			walkJSONLD(item, data)
+			walkJSONLD(item, data, validate)
 		}
 	case map[string]any:
 		if graph, ok := node["@graph"]; ok {
-			walkJSONLD(graph, data)
+			walkJSONLD(graph, data, true) // @graph members are primary entities
 		}
 		types := typeList(node["@type"])
-		for _, t := range types {
-			data.Types = append(data.Types, t)
-			validateProps(t, func(prop string) bool {
+		for i := range types {
+			types[i] = shortType(types[i]) // normalize full-URL / prefixed @type
+		}
+		data.Types = append(data.Types, types...)
+		if validate {
+			validateNode(types, func(prop string) bool {
 				_, ok := node[prop]
 				return ok
 			}, data)
 		}
-		// nested entities
+		// Nested property values record their types only — never validated.
 		for key, child := range node {
 			if strings.HasPrefix(key, "@") {
 				continue
 			}
 			switch child.(type) {
 			case map[string]any, []any:
-				walkJSONLD(child, data)
+				walkJSONLD(child, data, false)
 			}
 		}
 	}
@@ -256,15 +337,42 @@ func extractMicrodata(root *html.Node, data *PageData) {
 			return
 		}
 		found = true
-		typ := shortType(itemtype)
-		data.Types = append(data.Types, typ)
+		// itemtype may carry several space-separated type URLs (e.g.
+		// "…/Product …/IndividualProduct"); record and validate them all, the
+		// same way RDFa's typeof is split — a single shortType would keep only
+		// the last token's leaf and make the outcome token-order-dependent.
+		var types []string
+		for t := range strings.FieldsSeq(itemtype) {
+			types = append(types, shortType(t))
+		}
+		data.Types = append(data.Types, types...)
+		// A nested itemscope (the value of a parent item's itemprop) is a
+		// reference stub like a nested JSON-LD entity — record its types but do
+		// not validate it for required properties (same primary-entity scoping).
+		if hasItemscopeAncestor(n) {
+			return
+		}
 		props := map[string]bool{}
 		collectItemprops(n, props, true)
-		validateProps(typ, func(p string) bool { return props[p] }, data)
+		validateNode(types, func(p string) bool { return props[p] }, data)
 	})
 	if found {
 		data.Formats = append(data.Formats, "microdata")
 	}
+}
+
+// hasItemscopeAncestor reports whether n sits inside another itemscope element,
+// i.e. n is a nested microdata item rather than a top-level one.
+func hasItemscopeAncestor(n *html.Node) bool {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		if _, ok := attrValue(p, "itemscope"); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // collectItemprops gathers itemprop names within an itemscope (not
@@ -313,11 +421,38 @@ func shortType(t string) string {
 	return t
 }
 
-func validateProps(typ string, has func(string) bool, data *PageData) {
-	req, ok := requirements[typ]
-	if !ok {
-		return
+// validateNode validates one structured-data node's (already shortType-
+// normalized) @type set. Each declared type resolves to its curated rich-result
+// root; redundant supertype roots are then collapsed (mostSpecific) so a
+// ["Restaurant"] node validates once as LocalBusiness, a ["NewsArticle","Article"]
+// node validates once as NewsArticle, and a ["VideoGame","SoftwareApplication"]
+// node still validates as SoftwareApplication (the explicit app co-type) even
+// though VideoGame alone is excluded. The leaf type name is reported in the
+// issue so the owner sees the markup they actually wrote.
+func validateNode(types []string, has func(string) bool, data *PageData) {
+	rep := map[string]string{} // curated root -> representative leaf for the message
+	var roots []string
+	for _, leaf := range types {
+		root := resolveType(leaf)
+		if root == "" {
+			continue
+		}
+		if _, seen := rep[root]; !seen {
+			rep[root] = leaf
+			roots = append(roots, root)
+		}
 	}
+	roots = mostSpecific(roots)
+	slices.Sort(roots) // deterministic emission order
+	for _, root := range roots {
+		validateProps(rep[root], root, has, data)
+	}
+}
+
+// validateProps emits errors/warnings for one node against the curated `root`'s
+// requirements, attributing them to the page's actual `leaf` type.
+func validateProps(leaf, root string, has func(string) bool, data *PageData) {
+	req := requirements[root]
 	// Feature-eligibility gate: not a rich-result candidate unless every
 	// trigger property is present (no trigger ⇒ always eligible).
 	for _, p := range req.trigger {
@@ -327,12 +462,18 @@ func validateProps(typ string, has func(string) bool, data *PageData) {
 	}
 	for _, p := range req.required {
 		if !has(p) {
-			data.Errors = append(data.Errors, fmt.Sprintf("%s: missing required property %q", typ, p))
+			data.Errors = append(data.Errors, fmt.Sprintf("%s: missing required property %q", leaf, p))
+		}
+	}
+	for _, group := range req.anyOf {
+		if !slices.ContainsFunc(group, has) {
+			data.Errors = append(data.Errors,
+				fmt.Sprintf("%s: missing required property (one of %s)", leaf, strings.Join(group, ", ")))
 		}
 	}
 	for _, p := range req.recommended {
 		if !has(p) {
-			data.Warnings = append(data.Warnings, fmt.Sprintf("%s: missing recommended property %q", typ, p))
+			data.Warnings = append(data.Warnings, fmt.Sprintf("%s: missing recommended property %q", leaf, p))
 		}
 	}
 }
