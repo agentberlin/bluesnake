@@ -364,7 +364,9 @@ internal/parse/          HTML tokenization → PageFacts: elements, directives, 
                          forms, security signals, head-validity, content area text, word count,
                          readability, hash, structured-data raw blocks
 internal/extract/        custom search, custom extraction (xpath/css/regex) over parsed docs
-internal/structured/     JSON-LD/Microdata/RDFa parsing + schema.org validation (+ rich results later)
+internal/structured/     JSON-LD/Microdata/RDFa parsing + Google rich-results validation;
+                         embedded schema.org IS-A graph resolves subtypes to the most-specific
+                         curated root (a Restaurant validates as a LocalBusiness)
 internal/render/         chromedp session pool, rendered DOM, screenshots, console log, custom JS
 internal/frontier/       dedup set + priority FIFO by depth, per-host queues, politeness,
                          limits enforcement, SQLite mirroring for resume
@@ -722,6 +724,77 @@ the desktop comparison view) with no new config or UI. Pinned by
 `features/compare.feature` scenarios. Retires the §9.1 "two dead
 change-detection values" note and the §9.2 "Compare detectors" backlog row.
 
+**2026-06-19 — rich-result matrix breadth: SoftwareApplication / Review /
+AggregateRating (G5-matrix, partial).** The curated `internal/structured`
+requirements table grew from 12 to 15 schema.org types, grounded in Google's
+current rich-results docs (the "ground in correct behaviour, not the reference
+tool" §0 anchor) rather than copied from SF: **SoftwareApplication** (+ the
+`WebApplication` / `MobileApplication` subtypes Google validates identically —
+matched on the leaf `@type`), **Review**, and **AggregateRating**. Two real
+Google requirement shapes the old AND-only `required` list couldn't express are
+now modelled: an `anyOf` group ("at least one of", e.g. AggregateRating needs
+`ratingCount` **or** `reviewCount`; a Software App needs `aggregateRating` **or**
+`review`) emits a single error when no member is present, and Review is
+`trigger`-gated on `reviewRating` so a rating-less or nested review is not a
+snippet candidate — the nesting-dependent `itemReviewed` is deliberately dropped
+to avoid reproducing the R6 Organization-logo over-warning regression. **HowTo
+is deliberately excluded**: Google deprecated HowTo rich results in Sep 2023, so
+validating it would chase a stale feature. No new issue IDs (occurrences reuse
+`structured_validation_error` / `_warning`), so every surface — `bluesnake
+issues`, `crawl_overview`, the serve `/issues` endpoint, the MCP tools and the
+desktop UI — picks them up unchanged, and the catalogue-coverage meta-test is
+unaffected. Pinned by `internal/structured` table-driven tests (per-type
+required/recommended/anyOf, the subtype aliases, the trigger gate, and an
+explicit nested-rating no-over-warn guard). **Still open** (the row stays in
+§9.2, narrowed): standalone `Offer` / merchant-listing depth, the LocalBusiness
+subtype hierarchy (`Restaurant` et al., needs a schema.org IS-A map), nested
+property checks (`offers.price`, `reviewRating.ratingValue` — the engine checks
+top-level presence only), and the SF cross-check on trigger.dev / vellum.ai /
+braintrust.dev / zenskar.com to verify counts and tune the error/warning split
+(the established R6-style verification, which needs the Screaming Frog harness).
+
+**2026-06-19 — schema.org subtype-hierarchy resolution (G5-matrix, the
+LocalBusiness-subtree increment).** The previous note matched only literal
+curated `@type`s, so `Restaurant`/`Hospital`/`TechArticle`/`Festival` got zero
+validation. bluesnake now embeds the **objective schema.org IS-A graph**
+(`internal/structured/schemaorg_hierarchy.txt`, 945 edges, generated
+deterministically from schema.org's published types CSV by a checked-in
+`go:generate` tool — `gen_hierarchy.go` — with **no LLM in the data path**) and
+resolves any seen type to its **most-specific curated ancestor**
+(`internal/structured/hierarchy.go`). `requirements` stays the single source of
+truth (no per-subtype aliases); resolution is computed against it at load time.
+**264 schema.org types now validate** (up from ~15): 150 LocalBusiness subtypes
+(Restaurant, Bakery, Attorney, …), plus the Event (26), Organization (logo-gated,
+safe), Article (recommended-only, safe), Product and Review subtrees. Design
+points, each grounded and pinned: a directly-curated type keeps its own rules
+(short-circuit, never falls through to a parent); the only incomparable tie in
+the whole vocabulary is `ReviewNewsArticle`; per-node resolution collapses
+redundant supertype roots so `["NewsArticle","Article"]` and
+`["LocalBusiness","Organization"]` validate once, while `["VideoGame",
+"SoftwareApplication"]` still validates as the explicit app co-type. **Validation
+is scoped to the page's PRIMARY entity** — top-level / `@graph`-member JSON-LD
+nodes and top-level microdata items — and nested reference stubs (a `Store` as
+`offers.seller`, a `Restaurant` as `publisher`/`author`) record their types but
+are **not** validated, matching how Google scopes a feature's required props and
+avoiding an R6-class "missing address" false error (caught by an adversarial
+review). JSON-LD `@type` is normalized through `shortType` (full-URL/prefixed),
+and `data.Types` now records short forms (parity with SF and microdata).
+**Grounded exclusions** (subtype routed to a different/retired Google feature, so
+inheriting the parent over-flags): the Vehicle subtree ↛ Product (Vehicle-listing
+deprecated 2025-06), `VideoGame`/`OperatingSystem`/`RuntimePlatform` ↛
+SoftwareApplication, `ClaimReview`/`MediaReview`/`EmployerReview` ↛ Review (Fact
+Check / media-authenticity / Employer features), `EmployerAggregateRating` ↛
+AggregateRating, the `UserInteraction` telemetry family ↛ Event,
+`ReviewNewsArticle` ↛ Review. Grounded and adversarially reviewed by two
+background workflows (Google-feature semantics + over-warning/correctness/
+cross-surface review); the sole confirmed blocker (nested-entity over-warning)
+and a microdata multi-`itemtype` major were fixed before this note. Still open:
+standalone `Offer`/merchant-listing depth, nested-property checks
+(`offers.price`), and the SF count cross-check (needs the Screaming Frog harness).
+A separate pre-existing limitation surfaced by the multi-property rules — the
+`issues` table stores one detail per `(url, issue)` so multiple missing-property
+details collapse to the last — is tracked as its own follow-up, not fixed here.
+
 **Implemented but scoped down (extension points exist):**
 - Issues catalogue: **164 = the full issues library computable on the current
   data model** (the no-new-infrastructure boundary, not an arbitrary stop).
@@ -833,7 +906,7 @@ uncertainty.
 | SF-style elem paths `[n]`/`[@class]` (G10) | High | Med | Med | Kills ~12k cosmetic path diffs/site and unlocks SF's class-driven Navigation position matches. Exact qualifier rules need probes (SF emits [n] only for same-tag siblings, sometimes [@class] instead) |
 | Accessibility (axe via CDP) | Med | High | Med | Most-requested real-world audit type; SF ships it. Needs Chrome + axe bundle injection. More "useful" than "parity" |
 | Shadow-DOM/iframe flattening (`rendering.flatten_*`) | Med | Med-High | Med | Web-component sites currently lose rendered text/links that SF sees |
-| Rich-result matrix breadth (G5 residual) | Med | Med-High | Low | Extend `structured.requirements` (SoftwareApplication, Review, HowTo, AggregateRating) with probes against SF |
+| Rich-result matrix breadth (G5 residual, narrowed) | Low | Low-Med | Low-Med | SoftwareApplication/Review/AggregateRating (2026-06-19) and the full schema.org subtype hierarchy (264 types incl. all 150 LocalBusiness subtypes, via an embedded IS-A graph, 2026-06-19) both landed; HowTo + deprecated/wrong-feature subtypes deliberately excluded. Residual: standalone `Offer` / merchant-listing depth and nested-property checks (`offers.price`, `reviewRating.ratingValue` — engine checks top-level presence only). Still wants an SF count cross-check (trigger.dev/vellum/braintrust/zenskar) to tune the error/warning split |
 | Cookie collection (`url_details.cookies`) | Med | Med | Low-Med | Whole SF report we lack; GDPR/consent audits use it. Needs a cookies table + rendered-mode capture |
 | Persistent-frontier worker pool (scale) | Indirect | High | Med-High | Gates large-site (e-commerce) crawls; rendered stores already hit ~1GB on mid-size sites |
 | Fragment self-edges (G28) | Med | Low | Med | SF keeps `<a href="#x">` as empty-anchor self-edges (feeds its no-anchor-text counts). Changes outlink counts everywhere — probe SF's dedup semantics first |
