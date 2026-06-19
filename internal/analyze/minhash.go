@@ -55,3 +55,14 @@ func (s signature) similarity(other signature) float64 {
 	}
 	return float64(match) / float64(sigSize)
 }
+
+// ContentSimilarity reports the content similarity (0–100%) between two
+// content-area texts, using the same 5-word-shingle minhash signature as
+// near-duplicate analysis. It is the single source of truth for "how alike is
+// this content", shared by the Near Duplicates report and crawl-comparison
+// "content" change detection so both speak the same similarity language. Two
+// empty texts are 100% similar (no content either side); empty vs non-empty is
+// ~0% (content appeared or vanished).
+func ContentSimilarity(a, b string) float64 {
+	return minhash(a).similarity(minhash(b)) * 100
+}
