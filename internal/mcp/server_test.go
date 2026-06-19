@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/issues"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
@@ -198,6 +199,51 @@ func TestIssueSummaryEmptyCrawl(t *testing.T) {
 	}
 	if !strings.Contains(text, "totals") || !strings.Contains(text, "checks") {
 		t.Errorf("issue_summary shape: %s", text)
+	}
+}
+
+// TestIssueSummaryCountsDistinctURLs pins that issue_summary reports affected
+// URLs, not raw occurrence rows: a page storing the same issue id with two
+// distinct details plus a second page with one detail is 2 affected URLs, not 3.
+func TestIssueSummaryCountsDistinctURLs(t *testing.T) {
+	s, dir := testServer(t)
+	st, err := store.CreateCrawl(dir, "proj", []string{"https://example.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := st.ID
+	if err := st.SaveIssues([]issues.Occurrence{
+		{URL: "https://example.com/r", IssueID: "structured_validation_error", Detail: "Recipe: missing required property name"},
+		{URL: "https://example.com/r", IssueID: "structured_validation_error", Detail: "Recipe: missing required property image"},
+		{URL: "https://example.com/a", IssueID: "structured_validation_error", Detail: "Article: missing author"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	text, isErr := callTool(t, s, "issue_summary", map[string]any{"crawl_id": id})
+	if isErr {
+		t.Fatalf("issue_summary failed: %s", text)
+	}
+	var out struct {
+		Checks []struct {
+			ID           string `json:"id"`
+			URLsAffected int    `json:"urls_affected"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatalf("decode issue_summary: %v\n%s", err, text)
+	}
+	got := -1
+	for _, c := range out.Checks {
+		if c.ID == "structured_validation_error" {
+			got = c.URLsAffected
+		}
+	}
+	if got != 2 {
+		t.Errorf("structured_validation_error urls_affected = %d, want 2 (distinct URLs, not 3 detail rows)", got)
 	}
 }
 

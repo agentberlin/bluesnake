@@ -2,10 +2,12 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -408,6 +410,236 @@ func TestLoadPagesAndIssues(t *testing.T) {
 	}
 	if v, _ := c.Meta("absent"); v != "" {
 		t.Errorf("absent meta = %q", v)
+	}
+}
+
+// TestIssueMultiDetailPreserved pins that a single page emitting the SAME issue
+// id with several DISTINCT details (e.g. a Recipe missing more than one required
+// property) keeps every occurrence — the bug was a (url, issue) primary key that
+// collapsed them to the last detail. Affected-URL counts must stay per-URL.
+func TestIssueMultiDetailPreserved(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	occs := []issues.Occurrence{
+		{URL: "https://ex.com/r", IssueID: "structured_validation_error", Detail: "Recipe: missing required property name"},
+		{URL: "https://ex.com/r", IssueID: "structured_validation_error", Detail: "Recipe: missing required property image"},
+		// exact duplicate occurrence — must collapse, not inflate
+		{URL: "https://ex.com/r", IssueID: "structured_validation_error", Detail: "Recipe: missing required property name"},
+		{URL: "https://ex.com/a", IssueID: "structured_validation_error", Detail: "Article: missing author"},
+	}
+	if err := c.SaveIssues(occs); err != nil {
+		t.Fatal(err)
+	}
+
+	// every DISTINCT (url, issue, detail) survives: 2 on /r + 1 on /a = 3 rows
+	var rows int
+	c.db.QueryRow(`SELECT COUNT(*) FROM issues WHERE issue = 'structured_validation_error'`).Scan(&rows)
+	if rows != 3 {
+		t.Errorf("stored detail rows = %d, want 3", rows)
+	}
+
+	// affected-URL counts stay per-URL, not per-detail
+	counts, err := c.IssueCounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts["structured_validation_error"] != 2 {
+		t.Errorf("affected URLs = %d, want 2", counts["structured_validation_error"])
+	}
+	urls, err := c.IssueURLs("structured_validation_error")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(urls) != 2 {
+		t.Errorf("IssueURLs = %v, want 2 distinct", urls)
+	}
+
+	// both details for /r are individually retrievable
+	got := map[string]bool{}
+	r, err := c.db.Query(`SELECT detail FROM issues WHERE url = 'https://ex.com/r' AND issue = 'structured_validation_error'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	for r.Next() {
+		var d string
+		if err := r.Scan(&d); err != nil {
+			t.Fatal(err)
+		}
+		got[d] = true
+	}
+	if !got["Recipe: missing required property name"] || !got["Recipe: missing required property image"] {
+		t.Errorf("details for /r = %v, want both Recipe properties", got)
+	}
+}
+
+// TestIssuesDetailPKMigration pins that a crawl DB created with the old
+// (url, issue) primary key is rebuilt to (url, issue, detail) on open, without
+// losing rows — and that the rebuilt table then accepts multiple distinct
+// details for one (url, issue).
+func TestIssuesDetailPKMigration(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := c.ID
+
+	// Reconstruct a pre-versioning crawl DB: drop the new table and recreate it
+	// with the legacy single-detail primary key plus one existing row, and reset
+	// user_version to 0 so the open path sees it as an un-stamped old database and
+	// runs the migration ladder.
+	if _, err := c.db.Exec(`DROP TABLE issues;
+		CREATE TABLE issues(url TEXT, issue TEXT, detail TEXT, PRIMARY KEY(url, issue));
+		INSERT INTO issues(url, issue, detail)
+			VALUES('https://ex.com/', 'structured_validation_error', 'Recipe: missing required property name');
+		PRAGMA user_version = 0;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopening runs the migration.
+	c2, err := OpenCrawl(dir, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+
+	urls, err := c2.IssueURLs("structured_validation_error")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(urls) != 1 || urls[0] != "https://ex.com/" {
+		t.Fatalf("existing row lost in migration: %v", urls)
+	}
+
+	// the rebuilt PK now accepts a SECOND distinct detail for the same (url, issue)
+	if err := c2.AddIssues([]issues.Occurrence{
+		{URL: "https://ex.com/", IssueID: "structured_validation_error", Detail: "Recipe: missing required property image"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	c2.db.QueryRow(`SELECT COUNT(*) FROM issues WHERE issue = 'structured_validation_error'`).Scan(&n)
+	if n != 2 {
+		t.Errorf("after migration, distinct details for one (url, issue) = %d, want 2", n)
+	}
+	if counts, _ := c2.IssueCounts(); counts["structured_validation_error"] != 1 {
+		t.Errorf("affected-URL count after migration = %d, want 1", counts["structured_validation_error"])
+	}
+	// the migrated DB is now stamped to the current revision, so a later open
+	// skips the ladder entirely.
+	var ver int
+	c2.db.QueryRow(`PRAGMA user_version`).Scan(&ver)
+	if want := ladderTop(crawlMigrations); ver != want {
+		t.Errorf("user_version after migration = %d, want %d", ver, want)
+	}
+}
+
+// TestFreshDBSchemaVersion pins that newly created databases are stamped to the
+// top of their ladder, so a later raised floor can tell a fresh DB (current)
+// from a genuinely old un-stamped one (revision 0).
+func TestFreshDBSchemaVersion(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var v int
+	c.db.QueryRow(`PRAGMA user_version`).Scan(&v)
+	if want := ladderTop(crawlMigrations); v != want {
+		t.Errorf("fresh crawl DB user_version = %d, want %d", v, want)
+	}
+
+	reg, err := registryDB(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	var rv int
+	reg.QueryRow(`PRAGMA user_version`).Scan(&rv)
+	if want := ladderTop(registryMigrations); rv != want {
+		t.Errorf("registry DB user_version = %d, want %d", rv, want)
+	}
+}
+
+// TestUpgradeLadder pins the generic versioned migrator independently of the
+// concrete crawl steps: stepwise apply + stamp, idempotent re-open, the
+// minVersion floor refusal, and the fresh-DB straight-to-top stamp.
+func TestUpgradeLadder(t *testing.T) {
+	open := func(name string) *sql.DB {
+		db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		t.Cleanup(func() { db.Close() })
+		return db
+	}
+	version := func(db *sql.DB) int {
+		var v int
+		db.QueryRow(`PRAGMA user_version`).Scan(&v)
+		return v
+	}
+
+	var applied []string
+	ladder := []migration{
+		{1, "one", func(tx *sql.Tx) error {
+			applied = append(applied, "one")
+			_, e := tx.Exec(`ALTER TABLE t ADD COLUMN a`)
+			return e
+		}},
+		{2, "two", func(tx *sql.Tx) error {
+			applied = append(applied, "two")
+			_, e := tx.Exec(`ALTER TABLE t ADD COLUMN b`)
+			return e
+		}},
+	}
+
+	db := open("existing.db")
+	if _, err := db.Exec(`CREATE TABLE t(id INTEGER)`); err != nil { // non-fresh, revision 0
+		t.Fatal(err)
+	}
+
+	// floor refusal: a revision-0 DB with a floor of 2 is rejected, untouched.
+	if err := upgrade(db, ladder, 2, false); err == nil {
+		t.Error("expected floor refusal for v0 below minVersion 2")
+	}
+	if len(applied) != 0 || version(db) != 0 {
+		t.Fatalf("refused upgrade still mutated: applied=%v v=%d", applied, version(db))
+	}
+
+	// normal run: apply both steps and stamp to the top.
+	if err := upgrade(db, ladder, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if version(db) != 2 || len(applied) != 2 {
+		t.Fatalf("after upgrade: v=%d applied=%v", version(db), applied)
+	}
+	// idempotent: a second open re-applies nothing.
+	if err := upgrade(db, ladder, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(applied) != 2 {
+		t.Errorf("re-applied steps on current DB: %v", applied)
+	}
+
+	// fresh DB: stamped straight to the top without running any step.
+	fresh := open("fresh.db")
+	applied = nil
+	if err := upgrade(fresh, ladder, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	if version(fresh) != 2 || len(applied) != 0 {
+		t.Errorf("fresh stamp: v=%d applied=%v, want v=2 with no steps", version(fresh), applied)
 	}
 }
 
