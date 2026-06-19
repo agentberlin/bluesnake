@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS links(
 CREATE INDEX IF NOT EXISTS links_src ON links(src);
 CREATE INDEX IF NOT EXISTS links_dst ON links(dst);
 CREATE TABLE IF NOT EXISTS frontier(url TEXT PRIMARY KEY, depth INT, redirect_hops INT, source TEXT);
-CREATE TABLE IF NOT EXISTS issues(url TEXT, issue TEXT, detail TEXT, PRIMARY KEY(url, issue));
+CREATE TABLE IF NOT EXISTS issues(url TEXT, issue TEXT, detail TEXT, PRIMARY KEY(url, issue, detail));
 CREATE TABLE IF NOT EXISTS custom_results(url TEXT, kind TEXT, name TEXT, value TEXT, PRIMARY KEY(url, kind, name));
 CREATE TABLE IF NOT EXISTS sitemap_entries(sitemap TEXT, url TEXT, PRIMARY KEY(sitemap, url));
 CREATE TABLE IF NOT EXISTS llmstxt(
@@ -111,21 +111,22 @@ func registryDB(dir string) (*sql.DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	fresh, err := isFreshDB(db)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS crawls(
 			id TEXT PRIMARY KEY, project TEXT, seed TEXT, mode TEXT, status TEXT,
-			started INT, finished INT, crawled INT DEFAULT 0);
+			started INT, finished INT, crawled INT DEFAULT 0, total INT DEFAULT 0);
 		CREATE TABLE IF NOT EXISTS brands(
 			host TEXT PRIMARY KEY, logo BLOB, logo_type TEXT, fetched INT);`)
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	// migration: `total` (URLs encountered) was added after `crawled` (URLs
-	// fetched). SQLite has no ADD COLUMN IF NOT EXISTS, so tolerate the
-	// duplicate-column error on registries that already have it.
-	if _, err := db.Exec(`ALTER TABLE crawls ADD COLUMN total INT DEFAULT 0`); err != nil &&
-		!strings.Contains(err.Error(), "duplicate column name") {
+	if err := upgrade(db, registryMigrations, minRegistryVersion, fresh); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -236,15 +237,194 @@ func openCrawlDB(dir, id string) (*Crawl, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // sqlite single-writer; serialize through database/sql
+	fresh, err := isFreshDB(db)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(crawlSchema); err != nil {
 		db.Close()
 		return nil, err
 	}
-	// migrations for crawl DBs created before a column existed; the error
-	// ("duplicate column") is the normal case and deliberately ignored
-	db.Exec(`ALTER TABLE pages ADD COLUMN http_version TEXT`)
-	db.Exec(`ALTER TABLE pages ADD COLUMN duplicate_of TEXT`)
+	if err := upgrade(db, crawlMigrations, minCrawlVersion, fresh); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Crawl{ID: id, dir: dir, db: db}, nil
+}
+
+// --- schema versioning & migrations ---------------------------------------
+//
+// Crawl and registry databases carry a schema revision in SQLite's built-in
+// user_version header slot (zero-cost, durable). openCrawlDB/registryDB CREATE
+// the latest shape and then call upgrade(): a fresh database is stamped straight
+// to the top of its ladder; an existing one runs only the steps above its stored
+// revision. The common case — an already-current database — costs one pragma read.
+//
+// Each step has a STABLE version number (never renumbered or reordered) and an
+// idempotent apply func. Stability plus the minVersion floor are what let us
+// later *delete* retired steps without silently half-migrating old data — see
+// "Retiring a migration" in DESIGN.md §5.3.
+type migration struct {
+	version int // the user_version this step brings the database up to
+	name    string
+	apply   func(*sql.Tx) error
+}
+
+// crawlMigrations is the per-crawl-DB ladder. APPEND ONLY.
+var crawlMigrations = []migration{
+	{1, "pages.http_version", func(tx *sql.Tx) error { return addColumn(tx, "pages", "http_version TEXT") }},
+	{2, "pages.duplicate_of", func(tx *sql.Tx) error { return addColumn(tx, "pages", "duplicate_of TEXT") }},
+	{3, "issues.detail_in_pk", migrateIssuesDetailPK},
+}
+
+// registryMigrations is the ladder for the single shared registry DB. APPEND ONLY.
+var registryMigrations = []migration{
+	{1, "crawls.total", func(tx *sql.Tx) error { return addColumn(tx, "crawls", "total INT DEFAULT 0") }},
+}
+
+// minCrawlVersion / minRegistryVersion are the oldest revisions we still carry
+// steps for: 0 = accept and migrate everything (nothing retired yet). Raising a
+// floor to F (and deleting every step with version <= F) makes DBs below F fail
+// with a clear re-crawl message instead of running an incomplete ladder.
+const (
+	minCrawlVersion    = 0
+	minRegistryVersion = 0
+)
+
+// ladderTop is the latest revision a ladder migrates to (its highest version).
+func ladderTop(ladder []migration) int {
+	top := 0
+	for _, m := range ladder {
+		if m.version > top {
+			top = m.version
+		}
+	}
+	return top
+}
+
+// upgrade brings db to the top of ladder via user_version. A fresh DB (CREATE
+// just built the latest shape) is stamped straight to the top; an existing DB
+// runs the steps above its stored revision. A non-fresh DB below minVersion is
+// refused so a ladder with retired steps never half-migrates old data.
+func upgrade(db *sql.DB, ladder []migration, minVersion int, fresh bool) error {
+	target := ladderTop(ladder)
+	if fresh {
+		return setUserVersion(db, target)
+	}
+	var v int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
+		return err
+	}
+	if v >= target {
+		return nil // already current — the hot path
+	}
+	if v < minVersion {
+		return fmt.Errorf("database schema v%d predates the minimum supported v%d — re-crawl or remove it", v, minVersion)
+	}
+	for _, m := range ladder {
+		if m.version <= v {
+			continue
+		}
+		if err := applyStep(db, m); err != nil {
+			return fmt.Errorf("migration %q: %w", m.name, err)
+		}
+	}
+	return nil
+}
+
+// applyStep runs one migration and bumps user_version in the SAME transaction,
+// so a crash mid-step rolls back atomically — the DB stays at its prior revision
+// rather than stranding a half-applied schema.
+func applyStep(db *sql.DB, m migration) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := m.apply(tx); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, m.version)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func setUserVersion(db *sql.DB, v int) error {
+	// user_version takes no bind parameters; v is an in-code constant, not input.
+	_, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, v))
+	return err
+}
+
+// addColumn applies an ADD COLUMN that tolerates the column already existing:
+// DBs created before user_version tracking may already carry it (from the old
+// best-effort ALTERs) while still reporting a stored revision of 0.
+func addColumn(tx *sql.Tx, table, colDef string) error {
+	if _, err := tx.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s`, table, colDef)); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+	return nil
+}
+
+// isFreshDB reports whether the database has no user tables yet — i.e. this open
+// is creating it, so CREATE builds the latest shape and the ladder is moot.
+func isFreshDB(db *sql.DB) (bool, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'`).Scan(&n)
+	return n == 0, err
+}
+
+// migrateIssuesDetailPK rebuilds an issues table created with the legacy
+// (url, issue) primary key to (url, issue, detail). The old key collapsed every
+// occurrence of one issue id on a page to its last detail (an INSERT OR REPLACE
+// over the same key); the new key keeps each distinct occurrence — e.g. one row
+// per missing required structured-data property. SQLite can't ALTER a primary
+// key, so the rebuild copies into a fresh table and swaps it in. applyStep wraps
+// this in a transaction; the detail-in-PK guard keeps it idempotent regardless.
+func migrateIssuesDetailPK(tx *sql.Tx) error {
+	inPK, err := detailInIssuesPK(tx)
+	if err != nil || inPK {
+		return err // already on the (url, issue, detail) key
+	}
+	_, err = tx.Exec(`
+		CREATE TABLE issues_migrate(url TEXT, issue TEXT, detail TEXT, PRIMARY KEY(url, issue, detail));
+		INSERT OR IGNORE INTO issues_migrate(url, issue, detail) SELECT url, issue, detail FROM issues;
+		DROP TABLE issues;
+		ALTER TABLE issues_migrate RENAME TO issues;`)
+	return err
+}
+
+// queryer is the read surface shared by *sql.DB and *sql.Tx, so schema
+// inspection works inside or outside a transaction.
+type queryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+// detailInIssuesPK reports whether the issues table's primary key already
+// includes the detail column (the post-fix shape). It reads the actual key from
+// the schema rather than string-matching the DDL, so it is robust to formatting.
+// PRAGMA table_info's pk column is the 1-based position of a column within the
+// primary key, 0 when the column is not part of it.
+func detailInIssuesPK(q queryer) (bool, error) {
+	rows, err := q.Query(`PRAGMA table_info(issues)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == "detail" && pk > 0 {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func (c *Crawl) Close() error {
@@ -638,9 +818,11 @@ func (c *Crawl) SaveIssues(occs []issues.Occurrence) error {
 	return tx.Commit()
 }
 
-// IssueCounts returns issue id -> affected URL count.
+// IssueCounts returns issue id -> affected URL count. A page may store several
+// rows for one issue id (one per distinct detail), so this counts distinct URLs,
+// never raw occurrence rows.
 func (c *Crawl) IssueCounts() (map[string]int, error) {
-	rows, err := c.db.Query(`SELECT issue, COUNT(*) FROM issues GROUP BY issue`)
+	rows, err := c.db.Query(`SELECT issue, COUNT(DISTINCT url) FROM issues GROUP BY issue`)
 	if err != nil {
 		return nil, err
 	}
@@ -657,9 +839,10 @@ func (c *Crawl) IssueCounts() (map[string]int, error) {
 	return counts, rows.Err()
 }
 
-// IssueURLs returns the URLs affected by one issue.
+// IssueURLs returns the URLs affected by one issue. DISTINCT collapses the
+// several detail rows a page may store for one issue id into a single URL.
 func (c *Crawl) IssueURLs(issueID string) ([]string, error) {
-	rows, err := c.db.Query(`SELECT url FROM issues WHERE issue = ? ORDER BY url`, issueID)
+	rows, err := c.db.Query(`SELECT DISTINCT url FROM issues WHERE issue = ? ORDER BY url`, issueID)
 	if err != nil {
 		return nil, err
 	}

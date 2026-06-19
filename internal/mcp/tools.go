@@ -569,7 +569,7 @@ func (s *Server) issueSummary(ctx context.Context, id string) (string, error) {
 		return "", err
 	}
 	defer db.Close()
-	rows, err := db.QueryContext(ctx, `SELECT issue, COUNT(*) FROM issues GROUP BY issue`)
+	rows, err := db.QueryContext(ctx, `SELECT issue, COUNT(DISTINCT url) FROM issues GROUP BY issue`)
 	if err != nil {
 		return "", err
 	}
@@ -632,7 +632,7 @@ const schemaNotes = `Notes:
 - pages.facts (JSON, PascalCase keys): the parsed on-page data — Titles, Descriptions, H1s, H2s, MetaRobots, CanonicalHTML, HreflangHTML, WordCount, TextRatio, Flesch, Lang, Links. Access with json_extract, e.g. json_extract(facts,'$.Titles[0]') or json_extract(facts,'$.WordCount').
 - pages.headers (JSON): response headers. pages.structured (JSON): JSON-LD/Microdata/RDFa items. pages.jsdiff (JSON): static-vs-rendered differences (JavaScript rendering mode).
 - links: the edge list. type is hyperlink|image|css|js|iframe|canonical|hreflang|next|prev|amp|meta_refresh|...; nofollow is 0/1.
-- issues: issue ids per URL — issue_summary translates ids to names/severities.
+- issues: one row per (url, issue, detail) occurrence — a page can hold several rows for one issue id (e.g. one per missing structured-data property). issue_summary translates ids to names/severities and counts distinct affected URLs; use COUNT(DISTINCT url) for URL tallies.
 - meta: key/value crawl metadata (config YAML under 'config', seed, mode).
 - frontier: URLs discovered but not yet crawled (the pending queue of a paused crawl).
 - custom_results: custom search/extraction hits (kind is 'search'|'extraction').

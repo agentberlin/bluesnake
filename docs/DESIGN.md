@@ -515,8 +515,12 @@ CREATE TABLE issues (
   page_id INTEGER NOT NULL REFERENCES pages(id),
   issue_id TEXT NOT NULL,    -- stable snake_case id, e.g. title_missing
   detail TEXT,
-  PRIMARY KEY (page_id, issue_id)
-);
+  PRIMARY KEY (page_id, issue_id, detail)   -- detail is part of the key: one page
+);                                          -- can trigger a check several times with
+                                            -- different specifics (e.g. a Recipe missing
+                                            -- two required properties); each distinct
+                                            -- occurrence is its own row. Affected-URL
+                                            -- counts use COUNT(DISTINCT page_id).
 CREATE TABLE blobs (page_id INTEGER, kind TEXT, path TEXT);  -- stored html/rendered/pdf/screenshot file refs (filesystem-backed under <crawl-id>.assets/)
 CREATE TABLE analysis_meta (key TEXT PRIMARY KEY, value TEXT);  -- which analyses ran, params (e.g. near-dup threshold)
 ```
@@ -524,6 +528,23 @@ CREATE TABLE analysis_meta (key TEXT PRIMARY KEY, value TEXT);  -- which analyse
 Write strategy: workers push results to a single writer goroutine; batched transactions (N=200 pages or 500 ms, whichever first) → continuous commit with bounded fsync cost. WAL mode + `synchronous=NORMAL`.
 
 Issue definitions (name, severity, priority, description, trigger doc) live in code (`internal/issues/catalogue.go`) as the single source of truth; `issues` table stores only occurrences.
+
+#### Schema versioning & migrations (`internal/store`)
+
+Crawl DBs and the registry DB are durable artifacts that outlive the binary, so the schema is **versioned, not patched ad hoc**. Each database carries its revision in SQLite's built-in `user_version` header slot (zero-cost to read, durable in the file header). On open, `store` runs the `CREATE TABLE IF NOT EXISTS` of the **latest** shape and then calls a single generic upgrader (`upgrade`):
+
+- A **fresh** database (no tables yet → this open created it) is stamped straight to the top of its ladder; the migration steps never run.
+- An **existing** database runs only the ladder steps whose version is above its stored revision, each applied in a transaction that bumps `user_version` atomically (a crash mid-step rolls back to the prior revision). The common case — already current — is one pragma read.
+
+Migrations are an **append-only ladder** (`crawlMigrations`, `registryMigrations`): each step has a *stable* version number (never renumbered or reordered) and an idempotent `apply` func. Adding a schema change = append one step. The two `min*Version` floors are the removal lever (below).
+
+> **Retiring a migration.** Stable version numbers + a floor are what make old step code *safely deletable* — without a durable revision marker you can never prove a DB on disk doesn't still need an old step. To drop support for ancient databases and delete their migration code:
+> 1. Pick the new floor **F** — the oldest revision you still want to open.
+> 2. Set `minCrawlVersion`/`minRegistryVersion = F`.
+> 3. Delete every ladder step with `version <= F` (and any helper only it used). Leave the surviving steps' version numbers **unchanged** — never renumber.
+> 4. Done: a database below F now fails to open with a clear *"schema vN predates the minimum supported vF — re-crawl or remove it"* error instead of running a half-complete ladder, and the retired step code is gone. Fresh databases (stamped at the current top) and any DB at ≥ F are unaffected.
+>
+> This is the project's deliberate stance on old data: we carry no backward-compat debt for its own sake (§0), so support for a schema era is dropped *explicitly* by raising the floor — never by silently keeping dead migration code forever.
 
 ### 5.4 Indexability state machine
 
@@ -626,6 +647,24 @@ Definition of done per milestone: feature file(s) green, unit coverage ≥ 85% f
   `MutationObserver` injected at document start ("ms since last DOM mutation") instead
   of polling node counts.
 
+- **Schema-floor refusal handling is deferred until a floor is actually raised**
+  (decided 2026-06-19). The migration ladder's `min*Version` floors are `0`, so
+  `upgrade()`'s "schema vN predates the minimum supported vF" error (§5.3) cannot
+  fire yet; building surface handling for an error that can't occur would be
+  speculative and untestable. When we first raise a floor, three things land
+  together with it: (1) make the refusal a **typed sentinel** (e.g.
+  `store.ErrSchemaTooOld`) so surfaces detect it with `errors.Is` instead of
+  string-matching; (2) decide whether the **read-only open paths** that currently
+  skip migrations (`mcp.openCrawlRO` → `query`/`issue_summary`, and
+  `serve.open()`) should check `user_version` and refuse a sub-floor DB, or keep
+  serving best-effort reads — today they'd silently query an unsupported schema;
+  (3) give the **desktop** a real "this crawl predates this version — re-crawl or
+  remove it" affordance, and let **serve** return that specific message (it
+  currently masks every open error as a generic 404 by design). On the **CLI** and
+  the MCP **`resume_crawl`** path the error already propagates verbatim, so those
+  need nothing. Until then the floors stay at `0` (migrate everything) and the
+  refusal branch is pinned only by `store.TestUpgradeLadder`.
+
 Resolved (2026-06-11): `serve` subcommand shipped (`internal/serve`, read-only JSON API
 over the export layer); `rendering.wait_strategy: adaptive | fixed` shipped (§5.8).
 
@@ -721,6 +760,47 @@ the desktop comparison view) with no new config or UI. Pinned by
 `internal/compare` unit tests, an `analyze.ContentSimilarity` test, and two
 `features/compare.feature` scenarios. Retires the §9.1 "two dead
 change-detection values" note and the §9.2 "Compare detectors" backlog row.
+
+**2026-06-19 — issues store keeps every distinct occurrence.** The `issues`
+table keyed on `(url, issue)`, so a page that triggered one check several times
+with different details kept only the **last** detail (the write path is
+`INSERT OR REPLACE`). Systemic across any multi-detail check; most visible after
+the schema.org rich-result work, where one page commonly emits several
+`structured_validation_error`/`_warning` rows (one per missing required
+property). The primary key is now `(url, issue, detail)`, so each distinct
+occurrence is its own row while exact duplicates still collapse — which preserves
+the `INSERT OR REPLACE` idempotency that re-analysis depends on (`finalize.Analyze`
+clears via `SaveIssues` then re-adds, so no stale rows accumulate). A natural key
+beats an autoincrement id here precisely for that idempotency. Affected-URL
+tallies are unchanged: the count paths now use `COUNT(DISTINCT url)`
+(`store.IssueCounts`/`IssueURLs`, the MCP `issue_summary` query), so the headline
+numbers across CLI/serve/MCP/desktop stay per-URL while exports and the issues
+table now list all details. Existing crawl DBs migrate on open
+(a transactional `issues` table rebuild, detected via `PRAGMA table_info`,
+idempotent) — required so re-analysing an old crawl doesn't keep collapsing on
+the very path meant to fix it. Pinned, mutation-verified, by
+`store.TestIssueMultiDetailPreserved`/`TestIssuesDetailPKMigration`,
+`export.TestIssuesExportListsEveryDetail` (driven through the real
+`issues.Evaluate` structured-validation path), and
+`mcp.TestIssueSummaryCountsDistinctURLs`.
+
+**2026-06-19 — schema versioning via `user_version` (migrations are now a
+retirable ladder).** Folded the store's previously ad-hoc migrations (the two
+`pages` `ADD COLUMN`s, the registry `crawls.total` column, and the issues-PK
+rebuild above) into a single versioned mechanism in `internal/store`. Every
+crawl/registry DB now records its revision in SQLite's `user_version`; `open`
+CREATEs the latest shape then runs a generic `upgrade()` that stamps fresh DBs to
+the top and runs only the above-revision steps on existing ones, each in a
+`user_version`-bumping transaction. Migrations are an append-only ladder of
+stably-numbered, idempotent steps; the per-ladder `min*Version` floor is the
+removal lever — raising it (and deleting the sub-floor steps, never renumbering
+the rest) makes too-old DBs fail to open with a clear re-crawl message instead of
+half-migrating, so retired migration code is *safely* deletable. This is the
+durable-revision marker the old detect-or-tolerate ALTERs lacked, which is why
+they could never be removed. The §5.3 "Schema versioning & migrations" box
+documents the mechanism and the retirement procedure. Pinned, mutation-verified,
+by `store.TestUpgradeLadder` (stepwise apply, idempotent re-open, floor refusal,
+fresh stamp) and `store.TestFreshDBSchemaVersion`.
 
 **Implemented but scoped down (extension points exist):**
 - Issues catalogue: **164 = the full issues library computable on the current

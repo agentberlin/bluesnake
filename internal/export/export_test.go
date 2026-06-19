@@ -13,6 +13,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/issues"
 	"github.com/agentberlin/bluesnake/internal/parse"
 	"github.com/agentberlin/bluesnake/internal/store"
+	"github.com/agentberlin/bluesnake/internal/structured"
 )
 
 func seededStore(t *testing.T) *store.Crawl {
@@ -122,6 +123,61 @@ func TestTabExports(t *testing.T) {
 
 	if _, err := Build(st, "nonsense", ""); err == nil {
 		t.Error("unknown tab must error")
+	}
+}
+
+// TestIssuesExportListsEveryDetail pins the real path end to end: a page whose
+// schema.org validation reports two missing required properties produces two
+// structured_validation_error occurrences (issues.Evaluate), both of which must
+// survive storage and appear in the issues export — while the per-issue
+// affected-URL count stays per-URL. This is the regression the (url, issue, detail)
+// key exists for; the old (url, issue) key kept only the last property.
+func TestIssuesExportListsEveryDetail(t *testing.T) {
+	st, err := store.CreateCrawl(t.TempDir(), "", []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	pages := map[string]*crawler.PageRecord{
+		"https://ex.com/recipe": {
+			URL: "https://ex.com/recipe", Scope: "internal", State: crawler.StateCrawled,
+			StatusCode: 200, Status: "OK", ContentType: "text/html", Indexable: true,
+			Facts: &parse.Facts{Titles: []string{"Recipe"}, H1s: []string{"Recipe"}},
+			StructuredData: &structured.PageData{
+				Formats: []string{"jsonld"}, Types: []string{"Recipe"},
+				Errors: []string{
+					"Recipe: missing required property name",
+					"Recipe: missing required property image",
+				},
+			},
+		},
+	}
+	if err := st.SaveIssues(issues.Evaluate(pages, config.Default())); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := Build(st, "issues", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	details := map[string]bool{}
+	for _, row := range d.Rows {
+		// header: url, issue, severity, priority, tab, detail
+		if row[1] == "structured_validation_error" {
+			details[row[len(row)-1]] = true
+		}
+	}
+	if !details["Recipe: missing required property name"] || !details["Recipe: missing required property image"] {
+		t.Errorf("issues export details = %v, want both Recipe properties", details)
+	}
+
+	counts, err := st.IssueCounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts["structured_validation_error"] != 1 {
+		t.Errorf("affected URLs = %d, want 1", counts["structured_validation_error"])
 	}
 }
 
