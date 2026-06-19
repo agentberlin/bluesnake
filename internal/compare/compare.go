@@ -9,9 +9,13 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strings"
 
+	"github.com/agentberlin/bluesnake/internal/analyze"
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/parse"
+	"github.com/agentberlin/bluesnake/internal/structured"
 )
 
 // Delta is the per-issue membership change between two crawls.
@@ -187,14 +191,60 @@ func changeDetection(prev, curr map[string]*crawler.PageRecord, cfg *config.Conf
 		}
 		note("crawl_depth", itoa(p.Depth), itoa(c.Depth))
 		note("links", itoa(p.Inlinks), itoa(c.Inlinks))
+		// Structured data is compared as the unique set of schema.org types
+		// (SF's "Structured Data Unique Types" filter), independent of HTML
+		// parse facts so it still fires on pages where Facts is absent.
+		note("structured_data", uniqueTypes(p.StructuredData), uniqueTypes(c.StructuredData))
 		if p.Facts != nil && c.Facts != nil {
 			note("titles", first(p.Facts.Titles), first(c.Facts.Titles))
 			note("descriptions", first(p.Facts.Descriptions), first(c.Facts.Descriptions))
 			note("h1", first(p.Facts.H1s), first(c.Facts.H1s))
 			note("word_count", itoa(p.Facts.WordCount), itoa(c.Facts.WordCount))
+			if slices.Contains(enabled, "content") {
+				if ch, ok := contentChange(url, p.Facts, c.Facts, cfg.Compare.ContentChangeThreshold); ok {
+					changes = append(changes, ch)
+				}
+			}
 		}
 	}
 	return changes
+}
+
+// contentChange reports a content-area change between two versions of a URL.
+// The content-area text is compared with the shared minhash similarity, and a
+// change fires only when the content moved by more than threshold percent (SF's
+// ">N% similarity change"): a footer/nav-only edit changes the body hash but
+// not the content area, so it is not reported. An identical body short-circuits
+// before the similarity computation.
+func contentChange(url string, prev, curr *parse.Facts, threshold int) (Change, bool) {
+	if prev.Hash != "" && prev.Hash == curr.Hash {
+		return Change{}, false
+	}
+	sim := analyze.ContentSimilarity(prev.ContentText, curr.ContentText)
+	if 100-sim <= float64(threshold) {
+		return Change{}, false
+	}
+	return Change{URL: url, Element: "content",
+		Current: fmt.Sprintf("%.0f%% similar", sim)}, true
+}
+
+// uniqueTypes renders a page's schema.org types as a sorted, de-duplicated,
+// comma-separated string — the normalized form compared for structured-data
+// change detection. Absent structured data yields the empty string.
+func uniqueTypes(sd *structured.PageData) string {
+	if sd == nil || len(sd.Types) == 0 {
+		return ""
+	}
+	seen := map[string]bool{}
+	types := make([]string, 0, len(sd.Types))
+	for _, t := range sd.Types {
+		if t != "" && !seen[t] {
+			seen[t] = true
+			types = append(types, t)
+		}
+	}
+	sort.Strings(types)
+	return strings.Join(types, ", ")
 }
 
 func itoa(n int) string { return fmt.Sprintf("%d", n) }

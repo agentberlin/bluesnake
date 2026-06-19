@@ -552,7 +552,7 @@ Each analyzer reads SQLite, writes back columns/tables; all are idempotent and r
 
 ### 5.7 Compare
 
-`bluesnake compare <prev> <curr>`: attaches both DBs, applies URL mapping regexes to previous, computes per-filter membership deltas (Added/New/Removed/Missing per SF semantics) and element change detection (title/desc/h1/word-count/depth/link-metrics/content-similarity), writes a comparison report (terminal summary + exportable CSV/JSON).
+`bluesnake compare <prev> <curr>`: attaches both DBs, applies URL mapping regexes to previous, computes per-filter membership deltas (Added/New/Removed/Missing per SF semantics) and element change detection (title/desc/h1/word-count/depth/link-metrics/content-similarity/structured-data-types), writes a comparison report (terminal summary + exportable CSV/JSON).
 
 ### 5.8 Rendering (phase 2)
 
@@ -704,6 +704,24 @@ surface automatically through `bluesnake issues`, `crawl_overview`, the serve
 out-of-band probe of unreached curated links, a dedicated report/export, and a
 `bluesnake llms test` CLI are deliberate follow-ups, not yet built.)
 
+**2026-06-19 — compare `content` + `structured_data` change detectors wired.**
+`compare.change_detection` shipped with both entries enabled by default but
+silently dropped them (`compare.content_change_threshold` was unread) — the
+product advertised detectors it didn't run. `internal/compare.changeDetection`
+now evaluates both. **Content** compares the two crawls' content-area text with
+the *same* minhash similarity as near-duplicate analysis (new exported
+`analyze.ContentSimilarity`, single source of truth) and reports a change only
+when the content moved by more than `content_change_threshold` percent (SF's
+">N% similarity change"); a footer/nav-only edit changes the body hash but not
+the content area, so it is not reported, and an identical body short-circuits
+the comparison. **Structured data** compares the unique, sorted schema.org type
+set (SF's "Structured Data Unique Types"). Both flow through every surface that
+reads `compare.Result.Changes` (CLI `bluesnake compare`, CSV/JSON/xlsx export,
+the desktop comparison view) with no new config or UI. Pinned by
+`internal/compare` unit tests, an `analyze.ContentSimilarity` test, and two
+`features/compare.feature` scenarios. Retires the §9.1 "two dead
+change-detection values" note and the §9.2 "Compare detectors" backlog row.
+
 **Implemented but scoped down (extension points exist):**
 - Issues catalogue: **164 = the full issues library computable on the current
   data model** (the no-new-infrastructure boundary, not an arbitrary stop).
@@ -780,11 +798,6 @@ correctly gated.)
 `bluesnake crawls prune` command (+ a desktop action), never an automatic
 delete-on-startup.
 
-**Compare deltas — two dead change-detection values:** `compare.change_detection`
-is honoured, but its `content` and `structured_data` entries have no detector,
-and `compare.content_change_threshold` is unread (it pairs with the unbuilt
-`content` similarity delta).
-
 **`limits.max_urls` on resume — cumulative, with one residual (2026-06-17):**
 the crawl-total budget is a per-session fetch counter (`crawler.fetched`); a
 resumed session now seeds it from the already-recorded pages
@@ -825,7 +838,6 @@ uncertainty.
 | Persistent-frontier worker pool (scale) | Indirect | High | Med-High | Gates large-site (e-commerce) crawls; rendered stores already hit ~1GB on mid-size sites |
 | Fragment self-edges (G28) | Med | Low | Med | SF keeps `<a href="#x">` as empty-anchor self-edges (feeds its no-anchor-text counts). Changes outlink counts everywhere — probe SF's dedup semantics first |
 | Schema.org vocabulary validation | Low-Med | Low | Med | SF's plain validation found zero issues across all 5 test domains — rich-results is what fires. Big build, small payoff |
-| Compare detectors (`content`/`structured_data`) | Low-Med | Med | Low | Real workflow, but only for repeat-crawl users |
 | Store-flag enforcement (§9.1) | Low | Low-Med | Low | DB size on big crawls; SF-visible counts already match |
 | PDF extraction (`extraction.pdf.*`) | Low-Med | Low | Med | Niche (gov/edu/docs sites). New parser dependency |
 | AMP full validator | Low | Near-zero | Med | AMP is effectively dead. Skip unless a user asks |
