@@ -1,6 +1,7 @@
 package structured
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -211,5 +212,406 @@ func TestNonePresent(t *testing.T) {
 	})
 	if d != nil {
 		t.Errorf("no structured data must yield nil, got %+v", d)
+	}
+}
+
+// --- Rich-result matrix breadth: SoftwareApplication / Review / AggregateRating ---
+// Grounded in Google's current rich-results docs (review-snippet, software-app);
+// HowTo is intentionally omitted (Google deprecated HowTo rich results in
+// Sep 2023). See structured.go `requirements` comments.
+
+func jsonld(t *testing.T, body string) *PageData {
+	t.Helper()
+	return extract(t, `<html><head><script type="application/ld+json">`+body+
+		`</script></head><body></body></html>`, func(s *config.StructuredDataConfig) { s.JSONLD = true })
+}
+
+func hasIssue(items []string, sub string) bool {
+	for _, it := range items {
+		if strings.Contains(it, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// Google Software App: name + offers + (aggregateRating OR review) required;
+// applicationCategory + operatingSystem recommended.
+func TestSoftwareApplication(t *testing.T) {
+	// Fully specified app ⇒ no errors, no warnings.
+	d := jsonld(t, `{"@context":"https://schema.org","@type":"SoftwareApplication","name":"App",
+		"offers":{"@type":"Offer","price":"0"},
+		"aggregateRating":{"@type":"AggregateRating","ratingValue":"4.5","ratingCount":"100"},
+		"applicationCategory":"BusinessApplication","operatingSystem":"Web"}`)
+	if len(d.Errors) != 0 || len(d.Warnings) != 0 {
+		t.Errorf("complete SoftwareApplication: errors=%v warnings=%v, want none", d.Errors, d.Warnings)
+	}
+
+	// Missing offers ⇒ required error; applicationCategory/operatingSystem ⇒ warnings.
+	d = jsonld(t, `{"@type":"SoftwareApplication","name":"App",
+		"aggregateRating":{"@type":"AggregateRating","ratingValue":"4.5","ratingCount":"100"}}`)
+	if !hasIssue(d.Errors, "offers") {
+		t.Errorf("missing offers: errors=%v, want offers error", d.Errors)
+	}
+	if hasIssue(d.Errors, "name") {
+		t.Errorf("name present: errors=%v, want no name error", d.Errors)
+	}
+	if !hasIssue(d.Warnings, "applicationCategory") || !hasIssue(d.Warnings, "operatingSystem") {
+		t.Errorf("warnings=%v, want applicationCategory + operatingSystem", d.Warnings)
+	}
+
+	// Missing BOTH aggregateRating and review ⇒ anyOf error (one of them required).
+	d = jsonld(t, `{"@type":"SoftwareApplication","name":"App","offers":{"@type":"Offer","price":"5"}}`)
+	if !hasIssue(d.Errors, "aggregateRating") || !hasIssue(d.Errors, "review") {
+		t.Errorf("no rating/review: errors=%v, want an 'one of aggregateRating, review' error", d.Errors)
+	}
+
+	// A `review` satisfies the anyOf even without aggregateRating ⇒ no anyOf error.
+	d = jsonld(t, `{"@type":"SoftwareApplication","name":"App","offers":{"@type":"Offer","price":"5"},
+		"review":{"@type":"Review","author":"Bo","reviewRating":{"@type":"Rating","ratingValue":"5"}}}`)
+	if hasIssue(d.Errors, "one of") {
+		t.Errorf("review present: errors=%v, want no anyOf error", d.Errors)
+	}
+}
+
+// WebApplication / MobileApplication are SoftwareApplication subtypes Google
+// treats identically; they validate against the same requirements.
+func TestSoftwareApplicationSubtypes(t *testing.T) {
+	for _, typ := range []string{"WebApplication", "MobileApplication"} {
+		d := jsonld(t, `{"@type":"`+typ+`","name":"App"}`)
+		if !hasIssue(d.Errors, "offers") {
+			t.Errorf("%s missing offers: errors=%v, want offers error (subtype must validate)", typ, d.Errors)
+		}
+	}
+}
+
+// Google Review snippet: a Review is only a candidate when it carries a
+// reviewRating (the trigger); then `author` is required. itemReviewed is
+// nesting-dependent and deliberately not required (avoids the R6 over-warn trap
+// on product/app reviews where the parent is the reviewed item).
+func TestReview(t *testing.T) {
+	// reviewRating present (trigger), author missing ⇒ required error.
+	d := jsonld(t, `{"@type":"Review","reviewRating":{"@type":"Rating","ratingValue":"5"},
+		"itemReviewed":{"@type":"Thing","name":"X"}}`)
+	if !hasIssue(d.Errors, "author") {
+		t.Errorf("rating-bearing review w/o author: errors=%v, want author error", d.Errors)
+	}
+
+	// reviewRating + author ⇒ satisfied.
+	d = jsonld(t, `{"@type":"Review","author":"Ada","reviewRating":{"@type":"Rating","ratingValue":"5"}}`)
+	if len(d.Errors) != 0 || len(d.Warnings) != 0 {
+		t.Errorf("complete review: errors=%v warnings=%v, want none", d.Errors, d.Warnings)
+	}
+
+	// No reviewRating ⇒ NOT a snippet candidate ⇒ no errors/warnings even w/o author.
+	d = jsonld(t, `{"@type":"Review","author":"Ada","reviewBody":"text only"}`)
+	if len(d.Errors) != 0 || len(d.Warnings) != 0 {
+		t.Errorf("rating-less review: errors=%v warnings=%v, want none (not a candidate)", d.Errors, d.Warnings)
+	}
+}
+
+// Google AggregateRating: ratingValue required; at least one of
+// ratingCount / reviewCount required.
+func TestAggregateRating(t *testing.T) {
+	ok := []string{
+		`{"@type":"AggregateRating","ratingValue":"4.2","reviewCount":"50"}`,
+		`{"@type":"AggregateRating","ratingValue":"4.2","ratingCount":"50"}`,
+	}
+	for _, body := range ok {
+		d := jsonld(t, body)
+		if len(d.Errors) != 0 {
+			t.Errorf("valid aggregateRating %s: errors=%v, want none", body, d.Errors)
+		}
+	}
+
+	// No count at all ⇒ anyOf error.
+	d := jsonld(t, `{"@type":"AggregateRating","ratingValue":"4.2"}`)
+	if !hasIssue(d.Errors, "ratingCount") || !hasIssue(d.Errors, "reviewCount") {
+		t.Errorf("count-less aggregateRating: errors=%v, want 'one of ratingCount, reviewCount'", d.Errors)
+	}
+
+	// Missing ratingValue ⇒ required error.
+	d = jsonld(t, `{"@type":"AggregateRating","ratingCount":"10"}`)
+	if !hasIssue(d.Errors, "ratingValue") {
+		t.Errorf("valueless aggregateRating: errors=%v, want ratingValue error", d.Errors)
+	}
+}
+
+// A Product with a well-formed nested aggregateRating + review must NOT produce
+// any rating/review errors or warnings (the R6 over-warning regression guard):
+// the only warnings are the Product's own missing recommended image/offers.
+func TestNestedRatingNoOverWarn(t *testing.T) {
+	d := jsonld(t, `{"@type":"Product","name":"P",
+		"aggregateRating":{"@type":"AggregateRating","ratingValue":"4.5","reviewCount":"100"},
+		"review":[{"@type":"Review","author":"A","reviewRating":{"@type":"Rating","ratingValue":"5"}}]}`)
+	if hasIssue(d.Errors, "author") || hasIssue(d.Errors, "ratingValue") || hasIssue(d.Errors, "one of") {
+		t.Errorf("nested rating/review must not error: errors=%v", d.Errors)
+	}
+	for _, w := range d.Warnings {
+		if !strings.Contains(w, "image") && !strings.Contains(w, "offers") {
+			t.Errorf("unexpected warning %q (only Product image/offers expected)", w)
+		}
+	}
+}
+
+// --- Subtype-hierarchy resolution through the JSON-LD path ---
+// A schema.org subtype validates against its most-specific curated ancestor's
+// rules, and the issue is attributed to the leaf type the page actually used.
+
+func TestSubtypeLocalBusiness(t *testing.T) {
+	// Restaurant IS-A LocalBusiness ⇒ name+address required.
+	d := jsonld(t, `{"@type":"Restaurant","name":"Joe's"}`)
+	if !hasIssue(d.Errors, "Restaurant") || !hasIssue(d.Errors, "address") {
+		t.Errorf("Restaurant missing address: errors=%v, want a 'Restaurant ... address' error", d.Errors)
+	}
+	if hasIssue(d.Errors, "name") {
+		t.Errorf("name present: errors=%v, want no name error", d.Errors)
+	}
+	// Complete restaurant ⇒ no errors.
+	d = jsonld(t, `{"@type":"Restaurant","name":"Joe's","address":"1 Main St"}`)
+	if len(d.Errors) != 0 {
+		t.Errorf("complete Restaurant: errors=%v, want none", d.Errors)
+	}
+	// Medical subtype resolves to LocalBusiness, not Organization.
+	d = jsonld(t, `{"@type":"Hospital","name":"Mercy"}`)
+	if !hasIssue(d.Errors, "address") {
+		t.Errorf("Hospital missing address: errors=%v, want address error (LocalBusiness rules)", d.Errors)
+	}
+}
+
+func TestSubtypeArticleRecommendedOnly(t *testing.T) {
+	// TechArticle IS-A Article ⇒ recommended-only, never an error.
+	d := jsonld(t, `{"@type":"TechArticle","author":"x"}`)
+	if len(d.Errors) != 0 {
+		t.Errorf("TechArticle: errors=%v, want none (Article has no required props)", d.Errors)
+	}
+	if !hasIssue(d.Warnings, "TechArticle") || !hasIssue(d.Warnings, "headline") {
+		t.Errorf("TechArticle: warnings=%v, want a 'TechArticle ... headline' warning", d.Warnings)
+	}
+}
+
+func TestSubtypeOrganizationTriggerInherited(t *testing.T) {
+	// Corporation IS-A Organization, whose Logo feature is trigger-gated on a
+	// logo. No logo ⇒ not a candidate ⇒ nothing (the R6 guard, inherited).
+	d := jsonld(t, `{"@type":"Corporation","name":"Acme"}`)
+	if len(d.Errors) != 0 || len(d.Warnings) != 0 {
+		t.Errorf("logo-less Corporation: errors=%v warnings=%v, want none", d.Errors, d.Warnings)
+	}
+	// Logo present, url missing ⇒ inherit the recommended-url warning.
+	d = jsonld(t, `{"@type":"Corporation","name":"Acme","logo":"https://x/l.png"}`)
+	if !hasIssue(d.Warnings, "url") || hasIssue(d.Warnings, "logo") {
+		t.Errorf("logo-bearing Corporation: warnings=%v, want a missing-url (not missing-logo) warning", d.Warnings)
+	}
+}
+
+// A node multi-typed with a type and its supertype must not double-validate.
+func TestSubtypeAntichainNoDoubleValidate(t *testing.T) {
+	for _, body := range []string{
+		`{"@type":["NewsArticle","Article"],"author":"x"}`,
+		`{"@type":["LocalBusiness","Organization"],"name":"X"}`,
+	} {
+		d := jsonld(t, body)
+		seen := map[string]bool{}
+		for _, m := range append(append([]string{}, d.Errors...), d.Warnings...) {
+			if seen[m] {
+				t.Errorf("%s: duplicate message %q (supertype not collapsed)", body, m)
+			}
+			seen[m] = true
+		}
+	}
+	// ["LocalBusiness","Organization"] name-only ⇒ exactly the LocalBusiness
+	// address error, and no Organization logo machinery.
+	d := jsonld(t, `{"@type":["LocalBusiness","Organization"],"name":"X"}`)
+	if !hasIssue(d.Errors, "address") {
+		t.Errorf("errors=%v, want address error", d.Errors)
+	}
+}
+
+// Grounded exclusions: subtypes Google routes to a different/retired feature
+// must produce no errors/warnings (over-warn guards).
+func TestSubtypeExclusions(t *testing.T) {
+	for _, body := range []string{
+		`{"@type":"Car","name":"Model X"}`,           // ↛ Product (Vehicle-listing deprecated)
+		`{"@type":"VideoGame","name":"Doom"}`,        // ↛ SoftwareApplication (no offers)
+		`{"@type":"OperatingSystem","name":"Linux"}`, // ↛ SoftwareApplication (metadata)
+		`{"@type":"RuntimePlatform","name":"JVM"}`,   // ↛ SoftwareApplication
+		`{"@type":"ClaimReview","claimReviewed":"x","reviewRating":{"@type":"Rating","ratingValue":"1"},"url":"https://x"}`, // ↛ Review (Fact Check, not author-required)
+	} {
+		d := jsonld(t, body)
+		if d == nil {
+			continue // type recorded but nothing to validate is fine
+		}
+		if len(d.Errors) != 0 || len(d.Warnings) != 0 {
+			t.Errorf("%s: errors=%v warnings=%v, want none (excluded from inheritance)", body, d.Errors, d.Warnings)
+		}
+	}
+}
+
+// VideoGame is excluded, but an EXPLICIT SoftwareApplication co-type opts the
+// page into the app rich result and must validate.
+func TestSubtypeVideoGameCoTypedValidates(t *testing.T) {
+	d := jsonld(t, `{"@type":["VideoGame","SoftwareApplication"],"name":"Doom"}`)
+	if !hasIssue(d.Errors, "offers") {
+		t.Errorf("co-typed app: errors=%v, want offers error (explicit SoftwareApplication validates)", d.Errors)
+	}
+}
+
+// ReviewNewsArticle IS-A both NewsArticle and Review (the only incomparable
+// tie). It must validate as NewsArticle (recommended-only) and NEVER fire the
+// Review "missing author" error.
+func TestSubtypeReviewNewsArticleTie(t *testing.T) {
+	d := jsonld(t, `{"@type":"ReviewNewsArticle","headline":"H","author":"A"}`)
+	if len(d.Errors) != 0 {
+		t.Errorf("ReviewNewsArticle: errors=%v, want none (NewsArticle has no required props; Review suppressed)", d.Errors)
+	}
+}
+
+// B1 regression: RDFa is type-recording-only (no property set is collected), so
+// a resolvable subtype must NOT be validated — else every RDFa subtype page
+// would false-error on missing required props.
+func TestRDFaSubtypeNotValidated(t *testing.T) {
+	d := extract(t, `<html><body vocab="https://schema.org/" typeof="Restaurant">
+		<span property="name">Joe's</span></body></html>`,
+		func(s *config.StructuredDataConfig) { s.RDFa = true })
+	if d == nil {
+		t.Fatal("nil data")
+	}
+	if len(d.Errors) != 0 || len(d.Warnings) != 0 {
+		t.Errorf("RDFa Restaurant: errors=%v warnings=%v, want none (RDFa collects no props)", d.Errors, d.Warnings)
+	}
+}
+
+// A complete root-level item with a nested non-curated item (PostalAddress)
+// must not false-error from the nested item.
+func TestMicrodataNestedNoFalseError(t *testing.T) {
+	d := extract(t, `<html><body>
+		<div itemscope itemtype="https://schema.org/Restaurant">
+		  <span itemprop="name">Joe's</span>
+		  <div itemprop="address" itemscope itemtype="https://schema.org/PostalAddress">
+		    <span itemprop="streetAddress">1 Main St</span>
+		  </div>
+		</div></body></html>`,
+		func(s *config.StructuredDataConfig) { s.Microdata = true })
+	if d == nil {
+		t.Fatal("nil data")
+	}
+	if len(d.Errors) != 0 {
+		t.Errorf("Restaurant w/ nested PostalAddress: errors=%v, want none", d.Errors)
+	}
+}
+
+// M5: a full-URL JSON-LD @type must normalize and resolve identically to the
+// bare leaf, the same way Microdata's itemtype URL does.
+func TestJSONLDFullURLTypeResolves(t *testing.T) {
+	d := jsonld(t, `{"@context":"https://schema.org","@type":"https://schema.org/Restaurant","name":"Joe's"}`)
+	if !hasIssue(d.Errors, "Restaurant") || !hasIssue(d.Errors, "address") {
+		t.Errorf("full-URL @type: errors=%v, want a 'Restaurant ... address' error", d.Errors)
+	}
+}
+
+// m8: the same entity appearing twice (here a Product in @graph and inline)
+// must report each finding once.
+func TestGraphInlineDedup(t *testing.T) {
+	d := jsonld(t, `{"@context":"https://schema.org","@graph":[
+		{"@type":"Product","name":"P"},
+		{"@type":"Product","name":"P"}]}`)
+	seen := map[string]bool{}
+	for _, w := range d.Warnings {
+		if seen[w] {
+			t.Errorf("duplicate warning %q across identical entities", w)
+		}
+		seen[w] = true
+	}
+}
+
+// B1 (the blocker the review caught): a business/media subtype that appears as a
+// NESTED reference value (offers.seller, publisher, author, location, video) is
+// a stub that legitimately carries only a name/url — it must NOT be validated
+// for the parent feature's required props (R6-class false error). Only the
+// page's primary entity (top-level / @graph member) is validated.
+func TestNestedReferenceEntityNotValidated(t *testing.T) {
+	cases := []string{
+		`{"@type":"Product","name":"Shirt","image":"s.jpg","offers":{"@type":"Offer","price":"9","seller":{"@type":"Store","name":"Acme Outlet"}}}`,
+		`{"@type":"NewsArticle","headline":"H","image":"i","datePublished":"2024","author":"A","publisher":{"@type":"Restaurant","name":"Joe's"}}`,
+		`{"@type":"Recipe","name":"Cake","image":"c.jpg","author":{"@type":"Bakery","name":"Sweet"}}`,
+		`{"@type":"Event","name":"Gig","startDate":"2024-01-01","location":{"@type":"Hotel","name":"Grand"}}`,
+		`{"@type":"Article","headline":"H","image":"i","datePublished":"2024","author":"A","video":{"@type":"VideoObject","name":"clip"}}`,
+	}
+	for _, body := range cases {
+		d := jsonld(t, body)
+		if len(d.Errors) != 0 {
+			t.Errorf("%s\n  nested stub must not error: errors=%v", body, d.Errors)
+		}
+	}
+	// Microdata equivalent: Product > Offer > nested Store itemscope.
+	d := extract(t, `<html><body>
+		<div itemscope itemtype="https://schema.org/Product">
+		  <span itemprop="name">Shirt</span>
+		  <span itemprop="image">s.jpg</span>
+		  <div itemprop="offers" itemscope itemtype="https://schema.org/Offer">
+		    <div itemprop="seller" itemscope itemtype="https://schema.org/Store">
+		      <span itemprop="name">Acme Outlet</span>
+		    </div>
+		  </div>
+		</div></body></html>`,
+		func(s *config.StructuredDataConfig) { s.Microdata = true })
+	if d == nil {
+		t.Fatal("nil data")
+	}
+	if len(d.Errors) != 0 {
+		t.Errorf("microdata nested Store must not error: errors=%v", d.Errors)
+	}
+	// …but the nested types are still recorded for the type set.
+	if !slices.Contains(d.Types, "Store") || !slices.Contains(d.Types, "Offer") {
+		t.Errorf("nested types must still be recorded: types=%v", d.Types)
+	}
+}
+
+// A nested entity that is genuinely incomplete is silently allowed (not the
+// primary entity); a TOP-LEVEL one of the same type IS validated — confirming
+// the guard keys on nesting, not on the type.
+func TestTopLevelStillValidatedAlongsideNested(t *testing.T) {
+	top := jsonld(t, `{"@type":"Store","name":"Acme"}`) // top-level ⇒ validated
+	if !hasIssue(top.Errors, "address") {
+		t.Errorf("top-level Store: errors=%v, want address error", top.Errors)
+	}
+}
+
+// M1: a microdata itemtype with several space-separated type URLs records ALL
+// of them and validation is order-independent (not just the last token's leaf).
+func TestMicrodataMultiItemtype(t *testing.T) {
+	d := extract(t, `<html><body>
+		<div itemscope itemtype="https://schema.org/Product https://schema.org/IndividualProduct">
+		  <span itemprop="name">Widget</span>
+		</div></body></html>`,
+		func(s *config.StructuredDataConfig) { s.Microdata = true })
+	if d == nil {
+		t.Fatal("nil data")
+	}
+	if !slices.Contains(d.Types, "Product") || !slices.Contains(d.Types, "IndividualProduct") {
+		t.Errorf("multi-itemtype: types=%v, want both Product and IndividualProduct", d.Types)
+	}
+	// Restaurant declared anywhere in the itemtype list must drive validation.
+	d = extract(t, `<html><body>
+		<div itemscope itemtype="https://schema.org/Thing https://schema.org/Restaurant">
+		  <span itemprop="name">Joe's</span>
+		</div></body></html>`,
+		func(s *config.StructuredDataConfig) { s.Microdata = true })
+	if !hasIssue(d.Errors, "address") {
+		t.Errorf("itemtype with Restaurant: errors=%v, want address error regardless of token order", d.Errors)
+	}
+}
+
+// JSON-LD @type recorded in PageData.Types is normalized to the short form
+// (parity with SF and Microdata), even from a full URL.
+func TestTypesNormalized(t *testing.T) {
+	d := jsonld(t, `{"@context":"https://schema.org","@type":"https://schema.org/Product","name":"P"}`)
+	if !slices.Contains(d.Types, "Product") {
+		t.Errorf("types=%v, want short-form Product", d.Types)
+	}
+	for _, ty := range d.Types {
+		if strings.Contains(ty, "/") {
+			t.Errorf("type %q not normalized to short form", ty)
+		}
 	}
 }
