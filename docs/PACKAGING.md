@@ -9,7 +9,7 @@ up yet — artifacts are unsigned (see [Signing](#signing-not-done-yet)).
 | Platform | Desktop app | CLI | Artifacts |
 |----------|:-----------:|:---:|-----------|
 | **macOS** (universal) | ✅ | ✅ (bundled) | `.dmg`, `.app` zip |
-| **Windows** (amd64) | ✅ frameless | ❌ | portable `.exe`, NSIS installer |
+| **Windows** (amd64) | ✅ native frame | ❌ | portable `.exe`, NSIS installer |
 | **Debian/Ubuntu** (amd64, arm64) | ❌ | ✅ | `.deb`, `.tar.gz` |
 
 The single fact that makes this easy: the CLI is **pure Go** (`modernc.org/sqlite`,
@@ -71,15 +71,16 @@ the embedded CLI (`lipo` of amd64 + arm64).
 > the DMG only. (The CI still uses `brew install create-dmg` on the macOS runner,
 > but that's just the tool that builds the DMG, not a distribution channel.)
 
-### Windows → frameless desktop, no CLI
-Windows has no equivalent of macOS's "hidden inset" title bar, so to keep the
-single custom title bar design intact we make the window **frameless**
-(`Frameless: runtime.GOOS == "windows"` in [desktop/main.go](../desktop/main.go))
-and draw our own min/max/close caption buttons in the frontend (`WinControls` in
-[main.jsx](../desktop/frontend/src/main.jsx), `.titlebar.win` styles in
-[styles.css](../desktop/frontend/src/styles.css)). The frontend detects the OS at
-startup via the Wails runtime `Environment()`. We ship the portable `.exe` and an
-NSIS installer; the CLI is intentionally not distributed on Windows.
+### Windows → native-framed desktop, no CLI
+The window uses the **standard native title bar** on Windows (and Linux) — the app
+is not frameless ([desktop/main.go](../desktop/main.go)). That way minimise,
+maximise, restore, Win11 Snap Layouts and every other window behaviour come from
+the OS and feel exactly like any native app, with no hand-drawn caption buttons to
+keep in sync. The custom title bar ([main.jsx](../desktop/frontend/src/main.jsx))
+renders as the app title bar only on macOS (which uses `TitleBarHiddenInset` to
+overlay the traffic lights on the content); on Windows/Linux it sits beneath the OS
+title bar as a plain toolbar. We ship the portable `.exe` and an NSIS installer;
+the CLI is intentionally not distributed on Windows.
 
 ### Self-update (desktop, macOS + Windows)
 The desktop app updates itself in place. The OS-agnostic core

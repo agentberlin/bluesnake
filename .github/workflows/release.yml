@@ -14,7 +14,7 @@ name: release
 #
 #   Linux  : CLI only  -> .deb (amd64 + arm64) + .tar.gz + raw binary + install.sh
 #   macOS  : desktop .app + .dmg (universal: Apple Silicon + Intel), CLI embedded
-#   Windows: frameless desktop .exe (+ NSIS installer), amd64; no CLI shipped
+#   Windows: native-framed desktop .exe (+ NSIS installer), amd64; no CLI shipped
 
 on:
   push:
@@ -192,7 +192,7 @@ jobs:
 
   # ----------------------------------------------------------- Windows desktop
   desktop-windows:
-    name: Desktop .exe (frameless) + installer
+    name: Desktop .exe (native frame) + installer
     needs: [resolve-version, test]
     runs-on: windows-latest
     env:
@@ -218,7 +218,7 @@ jobs:
           choco install nsis -y --no-progress
           echo "C:\Program Files (x86)\NSIS" >> "$GITHUB_PATH"
 
-      - name: Build desktop app (frameless portable .exe)
+      - name: Build desktop app (portable .exe)
         run: |
           GOBIN="$(go env GOPATH)/bin"
           export PATH="$GOBIN:$PATH"
