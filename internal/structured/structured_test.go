@@ -24,7 +24,7 @@ func TestDisabledReturnsNil(t *testing.T) {
 
 func TestJSONLD(t *testing.T) {
 	body := `<html><head><script type="application/ld+json">
-	{"@context":"https://schema.org","@type":"Product","name":"Widget","offers":{"@type":"Offer","price":"10"}}
+	{"@context":"https://schema.org","@type":"Product","name":"Widget","offers":{"@type":"Offer","price":"10","priceCurrency":"USD"}}
 	</script></head><body></body></html>`
 	d := extract(t, body, func(s *config.StructuredDataConfig) { s.JSONLD = true })
 	if d == nil || len(d.Formats) != 1 || d.Formats[0] != "jsonld" {
@@ -265,9 +265,10 @@ func hasIssue(items []string, sub string) bool {
 // Google Software App: name + offers + (aggregateRating OR review) required;
 // applicationCategory + operatingSystem recommended.
 func TestSoftwareApplication(t *testing.T) {
-	// Fully specified app ⇒ no errors, no warnings.
+	// Fully specified app ⇒ no errors, no warnings. (offers carries priceCurrency
+	// so the now-validated nested Offer is complete too.)
 	d := jsonld(t, `{"@context":"https://schema.org","@type":"SoftwareApplication","name":"App",
-		"offers":{"@type":"Offer","price":"0"},
+		"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},
 		"aggregateRating":{"@type":"AggregateRating","ratingValue":"4.5","ratingCount":"100"},
 		"applicationCategory":"BusinessApplication","operatingSystem":"Web"}`)
 	if len(d.Errors) != 0 || len(d.Warnings) != 0 {
@@ -288,13 +289,13 @@ func TestSoftwareApplication(t *testing.T) {
 	}
 
 	// Missing BOTH aggregateRating and review ⇒ anyOf error (one of them required).
-	d = jsonld(t, `{"@type":"SoftwareApplication","name":"App","offers":{"@type":"Offer","price":"5"}}`)
+	d = jsonld(t, `{"@type":"SoftwareApplication","name":"App","offers":{"@type":"Offer","price":"5","priceCurrency":"USD"}}`)
 	if !hasIssue(d.Errors, "aggregateRating") || !hasIssue(d.Errors, "review") {
 		t.Errorf("no rating/review: errors=%v, want an 'one of aggregateRating, review' error", d.Errors)
 	}
 
 	// A `review` satisfies the anyOf even without aggregateRating ⇒ no anyOf error.
-	d = jsonld(t, `{"@type":"SoftwareApplication","name":"App","offers":{"@type":"Offer","price":"5"},
+	d = jsonld(t, `{"@type":"SoftwareApplication","name":"App","offers":{"@type":"Offer","price":"5","priceCurrency":"USD"},
 		"review":{"@type":"Review","author":"Bo","reviewRating":{"@type":"Rating","ratingValue":"5"}}}`)
 	if hasIssue(d.Errors, "one of") {
 		t.Errorf("review present: errors=%v, want no anyOf error", d.Errors)
@@ -558,7 +559,7 @@ func TestGraphInlineDedup(t *testing.T) {
 // page's primary entity (top-level / @graph member) is validated.
 func TestNestedReferenceEntityNotValidated(t *testing.T) {
 	cases := []string{
-		`{"@type":"Product","name":"Shirt","image":"s.jpg","offers":{"@type":"Offer","price":"9","seller":{"@type":"Store","name":"Acme Outlet"}}}`,
+		`{"@type":"Product","name":"Shirt","image":"s.jpg","offers":{"@type":"Offer","price":"9","priceCurrency":"USD","seller":{"@type":"Store","name":"Acme Outlet"}}}`,
 		`{"@type":"NewsArticle","headline":"H","image":"i","datePublished":"2024","author":"A","publisher":{"@type":"Restaurant","name":"Joe's"}}`,
 		`{"@type":"Recipe","name":"Cake","image":"c.jpg","author":{"@type":"Bakery","name":"Sweet"}}`,
 		`{"@type":"Event","name":"Gig","startDate":"2024-01-01","location":{"@type":"Hotel","name":"Grand"}}`,
@@ -576,6 +577,8 @@ func TestNestedReferenceEntityNotValidated(t *testing.T) {
 		  <span itemprop="name">Shirt</span>
 		  <span itemprop="image">s.jpg</span>
 		  <div itemprop="offers" itemscope itemtype="https://schema.org/Offer">
+		    <span itemprop="price">9</span>
+		    <span itemprop="priceCurrency">USD</span>
 		    <div itemprop="seller" itemscope itemtype="https://schema.org/Store">
 		      <span itemprop="name">Acme Outlet</span>
 		    </div>
@@ -640,5 +643,172 @@ func TestTypesNormalized(t *testing.T) {
 		if strings.Contains(ty, "/") {
 			t.Errorf("type %q not normalized to short form", ty)
 		}
+	}
+}
+
+// --- Nested integral-object validation (G5-matrix nested-property checks) ---
+//
+// Google (and Screaming Frog, which mirrors the Rich Results Test) validate the
+// integral sub-entities of a rich result — a Product's offers→Offer and
+// review→Review, a Review's reviewRating→Rating — against their OWN required
+// properties, not just the parent. bluesnake previously validated the page's
+// primary entity only, so an Offer with no price slipped past silently. The
+// engine now recurses into a curated whitelist of integral properties
+// (offers/review/reviews/reviewRating/aggregateRating) while still leaving
+// reference stubs (seller/publisher/author/brand) unvalidated.
+//
+// Ground truth measured on SF v24.1 (STANDARD config) probe pages:
+//   offers w/o price        ⇒ Rich Result Error  "Offer ... price ... required"
+//   offers w/o priceCurrency⇒ Rich Result Error  "Offer ... priceCurrency ... required"
+//   reviewRating w/o ratingValue ⇒ Rich Result Error "Rating ... ratingValue ... required"
+// Scope is REQUIRED properties (errors); the merchant-listing recommended breadth
+// (Offer itemCondition/availability, Product gtin/description) is a separate gap.
+
+func TestNestedOfferRequiredProperties(t *testing.T) {
+	// offers present but missing price ⇒ Offer price error (anyOf price/priceSpec).
+	d := jsonld(t, `{"@type":"Product","name":"P","offers":{"@type":"Offer","priceCurrency":"USD"}}`)
+	if !hasIssue(d.Errors, "Offer") || !hasIssue(d.Errors, "price") {
+		t.Errorf("offers w/o price: errors=%v, want an Offer price error", d.Errors)
+	}
+
+	// offers present but missing priceCurrency ⇒ Offer priceCurrency error.
+	d = jsonld(t, `{"@type":"Product","name":"P","offers":{"@type":"Offer","price":"9.99"}}`)
+	if !hasIssue(d.Errors, "Offer") || !hasIssue(d.Errors, "priceCurrency") {
+		t.Errorf("offers w/o priceCurrency: errors=%v, want an Offer priceCurrency error", d.Errors)
+	}
+
+	// Complete offers ⇒ no Offer error (priceSpecification also satisfies both).
+	for _, off := range []string{
+		`{"@type":"Offer","price":"9.99","priceCurrency":"USD"}`,
+		`{"@type":"Offer","priceSpecification":{"@type":"PriceSpecification","price":"9.99","priceCurrency":"USD"}}`,
+	} {
+		d = jsonld(t, `{"@type":"Product","name":"P","offers":`+off+`}`)
+		if hasIssue(d.Errors, "Offer") {
+			t.Errorf("complete offers %s: errors=%v, want no Offer error", off, d.Errors)
+		}
+	}
+
+	// offers with no @type ⇒ Google infers Offer from the property; still validated.
+	d = jsonld(t, `{"@type":"Product","name":"P","offers":{"price":"9.99"}}`)
+	if !hasIssue(d.Errors, "priceCurrency") {
+		t.Errorf("typeless offers w/o currency: errors=%v, want priceCurrency error (implied Offer)", d.Errors)
+	}
+}
+
+func TestNestedRatingRequiredRatingValue(t *testing.T) {
+	// A review's reviewRating missing ratingValue ⇒ Rating ratingValue error.
+	d := jsonld(t, `{"@type":"Product","name":"P","offers":{"@type":"Offer","price":"9.99","priceCurrency":"USD"},
+		"review":{"@type":"Review","author":"A","reviewRating":{"@type":"Rating","bestRating":"5"}}}`)
+	if !hasIssue(d.Errors, "Rating") || !hasIssue(d.Errors, "ratingValue") {
+		t.Errorf("reviewRating w/o ratingValue: errors=%v, want a Rating ratingValue error", d.Errors)
+	}
+
+	// A Product's nested aggregateRating missing ratingValue ⇒ error (validated nested).
+	d = jsonld(t, `{"@type":"Product","name":"P","offers":{"@type":"Offer","price":"9.99","priceCurrency":"USD"},
+		"aggregateRating":{"@type":"AggregateRating","ratingCount":"10"}}`)
+	if !hasIssue(d.Errors, "ratingValue") {
+		t.Errorf("nested aggregateRating w/o ratingValue: errors=%v, want a ratingValue error", d.Errors)
+	}
+}
+
+// AggregateOffer (IS-A Offer) uses lowPrice, not price — validating it against
+// the plain Offer rule would false-error on valid markup. It has its own rule.
+func TestNestedAggregateOfferNotMisvalidated(t *testing.T) {
+	d := jsonld(t, `{"@type":"Product","name":"P","offers":{"@type":"AggregateOffer","lowPrice":"9.99","priceCurrency":"USD"}}`)
+	if hasIssue(d.Errors, "price") && !hasIssue(d.Errors, "lowPrice") {
+		t.Errorf("valid AggregateOffer: errors=%v, want no plain-price error", d.Errors)
+	}
+	// Empty AggregateOffer ⇒ still flags the missing low/price + currency.
+	d = jsonld(t, `{"@type":"Product","name":"P","offers":{"@type":"AggregateOffer"}}`)
+	if !hasIssue(d.Errors, "lowPrice") || !hasIssue(d.Errors, "priceCurrency") {
+		t.Errorf("empty AggregateOffer: errors=%v, want lowPrice + priceCurrency errors", d.Errors)
+	}
+}
+
+// Offer validation is parent-aware and scoped to Product (offerStrictParents).
+// A Product offer requires price + priceCurrency; an Event offer (a ticket url
+// is enough) and a Software App offer have different/looser per-feature rules,
+// so they are deliberately NOT validated here — over-erroring them would be an
+// R6-class regression. Measured on SF v24.1: an Event offer's price/priceCurrency
+// are warnings (not errors), and a Software App offer requires price but NOT
+// priceCurrency. Those two are tracked as residuals (under-report, never over).
+func TestNestedOfferParentAware(t *testing.T) {
+	// A Product url-only offer DOES require price + priceCurrency.
+	d := jsonld(t, `{"@type":"Product","name":"P","offers":{"@type":"Offer","url":"https://x"}}`)
+	if !hasIssue(d.Errors, "Offer") || !hasIssue(d.Errors, "price") {
+		t.Errorf("Product url-only offer: errors=%v, want an Offer price error", d.Errors)
+	}
+
+	// Event with a url-only offer ⇒ NO Offer error (price is recommended there).
+	d = jsonld(t, `{"@type":"Event","name":"Gig","startDate":"2026-09-01",
+		"location":{"@type":"Place","name":"Hall","address":"1 Main St"},
+		"offers":{"@type":"Offer","url":"https://tickets.example","availability":"https://schema.org/InStock"}}`)
+	if hasIssue(d.Errors, "Offer") {
+		t.Errorf("Event url-only offer: errors=%v, want NO Offer error (out of Product scope)", d.Errors)
+	}
+
+	// SoftwareApplication offer missing price ⇒ NO Offer error from bluesnake
+	// (the app-offer rule — price-yes, priceCurrency-no — is a documented
+	// residual; we under-report rather than over-error on priceCurrency).
+	d = jsonld(t, `{"@type":"SoftwareApplication","name":"App","aggregateRating":{"@type":"AggregateRating","ratingValue":"4","ratingCount":"9"},
+		"offers":{"@type":"Offer","availability":"https://schema.org/InStock"}}`)
+	if hasIssue(d.Errors, "Offer") {
+		t.Errorf("SoftwareApplication offer: errors=%v, want NO Offer error (out of scope residual)", d.Errors)
+	}
+}
+
+// The R6 over-warn boundary, locked precisely: a nested REFERENCE stub reached
+// via a non-integral property (seller→Store, publisher→Organization) records its
+// type but is NEVER validated for its own required properties. Validating a
+// nested Store for `address` is the original R6 false-error.
+func TestNestedReferenceStubNotValidated(t *testing.T) {
+	// offers.seller = a Store with no address ⇒ must NOT emit a Store/address error.
+	d := jsonld(t, `{"@type":"Product","name":"P","offers":{"@type":"Offer","price":"9.99","priceCurrency":"USD",
+		"seller":{"@type":"Store","name":"Acme Shop"}}}`)
+	if hasIssue(d.Errors, "address") || hasIssue(d.Errors, "Store") {
+		t.Errorf("offers.seller=Store: errors=%v, want NO Store/address error (reference stub)", d.Errors)
+	}
+	if !slices.Contains(d.Types, "Store") {
+		t.Errorf("types=%v, want Store recorded even though unvalidated", d.Types)
+	}
+
+	// A reference stub's OWN nested integral child stays unvalidated too: the
+	// seller Store carries a malformed aggregateRating (no ratingValue), but it
+	// is inside a stub subtree, so no error fires (the whole subtree is a stub).
+	d = jsonld(t, `{"@type":"Product","name":"P","offers":{"@type":"Offer","price":"9","priceCurrency":"USD",
+		"seller":{"@type":"Store","name":"Acme","aggregateRating":{"@type":"AggregateRating","ratingCount":"3"}}}}`)
+	if hasIssue(d.Errors, "ratingValue") {
+		t.Errorf("stub's nested rating: errors=%v, want none (whole seller subtree is a reference stub)", d.Errors)
+	}
+
+	// Article.publisher = a logo-less Organization ⇒ no Organization warning/error
+	// (publisher is a reference, not an integral part of the Article rich result).
+	d = jsonld(t, `{"@type":"Article","headline":"H","image":"i","author":"A","datePublished":"x","dateModified":"y",
+		"publisher":{"@type":"Organization","name":"Pub"}}`)
+	if hasIssue(d.Errors, "Organization") || hasIssue(d.Warnings, "Organization") {
+		t.Errorf("Article.publisher=Organization: errors=%v warnings=%v, want none (reference stub)", d.Errors, d.Warnings)
+	}
+}
+
+// Microdata gets the same nested-integral validation: a nested Offer itemscope
+// reached via itemprop="offers" is validated; a seller stub is not.
+func TestMicrodataNestedOffer(t *testing.T) {
+	body := `<html><body>
+	<div itemscope itemtype="https://schema.org/Product">
+	  <span itemprop="name">Widget</span>
+	  <span itemprop="image">i.jpg</span>
+	  <div itemprop="offers" itemscope itemtype="https://schema.org/Offer">
+	    <span itemprop="price">9.99</span>
+	    <div itemprop="seller" itemscope itemtype="https://schema.org/Store">
+	      <span itemprop="name">Acme Shop</span>
+	    </div>
+	  </div>
+	</div></body></html>`
+	d := extract(t, body, func(s *config.StructuredDataConfig) { s.Microdata = true })
+	if !hasIssue(d.Errors, "Offer") || !hasIssue(d.Errors, "priceCurrency") {
+		t.Errorf("microdata offers w/o priceCurrency: errors=%v, want Offer priceCurrency error", d.Errors)
+	}
+	if hasIssue(d.Errors, "address") || hasIssue(d.Errors, "Store") {
+		t.Errorf("microdata offers.seller=Store: errors=%v, want NO Store/address error", d.Errors)
 	}
 }

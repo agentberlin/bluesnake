@@ -48,6 +48,12 @@ var inheritanceExclusions = []struct{ subtree, root string }{
 	{"MediaReview", "Review"},
 	{"EmployerReview", "Review"},
 	{"EmployerAggregateRating", "AggregateRating"},
+	// AggregateRating IS-A Rating, so adding Rating as a curated root would let
+	// EmployerAggregateRating (the Employer Rating feature, not a star rating)
+	// fall back to Rating[required ratingValue] once its AggregateRating edge is
+	// suppressed above — re-introducing the very false error that suppression
+	// prevents. Exclude the Rating root too so it validates against neither.
+	{"EmployerAggregateRating", "Rating"},
 	// ReviewNewsArticle IS-A both NewsArticle and Review (the only incomparable
 	// curated tie in the vocabulary); it is fundamentally a news article, so
 	// suppress the Review edge — it validates as NewsArticle (recommended-only).
