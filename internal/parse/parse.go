@@ -674,6 +674,40 @@ func sameTagAdjacent(n *html.Node) bool {
 		n.PrevSibling.Data == n.Data
 }
 
+// extractBlockOverride lists elements that Screaming Frog (jsoup) treats as
+// BLOCK in extracted text — i.e. they re-introduce a word boundary — even though
+// content.go's inlineElements set lists them as inline for word counting. They
+// must space in extraction but not change counting, so they live here rather
+// than in inlineElements. Pinned with SF v24.1 probe pages (R10): a childless
+// <svg>/<canvas>/<button> between two text runs reads "Next Title", not
+// "NextTitle". <svg> drives the real-world gap (icon SVGs inside link/heading
+// label runs).
+var extractBlockOverride = map[string]bool{"svg": true, "canvas": true, "button": true}
+
+// extractInlineOverride lists elements SF (jsoup) treats as INLINE in extracted
+// text — they join with no space — but which are absent from inlineElements, so
+// the denylist in isExtractionBlock would otherwise wrongly separate them.
+// Pinned with the same SF probe pages (R10).
+var extractInlineOverride = map[string]bool{
+	"iframe": true, "map": true, "dialog": true, "summary": true,
+	"legend": true, "area": true, "datalist": true, "track": true,
+}
+
+// isExtractionBlock reports whether an element separates words in extracted text
+// (titles, H1/H2, anchor text), matching Screaming Frog's block/inline split.
+// The base rule is "not inline" (inlineElements is the word-counting inline
+// set); the two override maps carry the handful of elements where SF's
+// extraction classification diverges from that set.
+func isExtractionBlock(tag string) bool {
+	if extractBlockOverride[tag] {
+		return true
+	}
+	if extractInlineOverride[tag] {
+		return false
+	}
+	return !inlineElements[tag]
+}
+
 func subtreeText(n *html.Node) string {
 	var b strings.Builder
 	var visit func(*html.Node)
@@ -682,21 +716,26 @@ func subtreeText(n *html.Node) string {
 			b.WriteString(n.Data)
 			return
 		}
-		if n.Type == html.ElementNode && slices.Contains(nonTextElements, n.Data) {
+		if n.Type != html.ElementNode {
 			return
 		}
-		// Element-text EXTRACTION (titles, H1/H2, anchor text) joins inline
-		// elements with no synthetic space — including same-tag-adjacent ones:
-		// SF extracts `<span>Run</span><span>Execute</span>` as "RunExecute"
-		// (probe + infisical.com tripled-<h1>). Only block boundaries separate.
-		// (Word COUNTING is the opposite — it breaks at same-tag adjacency — but
-		// that lives in content.go, which keeps sameTagAdjacent.)
-		boundary := n.Type == html.ElementNode && !inlineElements[n.Data]
+		// Element-text EXTRACTION joins inline elements with no synthetic space —
+		// including same-tag-adjacent ones: SF extracts
+		// `<span>Run</span><span>Execute</span>` as "RunExecute" (probe +
+		// infisical.com tripled-<h1>). Block-level elements (incl. a childless
+		// inline <svg> icon) re-introduce a word boundary. (Word COUNTING is the
+		// opposite at same-tag adjacency — that lives in content.go.)
+		boundary := isExtractionBlock(n.Data)
 		if boundary {
 			b.WriteString(" ")
 		}
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			visit(c)
+		// Some block elements never contribute their own text (svg titles, select
+		// option labels) but still mark a boundary — so emit the boundary space
+		// above, then skip their subtree here.
+		if !slices.Contains(nonTextElements, n.Data) {
+			for c := n.FirstChild; c != nil; c = c.NextSibling {
+				visit(c)
+			}
 		}
 		if boundary {
 			b.WriteString(" ")

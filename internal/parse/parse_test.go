@@ -420,3 +420,75 @@ func TestLinkPositionHeaderNotHead(t *testing.T) {
 		t.Errorf("aside link position = %+v, want aside", l)
 	}
 }
+
+// Element-text EXTRACTION (anchors, titles, headings) re-introduces a word
+// boundary across a block-level element but joins across inline ones, matching
+// Screaming Frog's (jsoup's) block/inline classification of extracted text.
+// This is distinct from word COUNTING (content.go) — they only agree on the
+// genuinely-block elements; the few edge cases below were pinned with probe
+// pages crawled by SF v24.1 (R10 in the crawl-comparison decision log):
+//
+//   - <svg>/<canvas>/<button> are BLOCK in extracted text -> a childless one
+//     between two text runs gets a space ("Next Title"), even though content.go
+//     lists them as inline for word counting. <svg> in particular drives the
+//     real-world gap: blog "Next/Previous" cards <a><span>Next<svg/></span>
+//     <span>Title</span></a> read "Next Title" in SF (173 anchors on
+//     braintrust.dev), not "NextTitle".
+//   - <img>/<iframe>/<map>/<dialog>/<summary>/<legend>/<area>/<datalist>/<track>
+//     are INLINE -> no space ("NextTitle"). (The original R10 hypothesis that
+//     <img> also separates is DISPROVEN here: only <svg> does.)
+//   - Same-tag-adjacent inline siblings still join with no space (R3:
+//     "RunExecute") — a replaced element between them is what re-adds the space.
+func TestAnchorTextBlockInlineBoundaries(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		frag string
+		want string
+	}{
+		// block-level inline elements -> SF inserts a word boundary
+		{"svg-spans", "/svg-spans", `<span>Next<svg width="1" height="1"></svg></span><span>Title</span>`, "Next Title"},
+		{"svg-bare", "/svg-bare", `Next<svg width="1" height="1"></svg>Title`, "Next Title"},
+		{"canvas", "/canvas", `Next<canvas></canvas>Title`, "Next Title"},
+		{"button", "/button", `Next<button></button>Title`, "Next Title"},
+		{"video", "/video", `Next<video></video>Title`, "Next Title"},
+		{"br", "/br", `Next<br>Title`, "Next Title"},
+		// inline elements -> SF joins with no space
+		{"img", "/img", `Next<img src="/i.png" alt="">Title`, "NextTitle"},
+		{"iframe", "/iframe", `Next<iframe></iframe>Title`, "NextTitle"},
+		{"map", "/map", `Next<map></map>Title`, "NextTitle"},
+		{"dialog", "/dialog", `Next<dialog></dialog>Title`, "NextTitle"},
+		{"summary", "/summary", `Next<summary></summary>Title`, "NextTitle"},
+		{"legend", "/legend", `Next<legend></legend>Title`, "NextTitle"},
+		{"area", "/area", `Next<area>Title`, "NextTitle"},
+		{"datalist", "/datalist", `Next<datalist></datalist>Title`, "NextTitle"},
+		{"track", "/track", `Next<track>Title`, "NextTitle"},
+		// R3 regression guard: same-tag-adjacent siblings join with no space
+		{"r3", "/r3", `<span>Run</span><span>Execute</span>`, "RunExecute"},
+	}
+	var body strings.Builder
+	body.WriteString("<html><body>")
+	for _, c := range cases {
+		body.WriteString(`<a href="` + c.path + `">` + c.frag + `</a>`)
+	}
+	body.WriteString("</body></html>")
+	f := parseHTML(t, "https://ex.com/p", body.String(), nil, nil)
+	for _, c := range cases {
+		l := findLink(f, Hyperlink, "https://ex.com"+c.path)
+		if l == nil {
+			t.Errorf("%s: link missing", c.name)
+			continue
+		}
+		if l.Anchor != c.want {
+			t.Errorf("%s: anchor = %q, want %q", c.name, l.Anchor, c.want)
+		}
+	}
+
+	// Headings extract through the same path: an inline <svg> icon separates the
+	// two label runs just like in anchors.
+	h := parseHTML(t, "https://ex.com/h",
+		`<html><body><h1><span>Icon<svg width="1" height="1"></svg></span><span>Heading</span></h1></body></html>`, nil, nil)
+	if len(h.H1s) != 1 || h.H1s[0] != "Icon Heading" {
+		t.Errorf("H1s = %q, want [Icon Heading]", h.H1s)
+	}
+}
