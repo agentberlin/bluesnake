@@ -141,10 +141,26 @@ func fleschScore(words []string, sentences int) float64 {
 	return math.Min(100, math.Max(0, score))
 }
 
-// syllableEstimate counts vowel groups (y included), treating the silent
-// endings -e, -ed and -es as non-syllabic — except -le/-les, where the e is
-// sounded ("table"). Tokens keep whatever punctuation they were written
-// with, and vowel-less tokens ("$49") count zero syllables.
+// syllableEstimate counts vowel groups (y included) with two corrections
+// reverse-engineered from Screaming Frog v24.1 (the readability score is defined
+// as SF parity, so its syllable heuristic is the reference). Measured by crawling
+// controlled probe pages — one test word amplified and diluted by one-syllable
+// fillers, then inverting SF's reported Flesch — over ~170 words spanning every
+// systematic class; the two rules below took agreement from 58% to 100%.
+//
+//   - "ia" is a hiatus: SF counts the i and the a as separate syllables
+//     (so·ci·al, me·di·a, mar·tian, vari·a·tion). The vowel-group pass merges the
+//     pair into one, so add one back per "ia". No other vowel pair splits (io, ie,
+//     iou, ea, eo, ua, oa, ai, oe all stay one syllable). The sole exception is a
+//     word-final "-tial" (par·tial, es·sen·tial), which SF leaves merged; it is
+//     end-anchored, so a trailing period re-enables the split ("partial." => 3).
+//   - A trailing "-es" is NOT silent: SF counts box·es, hous·es, servic·es,
+//     machin·es. Only a lone "-e" or "-ed" is dropped (cake, baked), and "-le/-les"
+//     keep their sounded e (table, little). "-es" plurals and 3rd-person verbs are
+//     pervasive in real text, so dropping that subtraction is the dominant gain.
+//
+// Tokens keep whatever punctuation they were written with, and vowel-less tokens
+// ("$49") count zero syllables.
 func syllableEstimate(word string) int {
 	w := strings.ToLower(word)
 	count := 0
@@ -156,11 +172,15 @@ func syllableEstimate(word string) int {
 		}
 		prevVowel = isVowel
 	}
+	count += strings.Count(w, "ia")
+	if strings.HasSuffix(w, "tial") {
+		count--
+	}
 	if count > 1 {
 		switch {
 		case strings.HasSuffix(w, "le") || strings.HasSuffix(w, "les"):
 			// sounded e
-		case strings.HasSuffix(w, "e") || strings.HasSuffix(w, "ed") || strings.HasSuffix(w, "es"):
+		case strings.HasSuffix(w, "e") || strings.HasSuffix(w, "ed"):
 			count--
 		}
 	}
