@@ -900,6 +900,53 @@ flagging it "not yet wired". Pinned by
 filters, asserting page 1 stays in the filters) and
 `analyze.TestIgnorePaginatedForNearDuplicates`.
 
+**2026-06-21 — nested integral-object validation (G5-matrix, the `offers.price` /
+`reviewRating.ratingValue` half).** bluesnake validated only a page's PRIMARY
+entity, so an `Offer` with no price or a `reviewRating` with no `ratingValue`
+slipped past silently (0 Rich-Result errors on otherwise-valid e-commerce
+markup). The validator now recurses into a curated whitelist of INTEGRAL
+sub-entities — `internal/structured.integralProps` (offers→Offer,
+review/reviews→Review, reviewRating→Rating, aggregateRating→AggregateRating) —
+and validates each against its own Google-required props, while every other
+nested object (a `Store` as `offers.seller`, an `Organization` as
+`publisher`/`author`, and their whole subtrees) stays a recorded-but-unvalidated
+reference stub, preserving the R6 over-warn guard (the recursion is gated on the
+node itself being validated, so a stub's nested rating is not validated either).
+Three new `requirements` rows, grounded in Google's rich-results docs and
+cross-checked against SF v24.1 controlled probes: `Offer` (price **and**
+priceCurrency required, each an `anyOf` with `priceSpecification`),
+`AggregateOffer` (a price RANGE keyed on `lowPrice`, not `price`, so it gets its
+own rule and a valid range-offer isn't false-flagged), and `Rating`
+(ratingValue). The schema.org IS-A `EmployerAggregateRating` (the Employer-Rating
+feature) is excluded from the new `Rating` root in `hierarchy.go`, mirroring its
+existing AggregateRating exclusion — else suppressing its AggregateRating edge
+would let it fall back to `Rating[ratingValue]` and re-introduce the very false
+error the exclusion prevents. **Parent-aware, to avoid an R6-class over-warn:**
+Offer price/priceCurrency are required ONLY under a Product parent
+(`offerStrictParents`) — probes proved Google's Offer requirements are
+*per-feature*: an Event offer (a ticket `url` is enough) treats price/currency as
+WARNINGS, and a Software-App offer requires price but NOT priceCurrency, so
+validating those with the Product rule would over-error. Per the experiment
+owner's decision the counting model is **single-count per page**: where SF
+duplicates the SAME finding across two Google features (Product Snippet +
+Merchant Listing — e.g. a missing price shows SF 2 / BS 1) bluesnake reports it
+once on purpose (one finding per real problem). No new issue IDs (reuses
+`structured_validation_error`/`_warning`), so CLI/serve/MCP/desktop pick it up
+unchanged via the shared `internal/structured` path — JSON-LD and microdata
+both. SF-cross-checked on probe pages: per-page Rich-Result **error** parity is
+now EXACT on every Product-context page with ZERO over-errors (before the change
+bluesnake reported 0 errors on all of them). Pinned by `internal/structured`
+tests (`TestNestedOfferRequiredProperties`, `TestNestedRatingRequiredRatingValue`,
+`TestNestedAggregateOfferNotMisvalidated`, `TestNestedOfferParentAware`,
+`TestNestedReferenceStubNotValidated`, `TestMicrodataNestedOffer`). **Still open**
+(the §9.2 row stays, narrowed again): per-feature Offer profiles (the Software-App
+`price` error and Event recommended warnings bluesnake now scopes out), the
+merchant-listing RECOMMENDED breadth (Offer `itemCondition`/`availability`,
+Product `gtin`/`description` — bluesnake under-warns vs SF on Product-with-offers
+pages by exactly these), SF's property-VALUE *type* checks ("address must be of
+type PostalAddress" — a different validation dimension), and standalone-`Offer`
+merchant depth.
+
 **Implemented but scoped down (extension points exist):**
 - Issues catalogue: **164 = the full issues library computable on the current
   data model** (the no-new-infrastructure boundary, not an arbitrary stop).
@@ -912,9 +959,11 @@ filters, asserting page 1 stays in the filters) and
   redirect type, sitemap >50MB (response sizes uncaptured), Background/
   Incorrectly-Sized Images (render+analysis), High Carbon Rating. Catalogue
   is a data table; the coverage meta-test forces a fixture per entry.
-- Structured data validation: curated 12-type Google rich-results requirement
-  table (data-driven, `internal/structured.requirements`); full Schema.org
-  vocabulary validation not shipped.
+- Structured data validation: curated Google rich-results requirement table
+  (data-driven, `internal/structured.requirements`; ~18 curated roots incl. the
+  nested Offer/AggregateOffer/Rating sub-entities, resolving 264 schema.org types
+  via the embedded IS-A graph, with parent-aware nested-object validation); full
+  Schema.org vocabulary validation not shipped.
 - AMP: structural checks (canonical/viewport/charset/amp-script/reciprocity),
   not the full official AMP validator rule set.
 - Sitemap orphan detection approximates "only discoverable via sitemap" as
@@ -1011,10 +1060,10 @@ uncertainty.
 | SF-style elem paths `[n]`/`[@class]` (G10) | High | Med | Med | Kills ~12k cosmetic path diffs/site and unlocks SF's class-driven Navigation position matches. Exact qualifier rules need probes (SF emits [n] only for same-tag siblings, sometimes [@class] instead) |
 | Accessibility (axe via CDP) | Med | High | Med | Most-requested real-world audit type; SF ships it. Needs Chrome + axe bundle injection. More "useful" than "parity" |
 | Shadow-DOM/iframe flattening (`rendering.flatten_*`) | Med | Med-High | Med | Web-component sites currently lose rendered text/links that SF sees |
-| Rich-result matrix breadth (G5 residual, narrowed) | Low | Low-Med | Low-Med | SoftwareApplication/Review/AggregateRating (2026-06-19) and the full schema.org subtype hierarchy (264 types incl. all 150 LocalBusiness subtypes, via an embedded IS-A graph, 2026-06-19) both landed; HowTo + deprecated/wrong-feature subtypes deliberately excluded. Residual: standalone `Offer` / merchant-listing depth and nested-property checks (`offers.price`, `reviewRating.ratingValue` — engine checks top-level presence only). Still wants an SF count cross-check (trigger.dev/vellum/braintrust/zenskar) to tune the error/warning split |
+| Rich-result matrix breadth (G5 residual, narrowed again) | Low | Low | Low-Med | SoftwareApplication/Review/AggregateRating (2026-06-19), the full schema.org subtype hierarchy (264 types incl. all 150 LocalBusiness subtypes, 2026-06-19), AND nested integral-object validation (`offers.price`, `reviewRating.ratingValue`, parent-aware, single-count — 2026-06-21, SF-cross-checked, error parity EXACT in Product context) all landed; HowTo + deprecated/wrong-feature subtypes deliberately excluded. Residual: per-feature Offer profiles (Software-App `price`, Event recommended), merchant-listing RECOMMENDED breadth (Offer `itemCondition`/`availability`, Product `gtin`/`description`), SF property-VALUE *type* checks ("address must be PostalAddress"), standalone-`Offer` depth |
 | Cookie collection (`url_details.cookies`) | Med | Med | Low-Med | Whole SF report we lack; GDPR/consent audits use it. Needs a cookies table + rendered-mode capture |
 | Persistent-frontier worker pool (scale) | Indirect | High | Med-High | Gates large-site (e-commerce) crawls; rendered stores already hit ~1GB on mid-size sites |
-| Fragment self-edges (G28) | Med | Low | Med | SF keeps `<a href="#x">` as empty-anchor self-edges (feeds its no-anchor-text counts). Changes outlink counts everywhere — probe SF's dedup semantics first |
+| ~~Fragment self-edges (G28)~~ → rendered remainder folded into R9 | — | — | — | RE-VERIFIED 2026-06-21: the static-HTML gap is GONE — current BS matches SF exactly on every fragment-anchor pattern (empty/named/dup/`#`/svg-icon permalinks; SF page set = BS page set). The SF dedup-semantics probe this row asked for confirmed SF keeps distinct empty self-frag edges with the fragment stripped, exactly as BS does; the prior KeepFragments + R3/R10 work resolved it. The original "44 vs 18" was a rendered-DOM discovery effect (greptile/artisan emit `href="#…"` only after JS render) → tracked under R9, not a static link-extraction bug |
 | Schema.org vocabulary validation | Low-Med | Low | Med | SF's plain validation found zero issues across all 5 test domains — rich-results is what fires. Big build, small payoff |
 | Store-flag enforcement (§9.1) | Low | Low-Med | Low | DB size on big crawls; SF-visible counts already match |
 | PDF extraction (`extraction.pdf.*`) | Low-Med | Low | Med | Niche (gov/edu/docs sites). New parser dependency |

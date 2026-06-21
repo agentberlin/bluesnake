@@ -113,6 +113,47 @@ var requirements = map[string]typeReq{
 	// least one of ratingCount / reviewCount. itemReviewed omitted for the same
 	// nesting reason as Review.
 	"AggregateRating": {required: []string{"ratingValue"}, anyOf: [][]string{{"ratingCount", "reviewCount"}}},
+
+	// --- Integral sub-entities validated when nested in a rich result (see
+	// integralProps). These are NOT page primary entities; they are reached as
+	// the value of an offers/review/reviewRating/aggregateRating property and
+	// carry their own Google-required properties. Scope is REQUIRED properties
+	// (Rich Result errors); merchant-listing recommended breadth (Offer
+	// itemCondition/availability, Product gtin/description) is a separate gap.
+	//
+	// Offer: Google requires a price (or priceSpecification) and a priceCurrency
+	// (or priceSpecification). priceCurrency is only a *warning* under Product
+	// Snippet but a hard *error* under Product Merchant Listings — per the agreed
+	// "strictest severity wins" rule it is modelled as required. Measured on SF
+	// v24.1: offers w/o price ⇒ error, offers w/o priceCurrency ⇒ error.
+	"Offer": {anyOf: [][]string{{"price", "priceSpecification"}, {"priceCurrency", "priceSpecification"}}},
+	// AggregateOffer (IS-A Offer) prices a range with lowPrice/highPrice rather
+	// than a single price, so it needs its own rule — resolving it to the plain
+	// Offer rule would false-error a valid AggregateOffer on a missing `price`.
+	"AggregateOffer": {anyOf: [][]string{{"lowPrice", "price", "priceSpecification"}, {"priceCurrency", "priceSpecification"}}},
+	// Rating (a reviewRating's value object): ratingValue is required. Measured on
+	// SF v24.1: a reviewRating lacking ratingValue ⇒ "ratingValue required for
+	// Rating" error. AggregateRating IS-A Rating but is curated directly above
+	// (its own ratingCount/reviewCount rule), so it never falls back to this.
+	"Rating": {required: []string{"ratingValue"}},
+}
+
+// integralProps maps a property name to the schema.org type Google validates its
+// value as part of the PARENT's rich result. Unlike reference properties
+// (seller, publisher, author, brand, itemReviewed) whose values are identity
+// stubs that legitimately carry only a name/url, these nested objects ARE
+// validated for their own required properties — e.g. a Product's offers must
+// carry a price, a Review's reviewRating must carry a ratingValue. The mapped
+// type is the type Google infers when the nested object omits an explicit @type
+// (it is inferred from the property). This whitelist is the precise boundary of
+// the R6 over-warn guard: everything NOT listed here is a reference stub and is
+// recorded for the type set but never validated.
+var integralProps = map[string]string{
+	"offers":          "Offer",
+	"review":          "Review",
+	"reviews":         "Review",
+	"reviewRating":    "Rating",
+	"aggregateRating": "AggregateRating",
 }
 
 // Extract parses the enabled formats and validates the curated requirements.
@@ -210,7 +251,7 @@ func extractJSONLD(root *html.Node, data *PageData) {
 					found = true
 					data.Recovered = append(data.Recovered,
 						"jsonld: invalid raw control characters escaped to recover")
-					walkJSONLD(parsed, data, true)
+					walkJSONLD(parsed, data, true, "")
 					return
 				}
 			}
@@ -218,7 +259,7 @@ func extractJSONLD(root *html.Node, data *PageData) {
 			return
 		}
 		found = true
-		walkJSONLD(parsed, data, true)
+		walkJSONLD(parsed, data, true, "")
 	})
 	if found {
 		data.Formats = append(data.Formats, "jsonld")
@@ -269,21 +310,25 @@ func escapeJSONControlChars(s string) string {
 }
 
 // walkJSONLD handles objects, arrays and @graph containers. `validate` is true
-// for the page's primary entities (top-level nodes and @graph members) and
-// false for entities reached as a property value (offers.seller, publisher,
-// author, …): those are reference/identity stubs that legitimately carry only a
-// name/url, so their types are recorded for the type set but never validated —
-// Google scopes a rich-result's required properties to the primary entity, and
-// validating a nested Store/Restaurant for `address` is an R6-class false error.
-func walkJSONLD(v any, data *PageData, validate bool) {
+// for entities that carry their own rich-result requirements — the page's
+// primary entities (top-level nodes and @graph members) and integral nested
+// sub-entities reached via an integralProps property (offers→Offer,
+// review→Review, reviewRating→Rating). It is false for reference/identity stubs
+// reached via any other property (offers.seller, publisher, author, brand, …):
+// those carry only a name/url, so their types are recorded for the type set but
+// never validated — validating a nested Store/Restaurant for `address` is an
+// R6-class false error. `implied` is the type Google infers when a validated
+// node omits an explicit @type (e.g. a bare `offers: {price: …}` is an Offer);
+// it is "" for primary entities, which always declare a type.
+func walkJSONLD(v any, data *PageData, validate bool, implied string) {
 	switch node := v.(type) {
 	case []any:
 		for _, item := range node {
-			walkJSONLD(item, data, validate)
+			walkJSONLD(item, data, validate, implied)
 		}
 	case map[string]any:
 		if graph, ok := node["@graph"]; ok {
-			walkJSONLD(graph, data, true) // @graph members are primary entities
+			walkJSONLD(graph, data, true, "") // @graph members are primary entities
 		}
 		types := typeList(node["@type"])
 		for i := range types {
@@ -291,22 +336,85 @@ func walkJSONLD(v any, data *PageData, validate bool) {
 		}
 		data.Types = append(data.Types, types...)
 		if validate {
-			validateNode(types, func(prop string) bool {
+			vTypes := types
+			if len(vTypes) == 0 && implied != "" {
+				vTypes = []string{implied} // Google infers the type from the property
+			}
+			validateNode(vTypes, func(prop string) bool {
 				_, ok := node[prop]
 				return ok
 			}, data)
 		}
-		// Nested property values record their types only — never validated.
+		// Recurse: integral sub-entities of a VALIDATED node are validated against
+		// their own requirements (parent-aware — see integralValidatedUnder);
+		// every other nested object records its type only. Gating on `validate`
+		// keeps a reference stub's whole subtree unvalidated — a seller Store
+		// (itself a stub) must not have its own nested rating validated either.
+		var parentRoots []string
+		if validate {
+			parentRoots = resolvedRoots(types)
+		}
 		for key, child := range node {
 			if strings.HasPrefix(key, "@") {
 				continue
 			}
+			if impliedType, integral := integralProps[key]; validate && integral && integralValidatedUnder(key, parentRoots) {
+				walkJSONLD(child, data, true, impliedType)
+				continue
+			}
 			switch child.(type) {
 			case map[string]any, []any:
-				walkJSONLD(child, data, false)
+				walkJSONLD(child, data, false, "")
 			}
 		}
 	}
+}
+
+// offerStrictParents are the parent rich-result roots under which a nested
+// Offer's price + priceCurrency are REQUIRED (a missing one is a Rich Result
+// error). This is intentionally Product-only: Google's Offer requirements are
+// per-feature, and only the Product Snippet / Merchant Listing features require
+// BOTH a price and a priceCurrency. Two adjacent parents are deliberately left
+// out to avoid over-erroring, and tracked as residuals (under-report, never
+// over): a Software App offer requires price but NOT priceCurrency, and an Event
+// offer (a ticket `url` is enough) requires neither — measured on SF v24.1.
+// Matching those would need per-feature Offer profiles (the full-matrix scope).
+var offerStrictParents = map[string]bool{"Product": true}
+
+// integralValidatedUnder reports whether Google validates the value of integral
+// property `prop` as part of the parent's rich result. `offers` is parent-aware
+// (validated only under a Product — see offerStrictParents); the rating/review
+// family carries parent-independent requirements (a Rating always needs a
+// ratingValue, a Review an author), so it validates under any rich-result parent
+// but never under a non-candidate one (empty parentRoots).
+func integralValidatedUnder(prop string, parentRoots []string) bool {
+	if len(parentRoots) == 0 {
+		return false // parent is not itself a rich-result candidate
+	}
+	if prop == "offers" {
+		for _, r := range parentRoots {
+			if offerStrictParents[r] {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// resolvedRoots returns the curated rich-result roots a type set validates as
+// (deduped, collapsed to most-specific). Empty when the node is not a
+// rich-result candidate under the curated requirements.
+func resolvedRoots(types []string) []string {
+	seen := map[string]bool{}
+	var roots []string
+	for _, leaf := range types {
+		if r := resolveType(leaf); r != "" && !seen[r] {
+			seen[r] = true
+			roots = append(roots, r)
+		}
+	}
+	return mostSpecific(roots)
 }
 
 func typeList(v any) []string {
@@ -350,11 +458,28 @@ func extractMicrodata(root *html.Node, data *PageData) {
 			types = append(types, shortType(t))
 		}
 		data.Types = append(data.Types, types...)
-		// A nested itemscope (the value of a parent item's itemprop) is a
-		// reference stub like a nested JSON-LD entity — record its types but do
-		// not validate it for required properties (same primary-entity scoping).
+		// A nested itemscope (the value of a parent item's itemprop) is validated
+		// only when it is an integral sub-entity — introduced by an integralProps
+		// itemprop (itemprop="offers"/"review"/"reviewRating"/…). A nested scope
+		// reached via any other itemprop (a seller/publisher reference stub)
+		// records its types but is not validated (same R6 scoping as JSON-LD).
+		// The full-tree walk visits every itemscope, so deeper integral nesting
+		// (Review→reviewRating→Rating) is reached as its own node.
 		if hasItemscopeAncestor(n) {
-			return
+			prop, _ := attrValue(n, "itemprop")
+			if _, integral := integralProps[prop]; !integral {
+				return
+			}
+			// Every itemscope ancestor up to the top-level item must also be
+			// integral, else n is buried inside a reference stub (e.g. a seller
+			// Store's rating) and must not be validated (parity with JSON-LD's
+			// validate-gated recursion).
+			if !integralItemscopeChain(n) {
+				return
+			}
+			if !integralValidatedUnder(prop, resolvedRoots(nearestItemscopeAncestorTypes(n))) {
+				return
+			}
 		}
 		props := map[string]bool{}
 		collectItemprops(n, props, true)
@@ -363,6 +488,55 @@ func extractMicrodata(root *html.Node, data *PageData) {
 	if found {
 		data.Formats = append(data.Formats, "microdata")
 	}
+}
+
+// integralItemscopeChain reports whether every itemscope ancestor of n up to
+// the top-level item was reached via an integral itemprop. A non-integral link
+// anywhere in the chain means n sits inside a reference stub (e.g. a seller
+// Store's nested rating) and must not be validated — the microdata analogue of
+// JSON-LD's validate-gated recursion. The top-level item carries no itemprop,
+// which terminates the walk as integral.
+func integralItemscopeChain(n *html.Node) bool {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		if _, scoped := attrValue(p, "itemscope"); !scoped {
+			continue
+		}
+		prop, _ := attrValue(p, "itemprop")
+		if prop == "" {
+			return true // top-level item reached: chain is fully integral
+		}
+		if _, integral := integralProps[prop]; !integral {
+			return false
+		}
+	}
+	return true
+}
+
+// nearestItemscopeAncestorTypes returns the short-form @types of the closest
+// enclosing itemscope element (the nested item's parent entity), used to make
+// nested-Offer validation parent-aware. Empty when there is no typed ancestor.
+func nearestItemscopeAncestorTypes(n *html.Node) []string {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type != html.ElementNode {
+			continue
+		}
+		if _, scoped := attrValue(p, "itemscope"); !scoped {
+			continue
+		}
+		it, _ := attrValue(p, "itemtype")
+		if it == "" {
+			return nil
+		}
+		var ts []string
+		for t := range strings.FieldsSeq(it) {
+			ts = append(ts, shortType(t))
+		}
+		return ts
+	}
+	return nil
 }
 
 // hasItemscopeAncestor reports whether n sits inside another itemscope element,
