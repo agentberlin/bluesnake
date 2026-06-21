@@ -28,8 +28,10 @@ import (
 //   - Sentence segmentation per block: greedy-pack the block's words into runs
 //     of at most 80 characters (single-space text), then additionally split at
 //     every terminator (. ! ?) that ends a word other than its run's last word.
-//   - Syllables: vowel groups (y counts), silent trailing -e/-ed/-es except
-//     -le/-les; the score clamps to [0,100].
+//   - Syllables: vowel groups (y counts) plus a split for each "ia" hiatus
+//     (except a word-final "-tial"); silent trailing -e/-ed only (NOT -es, which
+//     is sounded), -le/-les keep the e; the score clamps to [0,100]. See
+//     syllableEstimate / TestSyllableEstimate for the SF-measured rules.
 //
 // Word Count and Sentence Count are asserted exactly. Flesch is asserted within
 // a small tolerance; a handful of bodies where SF's syllable heuristic differs
@@ -122,6 +124,17 @@ func TestContentMetricsScreamingFrogParity(t *testing.T) {
 		{"-le after t", "<p>" + rep("little") + "</p>", 20, 2, 27.485},
 		{"hyphen and apostrophe tokenisation", `<p>well-known facts cost 3.14 dollars and don't lie</p>`, 8, 2, 100},
 		{"numbers count as words", `<p>2024 was a year with 365 days total here</p>`, 9, 1, 100},
+		// -es is sounded, not silent: SF counts box·es (2) and machin·es (3). The
+		// last word carries the rep period, but "-es" no longer subtracts so the
+		// period is irrelevant here (unlike the silent-e words above).
+		{"-es plural is not silent", "<p>" + rep("boxes") + "</p>", 20, 2, 27.485},
+		{"-es silent-e plural is still sounded", "<p>" + rep("names") + "</p>", 20, 2, 27.485},
+		{"-es three-syllable clamps low", "<p>" + rep("services") + "</p>", 20, 3, 0},
+		// "ia" splits (me·di·a = 3); rep of a 3-syllable word clamps the score to 0.
+		{"ia splits into two syllables", "<p>" + rep("media") + "</p>", 20, 2, 0},
+		// "-tial" is end-anchored: the rep period defeats it, so "partial." = 3
+		// (par·ti·al) while a bare "partial" stays 2 — total 19*2+3 = 41 syllables.
+		{"tial exception is end-anchored", "<p>" + rep("partial") + "</p>", 20, 2, 23.255},
 		// SF reports Flesch 100 (its syllable count for "over"/"lazy"/"the"
 		// totals 10 here; ours totals 11, giving 94.3). Word and sentence
 		// counts still match; the one-syllable difference is a documented edge.
