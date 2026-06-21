@@ -46,12 +46,11 @@ var enums = map[string][]string{
 
 // Knobs parsed but not (fully) wired into the engine yet.
 var notes = map[string]string{
-	"advanced.respect_noindex":                 "not yet wired — noindex already drives indexability reporting",
-	"advanced.respect_canonical":               "not yet wired — canonicals already drive indexability reporting",
-	"advanced.respect_next_prev":               "not yet wired",
-	"advanced.html_validation":                 "not yet wired",
-	"advanced.ignore_paginated_for_duplicates": "not yet wired",
-	"analysis.canonicals":                      "canonical chains are gated by analysis.redirect_chains today",
+	"advanced.respect_noindex":   "not yet wired — noindex already drives indexability reporting",
+	"advanced.respect_canonical": "not yet wired — canonicals already drive indexability reporting",
+	"advanced.respect_next_prev": "not yet wired",
+	"advanced.html_validation":   "not yet wired",
+	"analysis.canonicals":        "canonical chains are gated by analysis.redirect_chains today",
 }
 
 var descriptions = map[string]string{
@@ -140,6 +139,7 @@ var descriptions = map[string]string{
 
 	"advanced.cookie_storage":                        "Cookie jar behaviour during the crawl.",
 	"advanced.ignore_non_indexable_for_issues":       "Skip non-indexable pages when evaluating content issues.",
+	"advanced.ignore_paginated_for_duplicates":       "Exclude paginated URLs (those declaring rel=prev) from the duplicate filters: page titles, meta descriptions, H1, H2, and exact/near-duplicate content.",
 	"advanced.always_follow_redirects":               "Follow redirects beyond crawl scope until a final target.",
 	"advanced.always_follow_canonicals":              "Follow canonical targets beyond crawl scope.",
 	"advanced.respect_hsts":                          "After seeing Strict-Transport-Security, treat http:// requests to that host as 307s to https (matches browsers).",

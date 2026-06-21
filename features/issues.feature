@@ -27,6 +27,30 @@ Feature: Issue detection
     And the page "/thin" has issue "content_low_word_count"
     And the page "/thin" does not have issue "title_missing"
 
+  Scenario: Paginated URLs are excluded from duplicate filters when configured
+    Given a site page "/" linking to "/page1,/page2,/plain"
+    And a site page "/page1" with body:
+      """
+      <html><head><title>Shared Catalogue Title</title><link rel="next" href="/page2"></head><body><h1>page one</h1><p>identical catalogue body text</p></body></html>
+      """
+    And a site page "/page2" with body:
+      """
+      <html><head><title>Shared Catalogue Title</title><link rel="prev" href="/page1"></head><body><h1>page two</h1><p>identical catalogue body text</p></body></html>
+      """
+    And a site page "/plain" with body:
+      """
+      <html><head><title>Shared Catalogue Title</title></head><body><h1>plain</h1><p>identical catalogue body text</p></body></html>
+      """
+    And the crawl config override "advanced.ignore_paginated_for_duplicates=true"
+    When I crawl the site into a store
+    And issues are evaluated
+    # page2 declares rel="prev" (page 2 of the sequence) so it drops out of the
+    # duplicate filters; page1 (rel="next" only) and the standalone page still
+    # flag each other despite the identical title.
+    Then the page "/page2" does not have issue "title_duplicate"
+    And the page "/page1" has issue "title_duplicate"
+    And the page "/plain" has issue "title_duplicate"
+
   Scenario: The issues CLI prints a summary
     Given a site page "/" with body "<html><body><a href='/missing-page'>x</a></body></html>"
     When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
