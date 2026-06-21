@@ -135,6 +135,71 @@ func TestDuplicates(t *testing.T) {
 	}
 }
 
+// TestIgnorePaginatedForDuplicates pins advanced.ignore_paginated_for_duplicates
+// (SF parity): URLs that declare a rel="prev" link (page 2+ of a sequence) drop
+// out of every Duplicate filter — Page Titles, Meta Description, H1, H2 and
+// Content Exact Duplicates. Page 1 carries only rel="next" and is unaffected.
+func TestIgnorePaginatedForDuplicates(t *testing.T) {
+	mk := func(url string, next, prev []string) *crawler.PageRecord {
+		return htmlPage(url, &parse.Facts{
+			Titles:        []string{"Catalogue Page Title Here"},
+			Descriptions:  []string{"Browse the full catalogue of items."},
+			H1s:           []string{"Catalogue"},
+			H2s:           []string{"Items"},
+			HeadingLevels: []int{1, 2},
+			Hash:          "samehash",
+			NextHTML:      next,
+			PrevHTML:      prev,
+		})
+	}
+	// p1 -> p2 -> p3 sequence plus a standalone page, all identical content.
+	// Only p2 and p3 carry rel="prev", so only they are "paginated".
+	p1 := mk("https://ex.com/p1", []string{"https://ex.com/p2"}, nil)
+	p2 := mk("https://ex.com/p2", []string{"https://ex.com/p3"}, []string{"https://ex.com/p1"})
+	p3 := mk("https://ex.com/p3", nil, []string{"https://ex.com/p2"})
+	plain := mk("https://ex.com/plain", nil, nil)
+
+	dupIDs := []string{"title_duplicate", "description_duplicate", "h1_duplicate", "h2_duplicate", "content_exact_duplicate"}
+	build := func() map[string]*crawler.PageRecord {
+		m := map[string]*crawler.PageRecord{}
+		for _, p := range []*crawler.PageRecord{p1, p2, p3, plain} {
+			m[p.URL] = p
+		}
+		return m
+	}
+
+	// Flag off: every page in the set duplicates the others.
+	off := Evaluate(build(), config.Default())
+	for _, url := range []string{"https://ex.com/p1", "https://ex.com/p2", "https://ex.com/p3", "https://ex.com/plain"} {
+		for _, id := range dupIDs {
+			if !has(off, url, id) {
+				t.Errorf("flag off: missing %s on %s", id, url)
+			}
+		}
+	}
+
+	// Flag on: the paginated pages drop out of every duplicate filter; the
+	// non-paginated p1 and plain still flag each other (proving only rel="prev",
+	// not mere sequence membership, triggers exclusion).
+	cfg := config.Default()
+	cfg.Advanced.IgnorePaginatedForDuplicates = true
+	on := Evaluate(build(), cfg)
+	for _, url := range []string{"https://ex.com/p2", "https://ex.com/p3"} {
+		for _, id := range dupIDs {
+			if has(on, url, id) {
+				t.Errorf("flag on: paginated %s still flagged %s", url, id)
+			}
+		}
+	}
+	for _, url := range []string{"https://ex.com/p1", "https://ex.com/plain"} {
+		for _, id := range dupIDs {
+			if !has(on, url, id) {
+				t.Errorf("flag on: non-paginated %s lost %s", url, id)
+			}
+		}
+	}
+}
+
 func TestSecurityIssues(t *testing.T) {
 	rec := htmlPage("https://ex.com/p", &parse.Facts{
 		Titles: []string{"a reasonable length page title here"},
