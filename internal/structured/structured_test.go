@@ -168,6 +168,33 @@ func TestJSONLDGraphAndMissingRequired(t *testing.T) {
 	}
 }
 
+// Google's Article rich result recommends BOTH datePublished and dateModified.
+// SF's Google-Article validator surfaces the missing recommended date property
+// as dateModified; bluesnake historically only checked datePublished, so a page
+// that carries datePublished but lacks dateModified slipped past silently
+// (latent divergence found cross-checking vs SF on baseten.co 2026-06-21, where
+// every Article was missing both dates so the URL counts happened to coincide).
+// Both dates are now recommended for the Article family.
+func TestArticleDateModifiedRecommended(t *testing.T) {
+	// Has datePublished but NOT dateModified ⇒ must warn about dateModified,
+	// and never as an error (Article has no required properties).
+	d := jsonld(t, `{"@context":"https://schema.org","@type":"Article","headline":"H","image":"i.jpg","author":"A","datePublished":"2026-01-01"}`)
+	if len(d.Errors) != 0 {
+		t.Errorf("errors = %v, want none (Article has no required props)", d.Errors)
+	}
+	if !hasIssue(d.Warnings, "dateModified") {
+		t.Errorf("warnings = %v, want a missing-dateModified warning", d.Warnings)
+	}
+	if hasIssue(d.Warnings, "datePublished") {
+		t.Errorf("warnings = %v, datePublished is present so must not warn on it", d.Warnings)
+	}
+	// Has both dates (plus the other recommended props) ⇒ no date warnings.
+	d2 := jsonld(t, `{"@context":"https://schema.org","@type":"Article","headline":"H","image":"i.jpg","author":"A","datePublished":"2026-01-01","dateModified":"2026-02-02"}`)
+	if hasIssue(d2.Warnings, "datePublished") || hasIssue(d2.Warnings, "dateModified") {
+		t.Errorf("warnings = %v, want no date warnings when both dates present", d2.Warnings)
+	}
+}
+
 func TestJSONLDParseError(t *testing.T) {
 	body := `<html><head><script type="application/ld+json">{not json}</script></head></html>`
 	d := extract(t, body, func(s *config.StructuredDataConfig) { s.JSONLD = true })

@@ -77,10 +77,14 @@ var requirements = map[string]typeReq{
 	"Product": {required: []string{"name"}, recommended: []string{"image", "offers", "review", "aggregateRating"}},
 	// headline is recommended, not required: Google's Article rich result
 	// has no required properties, and SF reports a missing headline as a
-	// Rich Result Validation *Warning* (measured on yonedalabs.com)
-	"Article":        {recommended: []string{"headline", "image", "datePublished", "author"}},
-	"NewsArticle":    {recommended: []string{"headline", "image", "datePublished", "author"}},
-	"BlogPosting":    {recommended: []string{"headline", "image", "datePublished", "author"}},
+	// Rich Result Validation *Warning* (measured on yonedalabs.com). Google's
+	// Article docs recommend BOTH datePublished and dateModified; SF surfaces the
+	// missing recommended date as dateModified, so both are listed (cross-checked
+	// vs SF on baseten.co 2026-06-21 — without dateModified, a page carrying only
+	// datePublished diverged from SF silently).
+	"Article":        {recommended: []string{"headline", "image", "datePublished", "dateModified", "author"}},
+	"NewsArticle":    {recommended: []string{"headline", "image", "datePublished", "dateModified", "author"}},
+	"BlogPosting":    {recommended: []string{"headline", "image", "datePublished", "dateModified", "author"}},
 	"BreadcrumbList": {required: []string{"itemListElement"}},
 	"FAQPage":        {required: []string{"mainEntity"}},
 	"Recipe":         {required: []string{"name", "image"}, recommended: []string{"recipeIngredient", "recipeInstructions"}},
