@@ -1134,6 +1134,13 @@ func (e *evaluator) duplicates() {
 			rec.Facts == nil || !isHTMLPage(rec) || e.skipForIndexability(rec) {
 			continue
 		}
+		// SF's "Ignore Paginated URLs for Duplicate Filters": page 2+ of a
+		// rel=next/prev sequence (declares rel="prev") is dropped from every
+		// Duplicate filter so continuation pages aren't flagged against each
+		// other or page 1.
+		if e.cfg.Advanced.IgnorePaginatedForDuplicates && rec.Facts.IsPaginated() {
+			continue
+		}
 		f := rec.Facts
 		collect(byHash, f.Hash, url)
 		if len(f.Titles) > 0 {

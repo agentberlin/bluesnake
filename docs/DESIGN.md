@@ -876,6 +876,30 @@ documents the mechanism and the retirement procedure. Pinned, mutation-verified,
 by `store.TestUpgradeLadder` (stepwise apply, idempotent re-open, floor refusal,
 fresh stamp) and `store.TestFreshDBSchemaVersion`.
 
+**2026-06-21 — `advanced.ignore_paginated_for_duplicates` wired (was a §9.1
+"behavioural flags not yet wired" row).** Screaming Frog's "Ignore Paginated URLs
+for Duplicate Filters" now takes effect instead of parsing to a no-op. A URL is
+"paginated" iff it declares a `rel="prev"` link (HTML or HTTP `Link` header) —
+i.e. it is page 2+ of a sequence; page 1 carries only `rel="next"` and is
+unaffected. That single rule lives in one place, `parse.Facts.IsPaginated()`, and
+gates both duplicate-detection sites: the per-aggregate duplicate filters in
+`issues.duplicates()` (`title_duplicate`, `description_duplicate`,
+`h1_duplicate`, `h2_duplicate`, `content_exact_duplicate`) and the near-duplicate
+candidate set in `analyze.nearDuplicates()` (`content_near_duplicate`) — matching
+SF's documented filter list (Page Titles, Meta Description, H1, H2, Content
+Exact/Near Duplicates). Excluded pages are neither flagged nor offered as a match
+target, so a continuation page no longer makes page 1 (or its siblings) look
+duplicated. Grounded in the rel=next/prev pagination signal (no longer a Google
+indexing signal, but still SF's declared-pagination marker), not just an
+output-match. **Default off, so default crawls are unchanged**; it flows through
+every surface that reads the issues table / near-dup occurrences (CLI `bluesnake
+issues`, `crawl_overview`, serve `/issues`, MCP `issue_summary`/`query`, desktop)
+with no per-surface code, and the MCP knob catalogue now describes it rather than
+flagging it "not yet wired". Pinned by
+`issues.TestIgnorePaginatedForDuplicates` (off-vs-on across all five duplicate
+filters, asserting page 1 stays in the filters) and
+`analyze.TestIgnorePaginatedForNearDuplicates`.
+
 **Implemented but scoped down (extension points exist):**
 - Issues catalogue: **164 = the full issues library computable on the current
   data model** (the no-new-infrastructure boundary, not an arbitrary stop).
@@ -942,9 +966,9 @@ edge is stored regardless. (The `crawl` flags *are* enforced — discovery is
 correctly gated.)
 
 **Behavioural flags not yet wired:** `advanced.respect_noindex`,
-`advanced.respect_canonical`, `advanced.respect_next_prev`,
-`advanced.ignore_paginated_for_duplicates`, and `analysis.canonicals`
-(canonical-chain analysis currently piggybacks on `analysis.redirect_chains`).
+`advanced.respect_canonical`, `advanced.respect_next_prev`, and
+`analysis.canonicals` (canonical-chain analysis currently piggybacks on
+`analysis.redirect_chains`).
 
 **Storage knobs not yet wired:** `storage.dir` (the store path comes from
 `--store-dir` or the app default, not this field) and `storage.retention_days`

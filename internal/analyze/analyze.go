@@ -322,6 +322,12 @@ func (a *analyzer) nearDuplicates() {
 		if a.cfg.Content.NearDuplicates.IndexableOnly && !rec.Indexable {
 			continue
 		}
+		// SF's "Ignore Paginated URLs for Duplicate Filters" also covers the
+		// Content near-duplicate filter: page 2+ of a sequence (declares
+		// rel="prev") is neither flagged nor offered as a match target.
+		if a.cfg.Advanced.IgnorePaginatedForDuplicates && rec.Facts.IsPaginated() {
+			continue
+		}
 		if rec.Facts.WordCount == 0 {
 			continue
 		}

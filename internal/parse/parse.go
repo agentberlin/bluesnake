@@ -142,6 +142,17 @@ type Facts struct {
 	Links []Link
 }
 
+// IsPaginated reports whether the page declares a rel="prev" link (in HTML or
+// an HTTP Link header) — i.e. it is page 2+ of a sequence. This is the signal
+// Screaming Frog's "Ignore Paginated URLs for Duplicate Filters"
+// (advanced.ignore_paginated_for_duplicates) keys on: page 1 of a sequence
+// carries only rel="next", so it is not treated as paginated. (rel=next/prev is
+// no longer a Google indexing signal, but it remains the declared-pagination
+// marker SF and this knob act on.)
+func (f *Facts) IsPaginated() bool {
+	return f != nil && (len(f.PrevHTML) > 0 || len(f.PrevHTTP) > 0)
+}
+
 type parser struct {
 	cfg     *config.Config
 	opts    urlutil.Options
