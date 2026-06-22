@@ -146,12 +146,16 @@ var requirements = map[string]typeReq{
 	"WebApplication":      softwareApp,
 	"MobileApplication":   softwareApp,
 	// Review snippet: a Review is only a candidate when it carries a
-	// reviewRating (the trigger); then `author` is required. `itemReviewed` is
-	// required by Google only for *standalone* reviews ("omit if nested"), and
-	// the vast majority of reviews are nested inside a Product/App where the
-	// parent is the reviewed item — requiring it unconditionally would
-	// reproduce the R6 over-warning regression, so it is deliberately omitted.
-	"Review": {trigger: []string{"reviewRating"}, required: []string{"author"}},
+	// reviewRating (the trigger); then `author` is required and `datePublished`
+	// is recommended (a missing one is a Rich Result warning). The recommendation
+	// is unconditional, NOT parent-dependent: SF v24.1 emits "'…/datePublished'
+	// property is recommended for 'Review'" on both a standalone Review and one
+	// nested inside a Product (/tmp/bs-probes/review). `itemReviewed` is required
+	// by Google only for *standalone* reviews ("omit if nested"), and the vast
+	// majority of reviews are nested inside a Product/App where the parent is the
+	// reviewed item — requiring it unconditionally would reproduce the R6
+	// over-warning regression, so it is deliberately omitted.
+	"Review": {trigger: []string{"reviewRating"}, required: []string{"author"}, recommended: []string{"datePublished"}},
 	// AggregateRating contributes star ratings: ratingValue is required and at
 	// least one of ratingCount / reviewCount. itemReviewed omitted for the same
 	// nesting reason as Review.

@@ -328,8 +328,9 @@ func TestReview(t *testing.T) {
 		t.Errorf("rating-bearing review w/o author: errors=%v, want author error", d.Errors)
 	}
 
-	// reviewRating + author ⇒ satisfied.
-	d = jsonld(t, `{"@type":"Review","author":"Ada","reviewRating":{"@type":"Rating","ratingValue":"5"}}`)
+	// reviewRating + author + datePublished ⇒ fully satisfied (datePublished is a
+	// recommended Review property — see TestReviewDatePublishedRecommended).
+	d = jsonld(t, `{"@type":"Review","author":"Ada","reviewRating":{"@type":"Rating","ratingValue":"5"},"datePublished":"2026-01-01"}`)
 	if len(d.Errors) != 0 || len(d.Warnings) != 0 {
 		t.Errorf("complete review: errors=%v warnings=%v, want none", d.Errors, d.Warnings)
 	}
@@ -338,6 +339,66 @@ func TestReview(t *testing.T) {
 	d = jsonld(t, `{"@type":"Review","author":"Ada","reviewBody":"text only"}`)
 	if len(d.Errors) != 0 || len(d.Warnings) != 0 {
 		t.Errorf("rating-less review: errors=%v warnings=%v, want none (not a candidate)", d.Errors, d.Warnings)
+	}
+}
+
+// Google's Review snippet recommends datePublished: a snippet-eligible Review
+// (one carrying the reviewRating trigger) missing datePublished is a Rich Result
+// Validation *warning*, not an error. Cross-checked on Screaming Frog v24.1
+// (STANDARD config, /tmp/bs-probes/review): SF emits "'…/datePublished' property
+// is recommended for 'Review'" on BOTH a standalone Review and a Review nested
+// inside a Product — so the recommendation is unconditional (gated only by the
+// reviewRating trigger), not parent-dependent. A rating-less Review is not a
+// candidate and emits nothing.
+func TestReviewDatePublishedRecommended(t *testing.T) {
+	// (1) Standalone Review, reviewRating + author, no datePublished ⇒ a single
+	//     datePublished recommended warning, no error.
+	d := jsonld(t, `{"@type":"Review","author":"Ada","reviewRating":{"@type":"Rating","ratingValue":"5"}}`)
+	if !hasIssue(d.Warnings, "datePublished") {
+		t.Errorf("standalone review w/o datePublished: warnings=%v, want a datePublished recommended warning", d.Warnings)
+	}
+	if len(d.Errors) != 0 {
+		t.Errorf("standalone review w/o datePublished: errors=%v, want none (datePublished is recommended, not required)", d.Errors)
+	}
+
+	// (2) datePublished present ⇒ no datePublished warning.
+	d = jsonld(t, `{"@type":"Review","author":"Ada","reviewRating":{"@type":"Rating","ratingValue":"5"},"datePublished":"2026-01-01"}`)
+	if hasIssue(d.Warnings, "datePublished") {
+		t.Errorf("review w/ datePublished: warnings=%v, must not warn on a present property", d.Warnings)
+	}
+
+	// (3) Review nested inside a Product (the common case) ⇒ the nested Review is
+	//     still validated and warns on the missing datePublished.
+	d = jsonld(t, `{"@type":"Product","name":"P","offers":{"@type":"Offer","price":"9","priceCurrency":"USD"},"image":"i.jpg",
+		"review":{"@type":"Review","author":"A","reviewRating":{"@type":"Rating","ratingValue":"5"}}}`)
+	if !hasIssue(d.Warnings, `Review: missing recommended property "datePublished"`) {
+		t.Errorf("nested review w/o datePublished: warnings=%v, want the nested Review's datePublished warning", d.Warnings)
+	}
+
+	// (4) Rating-less Review ⇒ NOT a snippet candidate ⇒ no datePublished warning.
+	d = jsonld(t, `{"@type":"Review","author":"Ada","reviewBody":"text only"}`)
+	if hasIssue(d.Warnings, "datePublished") {
+		t.Errorf("rating-less review: warnings=%v, want none (not a candidate, trigger gate)", d.Warnings)
+	}
+
+	// (5) Microdata parity (both surfaces share internal/structured): a top-level
+	//     Review with a reviewRating but no datePublished warns; adding it clears.
+	body := `<html><body>
+	<div itemscope itemtype="https://schema.org/Review">
+	  <span itemprop="author">Ada</span>
+	  <div itemprop="reviewRating" itemscope itemtype="https://schema.org/Rating">
+	    <span itemprop="ratingValue">5</span>
+	  </div>
+	</div></body></html>`
+	d = extract(t, body, func(s *config.StructuredDataConfig) { s.Microdata = true })
+	if !hasIssue(d.Warnings, "datePublished") {
+		t.Errorf("microdata review w/o datePublished: warnings=%v, want a datePublished recommended warning", d.Warnings)
+	}
+	bodyDated := strings.Replace(body, `<span itemprop="author">Ada</span>`,
+		`<span itemprop="author">Ada</span><meta itemprop="datePublished" content="2026-01-01">`, 1)
+	d = extract(t, bodyDated, func(s *config.StructuredDataConfig) { s.Microdata = true })
+	if hasIssue(d.Warnings, "datePublished") {
+		t.Errorf("microdata review w/ datePublished: warnings=%v, must not warn on a present property", d.Warnings)
 	}
 }
 
@@ -372,11 +433,13 @@ func TestAggregateRating(t *testing.T) {
 // any rating/review errors or warnings (the R6 over-warning regression guard).
 // This Product has no offers, so it is a Product Snippet but NOT a Merchant
 // Listing — the only warning is the missing recommended `offers` (image is not a
-// snippet recommendation, and description/gtin are merchant-listing-only).
+// snippet recommendation, and description/gtin are merchant-listing-only). The
+// nested review carries datePublished so it is itself complete, isolating the
+// guard to "no spurious rating/review findings".
 func TestNestedRatingNoOverWarn(t *testing.T) {
 	d := jsonld(t, `{"@type":"Product","name":"P",
 		"aggregateRating":{"@type":"AggregateRating","ratingValue":"4.5","reviewCount":"100"},
-		"review":[{"@type":"Review","author":"A","reviewRating":{"@type":"Rating","ratingValue":"5"}}]}`)
+		"review":[{"@type":"Review","author":"A","reviewRating":{"@type":"Rating","ratingValue":"5"},"datePublished":"2026-01-01"}]}`)
 	if hasIssue(d.Errors, "author") || hasIssue(d.Errors, "ratingValue") || hasIssue(d.Errors, "one of") {
 		t.Errorf("nested rating/review must not error: errors=%v", d.Errors)
 	}
@@ -906,10 +969,11 @@ func TestProductMerchantListing(t *testing.T) {
 		}
 	}
 
-	// (3) Complete merchant listing ⇒ no errors, no warnings.
+	// (3) Complete merchant listing ⇒ no errors, no warnings. (The nested review
+	//     carries datePublished, mirroring the /tmp/bs-probes/sd prod_ml_clean probe.)
 	d = jsonld(t, `{"@type":"Product","name":"P","image":"i.jpg","description":"d","gtin13":"0001234560001",
 		"aggregateRating":{"@type":"AggregateRating","ratingValue":"4.5","reviewCount":"12"},
-		"review":{"@type":"Review","author":"A","reviewRating":{"@type":"Rating","ratingValue":"5"}},
+		"review":{"@type":"Review","author":"A","reviewRating":{"@type":"Rating","ratingValue":"5"},"datePublished":"2026-01-01"},
 		"offers":{"@type":"Offer","price":"9.99","priceCurrency":"USD","availability":"https://schema.org/InStock","itemCondition":"https://schema.org/NewCondition"}}`)
 	if len(d.Errors) != 0 || len(d.Warnings) != 0 {
 		t.Errorf("complete merchant listing: errors=%v warnings=%v, want none", d.Errors, d.Warnings)
