@@ -725,13 +725,20 @@ func TestNestedAggregateOfferNotMisvalidated(t *testing.T) {
 	}
 }
 
-// Offer validation is parent-aware and scoped to Product (offerStrictParents).
-// A Product offer requires price + priceCurrency; an Event offer (a ticket url
-// is enough) and a Software App offer have different/looser per-feature rules,
-// so they are deliberately NOT validated here — over-erroring them would be an
-// R6-class regression. Measured on SF v24.1: an Event offer's price/priceCurrency
-// are warnings (not errors), and a Software App offer requires price but NOT
-// priceCurrency. Those two are tracked as residuals (under-report, never over).
+// Offer validation is parent-aware: Google's Offer requirements are per-feature
+// (measured on SF v24.1, message text from the Structured Data Validation Errors
+// export):
+//
+//	Product (Snippet + Merchant Listings) → price AND priceCurrency required (errors).
+//	Software App (+ Web/MobileApplication) → price required (error); priceCurrency
+//	    required only when price > 0 ("'priceCurrency' is recommended if 'price' > 0").
+//	Event → price/priceCurrency are RECOMMENDED (warnings), not errors.
+//
+// bluesnake validates the price requirement under Product and Software App, but
+// not under Event (recommended-only). priceCurrency is an unconditional error
+// under Product; under Software App it is value-conditional (price > 0), which the
+// presence-based engine cannot test, so it is omitted there — a deliberate
+// under-report that never over-errors a free app (see offerCurrencyOptional).
 func TestNestedOfferParentAware(t *testing.T) {
 	// A Product url-only offer DOES require price + priceCurrency.
 	d := jsonld(t, `{"@type":"Product","name":"P","offers":{"@type":"Offer","url":"https://x"}}`)
@@ -744,16 +751,48 @@ func TestNestedOfferParentAware(t *testing.T) {
 		"location":{"@type":"Place","name":"Hall","address":"1 Main St"},
 		"offers":{"@type":"Offer","url":"https://tickets.example","availability":"https://schema.org/InStock"}}`)
 	if hasIssue(d.Errors, "Offer") {
-		t.Errorf("Event url-only offer: errors=%v, want NO Offer error (out of Product scope)", d.Errors)
+		t.Errorf("Event url-only offer: errors=%v, want NO Offer error (recommended-only there)", d.Errors)
 	}
 
-	// SoftwareApplication offer missing price ⇒ NO Offer error from bluesnake
-	// (the app-offer rule — price-yes, priceCurrency-no — is a documented
-	// residual; we under-report rather than over-error on priceCurrency).
+	// SoftwareApplication offer missing price ⇒ price ERROR (matches SF: "'price'
+	// property is required for 'Offer'" under the Google Software App feature).
 	d = jsonld(t, `{"@type":"SoftwareApplication","name":"App","aggregateRating":{"@type":"AggregateRating","ratingValue":"4","ratingCount":"9"},
 		"offers":{"@type":"Offer","availability":"https://schema.org/InStock"}}`)
+	if !hasIssue(d.Errors, "Offer") || !hasIssue(d.Errors, "price") {
+		t.Errorf("SoftwareApplication offer missing price: errors=%v, want an Offer price error", d.Errors)
+	}
+
+	// SoftwareApplication offer WITH a price but no priceCurrency ⇒ NO error.
+	// SF errors here (priceCurrency required when price > 0), but that condition is
+	// value-based; bluesnake under-reports rather than over-error a free app.
+	d = jsonld(t, `{"@type":"SoftwareApplication","name":"App","aggregateRating":{"@type":"AggregateRating","ratingValue":"4","ratingCount":"9"},
+		"offers":{"@type":"Offer","price":"9.99","availability":"https://schema.org/InStock"}}`)
 	if hasIssue(d.Errors, "Offer") {
-		t.Errorf("SoftwareApplication offer: errors=%v, want NO Offer error (out of scope residual)", d.Errors)
+		t.Errorf("SoftwareApplication offer price-no-currency: errors=%v, want NO error (priceCurrency is value-conditional, deliberately under-reported)", d.Errors)
+	}
+
+	// A complete SoftwareApplication offer (price + currency) ⇒ no Offer error.
+	d = jsonld(t, `{"@type":"SoftwareApplication","name":"App","aggregateRating":{"@type":"AggregateRating","ratingValue":"4","ratingCount":"9"},
+		"offers":{"@type":"Offer","price":"9.99","priceCurrency":"USD"}}`)
+	if hasIssue(d.Errors, "Offer") {
+		t.Errorf("SoftwareApplication complete offer: errors=%v, want NO Offer error", d.Errors)
+	}
+
+	// Microdata SoftwareApplication offer missing price ⇒ price ERROR too (parity
+	// across formats — both surfaces share this engine).
+	mbody := `<html><body>
+	<div itemscope itemtype="https://schema.org/SoftwareApplication">
+	  <span itemprop="name">App</span>
+	  <div itemprop="aggregateRating" itemscope itemtype="https://schema.org/AggregateRating">
+	    <span itemprop="ratingValue">4</span><span itemprop="ratingCount">9</span>
+	  </div>
+	  <div itemprop="offers" itemscope itemtype="https://schema.org/Offer">
+	    <span itemprop="availability">https://schema.org/InStock</span>
+	  </div>
+	</div></body></html>`
+	dm := extract(t, mbody, func(s *config.StructuredDataConfig) { s.Microdata = true })
+	if !hasIssue(dm.Errors, "Offer") || !hasIssue(dm.Errors, "price") {
+		t.Errorf("microdata SoftwareApplication offer missing price: errors=%v, want an Offer price error", dm.Errors)
 	}
 }
 
