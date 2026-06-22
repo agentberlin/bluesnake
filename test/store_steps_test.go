@@ -123,7 +123,16 @@ func (w *world) storedInterruptedCrawl(pages, interruptAfter int) error {
 	}
 	srv := w.ensureServer()
 	cfg := config.Default()
-	cfg.Speed.MaxThreads = 2
+	// One worker makes the interrupt point deterministic (same rationale as
+	// TestResumeEquivalence's equivCfg). interruptSink cancels after the Nth
+	// *committed* page; with concurrent workers a second worker can have already
+	// *fetched* another page whose result is not yet committed when cancel fires.
+	// That page is never persisted, so it stays in the resumed frontier and is
+	// fetched again on resume — which is correct (nothing was committed to resume
+	// for it), but trips the "no fixture page was fetched twice" assertion
+	// non-deterministically. Single-threaded, no fetch is ever abandoned
+	// mid-flight: every fetched page is committed, so resume re-fetches nothing.
+	cfg.Speed.MaxThreads = 1
 
 	st, err := store.CreateCrawl(w.storeDirPath(), "resumetest", []string{srv.URL + "/"}, "spider", cfg)
 	if err != nil {
