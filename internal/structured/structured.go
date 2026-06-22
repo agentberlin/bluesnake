@@ -48,11 +48,13 @@ type typeReq struct {
 
 // softwareApp is Google's Software App rich result. MobileApplication and
 // WebApplication are SoftwareApplication subtypes Google validates identically;
-// we match on the leaf @type, so each subtype needs its own row. `offers`
-// (price) and a rating/review are both required for eligibility; the curated
-// engine checks top-level property presence, so we require the `offers` object
-// itself (not the nested `offers.price`). Recommended: applicationCategory,
-// operatingSystem. (Property bucketing is grounded in
+// we match on the leaf @type, so each subtype needs its own row. `offers` and a
+// rating/review are both required for eligibility. The `offers` object's own
+// price is validated as an integral nested entity (offerValidatedParents includes
+// the app types — a Software App offer missing price is a Rich Result error,
+// measured on SF v24.1); priceCurrency there is value-conditional and omitted
+// (see offerCurrencyOptional). Recommended: applicationCategory, operatingSystem.
+// (Property bucketing is grounded in
 // developers.google.com/search/docs/appearance/structured-data/software-app.)
 var softwareApp = typeReq{
 	required:    []string{"name", "offers"},
@@ -251,7 +253,7 @@ func extractJSONLD(root *html.Node, data *PageData) {
 					found = true
 					data.Recovered = append(data.Recovered,
 						"jsonld: invalid raw control characters escaped to recover")
-					walkJSONLD(parsed, data, true, "")
+					walkJSONLD(parsed, data, true, "", "")
 					return
 				}
 			}
@@ -259,7 +261,7 @@ func extractJSONLD(root *html.Node, data *PageData) {
 			return
 		}
 		found = true
-		walkJSONLD(parsed, data, true, "")
+		walkJSONLD(parsed, data, true, "", "")
 	})
 	if found {
 		data.Formats = append(data.Formats, "jsonld")
@@ -319,16 +321,19 @@ func escapeJSONControlChars(s string) string {
 // never validated — validating a nested Store/Restaurant for `address` is an
 // R6-class false error. `implied` is the type Google infers when a validated
 // node omits an explicit @type (e.g. a bare `offers: {price: …}` is an Offer);
-// it is "" for primary entities, which always declare a type.
-func walkJSONLD(v any, data *PageData, validate bool, implied string) {
+// it is "" for primary entities, which always declare a type. `parent` is the
+// integral node's parent rich-result root, used to make a nested Offer's
+// requirements parent-aware (see offerCurrencyOptional); it is "" for primary
+// entities and for integral types whose requirements are parent-independent.
+func walkJSONLD(v any, data *PageData, validate bool, implied, parent string) {
 	switch node := v.(type) {
 	case []any:
 		for _, item := range node {
-			walkJSONLD(item, data, validate, implied)
+			walkJSONLD(item, data, validate, implied, parent)
 		}
 	case map[string]any:
 		if graph, ok := node["@graph"]; ok {
-			walkJSONLD(graph, data, true, "") // @graph members are primary entities
+			walkJSONLD(graph, data, true, "", "") // @graph members are primary entities
 		}
 		types := typeList(node["@type"])
 		for i := range types {
@@ -343,7 +348,7 @@ func walkJSONLD(v any, data *PageData, validate bool, implied string) {
 			validateNode(vTypes, func(prop string) bool {
 				_, ok := node[prop]
 				return ok
-			}, data)
+			}, data, parent)
 		}
 		// Recurse: integral sub-entities of a VALIDATED node are validated against
 		// their own requirements (parent-aware — see integralValidatedUnder);
@@ -359,47 +364,87 @@ func walkJSONLD(v any, data *PageData, validate bool, implied string) {
 				continue
 			}
 			if impliedType, integral := integralProps[key]; validate && integral && integralValidatedUnder(key, parentRoots) {
-				walkJSONLD(child, data, true, impliedType)
+				childParent := ""
+				if key == "offers" {
+					childParent = offerParentRoot(parentRoots) // parent-aware Offer requirements
+				}
+				walkJSONLD(child, data, true, impliedType, childParent)
 				continue
 			}
 			switch child.(type) {
 			case map[string]any, []any:
-				walkJSONLD(child, data, false, "")
+				walkJSONLD(child, data, false, "", "")
 			}
 		}
 	}
 }
 
-// offerStrictParents are the parent rich-result roots under which a nested
-// Offer's price + priceCurrency are REQUIRED (a missing one is a Rich Result
-// error). This is intentionally Product-only: Google's Offer requirements are
-// per-feature, and only the Product Snippet / Merchant Listing features require
-// BOTH a price and a priceCurrency. Two adjacent parents are deliberately left
-// out to avoid over-erroring, and tracked as residuals (under-report, never
-// over): a Software App offer requires price but NOT priceCurrency, and an Event
-// offer (a ticket `url` is enough) requires neither — measured on SF v24.1.
-// Matching those would need per-feature Offer profiles (the full-matrix scope).
-var offerStrictParents = map[string]bool{"Product": true}
+// offerValidatedParents are the parent rich-result roots under which Google
+// validates a nested Offer's REQUIRED properties (a missing one is a Rich Result
+// error). Google's Offer requirements are per-feature, so this is curated to the
+// features that error on offer props (measured on SF v24.1 — message text from
+// the Structured Data Validation Errors export):
+//   - Product (Snippet + Merchant Listings): require a price AND a priceCurrency.
+//   - Software App (+ Web/MobileApplication subtypes): require a price; the
+//     priceCurrency requirement is value-conditional (only when price > 0).
+//
+// An Event offer is deliberately absent: its price/priceCurrency are RECOMMENDED
+// (warnings), not errors, so validating it for required props would over-error.
+var offerValidatedParents = map[string]bool{
+	"Product": true, "SoftwareApplication": true, "WebApplication": true, "MobileApplication": true,
+}
+
+// offerCurrencyOptional are the parent roots under which a nested Offer's
+// priceCurrency is NOT an unconditional error. Under the Google Software App
+// feature, priceCurrency is required only when price > 0 ("'priceCurrency' is
+// recommended if 'price' > 0") — a value condition the presence-based engine
+// cannot test. Rather than over-error a free app (price 0, no currency), the
+// priceCurrency requirement is dropped for these parents; the (rare) paid-app-
+// without-currency case is a deliberate under-report. Product keeps priceCurrency
+// unconditionally required, as does the standalone/unknown default ("").
+var offerCurrencyOptional = map[string]bool{
+	"SoftwareApplication": true, "WebApplication": true, "MobileApplication": true,
+}
 
 // integralValidatedUnder reports whether Google validates the value of integral
 // property `prop` as part of the parent's rich result. `offers` is parent-aware
-// (validated only under a Product — see offerStrictParents); the rating/review
-// family carries parent-independent requirements (a Rating always needs a
-// ratingValue, a Review an author), so it validates under any rich-result parent
-// but never under a non-candidate one (empty parentRoots).
+// (validated only under an offer-validated feature — see offerValidatedParents);
+// the rating/review family carries parent-independent requirements (a Rating
+// always needs a ratingValue, a Review an author), so it validates under any
+// rich-result parent but never under a non-candidate one (empty parentRoots).
 func integralValidatedUnder(prop string, parentRoots []string) bool {
 	if len(parentRoots) == 0 {
 		return false // parent is not itself a rich-result candidate
 	}
 	if prop == "offers" {
 		for _, r := range parentRoots {
-			if offerStrictParents[r] {
+			if offerValidatedParents[r] {
 				return true
 			}
 		}
 		return false
 	}
 	return true
+}
+
+// offerParentRoot picks the parent rich-result root that governs a nested
+// offer's requirements. When the parent node is co-typed under several
+// offer-validated features, the strictest wins — a currency-REQUIRING parent
+// (e.g. Product) dominates a currency-optional one (Software App) so the offer is
+// never under-required on currency. Returns "" only when no parent qualifies
+// (callers gate on integralValidatedUnder first, so the offer path always has one).
+func offerParentRoot(parentRoots []string) string {
+	rep := ""
+	for _, r := range parentRoots {
+		if !offerValidatedParents[r] {
+			continue
+		}
+		if !offerCurrencyOptional[r] {
+			return r // a currency-requiring parent dominates
+		}
+		rep = r
+	}
+	return rep
 }
 
 // resolvedRoots returns the curated rich-result roots a type set validates as
@@ -465,6 +510,7 @@ func extractMicrodata(root *html.Node, data *PageData) {
 		// records its types but is not validated (same R6 scoping as JSON-LD).
 		// The full-tree walk visits every itemscope, so deeper integral nesting
 		// (Review→reviewRating→Rating) is reached as its own node.
+		parent := "" // parent rich-result root, for parent-aware Offer requirements
 		if hasItemscopeAncestor(n) {
 			prop, _ := attrValue(n, "itemprop")
 			if _, integral := integralProps[prop]; !integral {
@@ -477,13 +523,17 @@ func extractMicrodata(root *html.Node, data *PageData) {
 			if !integralItemscopeChain(n) {
 				return
 			}
-			if !integralValidatedUnder(prop, resolvedRoots(nearestItemscopeAncestorTypes(n))) {
+			ancestorRoots := resolvedRoots(nearestItemscopeAncestorTypes(n))
+			if !integralValidatedUnder(prop, ancestorRoots) {
 				return
+			}
+			if prop == "offers" {
+				parent = offerParentRoot(ancestorRoots)
 			}
 		}
 		props := map[string]bool{}
 		collectItemprops(n, props, true)
-		validateNode(types, func(p string) bool { return props[p] }, data)
+		validateNode(types, func(p string) bool { return props[p] }, data, parent)
 	})
 	if found {
 		data.Formats = append(data.Formats, "microdata")
@@ -607,7 +657,7 @@ func shortType(t string) string {
 // node still validates as SoftwareApplication (the explicit app co-type) even
 // though VideoGame alone is excluded. The leaf type name is reported in the
 // issue so the owner sees the markup they actually wrote.
-func validateNode(types []string, has func(string) bool, data *PageData) {
+func validateNode(types []string, has func(string) bool, data *PageData, parent string) {
 	rep := map[string]string{} // curated root -> representative leaf for the message
 	var roots []string
 	for _, leaf := range types {
@@ -623,14 +673,23 @@ func validateNode(types []string, has func(string) bool, data *PageData) {
 	roots = mostSpecific(roots)
 	slices.Sort(roots) // deterministic emission order
 	for _, root := range roots {
-		validateProps(rep[root], root, has, data)
+		validateProps(rep[root], root, has, data, parent)
 	}
 }
 
 // validateProps emits errors/warnings for one node against the curated `root`'s
-// requirements, attributing them to the page's actual `leaf` type.
-func validateProps(leaf, root string, has func(string) bool, data *PageData) {
+// requirements, attributing them to the page's actual `leaf` type. `parent` is
+// the node's parent rich-result root (an integral Offer/AggregateOffer is
+// validated parent-aware — see offerCurrencyOptional).
+func validateProps(leaf, root string, has func(string) bool, data *PageData, parent string) {
 	req := requirements[root]
+	// A nested Offer/AggregateOffer under a currency-optional feature (Software
+	// App) drops its priceCurrency requirement — Google makes it value-conditional
+	// (price > 0) there, which the presence engine can't test, so under-report
+	// rather than over-error a free app. Product/standalone keep the strict rule.
+	if (root == "Offer" || root == "AggregateOffer") && offerCurrencyOptional[parent] {
+		req = dropPriceCurrencyGroup(req)
+	}
 	// Feature-eligibility gate: not a rich-result candidate unless every
 	// trigger property is present (no trigger ⇒ always eligible).
 	for _, p := range req.trigger {
@@ -654,4 +713,21 @@ func validateProps(leaf, root string, has func(string) bool, data *PageData) {
 			data.Warnings = append(data.Warnings, fmt.Sprintf("%s: missing recommended property %q", leaf, p))
 		}
 	}
+}
+
+// dropPriceCurrencyGroup returns r without the anyOf group carrying the
+// priceCurrency requirement, leaving the price group (and any others) intact. It
+// relaxes an Offer rule under a parent feature where priceCurrency is value-
+// conditional rather than an unconditional error. Deriving from the base rule
+// (requirements["Offer"]/["AggregateOffer"]) keeps a single source of truth: the
+// price requirement still tracks the offer's own type (price vs lowPrice).
+func dropPriceCurrencyGroup(r typeReq) typeReq {
+	out := typeReq{required: r.required, recommended: r.recommended, trigger: r.trigger}
+	for _, g := range r.anyOf {
+		if slices.Contains(g, "priceCurrency") {
+			continue
+		}
+		out.anyOf = append(out.anyOf, g)
+	}
+	return out
 }
