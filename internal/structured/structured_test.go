@@ -41,10 +41,13 @@ func TestJSONLD(t *testing.T) {
 	if !hasType("Product") || !hasType("Offer") {
 		t.Errorf("types = %v", d.Types)
 	}
-	if len(d.Errors) != 0 {
-		t.Errorf("product has name; errors = %v", d.Errors)
+	// A Product carrying offers is a Merchant Listing, which REQUIRES image —
+	// missing it is a Rich Result error (measured on SF v24.1, not a warning).
+	if !hasIssue(d.Errors, "image") {
+		t.Errorf("merchant-listing Product w/o image: errors=%v, want an image required error", d.Errors)
 	}
-	// image/review/aggregateRating recommended but missing
+	// description / gtin (and the Offer's availability / itemCondition) are the
+	// merchant-listing recommended properties.
 	if len(d.Warnings) == 0 {
 		t.Error("expected recommended-property warnings")
 	}
@@ -366,8 +369,10 @@ func TestAggregateRating(t *testing.T) {
 }
 
 // A Product with a well-formed nested aggregateRating + review must NOT produce
-// any rating/review errors or warnings (the R6 over-warning regression guard):
-// the only warnings are the Product's own missing recommended image/offers.
+// any rating/review errors or warnings (the R6 over-warning regression guard).
+// This Product has no offers, so it is a Product Snippet but NOT a Merchant
+// Listing — the only warning is the missing recommended `offers` (image is not a
+// snippet recommendation, and description/gtin are merchant-listing-only).
 func TestNestedRatingNoOverWarn(t *testing.T) {
 	d := jsonld(t, `{"@type":"Product","name":"P",
 		"aggregateRating":{"@type":"AggregateRating","ratingValue":"4.5","reviewCount":"100"},
@@ -376,8 +381,8 @@ func TestNestedRatingNoOverWarn(t *testing.T) {
 		t.Errorf("nested rating/review must not error: errors=%v", d.Errors)
 	}
 	for _, w := range d.Warnings {
-		if !strings.Contains(w, "image") && !strings.Contains(w, "offers") {
-			t.Errorf("unexpected warning %q (only Product image/offers expected)", w)
+		if !strings.Contains(w, "offers") {
+			t.Errorf("unexpected warning %q (only the missing recommended offers expected)", w)
 		}
 	}
 }
@@ -661,8 +666,8 @@ func TestTypesNormalized(t *testing.T) {
 //   offers w/o price        ⇒ Rich Result Error  "Offer ... price ... required"
 //   offers w/o priceCurrency⇒ Rich Result Error  "Offer ... priceCurrency ... required"
 //   reviewRating w/o ratingValue ⇒ Rich Result Error "Rating ... ratingValue ... required"
-// Scope is REQUIRED properties (errors); the merchant-listing recommended breadth
-// (Offer itemCondition/availability, Product gtin/description) is a separate gap.
+// (The merchant-listing recommended breadth — Offer itemCondition/availability,
+// Product image/description/gtin — is pinned by TestProductMerchantListing.)
 
 func TestNestedOfferRequiredProperties(t *testing.T) {
 	// offers present but missing price ⇒ Offer price error (anyOf price/priceSpec).
@@ -849,5 +854,132 @@ func TestMicrodataNestedOffer(t *testing.T) {
 	}
 	if hasIssue(d.Errors, "address") || hasIssue(d.Errors, "Store") {
 		t.Errorf("microdata offers.seller=Store: errors=%v, want NO Store/address error", d.Errors)
+	}
+}
+
+// --- Product / Offer Merchant Listing model (G5-matrix residual (b)) ---
+//
+// Pinned to Screaming Frog v24.1 (STANDARD config) measured behaviour
+// (/tmp/bs-probes/sd: prod_bare, ml_min, prod_ml_clean, prod_snip_review, swapp_*).
+// A Product is ALWAYS a Product Snippet candidate: one of review / aggregateRating
+// / offers is required (an error if none), and each of those three is recommended.
+// Carrying `offers` additionally makes the Product a Merchant Listing, which
+// REQUIRES `image` (an error, not a warning) and recommends `description` + a
+// `gtin` family member; its nested Offer then recommends `availability` +
+// `itemCondition`. Software-App / Event offers carry DIFFERENT per-feature Offer
+// rules and must not inherit the merchant recommendations.
+func TestProductMerchantListing(t *testing.T) {
+	// (1) Bare Product (none of review/aggregateRating/offers) ⇒ snippet-eligibility
+	//     anyOf ERROR + the three snippet recommended warnings. NOT a merchant
+	//     listing, so NO image/description/gtin findings at all.
+	d := jsonld(t, `{"@type":"Product","name":"P"}`)
+	if !hasIssue(d.Errors, "one of") || !hasIssue(d.Errors, "offers") {
+		t.Errorf("bare Product: errors=%v, want a 'one of review, aggregateRating, offers' error", d.Errors)
+	}
+	for _, w := range []string{"offers", "review", "aggregateRating"} {
+		if !hasIssue(d.Warnings, w) {
+			t.Errorf("bare Product: warnings=%v, want snippet recommended %q", d.Warnings, w)
+		}
+	}
+	if hasIssue(d.Errors, "image") || hasIssue(d.Warnings, "image") ||
+		hasIssue(d.Warnings, "description") || hasIssue(d.Warnings, "gtin") {
+		t.Errorf("bare Product (no offers) must not emit merchant image/description/gtin: errors=%v warnings=%v", d.Errors, d.Warnings)
+	}
+
+	// (2) Merchant listing missing image (Product + offers, no image) ⇒ image is a
+	//     REQUIRED error (never a warning); offers satisfies snippet eligibility (no
+	//     anyOf error); description + gtin recommended; the nested Offer recommends
+	//     availability + itemCondition.
+	d = jsonld(t, `{"@type":"Product","name":"P","offers":{"@type":"Offer","price":"9.99","priceCurrency":"USD"}}`)
+	if !hasIssue(d.Errors, "image") {
+		t.Errorf("merchant listing w/o image: errors=%v, want an image REQUIRED error", d.Errors)
+	}
+	if hasIssue(d.Warnings, "image") {
+		t.Errorf("image must be a merchant-listing error, never a warning: warnings=%v", d.Warnings)
+	}
+	if hasIssue(d.Errors, "one of") {
+		t.Errorf("offers satisfies snippet eligibility: errors=%v, want no anyOf error", d.Errors)
+	}
+	for _, w := range []string{"description", "gtin", "availability", "itemCondition"} {
+		if !hasIssue(d.Warnings, w) {
+			t.Errorf("merchant listing: warnings=%v, want merchant recommended %q", d.Warnings, w)
+		}
+	}
+
+	// (3) Complete merchant listing ⇒ no errors, no warnings.
+	d = jsonld(t, `{"@type":"Product","name":"P","image":"i.jpg","description":"d","gtin13":"0001234560001",
+		"aggregateRating":{"@type":"AggregateRating","ratingValue":"4.5","reviewCount":"12"},
+		"review":{"@type":"Review","author":"A","reviewRating":{"@type":"Rating","ratingValue":"5"}},
+		"offers":{"@type":"Offer","price":"9.99","priceCurrency":"USD","availability":"https://schema.org/InStock","itemCondition":"https://schema.org/NewCondition"}}`)
+	if len(d.Errors) != 0 || len(d.Warnings) != 0 {
+		t.Errorf("complete merchant listing: errors=%v warnings=%v, want none", d.Errors, d.Warnings)
+	}
+
+	// (4) Snippet-only Product (review present, no offers) ⇒ NOT a merchant listing:
+	//     no image/description/gtin/availability/itemCondition; review satisfies
+	//     eligibility (no error); snippet still recommends offers + aggregateRating.
+	d = jsonld(t, `{"@type":"Product","name":"P","review":{"@type":"Review","author":"A","reviewRating":{"@type":"Rating","ratingValue":"5"}}}`)
+	if len(d.Errors) != 0 {
+		t.Errorf("snippet-only Product: errors=%v, want none (review satisfies eligibility, image not required)", d.Errors)
+	}
+	for _, bad := range []string{"image", "description", "gtin", "availability", "itemCondition"} {
+		if hasIssue(d.Warnings, bad) {
+			t.Errorf("snippet-only Product must not emit merchant property %q: warnings=%v", bad, d.Warnings)
+		}
+	}
+	if !hasIssue(d.Warnings, "offers") || !hasIssue(d.Warnings, "aggregateRating") {
+		t.Errorf("snippet-only Product: warnings=%v, want snippet recommended offers + aggregateRating", d.Warnings)
+	}
+
+	// (5) gtin family: any of gtin/gtin8/.../isbn satisfies the recommendation.
+	d = jsonld(t, `{"@type":"Product","name":"P","image":"i.jpg","description":"d","isbn":"123",
+		"aggregateRating":{"@type":"AggregateRating","ratingValue":"4","reviewCount":"2"},
+		"review":{"@type":"Review","author":"A","reviewRating":{"@type":"Rating","ratingValue":"5"}},
+		"offers":{"@type":"Offer","price":"9","priceCurrency":"USD","availability":"x","itemCondition":"x"}}`)
+	if hasIssue(d.Warnings, "gtin") {
+		t.Errorf("isbn present satisfies the gtin recommendation: warnings=%v", d.Warnings)
+	}
+}
+
+// A nested Offer's merchant-listing recommended set (availability/itemCondition)
+// is Product-specific: a Software-App offer must NOT inherit it (SF v24.1: swapp
+// offers warn on neither), while a Product offer does.
+func TestOfferMerchantRecommendedParentAware(t *testing.T) {
+	// Software-App offer missing availability/itemCondition ⇒ NO such warnings.
+	d := jsonld(t, `{"@type":"SoftwareApplication","name":"App",
+		"aggregateRating":{"@type":"AggregateRating","ratingValue":"4","ratingCount":"9"},
+		"applicationCategory":"X","operatingSystem":"Web",
+		"offers":{"@type":"Offer","price":"9.99","priceCurrency":"USD"}}`)
+	if hasIssue(d.Warnings, "availability") || hasIssue(d.Warnings, "itemCondition") {
+		t.Errorf("Software-App offer must not carry merchant availability/itemCondition: warnings=%v", d.Warnings)
+	}
+	// Product offer DOES carry them.
+	d = jsonld(t, `{"@type":"Product","name":"P","image":"i.jpg","description":"d","gtin":"1",
+		"aggregateRating":{"@type":"AggregateRating","ratingValue":"4","reviewCount":"2"},
+		"review":{"@type":"Review","author":"A","reviewRating":{"@type":"Rating","ratingValue":"5"}},
+		"offers":{"@type":"Offer","price":"9.99","priceCurrency":"USD"}}`)
+	if !hasIssue(d.Warnings, "availability") || !hasIssue(d.Warnings, "itemCondition") {
+		t.Errorf("Product offer: warnings=%v, want availability + itemCondition", d.Warnings)
+	}
+}
+
+// Microdata parity: a merchant-listing Product carries the same model across both
+// surfaces (both share internal/structured).
+func TestMicrodataProductMerchantListing(t *testing.T) {
+	body := `<html><body>
+	<div itemscope itemtype="https://schema.org/Product">
+	  <span itemprop="name">Widget</span>
+	  <div itemprop="offers" itemscope itemtype="https://schema.org/Offer">
+	    <span itemprop="price">9.99</span><span itemprop="priceCurrency">USD</span>
+	  </div>
+	</div></body></html>`
+	d := extract(t, body, func(s *config.StructuredDataConfig) { s.Microdata = true })
+	if !hasIssue(d.Errors, "image") {
+		t.Errorf("microdata merchant listing w/o image: errors=%v, want image required error", d.Errors)
+	}
+	for _, w := range []string{"description", "gtin", "availability", "itemCondition"} {
+		if !hasIssue(d.Warnings, w) {
+			t.Errorf("microdata merchant listing: warnings=%v, want merchant recommended %q", d.Warnings, w)
+		}
 	}
 }

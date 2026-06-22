@@ -35,15 +35,33 @@ type PageData struct {
 // requirements. A missing `required` prop emits an error; a missing
 // `recommended` prop emits a warning. `anyOf` groups model Google's
 // "at least one of" requirements (e.g. an AggregateRating needs ratingCount OR
-// reviewCount) — a group with none of its members present emits one error.
-// `trigger` props gate feature eligibility: a type is only a rich-result
-// candidate when every trigger prop is present (an empty trigger means
-// always-validate), so bare/incidental markup emits nothing.
+// reviewCount) — a group with none of its members present emits one error;
+// `recAnyOf` is the warning equivalent (e.g. a Product Merchant Listing
+// recommends one of the gtin family). `trigger` props gate feature eligibility:
+// a type is only a rich-result candidate when every trigger prop is present (an
+// empty trigger means always-validate), so bare/incidental markup emits nothing.
+// `conditional` carries rich-result sub-features the entity only qualifies for
+// when a gating property is present (e.g. a Product carrying offers is also a
+// Merchant Listing, which adds its own required/recommended properties).
 type typeReq struct {
 	required    []string
 	recommended []string
 	trigger     []string
 	anyOf       [][]string
+	recAnyOf    [][]string
+	conditional []condFeature
+}
+
+// condFeature is a rich-result sub-feature a primary entity qualifies for only
+// when `when` is present, contributing `req`'s requirements on top of the base
+// type's. Google validates the same @type against several features at once (a
+// Product is a Product Snippet always, and a Merchant Listing once it carries
+// offers); modelling the conditional feature inline keeps the data-driven table
+// as the single source of truth. The sub-feature's `req` is emitted without
+// re-checking the base trigger (the caller has already gated eligibility).
+type condFeature struct {
+	when string
+	req  typeReq
 }
 
 // softwareApp is Google's Software App rich result. MobileApplication and
@@ -76,7 +94,30 @@ var softwareApp = typeReq{
 // Sep 2023 (no longer shown in Search), so validating it would chase a stale
 // feature rather than correct current behaviour.
 var requirements = map[string]typeReq{
-	"Product": {required: []string{"name"}, recommended: []string{"image", "offers", "review", "aggregateRating"}},
+	// A Product is ALWAYS a Google Product Snippet candidate: it needs a name, at
+	// least one of review / aggregateRating / offers (the anyOf error SF emits on a
+	// bare Product), and recommends each of those three. Carrying `offers` ALSO
+	// makes it a Merchant Listing (the conditional sub-feature), which REQUIRES
+	// `image` — an error, not a warning — and recommends `description` plus a `gtin`
+	// family member. `image` is therefore NOT a snippet recommendation: a Product
+	// without offers and without image emits nothing about image (matching SF; the
+	// old model warned it unconditionally). The nested Offer's own merchant
+	// recommendations (availability/itemCondition) live in offerReq /
+	// offerMerchantParents, since they are Product-specific. Grounded on SF v24.1
+	// probes (/tmp/bs-probes/sd).
+	"Product": {
+		required:    []string{"name"},
+		anyOf:       [][]string{{"review", "aggregateRating", "offers"}},
+		recommended: []string{"offers", "review", "aggregateRating"},
+		conditional: []condFeature{{
+			when: "offers", // a Product carrying offers is a Merchant Listing
+			req: typeReq{
+				required:    []string{"image"},
+				recommended: []string{"description"},
+				recAnyOf:    [][]string{{"gtin", "gtin8", "gtin12", "gtin13", "gtin14", "isbn"}},
+			},
+		}},
+	},
 	// headline is recommended, not required: Google's Article rich result
 	// has no required properties, and SF reports a missing headline as a
 	// Rich Result Validation *Warning* (measured on yonedalabs.com). Google's
@@ -406,6 +447,32 @@ var offerCurrencyOptional = map[string]bool{
 	"SoftwareApplication": true, "WebApplication": true, "MobileApplication": true,
 }
 
+// offerMerchantParents are the parent rich-result roots under which a nested
+// Offer carries Google's Merchant Listing RECOMMENDED properties (availability,
+// itemCondition → warnings). Only Product: an Offer under a Software App
+// recommends neither (its price is required outright), and an Event offer has a
+// different recommended set (price/priceCurrency) — both measured on SF v24.1, so
+// the merchant recommendations must not leak onto them. AggregateOffer is left out
+// deliberately (no probe coverage; standalone/AggregateOffer merchant depth is a
+// separate open gap).
+var offerMerchantParents = map[string]bool{"Product": true}
+
+// offerReq returns an Offer's (or AggregateOffer's) parent-aware requirements:
+// the base price/currency rule, relaxed for currency-optional parents (Software
+// App), plus the Merchant Listing recommended set (availability, itemCondition)
+// when the Offer hangs off a Product. Centralizing this keeps Google's per-feature
+// Offer profiles in one place rather than scattered across validateProps.
+func offerReq(root, parent string) typeReq {
+	req := requirements[root]
+	if offerCurrencyOptional[parent] {
+		req = dropPriceCurrencyGroup(req)
+	}
+	if root == "Offer" && offerMerchantParents[parent] {
+		req.recommended = append(slices.Clone(req.recommended), "availability", "itemCondition")
+	}
+	return req
+}
+
 // integralValidatedUnder reports whether Google validates the value of integral
 // property `prop` as part of the parent's rich result. `offers` is parent-aware
 // (validated only under an offer-validated feature — see offerValidatedParents);
@@ -680,15 +747,13 @@ func validateNode(types []string, has func(string) bool, data *PageData, parent 
 // validateProps emits errors/warnings for one node against the curated `root`'s
 // requirements, attributing them to the page's actual `leaf` type. `parent` is
 // the node's parent rich-result root (an integral Offer/AggregateOffer is
-// validated parent-aware — see offerCurrencyOptional).
+// validated parent-aware — see offerReq). After the base requirements, any
+// conditional sub-feature whose gating property is present contributes its own
+// requirements too (e.g. a Product carrying offers is also a Merchant Listing).
 func validateProps(leaf, root string, has func(string) bool, data *PageData, parent string) {
 	req := requirements[root]
-	// A nested Offer/AggregateOffer under a currency-optional feature (Software
-	// App) drops its priceCurrency requirement — Google makes it value-conditional
-	// (price > 0) there, which the presence engine can't test, so under-report
-	// rather than over-error a free app. Product/standalone keep the strict rule.
-	if (root == "Offer" || root == "AggregateOffer") && offerCurrencyOptional[parent] {
-		req = dropPriceCurrencyGroup(req)
+	if root == "Offer" || root == "AggregateOffer" {
+		req = offerReq(root, parent) // parent-aware Offer profile (currency + merchant recs)
 	}
 	// Feature-eligibility gate: not a rich-result candidate unless every
 	// trigger property is present (no trigger ⇒ always eligible).
@@ -697,6 +762,23 @@ func validateProps(leaf, root string, has func(string) bool, data *PageData, par
 			return
 		}
 	}
+	emitRequirements(leaf, req, has, data)
+	// Conditional sub-features: a gating property's presence opts the entity into
+	// an additional rich-result feature with its own requirements. The base
+	// trigger has already passed, so the sub-feature is emitted directly.
+	for _, cf := range req.conditional {
+		if has(cf.when) {
+			emitRequirements(leaf, cf.req, has, data)
+		}
+	}
+}
+
+// emitRequirements appends the error/warning messages for one requirement set,
+// attributed to `leaf`. required props and unsatisfied `anyOf` groups are errors;
+// recommended props and unsatisfied `recAnyOf` groups are warnings. It does NOT
+// apply the trigger gate — eligibility is the caller's responsibility — so it can
+// be reused for conditional sub-features.
+func emitRequirements(leaf string, req typeReq, has func(string) bool, data *PageData) {
 	for _, p := range req.required {
 		if !has(p) {
 			data.Errors = append(data.Errors, fmt.Sprintf("%s: missing required property %q", leaf, p))
@@ -713,6 +795,12 @@ func validateProps(leaf, root string, has func(string) bool, data *PageData, par
 			data.Warnings = append(data.Warnings, fmt.Sprintf("%s: missing recommended property %q", leaf, p))
 		}
 	}
+	for _, group := range req.recAnyOf {
+		if !slices.ContainsFunc(group, has) {
+			data.Warnings = append(data.Warnings,
+				fmt.Sprintf("%s: missing recommended property (one of %s)", leaf, strings.Join(group, ", ")))
+		}
+	}
 }
 
 // dropPriceCurrencyGroup returns r without the anyOf group carrying the
@@ -722,7 +810,7 @@ func validateProps(leaf, root string, has func(string) bool, data *PageData, par
 // (requirements["Offer"]/["AggregateOffer"]) keeps a single source of truth: the
 // price requirement still tracks the offer's own type (price vs lowPrice).
 func dropPriceCurrencyGroup(r typeReq) typeReq {
-	out := typeReq{required: r.required, recommended: r.recommended, trigger: r.trigger}
+	out := typeReq{required: r.required, recommended: r.recommended, trigger: r.trigger, recAnyOf: r.recAnyOf, conditional: r.conditional}
 	for _, g := range r.anyOf {
 		if slices.Contains(g, "priceCurrency") {
 			continue
