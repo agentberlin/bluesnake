@@ -131,9 +131,16 @@ var requirements = map[string]typeReq{
 	"BreadcrumbList": {required: []string{"itemListElement"}},
 	"FAQPage":        {required: []string{"mainEntity"}},
 	"Recipe":         {required: []string{"name", "image"}, recommended: []string{"recipeIngredient", "recipeInstructions"}},
-	"Event":          {required: []string{"name", "startDate", "location"}, recommended: []string{"image", "offers"}},
-	"JobPosting":     {required: []string{"title", "datePosted", "description", "hiringOrganization", "jobLocation"}},
-	"LocalBusiness":  {required: []string{"name", "address"}, recommended: []string{"telephone", "openingHours"}},
+	// Google Event rich result (measured on SF v24.1, /tmp/bs-probes/event):
+	// name/startDate/location required; description/endDate/image/offers/organizer/
+	// performer recommended. SF omits eventStatus/eventAttendanceMode from its
+	// curated recommended set (Google lists them, SF doesn't surface them), so we
+	// match SF. The nested Event offer's price/priceCurrency are recommended
+	// (warnings), not required — handled per-parent in offerReq via
+	// offerPriceRecommendedParents.
+	"Event":         {required: []string{"name", "startDate", "location"}, recommended: []string{"description", "endDate", "image", "offers", "organizer", "performer"}},
+	"JobPosting":    {required: []string{"title", "datePosted", "description", "hiringOrganization", "jobLocation"}},
+	"LocalBusiness": {required: []string{"name", "address"}, recommended: []string{"telephone", "openingHours"}},
 	// Organization's Logo rich result is keyed on `logo`: SF only validates
 	// (and warns on a missing recommended `url`) when a logo is present; without
 	// a logo it is not a Logo candidate and emits nothing. `name` is therefore
@@ -425,18 +432,21 @@ func walkJSONLD(v any, data *PageData, validate bool, implied, parent string) {
 }
 
 // offerValidatedParents are the parent rich-result roots under which Google
-// validates a nested Offer's REQUIRED properties (a missing one is a Rich Result
-// error). Google's Offer requirements are per-feature, so this is curated to the
-// features that error on offer props (measured on SF v24.1 — message text from
-// the Structured Data Validation Errors export):
-//   - Product (Snippet + Merchant Listings): require a price AND a priceCurrency.
-//   - Software App (+ Web/MobileApplication subtypes): require a price; the
+// validates a nested Offer at all. The per-parent SEVERITY of the price/currency
+// rules is set in offerReq, since Google's Offer requirements are per-feature
+// (measured on SF v24.1 — message text from the Structured Data Validation
+// Errors/Warnings exports):
+//   - Product (Snippet + Merchant Listings): price AND priceCurrency required (errors).
+//   - Software App (+ Web/MobileApplication subtypes): price required (error); the
 //     priceCurrency requirement is value-conditional (only when price > 0).
+//   - Event: price AND priceCurrency are RECOMMENDED (warnings), not errors — see
+//     offerPriceRecommendedParents.
 //
-// An Event offer is deliberately absent: its price/priceCurrency are RECOMMENDED
-// (warnings), not errors, so validating it for required props would over-error.
+// A parent NOT listed here (e.g. a reference-stub seller, or a primary entity with
+// no Offer feature) never validates its nested offer — its type is recorded only.
 var offerValidatedParents = map[string]bool{
 	"Product": true, "SoftwareApplication": true, "WebApplication": true, "MobileApplication": true,
+	"Event": true,
 }
 
 // offerCurrencyOptional are the parent roots under which a nested Offer's
@@ -461,12 +471,33 @@ var offerCurrencyOptional = map[string]bool{
 // separate open gap).
 var offerMerchantParents = map[string]bool{"Product": true}
 
+// offerPriceRecommendedParents are the parent rich-result roots under which a
+// nested Offer's price/priceCurrency are RECOMMENDED (warnings) rather than
+// required (errors). Google's Event rich result recommends offers.price and
+// offers.priceCurrency (measured on SF v24.1, /tmp/bs-probes/event: "'price' /
+// 'priceCurrency' property is recommended for 'Offer'"), unlike Product / Software
+// App where a missing price is an error.
+var offerPriceRecommendedParents = map[string]bool{"Event": true}
+
 // offerReq returns an Offer's (or AggregateOffer's) parent-aware requirements:
 // the base price/currency rule, relaxed for currency-optional parents (Software
 // App), plus the Merchant Listing recommended set (availability, itemCondition)
-// when the Offer hangs off a Product. Centralizing this keeps Google's per-feature
-// Offer profiles in one place rather than scattered across validateProps.
+// when the Offer hangs off a Product. Under an Event the whole rule softens to
+// recommended (see offerPriceRecommendedParents). Centralizing this keeps Google's
+// per-feature Offer profiles in one place rather than scattered across validateProps.
 func offerReq(root, parent string) typeReq {
+	if offerPriceRecommendedParents[parent] {
+		// Under an Event, price/priceCurrency are RECOMMENDED (warnings), never
+		// errors (SF v24.1: "'price'/'priceCurrency' property is recommended for
+		// 'Offer'"). Merchant recs are Product-only and don't apply. An AggregateOffer
+		// under an Event is left unvalidated — rare, and validating it for the plain
+		// `price` would be wrong (it prices a range via lowPrice); a deliberate
+		// under-report rather than an over-warn.
+		if root == "Offer" {
+			return typeReq{recommended: []string{"price", "priceCurrency"}}
+		}
+		return typeReq{}
+	}
 	req := requirements[root]
 	if offerCurrencyOptional[parent] {
 		req = dropPriceCurrencyGroup(req)
@@ -498,24 +529,37 @@ func integralValidatedUnder(prop string, parentRoots []string) bool {
 	return true
 }
 
-// offerParentRoot picks the parent rich-result root that governs a nested
-// offer's requirements. When the parent node is co-typed under several
-// offer-validated features, the strictest wins — a currency-REQUIRING parent
-// (e.g. Product) dominates a currency-optional one (Software App) so the offer is
-// never under-required on currency. Returns "" only when no parent qualifies
-// (callers gate on integralValidatedUnder first, so the offer path always has one).
+// offerParentRank orders offer-validated parents by how strict their Offer profile
+// is (lower = stricter). offerParentRoot uses it to pick the strictest when an
+// offer is co-typed under several parents, so a real price error (Product /
+// Software App) is never downgraded to a warning by a weaker Event co-type.
+func offerParentRank(root string) int {
+	switch {
+	case offerPriceRecommendedParents[root]:
+		return 2 // Event: price/priceCurrency recommended (warnings) — weakest
+	case offerCurrencyOptional[root]:
+		return 1 // Software App: price required, priceCurrency value-conditional
+	default:
+		return 0 // Product (and the standalone default): price + priceCurrency required
+	}
+}
+
+// offerParentRoot picks the parent rich-result root that governs a nested offer's
+// requirements: the strictest among the parent node's offer-validated roots (see
+// offerParentRank). Returns "" only when no parent qualifies (callers gate on
+// integralValidatedUnder first, so the offer path always has one).
 func offerParentRoot(parentRoots []string) string {
-	rep := ""
+	best := ""
+	bestRank := 0
 	for _, r := range parentRoots {
 		if !offerValidatedParents[r] {
 			continue
 		}
-		if !offerCurrencyOptional[r] {
-			return r // a currency-requiring parent dominates
+		if rank := offerParentRank(r); best == "" || rank < bestRank {
+			best, bestRank = r, rank
 		}
-		rep = r
 	}
-	return rep
+	return best
 }
 
 // resolvedRoots returns the curated rich-result roots a type set validates as
