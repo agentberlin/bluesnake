@@ -17,7 +17,7 @@ BDD-first: Gherkin acceptance specs in `features/` (run by godog), exhaustive ta
 
 ```sh
 make test        # unit + acceptance tests
-make cover       # coverage report (85% gate on internal/...)
+make cover       # coverage report (90% gate on internal/...)
 make build       # build ./bin/bluesnake
 make lint        # gofmt + go vet
 ```

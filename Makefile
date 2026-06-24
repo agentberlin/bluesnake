@@ -1,7 +1,8 @@
 GO ?= go
 PKGS := ./...
 COVER_PKGS := ./internal/...
-COVER_MIN := 85
+# Aggregate statement-coverage gate across COVER_PKGS (see docs/DESIGN.md §6).
+COVER_MIN := 90
 
 # Where the built .app bundle gets installed so Spotlight can index it.
 # ~/Applications is user-writable (no sudo) and indexed by Spotlight; override

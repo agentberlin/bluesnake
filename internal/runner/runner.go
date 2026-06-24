@@ -133,7 +133,14 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 	}
 	c, err := crawler.New(cfg, opts...)
 	if err != nil {
+		// crawler.New failed after open() registered the crawl as running, so
+		// finalize will never run for it. Mark the row terminal here, otherwise
+		// it is orphaned at "running" forever (the dispatcher has moved on).
+		markTerminal(e.storeDir, st, store.StatusInterrupted)
 		st.Close()
+		if e.obs != nil {
+			e.obs.OnDone(Outcome{CrawlID: st.ID, Status: store.StatusInterrupted, Err: err})
+		}
 		return "", err
 	}
 	r.c = c
@@ -182,11 +189,30 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 		if ferr != nil && out.Err == nil {
 			out.Err = ferr
 		}
+	} else {
+		// No Result means the crawler errored before producing one (e.g. a seed
+		// or scope failure), so finalize never ran. Persist the terminal status
+		// directly so the registry row isn't orphaned at "running".
+		if serr := markTerminal(e.storeDir, st, store.StatusInterrupted); serr != nil && out.Err == nil {
+			out.Err = serr
+		}
 	}
 	if e.obs != nil {
 		e.obs.OnDone(out)
 	}
 	return out.Status, out.Err
+}
+
+// markTerminal records a terminal registry status for a crawl that ended before
+// finalize ran — a startup/seed error after the crawl row was already created.
+// It mirrors finalize's authoritative counts (read from the stored graph, best
+// effort) so the row stops claiming to be running.
+func markTerminal(storeDir string, st *store.Crawl, status string) error {
+	crawled, total := 0, 0
+	if c, t, err := st.Counts(); err == nil {
+		crawled, total = c, t
+	}
+	return store.SetStatus(storeDir, st.ID, status, crawled, total)
 }
 
 // open resolves a spec into an open crawl ready to run: a fresh crawl, or an
