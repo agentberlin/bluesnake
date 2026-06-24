@@ -15,7 +15,7 @@ export function NewCrawl({ onStart, onOpenSettings }) {
   const [profile, setProfile] = useState("Default audit");
   const [depth, setDepth] = useState(""); // "" = unlimited
   const [threads, setThreads] = useState(5);
-  const [ups, setUps] = useState(2);
+  const [ups, setUps] = useState(5); // matches the 5-thread default so the rate cap isn't the bottleneck; 0 = unlimited
   const [rendering, setRendering] = useState("text");
   const [err, setErr] = useState("");
   const [starting, setStarting] = useState(false);
