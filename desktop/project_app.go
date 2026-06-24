@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/agentberlin/bluesnake/internal/compare"
 	"github.com/agentberlin/bluesnake/internal/project"
+	"github.com/agentberlin/bluesnake/internal/queue"
 )
 
 // ProjectApp is the Wails binding for the opt-in project layer (competitor
@@ -10,14 +11,43 @@ import (
 // its own ProjectApp.js and the core App binding is untouched — removing the
 // feature is: drop this file, drop ProjectApp from the Bind slice in main.go,
 // delete the generated ProjectApp.js and the frontend projects view. It holds no
-// crawl state; every call opens the project layer's own database read-side.
+// crawl state; every call opens the project layer's own database read-side. The
+// one-way reference to *App lets "crawl all" enqueue through the core queue; the
+// core App never references the project layer back, so removal stays clean.
 type ProjectApp struct {
 	storeDir string
+	app      *App
 }
 
 // NewProjectApp constructs the binding against the shared store directory.
-func NewProjectApp() *ProjectApp {
-	return &ProjectApp{storeDir: defaultStoreDir()}
+func NewProjectApp(app *App) *ProjectApp {
+	return &ProjectApp{storeDir: app.storeDir, app: app}
+}
+
+// CrawlAll enqueues a default spider crawl for every member domain of the
+// project, returning how many jobs it queued. The crawls run one at a time
+// through the app's single dispatcher (no parallel crawls), interleaved with any
+// hand-started crawls. A standalone crawl of a member domain already auto-joins
+// the project, so this is just "(re)crawl everything in this project now".
+func (a *ProjectApp) CrawlAll(projectID string) (int, error) {
+	s, err := a.open()
+	if err != nil {
+		return 0, err
+	}
+	defer s.Close()
+	members, err := s.Members(projectID)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, m := range members {
+		spec := queue.JobSpec{URL: "https://" + m.Domain}
+		if _, err := a.app.EnqueueCrawl(spec, "project", projectID, m.Domain); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }
 
 func (a *ProjectApp) open() (*project.Store, error) { return project.Open(a.storeDir) }

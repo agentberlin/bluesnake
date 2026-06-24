@@ -17,7 +17,9 @@ import (
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/robots"
+	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
@@ -29,8 +31,14 @@ type App struct {
 	tunnel   *tunnelManager // optional public HTTPS URL for the MCP server
 	upd      *updateManager // self-update checker / installer
 
-	mu      sync.Mutex
-	session *crawlSession // at most one live crawl
+	// The crawl queue: every start (hand-driven or MCP-driven) enqueues a job;
+	// the single dispatcher drains it one crawl at a time through the executor,
+	// owning the one-crawl-at-a-time slot. The queue is persisted in the registry
+	// DB, so it survives restarts.
+	mu   sync.Mutex
+	exec *runner.Executor
+	disp *queue.Dispatcher
+	obs  *uiObserver
 
 	cacheMu    sync.Mutex
 	pagesCache map[string]map[string]*crawler.PageRecord // crawlID -> pages
@@ -61,6 +69,11 @@ func defaultStoreDir() string {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.ensureQueue()
+	// Drain the persistent queue: this reconciles any job left running by a
+	// previous crash (-> interrupted, the partial crawl stays resumable) and
+	// then runs queued jobs one at a time.
+	_ = a.disp.Start(ctx)
 	a.mcp.initFromSettings()    // restore the MCP toggle, auto-starting the server
 	a.tunnel.initFromSettings() // then the public-URL toggle (forwards to the MCP server)
 }
@@ -69,12 +82,25 @@ func (a *App) shutdown(ctx context.Context) {
 	a.tunnel.shutdown()
 	a.mcp.shutdown()
 	a.mu.Lock()
-	s := a.session
+	d := a.disp
 	a.mu.Unlock()
-	if s != nil {
-		s.stop("pause") // interrupted crawls resume cleanly; nothing is lost
-		s.wait()
+	if d != nil {
+		d.Shutdown() // pauses any in-flight crawl (resumable) and stops the loop
 	}
+}
+
+// ensureQueue lazily builds the executor + dispatcher over the current store
+// dir. Construction is deferred (not done in NewApp) because tests set storeDir
+// after construction; startup wires the same path before draining.
+func (a *App) ensureQueue() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.disp != nil {
+		return
+	}
+	a.obs = &uiObserver{app: a}
+	a.exec = runner.New(a.storeDir, a.obs)
+	a.disp = queue.New(queue.NewSQLiteStore(a.storeDir), a.exec)
 }
 
 func (a *App) invalidate(id string) {
@@ -172,155 +198,202 @@ type StartRequest struct {
 	Rendering  string   `json:"rendering"`
 }
 
-func (a *App) StartCrawl(req StartRequest) (string, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.session != nil && !a.session.finished() {
-		return "", fmt.Errorf("a crawl is already running")
-	}
-
-	cfg, err := a.loadProfileConfig(req.Profile)
-	if err != nil {
-		return "", err
+// toSpec translates the desktop's start form into the neutral queue job spec:
+// the per-field knobs (threads/rate/depth/rendering) become dotted-path config
+// overrides, so the runner's BuildConfig is the single config-building path.
+func (req StartRequest) toSpec() queue.JobSpec {
+	cfg := map[string]any{
+		"speed.max_urls_per_sec": req.Rate, // 0 = unlimited, set unconditionally
 	}
 	if req.Threads > 0 {
-		cfg.Speed.MaxThreads = req.Threads
+		cfg["speed.max_threads"] = req.Threads
 	}
-	cfg.Speed.MaxURLsPerSec = req.Rate
 	if req.MaxDepth != 0 {
-		cfg.Limits.MaxDepth = req.MaxDepth
+		cfg["limits.max_depth"] = req.MaxDepth
 	}
 	if req.Rendering != "" {
-		cfg.Rendering.Mode = req.Rendering
+		cfg["rendering.mode"] = req.Rendering
 	}
-
-	var seeds []string
-	mode := "spider"
-	switch req.Mode {
-	case "list":
-		mode = "list"
-		cfg.Mode = "list"
-		cfg.Limits.MaxDepth = cfg.ListMode.CrawlDepth
-		if !cfg.ListMode.RespectRobots {
-			cfg.Robots.Mode = "ignore"
-		}
-		if req.SitemapURL != "" {
-			seeds, err = crawler.FetchSitemapURLs(a.ctx, cfg, req.SitemapURL)
-			if err != nil {
-				return "", err
-			}
-		} else {
-			seeds = req.ListURLs
-		}
-		if len(seeds) == 0 {
-			return "", fmt.Errorf("no URLs to audit")
-		}
-	default:
-		if !strings.HasPrefix(req.URL, "http://") && !strings.HasPrefix(req.URL, "https://") {
-			return "", fmt.Errorf("enter a valid URL including http:// or https://")
-		}
-		seeds = []string{req.URL}
+	spec := queue.JobSpec{Mode: req.Mode, Profile: req.Profile, Config: cfg}
+	if req.Mode == "list" {
+		spec.URLs = req.ListURLs
+		spec.SitemapURL = req.SitemapURL
+	} else {
+		spec.URL = req.URL
 	}
-	if err := cfg.Validate(); err != nil {
-		return "", err
-	}
-
-	st, err := store.CreateCrawl(a.storeDir, seeds, mode, cfg)
-	if err != nil {
-		return "", err
-	}
-	s, err := newCrawlSession(a, st, cfg, seeds, nil, nil)
-	if err != nil {
-		st.Close()
-		return "", err
-	}
-	a.session = s
-	go s.run()
-	return st.ID, nil
+	return spec
 }
 
+func (req StartRequest) label() string {
+	if req.URL != "" {
+		return req.URL
+	}
+	if req.SitemapURL != "" {
+		return req.SitemapURL
+	}
+	if len(req.ListURLs) > 0 {
+		return req.ListURLs[0]
+	}
+	return "list crawl"
+}
+
+// StartCrawl validates the request and enqueues a crawl job, returning the job
+// id. When the queue is idle the dispatcher starts it within a tick and the UI
+// jumps to the live view on the crawl:started event; when a crawl is already
+// running it queues behind it.
+func (a *App) StartCrawl(req StartRequest) (string, error) {
+	a.ensureQueue()
+	spec := req.toSpec()
+	if err := runner.ValidateSpec(a.storeDir, spec); err != nil {
+		return "", err
+	}
+	j, err := a.disp.Enqueue(spec, "manual", "", req.label())
+	if err != nil {
+		return "", err
+	}
+	return j.ID, nil
+}
+
+// ResumeCrawl enqueues a job that resumes an existing crawl.
 func (a *App) ResumeCrawl(id string) (string, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.session != nil && !a.session.finished() {
-		return "", fmt.Errorf("a crawl is already running")
-	}
-	st, err := store.OpenCrawl(a.storeDir, id)
-	if err != nil {
-		return "", err
-	}
-	cfgYAML, err := st.Meta("config")
-	if err != nil {
-		st.Close()
-		return "", err
-	}
-	cfg, err := config.Load([]byte(cfgYAML))
-	if err != nil {
-		st.Close()
-		return "", err
-	}
-	seeds, err := st.Seeds()
-	if err != nil {
-		st.Close()
-		return "", err
-	}
-	if len(seeds) == 0 {
-		st.Close()
-		return "", fmt.Errorf("crawl %s has no stored seed", id)
-	}
-	processed, err := st.ProcessedURLs()
-	if err != nil {
-		st.Close()
-		return "", err
-	}
-	pending, err := st.PendingFrontier()
-	if err != nil {
-		st.Close()
-		return "", err
-	}
+	a.ensureQueue()
 	a.invalidate(id)
-	s, err := newCrawlSession(a, st, cfg, seeds, processed, pending)
+	j, err := a.disp.Enqueue(queue.JobSpec{ResumeID: id}, "manual", "", "resume "+id)
 	if err != nil {
-		st.Close()
 		return "", err
 	}
-	a.session = s
-	go s.run()
-	return id, nil
+	return j.ID, nil
 }
 
 // PauseCrawl interrupts the live crawl, leaving it resumable.
 func (a *App) PauseCrawl() {
-	a.mu.Lock()
-	s := a.session
-	a.mu.Unlock()
-	if s != nil {
-		s.stop("pause")
-	}
+	a.ensureQueue()
+	a.disp.Pause()
 }
 
 // StopCrawl ends the live crawl and finalises it as completed (analysis runs
 // on what was crawled so far).
 func (a *App) StopCrawl() {
-	a.mu.Lock()
-	s := a.session
-	a.mu.Unlock()
-	if s != nil {
-		s.stop("stop")
-	}
+	a.ensureQueue()
+	a.disp.Stop()
 }
 
 // ActiveProgress lets the progress view rehydrate after a reload; nil when no
 // crawl is live.
 func (a *App) ActiveProgress() *ProgressSnapshot {
 	a.mu.Lock()
-	s := a.session
+	exec, obs := a.exec, a.obs
 	a.mu.Unlock()
-	if s == nil || s.finished() {
+	if exec == nil {
 		return nil
 	}
-	snap := s.snapshot()
-	return &snap
+	snap, ok := exec.Snapshot()
+	if !ok {
+		return nil
+	}
+	ps := obs.build(snap, "running")
+	return &ps
+}
+
+// ---------------------------------------------------------------------------
+// queue management (desktop queue panel)
+
+// QueueItem is one crawl-queue entry surfaced to the UI.
+type QueueItem struct {
+	ID       string `json:"id"`
+	Status   string `json:"status"`
+	Source   string `json:"source"` // manual | project
+	Label    string `json:"label"`
+	CrawlID  string `json:"crawlId"`
+	Error    string `json:"error,omitempty"`
+	Enqueued string `json:"enqueued"`
+}
+
+// ListQueue returns every job in the queue (newest position last).
+func (a *App) ListQueue() ([]QueueItem, error) {
+	a.ensureQueue()
+	jobs, err := a.disp.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]QueueItem, 0, len(jobs))
+	for _, j := range jobs {
+		qi := QueueItem{
+			ID: j.ID, Status: j.Status, Source: j.Source,
+			Label: j.Label, CrawlID: j.CrawlID, Error: j.Error,
+		}
+		if !j.Enqueued.IsZero() {
+			qi.Enqueued = j.Enqueued.Format("2006-01-02 15:04")
+		}
+		out = append(out, qi)
+	}
+	return out, nil
+}
+
+// EnqueueCrawl adds a job to the queue and returns its id. It is the entry point
+// the removable project layer uses to drive "crawl all" through the same queue
+// without the core App depending on the project package.
+func (a *App) EnqueueCrawl(spec queue.JobSpec, source, projectID, label string) (string, error) {
+	a.ensureQueue()
+	j, err := a.disp.Enqueue(spec, source, projectID, label)
+	if err != nil {
+		return "", err
+	}
+	return j.ID, nil
+}
+
+// CancelJob drops a queued job, or stops the running one.
+func (a *App) CancelJob(id string) error {
+	a.ensureQueue()
+	_, err := a.disp.Cancel(id)
+	return err
+}
+
+// ClearJob removes a finished/canceled job from the queue list.
+func (a *App) ClearJob(id string) error {
+	a.ensureQueue()
+	return store.DeleteJob(a.storeDir, id)
+}
+
+// awaitCrawlID blocks until the dispatcher has started the given job's crawl
+// (returning its crawl id) or the job failed/was canceled. Used by the MCP
+// backend to turn the async enqueue back into the tool's "return a crawl id"
+// contract; the queue is idle when it is called (a start is rejected otherwise),
+// so the wait is a few ticks at most.
+func (a *App) awaitCrawlID(ctx context.Context, jobID string) (string, error) {
+	for i := 0; i < 600; i++ { // ~30s ceiling at 50ms
+		jobs, err := a.disp.List()
+		if err != nil {
+			return "", err
+		}
+		for _, j := range jobs {
+			if j.ID != jobID {
+				continue
+			}
+			if j.CrawlID != "" {
+				if j.Status == store.JobFailed && j.Error != "" {
+					return j.CrawlID, fmt.Errorf("%s", j.Error)
+				}
+				return j.CrawlID, nil
+			}
+			switch j.Status {
+			case store.JobFailed:
+				msg := j.Error
+				if msg == "" {
+					msg = "crawl failed to start"
+				}
+				return "", fmt.Errorf("%s", msg)
+			case store.JobCanceled:
+				return "", fmt.Errorf("crawl was canceled")
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	return "", fmt.Errorf("crawl did not start in time")
 }
 
 // ---------------------------------------------------------------------------

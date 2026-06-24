@@ -47,6 +47,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newListCmd())
 	root.AddCommand(newCompareCmd())
 	root.AddCommand(newCrawlsCmd())
+	root.AddCommand(newQueueCmd())
 	root.AddCommand(newProjectCmd())
 	root.AddCommand(newResumeCmd())
 	root.AddCommand(newIssuesCmd())

@@ -25,6 +25,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/indexability"
 	"github.com/agentberlin/bluesnake/internal/issues"
 	"github.com/agentberlin/bluesnake/internal/parse"
+	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/robots"
 	"github.com/agentberlin/bluesnake/internal/urlutil"
 	"github.com/cucumber/godog"
@@ -151,6 +152,12 @@ type world struct {
 	firstCrawlID     string
 	listFilePath     string
 	issueOccs        []issues.Occurrence
+
+	// queue steps
+	queueDisp    *queue.Dispatcher
+	queueObs     *queueObserver
+	queueSeeds   []string
+	crashedJobID string
 }
 
 type routeSpec struct {
@@ -337,6 +344,9 @@ func initializeScenario(sc *godog.ScenarioContext) {
 
 	// --- store / resume (registered in store_steps_test.go) ---
 	w.registerStoreSteps(sc)
+
+	// --- crawl queue (registered in queue_steps_test.go) ---
+	w.registerQueueSteps(sc)
 
 	// --- issues (registered in issues_steps_test.go) ---
 	w.registerIssuesSteps(sc)
