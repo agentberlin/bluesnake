@@ -9,11 +9,15 @@ name: release
 #   https://github.com/<repo>/releases/latest/download/<asset>
 # always resolves to the newest released version. Does NOT run on pull requests
 # or on plain pushes to main. workflow_dispatch builds everything without
-# releasing (a manual smoke test). No external storage and no signing — unsigned
-# binaries are expected (see docs/PACKAGING.md).
+# releasing (a manual smoke test). No external storage. macOS is signed with a
+# Developer ID and notarized (REQUIRED — the desktop-macos job fails loudly if
+# the signing secrets are absent or any sign/notarize step fails; there is no
+# unsigned fallback). Linux and Windows artifacts are still unsigned (see
+# docs/PACKAGING.md).
 #
 #   Linux  : CLI only  -> .deb (amd64 + arm64) + .tar.gz + raw binary + install.sh
-#   macOS  : desktop .app + .dmg (universal: Apple Silicon + Intel), CLI embedded
+#   macOS  : desktop .app + .dmg (universal: Apple Silicon + Intel), CLI embedded;
+#            Developer ID signed + notarized + stapled (.app, .dmg, and the .zip)
 #   Windows: native-framed desktop .exe (+ NSIS installer), amd64; no CLI shipped
 
 on:
@@ -161,6 +165,72 @@ jobs:
           cp dist/bluesnake "$APP/Contents/Resources/bin/bluesnake"
           chmod +x "$APP/Contents/Resources/bin/bluesnake"
 
+      # --- Apple Developer ID signing + notarization (required, no fallback) ---
+      # Import the Developer ID Application cert (a base64 .p12) into a throwaway
+      # keychain and make it the default so codesign finds the identity. With
+      # `set -e` (GitHub's default bash), a missing secret or any failure below
+      # aborts the job — releases are never silently unsigned.
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PWD: ${{ secrets.KEYCHAIN_PWD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          # codesign resolves the identity from the keychain SEARCH LIST, which is
+          # distinct from the default keychain (where new items merely land). On a
+          # fresh runner that list holds only login.keychain, so prepend ours
+          # (keeping the existing entries) — this is the load-bearing step GitHub's
+          # own "install an Apple certificate on macOS runners" recipe relies on.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          # Let codesign use the private key without an interactive prompt.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PWD" "$KEYCHAIN" >/dev/null
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Sign the app (embedded CLI first, then the bundle)
+        env:
+          IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          APP=desktop/build/bin/bluesnake.app
+          ENT=desktop/build/darwin/entitlements.plist
+          # Nested Mach-O binaries must be signed before the bundle that seals
+          # them; the embedded CLI lives in Resources, so codesign won't sign it
+          # as part of sealing the bundle. Hardened runtime (--options runtime) +
+          # a secure timestamp are mandatory for notarization.
+          codesign --force --options runtime --timestamp \
+            --entitlements "$ENT" --sign "$IDENTITY" \
+            "$APP/Contents/Resources/bin/bluesnake"
+          codesign --force --options runtime --timestamp \
+            --entitlements "$ENT" --sign "$IDENTITY" \
+            "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+      - name: Notarize and staple the app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          APP=desktop/build/bin/bluesnake.app
+          # notarytool takes a zip/dmg/pkg; submit a zip of the bundle, then
+          # staple the ticket onto the .app itself (so the DMG built below and
+          # the distribution zip both carry an already-stapled bundle that
+          # passes Gatekeeper offline). --wait makes a rejected build fail here.
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$APP"
+          rm -f "$RUNNER_TEMP/notarize.zip"
+
       - name: Create DMG (drag app to Applications)
         run: |
           # Just the app + an Applications drop link — the classic clean layout.
@@ -179,6 +249,24 @@ jobs:
             "$DMG" "$STAGE" \
           || hdiutil create -volname "bluesnake ${VERSION}" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 
+      - name: Sign, notarize and staple the DMG
+        env:
+          IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG="dist/bluesnake-${VERSION}-darwin-universal.dmg"
+          # The DMG wraps an already-stapled .app; sign + notarize + staple the
+          # image itself so the downloaded .dmg also passes Gatekeeper offline.
+          codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$DMG"
+
+      # Built AFTER stapling so the self-updater's zip carries the stapled
+      # bundle (see desktop/update_darwin.go).
       - name: Zip the .app (alternative to the DMG)
         run: ditto -c -k --keepParent desktop/build/bin/bluesnake.app "dist/bluesnake-${VERSION}-darwin-universal-app.zip"
 
@@ -334,6 +422,6 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: false
           body: |
-            Unsigned binaries — see [docs/PACKAGING.md](docs/PACKAGING.md) for checksum verification and the macOS Gatekeeper / Windows SmartScreen first-run steps.
+            **macOS** builds are Developer ID signed and notarized — they open with no Gatekeeper prompt. **Windows** (`.exe`/installer) and **Linux** binaries are unsigned; see [docs/PACKAGING.md](docs/PACKAGING.md) for checksum verification and the Windows SmartScreen first-run step.
 
             **Linux CLI:** `curl -fsSL https://snake.blue/install.sh | bash`

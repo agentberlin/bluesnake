@@ -7,6 +7,12 @@ coverage.out
 /desktop/desktop
 desktop/build/*
 !desktop/build/appicon.png
+# Track only our committed darwin signing assets; let Wails regenerate the rest
+# (Info.dev.plist, icons, etc.) without them showing up as untracked.
+!desktop/build/darwin/
+desktop/build/darwin/*
+!desktop/build/darwin/Info.plist
+!desktop/build/darwin/entitlements.plist
 desktop/frontend/node_modules/
 desktop/frontend/dist/*
 !desktop/frontend/dist/.gitkeep

@@ -1,8 +1,9 @@
 # Packaging & distribution
 
 How bluesnake ships to each platform, why each mechanism was chosen, and how the
-CI produces every artifact. No external storage and **no code signing** is wired
-up yet — artifacts are unsigned (see [Signing](#signing-not-done-yet)).
+CI produces every artifact. No external storage. **macOS is Developer ID signed
+and notarized**; Windows and Linux artifacts are still unsigned (see
+[Signing](#signing)).
 
 ## What ships where
 
@@ -104,10 +105,12 @@ lives in [desktop/update_*.go](../desktop/update_darwin.go):
 - **Linux** — no desktop app ships, so the feature is hidden.
 
 Surfaced as a dismissible title-bar pill plus a **Settings → Updates** panel
-(current version, manual check, auto-check toggle). Dev builds (`0.0.0-dev`) and
-the usual unsigned Gatekeeper/SmartScreen first-run prompts apply as on first
-install. No `release.yml` change was needed — the updater reads the live asset
-names and `SHA256SUMS` straight from the published release.
+(current version, manual check, auto-check toggle). Dev builds (`0.0.0-dev`)
+apply as on first install. The macOS update zip carries a notarized + **stapled**
+bundle, so the swapped-in app passes Gatekeeper offline (the quarantine strip is
+kept as belt-and-braces); on Windows the usual SmartScreen first-run prompt still
+applies. No `release.yml` change was needed for the updater — it reads the live
+asset names and `SHA256SUMS` straight from the published release.
 
 ## CI/CD
 
@@ -174,14 +177,48 @@ go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest   # for .deb
 brew install create-dmg                                    # for .dmg
 ```
 
-## Signing (not done yet)
+## Signing
 
-Nothing is signed or notarized. Consequences for users:
-- **macOS**: Gatekeeper quarantines the unsigned `.app` — first launch needs
-  right-click → Open (or `xattr -dr com.apple.quarantine bluesnake.app`).
-- **Windows**: SmartScreen warns on the unsigned `.exe`/installer ("More info →
-  Run anyway").
+### macOS — Developer ID signed + notarized (done)
 
-Adding Apple notarization (Developer ID + `notarytool`) and Windows Authenticode
-signing are the natural next steps; they slot into the existing macOS/Windows
-jobs without changing the artifact layout.
+The `desktop-macos` job signs and notarizes every release, so users open the app
+with **no Gatekeeper prompt**. The flow (see [`release.yml`](../.github/workflows/release.yml)):
+
+1. Import the **Developer ID Application** cert into a throwaway keychain.
+2. `codesign` the **embedded CLI first**, then the `.app` — hardened runtime
+   (`--options runtime`), secure `--timestamp`, and
+   [`build/darwin/entitlements.plist`](../desktop/build/darwin/entitlements.plist).
+   (Nested Mach-O in `Resources/` isn't sealed by signing the bundle, so it must
+   be signed on its own.)
+3. **Notarize the `.app`** (`xcrun notarytool submit --wait`) and `stapler staple`
+   the bundle.
+4. Build the DMG from the stapled app, then **sign + notarize + staple the DMG**.
+5. Zip the **stapled** `.app` (the self-updater consumes that zip).
+
+Signing is **required** — there is no unsigned fallback. With `set -e` the job
+fails loudly if a secret is missing or any step fails, so a release can never be
+silently unsigned. The bundle identifier is fixed at `blue.snake.desktop` in
+[`build/darwin/Info.plist`](../desktop/build/darwin/Info.plist); keep it stable
+(it keys saved settings, TCC permissions, and the notarization record).
+
+**Required repo secrets** (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+|--------|-------|
+| `MACOS_CERTIFICATE` | base64 of the Developer ID Application `.p12` |
+| `MACOS_CERTIFICATE_PWD` | password the `.p12` was exported with |
+| `MACOS_SIGNING_IDENTITY` | `Developer ID Application: <Name> (<TEAMID>)` |
+| `KEYCHAIN_PWD` | any random string (throwaway keychain password) |
+| `APPLE_ID` | Apple Developer account email |
+| `APPLE_PASSWORD` | app-specific password (appleid.apple.com) |
+| `APPLE_TEAM_ID` | 10-char Team ID |
+
+Verify a built artifact: `spctl -a -vvv -t exec bluesnake.app` →
+*accepted, source=Notarized Developer ID*; `xcrun stapler validate bluesnake.app`.
+(Use `-t exec` for the `.app`; `-t install` is for the `.dmg`/`.pkg`.)
+
+### Windows — Authenticode (not done yet)
+
+The `.exe`/installer are unsigned, so SmartScreen warns on first run ("More info
+→ Run anyway"). Authenticode signing slots into the `desktop-windows` job without
+changing the artifact layout.
