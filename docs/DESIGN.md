@@ -128,13 +128,14 @@ Module path: `github.com/agentberlin/bluesnake`.
 bluesnake crawl <url>                  # spider mode crawl
 bluesnake list <file|->                # list mode (file, stdin, or --sitemap <url>)
 bluesnake resume <crawl-id>            # resume a paused/interrupted crawl
-bluesnake crawls [ls|rm|export|info]   # manage stored crawls (IDs, projects)
+bluesnake crawls [ls|rm|export|info]   # manage stored crawls (by crawl ID)
 bluesnake analyze <crawl-id>           # (re-)run post-crawl analysis
 bluesnake export <crawl-id> ...        # tab/filter/bulk exports; --list to discover
 bluesnake report <crawl-id> ...        # named reports; --list to discover
 bluesnake issues <crawl-id>            # issues summary (and per-issue export)
 bluesnake sitemap <crawl-id>           # generate XML sitemap(s) from a crawl
 bluesnake compare <id-prev> <id-curr>  # crawl comparison (+ change detection)
+bluesnake projects [ls|create|add|show|compare|diff]  # competitor-study layer (opt-in, own DB; §5.9)
 bluesnake robots test <url...>         # robots.txt tester (live or --robots-file)
 bluesnake config init|validate|show    # emit commented default config / validate / effective config
 bluesnake serve                        # read-only localhost JSON API over the crawl store (--addr)
@@ -383,12 +384,15 @@ internal/export/         tab/filter datasets, bulk exports, writers (csv/json/js
 internal/report/         named reports (crawl overview, chains, insecure content, ...)
 internal/sitemapgen/     XML sitemap + image sitemap generation w/ splitting + index
 internal/compare/        crawl comparison, change detection, URL mapping
+internal/project/        OPT-IN competitor-study overlay (Projects = main domain + competitors);
+                         OWN projects.db, reads the registry/per-crawl DBs read-only, reuses
+                         compare; zero changes to the crawl core — fully removable (§5.9)
 internal/serpwidth/      text pixel-width measurement (bundled font metrics table)
 internal/isocodes/       embedded ISO 639-1 + ISO 3166-1 registries (hreflang validation)
 internal/warc/           minimal WARC/1.1 writer (extraction.store_warc archives)
 internal/serve/          read-only localhost JSON API over stored crawls
 internal/mcp/            MCP server (hand-rolled JSON-RPC 2.0 over the streamable-HTTP transport):
-                         12 tools — crawl control (start/status/pause/resume/stop), config
+                         12 core tools (+5 from the removable project layer, §5.9) — crawl control (start/status/pause/resume/stop), config
                          introspection (knob catalogue via reflection over the schema, profiles),
                          and read-only SQL over the per-crawl SQLite DBs. Crawl control runs
                          against a Backend interface: the CLI uses the built-in Runner; the
@@ -591,6 +595,21 @@ Each analyzer reads SQLite, writes back columns/tables; all are idempotent and r
 **Wait strategy knob** (`rendering.wait_strategy: adaptive | fixed`): adaptive is the settle detection above; `fixed` waits for the browser load event and then sleeps the *full* AJAX timeout before snapshotting — slower, but the snapshot moment is deterministic, which keeps `compare` runs stable on pages with flaky widgets.
 
 **Custom JavaScript snippets** (`custom_js`): snippet files load at renderer construction (a missing file is a config error naming the snippet). After the page settles, `action` snippets run first (results discarded — they exist to mutate the page), then `extraction` snippets; values are stored in `custom_results` with kind `js` (JS strings verbatim, anything else compact JSON, `error: …` when a snippet throws). Each snippet is bounded by its `timeout_sec` (default 5); a `content_types` list restricts which pages a snippet's results are stored for.
+
+### 5.9 Project layer (competitor study) — an opt-in, removable overlay
+
+`internal/project` adds **Projects**: a *main domain plus its competitors*, for side-by-side benchmarking and per-competitor change-over-time. It is deliberately built as a **fully separable overlay** — like the desktop app (§1), a non-core extension that must never compromise the crawl engine. The contract (stated in the package `doc.go`, proven by the removal procedure below): the feature changes **no** crawl/store/compare/crawler logic, schema, or models. It owns its own database, reads everything else read-only through `store`'s public API, and reuses `internal/compare` unchanged. **Remove it** by deleting the package, its CLI/MCP/desktop registration lines (one `AddCommand`, the appended MCP `Tool` literals, the `ProjectApp` `Bind` entry, the frontend nav/router/`projectApi` additions), and `projects.db` — the rest of the product is byte-for-byte unchanged. No migrations to unwind.
+
+Design decisions:
+- **Own database.** A separate `~/.bluesnake/projects.db` (`projects`, `project_domains`), sibling to `registry.db`. The crawl registry and per-crawl DBs are never altered (so it adds no step to the §5.3 migration ladders).
+- **Domain-keyed, derived membership.** You add a *domain* (not a crawl) to a project. A site's crawl history is resolved **live** from the registry by matching the seed, so a standalone crawl of a member domain auto-joins and a deleted crawl simply drops out — no crawl→project link is ever persisted, hence no dangling references.
+- **Exact site identity, no folding.** A site key is the literal lowercased `host[:port]` of the seed. `example.com`, `www.example.com`, `a.example.com` and `example.com:8080` are **distinct** sites by design (it reuses none of the engine's `www`-stripping host derivers — it has its own `SiteKey`).
+- **Associated vs comparable.** Every same-host crawl is *associated* and shown under the site; only a **finished, full-site spider crawl of the root that is not scope-narrowed** (`scope.include` empty) is *comparable* and feeds the numbers. Path crawls, list audits, running, and narrowed crawls are surfaced greyed-out with a reason — visible, but excluded from the math.
+- **Dual-mode comparison.** Per-competitor *over time* reuses the pairwise `compare` engine verbatim (same domain ⇒ meaningful URL/issue deltas). *Cross-competitor* is a new read-only **metric scorecard** (`scorecard.go`): site size, indexable rate, status-code mix, issue counts by severity, link score, near-dups (+ optional avg word count / Flesch / schema.org coverage via SQLite JSON functions). Cross-domain URL comparison is **not** offered — disjoint URL sets make it degenerate. All metrics are single-pass SQL aggregates over each crawl DB; `LoadPages` is never used (it would reintroduce the per-crawl memory blow-up).
+- **No project-level config; fairness is surfaced, not enforced.** Each site is crawled with its normal default config (per-site changes use the ordinary crawl flow, not the project). When competitors' latest crawls used materially different settings (rendering, depth, robots), the scorecard shows per-site config badges and a divergence banner rather than silently emitting an unfair number; the remedy is re-crawling.
+- **Out of scope:** a scheduler. On-demand crawling of a project's sites is the building block a future scheduler would drive (§8).
+
+Surfaces (engine-first, all three per §0): the CLI `bluesnake projects` subtree; five MCP tools (`list_projects`, `create_project`, `add_competitor`, `remove_competitor`, `project_comparison`); and a desktop **Projects** view (Overview + Comparison) bound through a *separate* `ProjectApp` Wails struct so the core `App` binding (and its generated `App.js`) stay untouched.
 
 ---
 

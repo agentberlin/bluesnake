@@ -1,0 +1,249 @@
+package main
+
+import (
+	"fmt"
+	"text/tabwriter"
+	"time"
+
+	"github.com/agentberlin/bluesnake/internal/project"
+	"github.com/spf13/cobra"
+)
+
+// newProjectCmd is the `bluesnake projects` subtree: an opt-in competitor-study
+// layer over stored crawls. It reads the crawl registry read-only and keeps its
+// own data in <store-dir>/projects.db — removing this command and the package
+// leaves the rest of the product untouched.
+func newProjectCmd() *cobra.Command {
+	var storeDir string
+	cmd := &cobra.Command{
+		Use:     "projects",
+		Aliases: []string{"project"},
+		Short:   "Group a main domain with competitors for comparison",
+	}
+	cmd.PersistentFlags().StringVar(&storeDir, "store-dir", defaultStoreDir(), "crawl storage directory")
+
+	open := func() (*project.Store, error) { return project.Open(storeDir) }
+
+	createCmd := &cobra.Command{
+		Use:   "create <main-domain>",
+		Short: "Create a project anchored on a main domain",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name, _ := cmd.Flags().GetString("name")
+			s, err := open()
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			p, err := s.CreateProject(name, args[0])
+			if err != nil {
+				return exitErr{2, err}
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "created project %s (%s)\n", p.ID, p.Name)
+			return nil
+		},
+	}
+	createCmd.Flags().String("name", "", "display name (default \"<main-domain>'s Project\")")
+
+	lsCmd := &cobra.Command{
+		Use:   "ls",
+		Short: "List projects",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := open()
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			ps, err := s.ListProjects()
+			if err != nil {
+				return err
+			}
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
+			fmt.Fprintln(w, "ID\tNAME\tMAIN DOMAIN")
+			for _, p := range ps {
+				fmt.Fprintf(w, "%s\t%s\t%s\n", p.ID, p.Name, p.MainDomain)
+			}
+			return w.Flush()
+		},
+	}
+
+	rmCmd := &cobra.Command{
+		Use:   "rm <project-id>",
+		Short: "Delete a project (crawls are untouched)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := open()
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			if err := s.DeleteProject(args[0]); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", args[0])
+			return nil
+		},
+	}
+
+	addCmd := &cobra.Command{
+		Use:   "add <project-id> <competitor-domain>",
+		Short: "Add a competitor domain to a project",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := open()
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			if err := s.AddMember(args[0], args[1], project.RoleCompetitor); err != nil {
+				return exitErr{2, err}
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "added %s to %s\n", args[1], args[0])
+			return nil
+		},
+	}
+
+	removeCmd := &cobra.Command{
+		Use:   "remove <project-id> <domain>",
+		Short: "Remove a domain from a project",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := open()
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			if err := s.RemoveMember(args[0], args[1]); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "removed %s from %s\n", args[1], args[0])
+			return nil
+		},
+	}
+
+	showCmd := &cobra.Command{
+		Use:   "show <project-id>",
+		Short: "Show a project's sites and each site's crawl history",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := open()
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			p, err := s.GetProject(args[0])
+			if err != nil {
+				return err
+			}
+			members, err := s.Members(p.ID)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s  (%s)\n", p.Name, p.ID)
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
+			fmt.Fprintln(w, "SITE\tROLE\tCRAWL\tWHEN\tSTATUS")
+			for _, m := range members {
+				hist, err := s.SiteHistory(m.Domain)
+				if err != nil {
+					return err
+				}
+				if len(hist) == 0 {
+					fmt.Fprintf(w, "%s\t%s\t—\t—\tno crawl yet\n", m.Domain, m.Role)
+					continue
+				}
+				for _, h := range hist {
+					status := "comparable"
+					if !h.Comparable {
+						status = h.Reason
+					}
+					fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+						m.Domain, m.Role, h.ID, h.Started.Format("2006-01-02 15:04"), status)
+				}
+			}
+			return w.Flush()
+		},
+	}
+
+	var optional bool
+	compareCmd := &cobra.Command{
+		Use:   "compare <project-id>",
+		Short: "Competitor scorecard: main vs competitors (latest comparable crawl each)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := open()
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			card, err := s.BuildScorecard(args[0], optional)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", card.ProjectName)
+			if card.ConfigDiverges {
+				fmt.Fprintf(cmd.ErrOrStderr(), "⚠ configs differ across sites (%v) — interpret with care; re-crawl for a fair comparison\n", card.DivergingDims)
+			}
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 2, 2, ' ', 0)
+			head := "SITE\tROLE\tWHEN\tURLS\tINDEX%\tERR\tWARN\tOPP\tLINKSCORE\tRENDER"
+			if optional {
+				head += "\tAVGWORDS\tSCHEMA%"
+			}
+			fmt.Fprintln(w, head)
+			for _, r := range card.Sites {
+				if r.Status != "ok" {
+					fmt.Fprintf(w, "%s\t%s\tno comparable crawl\t\t\t\t\t\t\t\n", r.Domain, r.Role)
+					continue
+				}
+				line := fmt.Sprintf("%s\t%s\t%s\t%d\t%.0f%%\t%d\t%d\t%d\t%.1f\t%s",
+					r.Domain, r.Role, time.Unix(r.Started, 0).Format("2006-01-02"),
+					r.URLs, r.IndexableRate*100, r.Errors, r.Warnings, r.Opportunities,
+					r.AvgLinkScore, r.Rendering)
+				if optional {
+					line += fmt.Sprintf("\t%.0f\t%.0f%%", r.AvgWordCount, r.SchemaCoverage*100)
+				}
+				fmt.Fprintln(w, line)
+			}
+			return w.Flush()
+		},
+	}
+	compareCmd.Flags().BoolVar(&optional, "optional", false, "include content-depth & schema metrics (reads page JSON)")
+
+	diffCmd := &cobra.Command{
+		Use:   "diff <project-id> <domain>",
+		Short: "Over-time URL/issue diff for one site (its two latest comparable crawls)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := open()
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+			prevID, currID, ok, err := s.ComparePair(args[1])
+			if err != nil {
+				return err
+			}
+			if !ok {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s needs at least two comparable crawls to diff\n", args[1])
+				return nil
+			}
+			res, err := s.Compare(prevID, currID)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s: %s → %s\n", args[1], prevID, currID)
+			fmt.Fprintf(cmd.OutOrStdout(), "  pages: %d → %d  (+%d new, -%d missing)\n",
+				res.PagesPrevious, res.PagesCurrent, len(res.NewPages), len(res.MissingPages))
+			for _, d := range res.Deltas {
+				if len(d.New)+len(d.Removed)+len(d.Added)+len(d.Missing) == 0 {
+					continue
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "  %s: +%d added, -%d resolved\n",
+					d.IssueID, len(d.Added)+len(d.New), len(d.Removed)+len(d.Missing))
+			}
+			return nil
+		},
+	}
+
+	cmd.AddCommand(createCmd, lsCmd, rmCmd, addCmd, removeCmd, showCmd, compareCmd, diffCmd)
+	return cmd
+}

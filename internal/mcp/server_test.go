@@ -107,6 +107,8 @@ func TestToolsList(t *testing.T) {
 		"list_config_options", "list_profiles", "get_profile_config",
 		"start_crawl", "crawl_status", "pause_crawl", "resume_crawl", "stop_crawl",
 		"list_crawls", "get_database_schema", "query", "issue_summary",
+		// opt-in project layer (project_tools.go) — additive, removable
+		"list_projects", "create_project", "add_competitor", "remove_competitor", "project_comparison",
 	}
 	for _, n := range want {
 		if !names[n] {
