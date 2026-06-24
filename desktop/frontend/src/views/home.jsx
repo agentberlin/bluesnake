@@ -2,7 +2,7 @@
    Crawl Manager (home) — all stored crawls
    =========================================================================== */
 import React, { useState } from "react";
-import { Icon, Btn, IconBtn, Search, SEV, Modal, BrandMark } from "../ui";
+import { Icon, Btn, IconBtn, Search, SEV, Modal, BrandMark, CopyButton } from "../ui";
 import { urlShort } from "../api";
 
 export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDelete, storage, crawlBusyMsg }) {
@@ -69,7 +69,7 @@ export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDel
               const sm = statusMeta[c.status] || statusMeta.completed;
               const sev = sevOf(c);
               return (
-                <div key={c.id} className="crawl-row" style={rowGrid()} onClick={() => onOpen(c)}>
+                <div key={c.id} className="crawl-row copyhost" style={rowGrid()} onClick={() => onOpen(c)}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span className="statusdot" style={{ background: sm.c, boxShadow: `0 0 0 3px color-mix(in oklab, ${sm.c} 18%, transparent)` }} />
                     <span style={{ fontSize: 12, fontWeight: 600, color: c.status === "interrupted" ? "var(--sev-warn)" : "var(--ink-2)" }}>{sm.label}</span>
@@ -82,6 +82,7 @@ export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDel
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, color: "var(--ink-3)", flex: "0 0 auto", padding: "1px 6px", background: "var(--surface-2)", border: "1px solid var(--border)" }}>
                         <Icon name={c.mode === "list" ? "list" : "radar"} size={11} />{c.mode === "list" ? "List" : "Spider"}
                       </span>
+                      <CopyButton text={c.seed} title="Copy site URL" />
                     </div>
                     <div style={{ fontSize: 11, color: "var(--ink-faint)", marginTop: 2, display: "flex", gap: 6, alignItems: "center" }}>
                       <Icon name="calendar" size={11} />

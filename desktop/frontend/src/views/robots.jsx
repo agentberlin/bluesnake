@@ -2,7 +2,7 @@
    robots.txt Tester — real Google-REP matching via the backend engine
    =========================================================================== */
 import React, { useEffect, useState } from "react";
-import { Icon, Btn, Field } from "../ui";
+import { Icon, Btn, Field, CopyButton } from "../ui";
 import { api } from "../api";
 
 const DEFAULT_ROBOTS = `User-agent: *
@@ -76,12 +76,13 @@ export function RobotsTester() {
                 <span style={{ fontSize: 11.5, color: "var(--s-4xx)", fontWeight: 600 }}>{blockedN} blocked</span>
               </div>
               {results.map((r, i) => (
-                <div key={i} style={{ padding: "10px 14px", borderBottom: "1px solid var(--border-soft)", display: "flex", flexDirection: "column", gap: 4 }}>
+                <div key={i} className="copyhost" style={{ padding: "10px 14px", borderBottom: "1px solid var(--border-soft)", display: "flex", flexDirection: "column", gap: 4 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
                     <span className="badge tint" style={{ "--c": r.allowed ? "var(--sev-ok)" : "var(--s-4xx)" }}>
                       <Icon name={r.allowed ? "circle-check" : "ban"} size={11} />{r.allowed ? "ALLOWED" : "BLOCKED"}
                     </span>
-                    <span className="mono" style={{ fontSize: 11.5, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.url}</span>
+                    <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.url}</span>
+                    <CopyButton text={r.url} title="Copy URL" />
                   </div>
                   {r.rule
                     ? <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-faint)", paddingLeft: 4 }}>matched <span style={{ color: r.allowed ? "var(--sev-ok)" : "var(--s-4xx)" }}>{r.rule}</span> · line {r.line}</div>

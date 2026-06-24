@@ -4,7 +4,7 @@
    stored against a crawl. This whole view is removable with the feature.
    =========================================================================== */
 import React, { useEffect, useMemo, useState } from "react";
-import { Icon, Btn, IconBtn, BrandMark, Empty, Modal, Seg, Toggle } from "../ui";
+import { Icon, Btn, IconBtn, BrandMark, Empty, Modal, Seg, Toggle, CopyButton } from "../ui";
 import { projectApi, hostOf } from "../api";
 
 const fmtDate = (v) => {
@@ -50,13 +50,14 @@ export function ProjectsView({ onCrawlSite, crawlBusyMsg }) {
           )}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 14 }}>
             {projects.map((p) => (
-              <div key={p.id} className="card" style={{ padding: 16, cursor: "pointer", display: "flex", gap: 12, alignItems: "center" }} onClick={() => setSelId(p.id)}>
+              <div key={p.id} className="card copyhost" style={{ padding: 16, cursor: "pointer", display: "flex", gap: 12, alignItems: "center" }} onClick={() => setSelId(p.id)}>
                 <BrandMark seed={"https://" + p.main_domain} size={34} />
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontWeight: 650, fontSize: 13.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
                   <div className="mono" style={{ fontSize: 11.5, color: "var(--ink-faint)", marginTop: 2 }}>{p.main_domain}</div>
                 </div>
                 <div style={{ flex: 1 }} />
+                <CopyButton text={p.main_domain} title="Copy domain" />
                 <Icon name="chevron-right" size={16} style={{ color: "var(--ink-faint)" }} />
               </div>
             ))}
@@ -179,12 +180,13 @@ function Overview({ project, onCrawlSite, crawlBusyMsg }) {
             const latest = comparable[0];
             const others = s.crawls.filter((c) => !c.comparable);
             return (
-              <div key={s.domain} style={{ display: "flex", alignItems: "center", gap: 13, padding: "13px 16px", borderTop: "1px solid var(--border-soft)" }}>
+              <div key={s.domain} className="copyhost" style={{ display: "flex", alignItems: "center", gap: 13, padding: "13px 16px", borderTop: "1px solid var(--border-soft)" }}>
                 <BrandMark seed={"https://" + s.domain} size={30} />
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span className="mono" style={{ fontWeight: 600, fontSize: 12.5 }}>{s.domain}</span>
                     {s.role === "main" && <span className="pill" style={{ fontSize: 10, height: 18, color: "var(--accent)", borderColor: "var(--accent)" }}>main</span>}
+                    <CopyButton text={s.domain} title="Copy domain" />
                   </div>
                   <div style={{ fontSize: 11.5, color: "var(--ink-faint)", marginTop: 3, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
                     {latest
@@ -314,7 +316,7 @@ function Comparison({ project }) {
                 const isMain = s.role === "main";
                 if (s.status !== "ok") {
                   return (
-                    <tr key={s.domain} style={{ borderTop: "1px solid var(--border-soft)", background: isMain ? "var(--surface-2)" : undefined }}>
+                    <tr key={s.domain} className="copyhost" style={{ borderTop: "1px solid var(--border-soft)", background: isMain ? "var(--surface-2)" : undefined }}>
                       <td style={td}><SiteCell s={s} isMain={isMain} /></td>
                       <td style={td} colSpan={optional ? 10 : 8}>
                         <span style={{ color: "var(--ink-faint)", fontStyle: "italic" }}>no comparable crawl — crawl this site</span>
@@ -323,7 +325,7 @@ function Comparison({ project }) {
                   );
                 }
                 return (
-                  <tr key={s.domain} style={{ borderTop: "1px solid var(--border-soft)", background: isMain ? "var(--surface-2)" : undefined, cursor: "pointer" }}
+                  <tr key={s.domain} className="copyhost" style={{ borderTop: "1px solid var(--border-soft)", background: isMain ? "var(--surface-2)" : undefined, cursor: "pointer" }}
                     onClick={() => setDiff({ domain: s.domain })} title="Click for over-time changes">
                     <td style={td}><SiteCell s={s} isMain={isMain} /></td>
                     <td style={{ ...td, color: "var(--ink-2)" }}>{fmtDate(s.started)}<span style={{ color: "var(--ink-faint)" }}> · {ageDays(s.started)}d</span></td>
@@ -360,6 +362,7 @@ function SiteCell({ s, isMain }) {
       <BrandMark seed={"https://" + s.domain} size={22} />
       <span className="mono" style={{ fontWeight: isMain ? 650 : 500 }}>{s.domain}</span>
       {isMain && <span style={{ fontSize: 10, color: "var(--accent)" }}>main</span>}
+      <CopyButton text={s.domain} title="Copy domain" />
     </span>
   );
 }

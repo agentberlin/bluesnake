@@ -2,7 +2,7 @@
    Results workspace shell — dataset rail, toolbar, overview, export
    =========================================================================== */
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Icon, Btn, IconBtn, SevDot, SEV, PRIO, Empty, StatusBar, Ring, Modal, Toast, Toggle, Seg } from "../ui";
+import { Icon, Btn, IconBtn, SevDot, SEV, PRIO, Empty, StatusBar, Ring, Modal, Toast, Toggle, Seg, CopyButton } from "../ui";
 import { api, urlShort } from "../api";
 import { DataTable } from "./results";
 import { IssuesBrowser } from "./issues";
@@ -103,8 +103,11 @@ export function ResultsWorkspace({ crawl, live, tab, setTab, issueFilter, setIss
     <div className="main" style={{ flexDirection: "row" }}>
       {/* dataset rail */}
       <div style={{ width: 210, flex: "0 0 210px", borderRight: "1px solid var(--border-soft)", background: "var(--sidebar)", display: "flex", flexDirection: "column", minHeight: 0 }}>
-        <div style={{ padding: "11px 12px 7px" }}>
-          <div className="mono" style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{urlShort(crawl.seed)}</div>
+        <div className="copyhost" style={{ padding: "11px 12px 7px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div className="mono" style={{ flex: 1, minWidth: 0, fontSize: 11.5, fontWeight: 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{urlShort(crawl.seed)}</div>
+            <CopyButton text={crawl.seed} title="Copy site URL" />
+          </div>
           <div style={{ fontSize: 10.5, color: live ? "var(--accent)" : "var(--ink-faint)", marginTop: 2, display: "flex", alignItems: "center", gap: 5 }}>
             <span className="statusdot" style={{ background: live ? "var(--accent)" : crawl.status === "interrupted" ? "var(--sev-warn)" : "var(--sev-ok)", animation: live ? "pulse 1.4s infinite" : undefined }} />
             {live ? "crawling…" : `${(crawl.total || crawl.crawled).toLocaleString()} URLs${crawl.started ? " · " + crawl.started.split(" ")[0] : ""}`}

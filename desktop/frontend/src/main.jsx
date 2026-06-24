@@ -8,7 +8,7 @@ import "@fontsource/jetbrains-mono/500.css";
 import "@fontsource/jetbrains-mono/600.css";
 import "./styles.css";
 import { api, on, urlShort, hostOf, openURL } from "./api";
-import { Icon, IconBtn, BrandMark, Modal, Btn } from "./ui";
+import { Icon, IconBtn, BrandMark, Modal, Btn, CopyButton } from "./ui";
 import { CrawlManager } from "./views/home";
 import { Welcome } from "./views/welcome";
 import { NewCrawl } from "./views/newcrawl";
@@ -285,7 +285,7 @@ function App() {
                 </button>
               );
               return (
-                <div key={c.id} className={"sb-crawl" + (active ? " active" : "")} onClick={() => openCrawl(c)}>
+                <div key={c.id} className={"sb-crawl copyhost" + (active ? " active" : "")} onClick={() => openCrawl(c)}>
                   <BrandMark seed={c.seed} size={26} dot={dotc} live={live} />
                   <div className="meta">
                     <div className="host">{host}</div>
@@ -293,6 +293,7 @@ function App() {
                       {live ? "crawling…" : `${(c.total || c.crawled).toLocaleString()} URLs${c.started ? " · " + c.started.split(" ")[0] : ""}`}
                     </div>
                   </div>
+                  <CopyButton text={c.seed} title="Copy site URL" />
                 </div>
               );
             })}

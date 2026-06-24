@@ -2,7 +2,7 @@
    Compare — diff two stored crawls (compare.Run on the backend)
    =========================================================================== */
 import React, { useMemo, useState } from "react";
-import { Icon, Btn, Empty } from "../ui";
+import { Icon, Btn, Empty, CopyButton } from "../ui";
 import { api, urlShort } from "../api";
 
 export function CompareView({ crawls }) {
@@ -133,9 +133,12 @@ export function CompareView({ crawls }) {
               </div>
               {filtered.length === 0 && <div style={{ padding: "22px 16px", fontSize: 12.5, color: "var(--ink-faint)", display: "flex", gap: 8, alignItems: "center" }}><Icon name="circle-check" size={14} style={{ color: "var(--sev-ok)" }} />No differences in this category.</div>}
               {filtered.slice(0, 500).map((c, i) => (
-                <div key={i} className="datarow" style={{ display: "grid", gridTemplateColumns: "110px minmax(0,1fr) minmax(0,1.4fr)", gap: 12, alignItems: "center", padding: "10px 16px", borderBottom: "1px solid var(--border-soft)" }}>
+                <div key={i} className="datarow copyhost" style={{ display: "grid", gridTemplateColumns: "110px minmax(0,1fr) minmax(0,1.4fr)", gap: 12, alignItems: "center", padding: "10px 16px", borderBottom: "1px solid var(--border-soft)" }}>
                   <span className="badge tint" style={{ "--c": typeMeta[c.type].c }}><Icon name={typeMeta[c.type].icon} size={11} />{typeMeta[c.type].label}</span>
-                  <span className="mono" title={c.url} style={{ fontSize: 11.5, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{urlShort(c.url)}</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                    <span className="mono" title={c.url} style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{urlShort(c.url)}</span>
+                    <CopyButton text={c.url} />
+                  </span>
                   <span title={c.detail} style={{ fontSize: 11.5, color: "var(--ink-3)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.detail}</span>
                 </div>
               ))}

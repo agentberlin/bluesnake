@@ -3,7 +3,7 @@
    =========================================================================== */
 import React, { useEffect, useState } from "react";
 import { icons } from "lucide-react";
-import { brandLogo, hostOf } from "./api";
+import { brandLogo, hostOf, copyToClipboard } from "./api";
 
 /* ---- Lucide icon wrapper (name strings like "layout-grid") ------------- */
 function pascal(n) {
@@ -68,6 +68,31 @@ export function IconBtn({ icon, onClick, title, active, size = 16, style }) {
   return (
     <button className="iconbtn" onClick={onClick} title={title} style={Object.assign({ color: active ? "var(--ink)" : undefined, background: active ? "var(--surface-hover)" : undefined }, style)}>
       <Icon name={icon} size={size} />
+    </button>
+  );
+}
+
+/* Small hover-revealed "copy" affordance for displayed URLs/paths. Stays hidden
+   until an ancestor marked `.copyhost` is hovered (CSS), so resting layouts are
+   unchanged. Click copies `text` and flips to a check for a beat. `stopPropagation`
+   keeps it from triggering a parent row's click (open-detail / open-results). */
+export function CopyButton({ text, size = 12, title = "Copy URL", className, style }) {
+  const [done, setDone] = useState(false);
+  if (!text) return null;
+  return (
+    <button
+      className={"copybtn" + (className ? " " + className : "")}
+      title={title}
+      style={style}
+      onClick={(e) => {
+        e.stopPropagation();
+        copyToClipboard(text).then((ok) => {
+          if (!ok) return;
+          setDone(true);
+          setTimeout(() => setDone(false), 1100);
+        }).catch(() => {});
+      }}>
+      <Icon name={done ? "check" : "copy"} size={size} />
     </button>
   );
 }
