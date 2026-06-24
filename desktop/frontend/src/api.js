@@ -62,6 +62,28 @@ export const api = {
   setUpdateAutoCheck: (enabled) => call("SetUpdateAutoCheck", enabled),
 };
 
+/* Opt-in project layer (competitor study). Bound as a SEPARATE Go struct
+   (window.go.main.ProjectApp) so this whole block — and the feature — can be
+   deleted without touching the core api above. */
+function projectBackend() {
+  if (!window.go || !window.go.main || !window.go.main.ProjectApp) {
+    throw new Error("project backend not available — run inside the Wails app (wails dev)");
+  }
+  return window.go.main.ProjectApp;
+}
+const pcall = (method, ...args) => projectBackend()[method](...args);
+export const projectApi = {
+  list: () => pcall("ListProjects"),
+  create: (name, mainDomain) => pcall("CreateProject", name, mainDomain),
+  rename: (id, name) => pcall("RenameProject", id, name),
+  remove: (id) => pcall("DeleteProject", id),
+  addCompetitor: (id, domain) => pcall("AddCompetitor", id, domain),
+  removeCompetitor: (id, domain) => pcall("RemoveCompetitor", id, domain),
+  sites: (id) => pcall("ProjectSites", id),
+  comparison: (id, includeOptional) => pcall("ProjectComparison", id, includeOptional),
+  diff: (id, domain) => pcall("ProjectDiff", id, domain),
+};
+
 /* Open a URL in the user's default browser (Wails runtime), falling back to a
    normal window.open outside the app. */
 export function openURL(url) {

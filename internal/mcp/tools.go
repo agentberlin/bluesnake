@@ -59,7 +59,7 @@ func jsonText(v any) (string, error) {
 // ---------------------------------------------------------------------------
 
 func (s *Server) buildTools() []Tool {
-	return []Tool{
+	tools := []Tool{
 		// -- discovery: what can be configured -----------------------------
 		{
 			Name: "list_config_options",
@@ -359,6 +359,8 @@ func (s *Server) buildTools() []Tool {
 			},
 		},
 	}
+	// Project tools are an additive, removable layer; see project_tools.go.
+	return append(tools, s.projectTools()...)
 }
 
 // ---------------------------------------------------------------------------

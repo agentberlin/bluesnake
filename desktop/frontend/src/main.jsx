@@ -16,6 +16,7 @@ import { ResultsWorkspace } from "./views/results-shell";
 import { UrlDetail } from "./views/detail";
 import { SettingsView } from "./views/settings";
 import { CompareView } from "./views/compare";
+import { ProjectsView } from "./views/projects";
 import { RobotsTester } from "./views/robots";
 import { MCPControls } from "./mcp-controls";
 
@@ -186,6 +187,7 @@ function App() {
 
   const nav = [
     { id: "home", label: "Crawls", icon: "layout-grid", count: crawls.length },
+    { id: "projects", label: "Projects", icon: "folder" },
     { id: "compare", label: "Compare", icon: "git-compare" },
     { id: "robots", label: "robots.txt Tester", icon: "bot" },
     { id: "settings", label: "Settings & Profiles", icon: "sliders-horizontal" },
@@ -314,6 +316,10 @@ function App() {
         {view === "settings" && <SettingsView profileName={settingsProfile} focus={settingsFocus}
           onBack={settingsBack ? () => setView(settingsBack.view) : null} backLabel={settingsBack ? settingsBack.label : null} />}
         {view === "compare" && <CompareView crawls={crawls} />}
+        {view === "projects" && <ProjectsView onCrawlSite={(domain) => startCrawl({
+          mode: "spider", url: "https://" + domain, listUrls: [], sitemapUrl: "", project: "",
+          profile: "Default audit", threads: 5, rate: 2, maxDepth: -1, rendering: "text",
+        })} />}
         {view === "robots" && <RobotsTester />}
       </div>
 
