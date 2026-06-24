@@ -134,7 +134,7 @@ func (w *world) storedInterruptedCrawl(pages, interruptAfter int) error {
 	// mid-flight: every fetched page is committed, so resume re-fetches nothing.
 	cfg.Speed.MaxThreads = 1
 
-	st, err := store.CreateCrawl(w.storeDirPath(), "resumetest", []string{srv.URL + "/"}, "spider", cfg)
+	st, err := store.CreateCrawl(w.storeDirPath(), []string{srv.URL + "/"}, "spider", cfg)
 	if err != nil {
 		return err
 	}
@@ -173,7 +173,7 @@ func (w *world) storedCrossLinkedCrawl() error {
 	r := w.route("/shortcut")
 	r.status, r.body = 200, `<a href="/deep">d</a>`
 
-	st, err := store.CreateCrawl(w.storeDirPath(), "depthtest", []string{abs("/")}, "spider", config.Default())
+	st, err := store.CreateCrawl(w.storeDirPath(), []string{abs("/")}, "spider", config.Default())
 	if err != nil {
 		return err
 	}
@@ -225,7 +225,7 @@ func (w *world) storedListModeCrawl() error {
 	cfg.Mode = "list"
 	cfg.Limits.MaxDepth = 0 // list default: don't follow links
 
-	st, err := store.CreateCrawl(w.storeDirPath(), "listtest", []string{abs("/"), abs("/b")}, "list", cfg)
+	st, err := store.CreateCrawl(w.storeDirPath(), []string{abs("/"), abs("/b")}, "list", cfg)
 	if err != nil {
 		return err
 	}

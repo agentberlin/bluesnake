@@ -1,6 +1,6 @@
 // Package store persists crawls to per-crawl SQLite databases (WAL mode,
 // continuous commit → crash-safe) plus a registry database listing all
-// crawls with their IDs, projects and status (DESIGN.md §5.3). It implements
+// crawls with their IDs and status (DESIGN.md §5.3). It implements
 // crawler.Sink so the crawl engine streams pages and frontier mutations into
 // the database as it runs, which is what makes pause/resume work.
 package store
@@ -41,7 +41,6 @@ const (
 // Info is one registry row.
 type Info struct {
 	ID       string
-	Project  string
 	Seed     string
 	Mode     string
 	Status   string
@@ -118,7 +117,7 @@ func registryDB(dir string) (*sql.DB, error) {
 	}
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS crawls(
-			id TEXT PRIMARY KEY, project TEXT, seed TEXT, mode TEXT, status TEXT,
+			id TEXT PRIMARY KEY, seed TEXT, mode TEXT, status TEXT,
 			started INT, finished INT, crawled INT DEFAULT 0, total INT DEFAULT 0);
 		CREATE TABLE IF NOT EXISTS brands(
 			host TEXT PRIMARY KEY, logo BLOB, logo_type TEXT, fetched INT);`)
@@ -144,7 +143,7 @@ func newCrawlID() string {
 // a spider crawl has exactly one. seeds must be non-empty; resume restores every
 // seed so host classification and the depth BFS root from all of them. seeds[0]
 // is the registry's representative seed for `crawls ls`.
-func CreateCrawl(dir, project string, seeds []string, mode string, cfg *config.Config) (*Crawl, error) {
+func CreateCrawl(dir string, seeds []string, mode string, cfg *config.Config) (*Crawl, error) {
 	if len(seeds) == 0 {
 		return nil, fmt.Errorf("crawl needs at least one seed")
 	}
@@ -155,8 +154,8 @@ func CreateCrawl(dir, project string, seeds []string, mode string, cfg *config.C
 	defer reg.Close()
 
 	id := newCrawlID()
-	_, err = reg.Exec(`INSERT INTO crawls(id, project, seed, mode, status, started) VALUES(?,?,?,?,?,?)`,
-		id, project, seeds[0], mode, StatusRunning, time.Now().Unix())
+	_, err = reg.Exec(`INSERT INTO crawls(id, seed, mode, status, started) VALUES(?,?,?,?,?)`,
+		id, seeds[0], mode, StatusRunning, time.Now().Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -281,6 +280,10 @@ var crawlMigrations = []migration{
 // registryMigrations is the ladder for the single shared registry DB. APPEND ONLY.
 var registryMigrations = []migration{
 	{1, "crawls.total", func(tx *sql.Tx) error { return addColumn(tx, "crawls", "total INT DEFAULT 0") }},
+	// The legacy free-text per-crawl "project" label was retired when the
+	// first-class project layer (internal/project) landed; drop it from existing
+	// registries so it lingers nowhere.
+	{2, "crawls.drop_project", dropCrawlsProject},
 }
 
 // minCrawlVersion / minRegistryVersion are the oldest revisions we still carry
@@ -366,6 +369,40 @@ func addColumn(tx *sql.Tx, table, colDef string) error {
 		return err
 	}
 	return nil
+}
+
+// dropCrawlsProject removes the retired legacy "project" column from an existing
+// registry. Idempotent: a DB already without it (fresh, or migrated) is a no-op,
+// so re-running the ladder never fails.
+func dropCrawlsProject(tx *sql.Tx) error {
+	has, err := columnExists(tx, "crawls", "project")
+	if err != nil || !has {
+		return err
+	}
+	_, err = tx.Exec(`ALTER TABLE crawls DROP COLUMN project`)
+	return err
+}
+
+// columnExists reports whether table has a column named col. table is an in-code
+// constant (never user input), so the PRAGMA interpolation is safe.
+func columnExists(q queryer, table, col string) (bool, error) {
+	rows, err := q.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == col {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // isFreshDB reports whether the database has no user tables yet — i.e. this open
@@ -1059,7 +1096,7 @@ func ListCrawls(dir string) ([]Info, error) {
 		return nil, err
 	}
 	defer reg.Close()
-	rows, err := reg.Query(`SELECT id, project, seed, mode, status, started, COALESCE(finished, 0), crawled, COALESCE(total, 0)
+	rows, err := reg.Query(`SELECT id, seed, mode, status, started, COALESCE(finished, 0), crawled, COALESCE(total, 0)
 		FROM crawls ORDER BY started`)
 	if err != nil {
 		return nil, err
@@ -1069,7 +1106,7 @@ func ListCrawls(dir string) ([]Info, error) {
 	for rows.Next() {
 		var in Info
 		var started, finished int64
-		if err := rows.Scan(&in.ID, &in.Project, &in.Seed, &in.Mode, &in.Status,
+		if err := rows.Scan(&in.ID, &in.Seed, &in.Mode, &in.Status,
 			&started, &finished, &in.Crawled, &in.Total); err != nil {
 			return nil, err
 		}

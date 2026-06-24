@@ -27,7 +27,6 @@ type dataset struct {
 // crawlEntry mirrors one /api/crawls registry entry.
 type crawlEntry struct {
 	ID      string `json:"id"`
-	Project string `json:"project"`
 	Seed    string `json:"seed"`
 	Mode    string `json:"mode"`
 	Status  string `json:"status"`
@@ -47,7 +46,7 @@ type issueEntry struct {
 func servedStore(t *testing.T) (dir, id string) {
 	t.Helper()
 	dir = t.TempDir()
-	st, err := store.CreateCrawl(dir, "proj", []string{"https://ex.com/"}, "spider", config.Default())
+	st, err := store.CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +126,7 @@ func TestListCrawls(t *testing.T) {
 		t.Fatalf("entries = %+v, want exactly 1", entries)
 	}
 	e := entries[0]
-	if e.ID != id || e.Project != "proj" || e.Seed != "https://ex.com/" ||
+	if e.ID != id || e.Seed != "https://ex.com/" ||
 		e.Mode != "spider" || e.Status != store.StatusCompleted || e.Crawled != 2 {
 		t.Errorf("entry = %+v", e)
 	}

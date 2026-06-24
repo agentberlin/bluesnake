@@ -149,7 +149,6 @@ func (s *Server) buildTools() []Tool {
 				"mode":        map[string]any{"type": "string", "enum": []string{"spider", "list"}, "description": "spider (default) follows links from url; list audits a fixed URL set."},
 				"urls":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "URLs to audit in list mode."},
 				"sitemap_url": strProp("XML sitemap whose URLs become the list (list mode)."),
-				"project":     strProp("Project name for the stored crawl. Defaults to the seed's hostname."),
 				"profile":     strProp("Config profile to start from (see list_profiles)."),
 				"config":      map[string]any{"type": "object", "additionalProperties": true, "description": "Dotted-path overrides, e.g. {\"limits.max_urls\": 500, \"speed.max_threads\": 10, \"rendering.mode\": \"javascript\"}. Discover keys with list_config_options."},
 			}),
@@ -243,7 +242,7 @@ func (s *Server) buildTools() []Tool {
 		},
 		{
 			Name:        "list_crawls",
-			Description: "List all stored crawls: id, project, seed, mode, status (running | completed | interrupted), start time, URL count.",
+			Description: "List all stored crawls: id, seed, mode, status (running | completed | interrupted), start time, URL count.",
 			InputSchema: schema(map[string]any{}),
 			handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
 				infos, err := store.ListCrawls(s.backend.StoreDir())
@@ -525,7 +524,6 @@ func crawlInfoJSON(in store.Info) map[string]any {
 	}
 	m := map[string]any{
 		"crawl_id": in.ID,
-		"project":  in.Project,
 		"seed":     in.Seed,
 		"mode":     in.Mode,
 		"status":   in.Status,

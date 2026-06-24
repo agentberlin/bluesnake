@@ -123,7 +123,7 @@ func registryCounts(t *testing.T, dir, id string) (int, int) {
 func straightCrawl(t *testing.T, dir, seed string) string {
 	t.Helper()
 	cfg := equivCfg()
-	st, err := store.CreateCrawl(dir, "straight", []string{seed}, "spider", cfg)
+	st, err := store.CreateCrawl(dir, []string{seed}, "spider", cfg)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -155,7 +155,7 @@ func straightCrawl(t *testing.T, dir, seed string) string {
 func interruptResumeCrawl(t *testing.T, dir, seed string, after int) string {
 	t.Helper()
 	cfg := equivCfg()
-	st, err := store.CreateCrawl(dir, "resumed", []string{seed}, "spider", cfg)
+	st, err := store.CreateCrawl(dir, []string{seed}, "spider", cfg)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

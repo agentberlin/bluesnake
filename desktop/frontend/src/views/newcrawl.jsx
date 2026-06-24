@@ -11,7 +11,6 @@ export function NewCrawl({ onStart, onOpenSettings }) {
   const [listSrc, setListSrc] = useState("paste");
   const [listText, setListText] = useState("");
   const [sitemapUrl, setSitemapUrl] = useState("");
-  const [project, setProject] = useState("");
   const [profiles, setProfiles] = useState(["Default audit"]);
   const [profile, setProfile] = useState("Default audit");
   const [depth, setDepth] = useState(""); // "" = unlimited
@@ -43,7 +42,6 @@ export function NewCrawl({ onStart, onOpenSettings }) {
         url: url.trim(),
         listUrls: mode === "list" && listSrc !== "sitemap" ? listText.trim().split("\n").map((s) => s.trim()).filter(Boolean) : [],
         sitemapUrl: mode === "list" && listSrc === "sitemap" ? sitemapUrl.trim() : "",
-        project: project.trim(),
         profile,
         threads,
         rate: ups,
@@ -121,9 +119,6 @@ export function NewCrawl({ onStart, onOpenSettings }) {
               </select>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0 }}>
-              <Setup label="Project" hint="Group related crawls · defaults to the host">
-                <input className="input" value={project} placeholder="auto" onChange={(e) => setProject(e.target.value)} style={{ height: 28 }} />
-              </Setup>
               <Setup label="Max crawl depth" hint="Clicks from start · blank = unlimited">
                 <input className="input mono" value={depth} placeholder="∞ unlimited" onChange={(e) => setDepth(e.target.value.replace(/\D/g, ""))} style={{ height: 28 }} />
               </Setup>

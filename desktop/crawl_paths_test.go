@@ -18,7 +18,7 @@ func TestPageDetailDiscoveryPath(t *testing.T) {
 		seedURL = "https://site.test/"
 		urlA    = "https://site.test/a"
 	)
-	st, err := store.CreateCrawl(a.storeDir, "", []string{seedURL}, "spider", config.Default())
+	st, err := store.CreateCrawl(a.storeDir, []string{seedURL}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

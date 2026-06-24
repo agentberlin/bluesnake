@@ -10,7 +10,7 @@ import (
 )
 
 func TestHTTPVersionColumn(t *testing.T) {
-	st, err := store.CreateCrawl(t.TempDir(), "", []string{"https://ex.com/"}, "spider", config.Default())
+	st, err := store.CreateCrawl(t.TempDir(), []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,7 +17,6 @@ func newCrawlCmd() *cobra.Command {
 	var (
 		cfgFile   string
 		storeDir  string
-		project   string
 		sets      []string
 		threads   int
 		depth     int
@@ -71,7 +70,7 @@ func newCrawlCmd() *cobra.Command {
 				return exitErr{2, err}
 			}
 
-			st, err := store.CreateCrawl(storeDir, project, []string{args[0]}, "spider", cfg)
+			st, err := store.CreateCrawl(storeDir, []string{args[0]}, "spider", cfg)
 			if err != nil {
 				return exitErr{1, err}
 			}
@@ -113,7 +112,6 @@ func newCrawlCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&cfgFile, "config", "", "config file (YAML)")
 	cmd.Flags().StringVar(&storeDir, "store-dir", defaultStoreDir(), "crawl storage directory")
-	cmd.Flags().StringVar(&project, "project", "", "project name for the stored crawl")
 	cmd.Flags().StringArrayVar(&sets, "set", nil, "dotted-path config override (key.path=value), repeatable")
 	cmd.Flags().IntVar(&threads, "threads", 0, "max concurrent threads (speed.max_threads)")
 	cmd.Flags().IntVar(&depth, "depth", 0, "max crawl depth (limits.max_depth)")

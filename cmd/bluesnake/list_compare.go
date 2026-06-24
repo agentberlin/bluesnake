@@ -21,10 +21,10 @@ var urlToken = regexp.MustCompile(`https?://\S+`)
 
 func newListCmd() *cobra.Command {
 	var (
-		cfgFile, storeDir, project, sitemapURL string
-		sets                                   []string
-		followRedirects                        bool
-		quiet                                  bool
+		cfgFile, storeDir, sitemapURL string
+		sets                          []string
+		followRedirects               bool
+		quiet                         bool
 	)
 	cmd := &cobra.Command{
 		Use:   "list [<file>|-]",
@@ -82,7 +82,7 @@ func newListCmd() *cobra.Command {
 			}
 			fmt.Fprintf(cmd.ErrOrStderr(), "list mode: %d URLs\n", len(seeds))
 
-			st, err := store.CreateCrawl(storeDir, project, seeds, "list", cfg)
+			st, err := store.CreateCrawl(storeDir, seeds, "list", cfg)
 			if err != nil {
 				return exitErr{1, err}
 			}
@@ -119,7 +119,6 @@ func newListCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&cfgFile, "config", "", "config file (YAML)")
 	cmd.Flags().StringVar(&storeDir, "store-dir", defaultStoreDir(), "crawl storage directory")
-	cmd.Flags().StringVar(&project, "project", "", "project name")
 	cmd.Flags().StringArrayVar(&sets, "set", nil, "config override, repeatable")
 	cmd.Flags().StringVar(&sitemapURL, "sitemap", "", "download a sitemap (or index) as the URL source")
 	cmd.Flags().BoolVar(&followRedirects, "follow-redirects", false, "follow redirect chains to their final target regardless of depth")

@@ -42,7 +42,7 @@ func (r *Runner) StartCrawl(ctx context.Context, req StartRequest) (string, erro
 	if err != nil {
 		return "", err
 	}
-	st, err := store.CreateCrawl(r.storeDir, DefaultProject(req.Project, seeds), seeds, mode, cfg)
+	st, err := store.CreateCrawl(r.storeDir, seeds, mode, cfg)
 	if err != nil {
 		return "", err
 	}

@@ -17,7 +17,7 @@ func TestRunnerSinkForwardsSitemapEntryToStore(t *testing.T) {
 	var _ crawler.SitemapSink = (*runnerSink)(nil)
 
 	dir := t.TempDir()
-	st, err := store.CreateCrawl(dir, "", []string{"http://ex.com/"}, "spider", config.Default())
+	st, err := store.CreateCrawl(dir, []string{"http://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatalf("CreateCrawl: %v", err)
 	}

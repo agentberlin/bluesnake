@@ -4,14 +4,13 @@ Feature: Storage, pause and resume (partial crawling)
   happens. An interrupted crawl resumes from the stored frontier without
   re-fetching anything. The config is frozen into the crawl at start.
 
-  Scenario: Crawls get IDs and are listed with project and status
+  Scenario: Crawls get IDs and are listed with status
     Given a site page "/" linking to "/a"
     And a site page "/a" linking to ""
-    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --project myproj --quiet"
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
     Then the exit code is 0
     When I run "bluesnake crawls ls --store-dir <storedir>"
     Then the exit code is 0
-    And the output contains "myproj"
     And the output contains "completed"
 
   Scenario: An interrupted crawl resumes from where it stopped

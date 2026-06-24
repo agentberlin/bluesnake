@@ -3,14 +3,14 @@
    =========================================================================== */
 import React, { useState } from "react";
 import { Icon, Btn, IconBtn, Search, SEV, Modal, BrandMark } from "../ui";
-import { urlShort, hostOf } from "../api";
+import { urlShort } from "../api";
 
 export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDelete, storage }) {
   const [q, setQ] = useState("");
   const [confirm, setConfirm] = useState(null);
   const resumable = crawls.filter((c) => c.status === "interrupted");
   const filtered = crawls.filter((c) =>
-    (c.seed + c.project + c.id).toLowerCase().includes(q.toLowerCase()));
+    (c.seed + c.id).toLowerCase().includes(q.toLowerCase()));
 
   const statusMeta = {
     completed: { c: "var(--sev-ok)", label: "Completed" },
@@ -57,7 +57,7 @@ export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDel
           <div className="sb-sectlabel" style={{ padding: "0 0 8px" }}>All crawls</div>
           <div className="card" style={{ overflow: "hidden" }}>
             <div style={rowGrid(null, true)}>
-              <div>Status</div><div>Site / Project</div>
+              <div>Status</div><div>Site</div>
               <div style={{ textAlign: "right" }}>URLs</div><div>Findings</div><div></div>
             </div>
             {filtered.length === 0 && (
@@ -84,9 +84,7 @@ export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDel
                       </span>
                     </div>
                     <div style={{ fontSize: 11, color: "var(--ink-faint)", marginTop: 2, display: "flex", gap: 6, alignItems: "center" }}>
-                      <Icon name="folder" size={11} />
-                      <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.project || hostOf(c.seed)}</span>
-                      <span style={{ color: "var(--border-strong)" }}>·</span>
+                      <Icon name="calendar" size={11} />
                       <span className="mono">{(c.started || "").split(" ")[0]}</span>
                     </div>
                     </div>

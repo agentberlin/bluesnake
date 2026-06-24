@@ -27,7 +27,6 @@ func wireDataset(d *export.Dataset) apiDataset {
 
 type apiCrawl struct {
 	ID      string `json:"id"`
-	Project string `json:"project"`
 	Seed    string `json:"seed"`
 	Mode    string `json:"mode"`
 	Status  string `json:"status"`
@@ -101,7 +100,7 @@ func (h *handler) crawls(w http.ResponseWriter, r *http.Request) {
 			total = in.Crawled
 		}
 		entries = append(entries, apiCrawl{
-			ID: in.ID, Project: in.Project, Seed: in.Seed,
+			ID: in.ID, Seed: in.Seed,
 			Mode: in.Mode, Status: in.Status, Crawled: in.Crawled, Total: total,
 		})
 	}

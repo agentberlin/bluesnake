@@ -26,7 +26,7 @@ func TestCrawlLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 
-	c, err := CreateCrawl(dir, "proj", []string{"https://ex.com/"}, "spider", cfg)
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestCrawlLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(infos) != 1 || infos[0].ID != c.ID || infos[0].Project != "proj" || infos[0].Status != StatusRunning {
+	if len(infos) != 1 || infos[0].ID != c.ID || infos[0].Status != StatusRunning {
 		t.Errorf("registry = %+v", infos)
 	}
 	if err := SetStatus(dir, c.ID, StatusCompleted, 42, 50); err != nil {
@@ -140,7 +140,7 @@ func TestCrawlLifecycle(t *testing.T) {
 // regress fresh-crawl counts too.
 func TestCounts(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "proj", []string{"https://ex.com/"}, "spider", config.Default())
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestInterruptAndResume(t *testing.T) {
 	cfg.Speed.MaxThreads = 2
 
 	// phase 1: crawl, interrupted after ~15 pages
-	st, err := CreateCrawl(dir, "proj", []string{srv.URL + "/"}, "spider", cfg)
+	st, err := CreateCrawl(dir, []string{srv.URL + "/"}, "spider", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +313,7 @@ func TestInterruptAndResume(t *testing.T) {
 
 func TestLoadPagesAndIssues(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +419,7 @@ func TestLoadPagesAndIssues(t *testing.T) {
 // collapsed them to the last detail. Affected-URL counts must stay per-URL.
 func TestIssueMultiDetailPreserved(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +484,7 @@ func TestIssueMultiDetailPreserved(t *testing.T) {
 // details for one (url, issue).
 func TestIssuesDetailPKMigration(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +548,7 @@ func TestIssuesDetailPKMigration(t *testing.T) {
 // from a genuinely old un-stamped one (revision 0).
 func TestFreshDBSchemaVersion(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -645,7 +645,7 @@ func TestUpgradeLadder(t *testing.T) {
 
 func TestAnalysisPersistence(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -719,7 +719,7 @@ func TestAnalysisPersistence(t *testing.T) {
 
 func TestBlobStorage(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -742,7 +742,7 @@ func TestBlobStorage(t *testing.T) {
 
 func TestCustomResultsPersistence(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -787,7 +787,7 @@ func TestSeedsRoundTrip(t *testing.T) {
 
 	// list crawl: the full ordered set round-trips
 	full := []string{"https://a.example/", "https://b.example/", "https://c.example/p"}
-	c, err := CreateCrawl(dir, "proj", full, "list", config.Default())
+	c, err := CreateCrawl(dir, full, "list", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -814,7 +814,7 @@ func TestSeedsRoundTrip(t *testing.T) {
 	}
 
 	// spider crawl: a single seed round-trips as a one-element set
-	c2, err := CreateCrawl(dir, "proj", []string{"https://solo.example/"}, "spider", config.Default())
+	c2, err := CreateCrawl(dir, []string{"https://solo.example/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -824,7 +824,7 @@ func TestSeedsRoundTrip(t *testing.T) {
 	}
 
 	// an empty seed set is rejected up front
-	if _, err := CreateCrawl(dir, "proj", nil, "list", config.Default()); err == nil {
+	if _, err := CreateCrawl(dir, nil, "list", config.Default()); err == nil {
 		t.Error("CreateCrawl with no seeds must error")
 	}
 }
@@ -855,7 +855,7 @@ func TestListModeResumeRestoresAllSeeds(t *testing.T) {
 	// setup writes an interrupted list crawl with both seeds frozen in:
 	// seedA already crawled at depth 0, seedB still pending at depth 0.
 	setup := func(dir string) string {
-		st, err := CreateCrawl(dir, "listtest", []string{seedA, seedB}, "list", cfg)
+		st, err := CreateCrawl(dir, []string{seedA, seedB}, "list", cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -955,7 +955,7 @@ func TestListModeResumeRestoresAllSeeds(t *testing.T) {
 // columns untouched.
 func TestSaveDepths(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "proj", []string{"https://ex.com/"}, "spider", config.Default())
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1012,5 +1012,46 @@ func TestSaveDepths(t *testing.T) {
 	c.db.QueryRow(`SELECT COUNT(*) FROM pages WHERE depth IS NULL`).Scan(&nullCount)
 	if nullCount != 1 {
 		t.Errorf("NULL depths = %d, want 1", nullCount)
+	}
+}
+
+// TestDropProjectMigration proves the registry ladder removes the retired
+// legacy "project" column from a pre-existing registry while preserving rows.
+func TestDropProjectMigration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "registry.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Build an OLD-shape registry (crawls carries the legacy project column),
+	// stamped at v1 so it is treated as an existing DB that must run step 2.
+	if _, err := db.Exec(`
+		CREATE TABLE crawls(id TEXT PRIMARY KEY, project TEXT, seed TEXT, mode TEXT, status TEXT,
+			started INT, finished INT, crawled INT DEFAULT 0, total INT DEFAULT 0);
+		CREATE TABLE brands(host TEXT PRIMARY KEY, logo BLOB, logo_type TEXT, fetched INT);
+		PRAGMA user_version = 1;
+		INSERT INTO crawls(id, project, seed, mode, status, started)
+			VALUES('c1','legacy-label','https://ex.com/','spider','completed', 100);`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	reg, err := registryDB(dir) // runs the ladder
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	if has, err := columnExists(reg, "crawls", "project"); err != nil || has {
+		t.Fatalf("project column still present after migration (has=%v err=%v)", has, err)
+	}
+	var seed string
+	if err := reg.QueryRow(`SELECT seed FROM crawls WHERE id='c1'`).Scan(&seed); err != nil || seed != "https://ex.com/" {
+		t.Fatalf("row lost in migration: seed=%q err=%v", seed, err)
+	}
+	var v int
+	if err := reg.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil || v != ladderTop(registryMigrations) {
+		t.Errorf("user_version = %d (err=%v), want %d", v, err, ladderTop(registryMigrations))
 	}
 }

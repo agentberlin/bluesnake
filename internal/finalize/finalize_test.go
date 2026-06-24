@@ -29,7 +29,7 @@ func crawlInto(t *testing.T) (*store.Crawl, *crawler.Crawler, *crawler.Result, s
 
 	dir := t.TempDir()
 	cfg := config.Default()
-	st, err := store.CreateCrawl(dir, "proj", []string{srv.URL + "/"}, "spider", cfg)
+	st, err := store.CreateCrawl(dir, []string{srv.URL + "/"}, "spider", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

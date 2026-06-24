@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,7 +20,6 @@ type StartRequest struct {
 	URL        string         `json:"url,omitempty"`
 	URLs       []string       `json:"urls,omitempty"`
 	SitemapURL string         `json:"sitemap_url,omitempty"`
-	Project    string         `json:"project,omitempty"`
 	Profile    string         `json:"profile,omitempty"`
 	Config     map[string]any `json:"config,omitempty"` // dotted path -> value
 }
@@ -186,15 +184,4 @@ func ResolveSeeds(ctx context.Context, cfg *config.Config, req StartRequest) (se
 	default:
 		return nil, "", fmt.Errorf("mode must be spider or list (got %q)", req.Mode)
 	}
-}
-
-// DefaultProject derives a project name from the first seed's hostname.
-func DefaultProject(project string, seeds []string) string {
-	if project != "" {
-		return project
-	}
-	if u, err := url.Parse(seeds[0]); err == nil {
-		return strings.TrimPrefix(u.Hostname(), "www.")
-	}
-	return ""
 }
