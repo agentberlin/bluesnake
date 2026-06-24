@@ -4,7 +4,7 @@
    =========================================================================== */
 import React, { useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Icon, Btn, Search, Empty, StatusBadge, IndexBadge } from "../ui";
+import { Icon, Btn, Search, Empty, StatusBadge, IndexBadge, CopyButton } from "../ui";
 import { urlShort } from "../api";
 
 /* Row height = --row-h (30px, single-line cells) + 1px bottom border.
@@ -137,11 +137,14 @@ export function DataTable({ header, rows, total, truncated, onRowClick, urlColum
             {rowVirtualizer.getVirtualItems().map((vr) => {
               const row = filtered[vr.index];
               return (
-                <div key={vr.key} className="datarow" onClick={() => onRowClick && onRowClick(row)}
+                <div key={vr.key} className="datarow copyhost" onClick={() => onRowClick && onRowClick(row)}
                   style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${vr.start}px)`, display: "grid", gridTemplateColumns: grid, gap: 0, padding: "0 8px", borderBottom: "1px solid var(--border-soft)", alignItems: "center", minHeight: "var(--row-h)" }}>
                   {visible.map((i) => (
-                    <div key={i} style={{ padding: "4px 8px", fontSize: 12, minWidth: 0, overflow: "hidden" }}>
+                    <div key={i} style={{ padding: "4px 8px", fontSize: 12, minWidth: 0, overflow: "hidden", position: kinds[i] === "url" ? "relative" : undefined }}>
                       <Cell kind={kinds[i]} value={row[i]} />
+                      {kinds[i] === "url" && row[i] && (
+                        <CopyButton text={row[i]} style={{ position: "absolute", right: 2, top: "50%", transform: "translateY(-50%)", background: "var(--surface-hover)", boxShadow: "-8px 0 7px 3px var(--surface-hover)" }} />
+                      )}
                     </div>
                   ))}
                 </div>

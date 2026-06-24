@@ -2,7 +2,7 @@
    Per-URL detail drawer — full record, in/outlinks, issues, headers
    =========================================================================== */
 import React, { useEffect, useState } from "react";
-import { Icon, IconBtn, StatusBadge, IndexBadge, Empty, SevDot, SEV, PRIO, statusVar } from "../ui";
+import { Icon, IconBtn, StatusBadge, IndexBadge, Empty, SevDot, SEV, PRIO, statusVar, CopyButton } from "../ui";
 import { api, urlShort } from "../api";
 
 export function UrlDetail({ crawlId, url, onClose, onFilterByIssue }) {
@@ -47,6 +47,7 @@ export function UrlDetail({ crawlId, url, onClose, onFilterByIssue }) {
                 </div>
               )}
             </div>
+            <CopyButton text={url} title="Copy URL" size={15} style={{ width: 28, height: 28, opacity: 1, color: "var(--ink-2)" }} />
             <IconBtn icon="external-link" title="Open URL in browser" onClick={() => window.runtime && window.runtime.BrowserOpenURL(url)} />
             <IconBtn icon="x" title="Close" onClick={onClose} />
           </div>
@@ -102,10 +103,13 @@ export function UrlDetail({ crawlId, url, onClose, onFilterByIssue }) {
   );
 }
 
-function Row({ k, v, color }) {
-  return <div style={{ display: "grid", gridTemplateColumns: "130px 1fr", gap: 10, padding: "7px 0", borderBottom: "1px solid var(--border-soft)", alignItems: "baseline" }}>
+function Row({ k, v, color, copy }) {
+  return <div className={copy ? "copyhost" : undefined} style={{ display: "grid", gridTemplateColumns: "130px 1fr", gap: 10, padding: "7px 0", borderBottom: "1px solid var(--border-soft)", alignItems: "baseline" }}>
     <span style={{ fontSize: 11.5, color: "var(--ink-faint)" }}>{k}</span>
-    <span className="mono" style={{ fontSize: 12, color: color || "var(--ink-2)", wordBreak: "break-word" }}>{v}</span>
+    <span className="mono" style={{ fontSize: 12, color: color || "var(--ink-2)", wordBreak: "break-word", display: "inline-flex", alignItems: "baseline", gap: 6 }}>
+      <span style={{ minWidth: 0 }}>{v}</span>
+      {copy && <CopyButton text={copy} style={{ alignSelf: "center" }} />}
+    </span>
   </div>;
 }
 
@@ -132,13 +136,13 @@ function DetailFields({ p }) {
         <Row k="Link score" v={p.linkScore ? p.linkScore.toFixed(0) + " / 100" : "—"} />
         <Row k="Inlinks" v={`${p.inlinksCount}${p.uniqueInlinks ? ` (${p.uniqueInlinks} unique)` : ""}`} />
         <Row k="Unique outlinks" v={p.uniqueOutlinks || "—"} />
-        <Row k="Canonical" v={!p.canonical || p.canonical === p.url ? "Self-referencing" : urlShort(p.canonical)} color={p.canonical && p.canonical !== p.url ? "var(--s-3xx)" : null} />
-        {p.redirectUrl && <Row k="Redirects to" v={urlShort(p.redirectUrl)} color="var(--s-3xx)" />}
+        <Row k="Canonical" v={!p.canonical || p.canonical === p.url ? "Self-referencing" : urlShort(p.canonical)} color={p.canonical && p.canonical !== p.url ? "var(--s-3xx)" : null} copy={p.canonical || p.url} />
+        {p.redirectUrl && <Row k="Redirects to" v={urlShort(p.redirectUrl)} color="var(--s-3xx)" copy={p.redirectUrl} />}
         {p.redirectType && <Row k="Redirect type" v={p.redirectType} />}
         {p.robotsLine > 0 && <Row k="Blocked by" v={`robots.txt line ${p.robotsLine}`} color="var(--s-4xx)" />}
         {p.fetchError && <Row k="Fetch error" v={p.fetchError} color="var(--s-4xx)" />}
         <Row k="Near-duplicate" v={p.similarity ? `${p.similarity.toFixed(0)}% closest match` : "None"} color={p.similarity > 90 ? "var(--sev-warn)" : null} />
-        <Row k="Discovered via" v={p.discoveredFrom ? urlShort(p.discoveredFrom) : "Start URL"} />
+        <Row k="Discovered via" v={p.discoveredFrom ? urlShort(p.discoveredFrom) : "Start URL"} copy={p.discoveredFrom || null} />
       </div>
       <DiscoveryPath path={p.discoveryPath} url={p.url} />
     </div>
@@ -155,9 +159,10 @@ function DiscoveryPath({ path, url }) {
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         {path.map((u, i) => (
-          <div key={i} style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-            <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-faint)", minWidth: 18, textAlign: "right" }}>{i === 0 ? "•" : "↳"}</span>
-            <span className="mono" style={{ fontSize: 11.5, color: u === url ? "var(--ink)" : "var(--ink-3)", fontWeight: u === url ? 600 : 400, wordBreak: "break-all", paddingLeft: i * 8 }}>{urlShort(u)}</span>
+          <div key={i} className="copyhost" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-faint)", minWidth: 18, textAlign: "right", alignSelf: "baseline" }}>{i === 0 ? "•" : "↳"}</span>
+            <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: u === url ? "var(--ink)" : "var(--ink-3)", fontWeight: u === url ? 600 : 400, wordBreak: "break-all", paddingLeft: i * 8 }}>{urlShort(u)}</span>
+            <CopyButton text={u} />
           </div>
         ))}
       </div>
@@ -183,8 +188,11 @@ function LinkList({ links, dir, empty, n }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {links.slice(0, 60).map((l, i) => (
-        <div key={i} className="card" style={{ padding: "9px 12px" }}>
-          <div className="mono" style={{ fontSize: 11.5, color: "var(--ink)", wordBreak: "break-all" }}>{urlShort(l[dir])}</div>
+        <div key={i} className="card copyhost" style={{ padding: "9px 12px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div className="mono" style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: "var(--ink)", wordBreak: "break-all" }}>{urlShort(l[dir])}</div>
+            <CopyButton text={l[dir]} />
+          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
             <span className="badge code">{l.type}</span>
             {l.anchor && <span style={{ fontSize: 11, color: "var(--ink-3)" }}>“{l.anchor}”</span>}
