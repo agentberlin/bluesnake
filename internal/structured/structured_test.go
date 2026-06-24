@@ -265,6 +265,23 @@ func hasIssue(items []string, sub string) bool {
 	return false
 }
 
+// findingProps returns the (sorted) property names a leaf type was flagged for at
+// a given severity, parsed from the engine's message format ("<leaf>: missing
+// <kind> property \"<prop>\""). `kind` is "required" or "recommended". It lets a
+// test assert the EXACT finding set for one entity (e.g. SF's Event recommended
+// set) rather than a loose substring presence.
+func findingProps(msgs []string, leaf, kind string) []string {
+	prefix := leaf + ": missing " + kind + " property "
+	var out []string
+	for _, m := range msgs {
+		if rest, ok := strings.CutPrefix(m, prefix); ok {
+			out = append(out, strings.Trim(rest, `"`))
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // Google Software App: name + offers + (aggregateRating OR review) required;
 // applicationCategory + operatingSystem recommended.
 func TestSoftwareApplication(t *testing.T) {
@@ -814,12 +831,18 @@ func TestNestedOfferParentAware(t *testing.T) {
 		t.Errorf("Product url-only offer: errors=%v, want an Offer price error", d.Errors)
 	}
 
-	// Event with a url-only offer ⇒ NO Offer error (price is recommended there).
+	// Event with a url-only offer ⇒ NO Offer error, but price AND priceCurrency are
+	// RECOMMENDED there (warnings), measured on SF v24.1: "'price'/'priceCurrency'
+	// property is recommended for 'Offer'". Merchant recs (availability/itemCondition)
+	// do NOT apply under Event — only Product carries those.
 	d = jsonld(t, `{"@type":"Event","name":"Gig","startDate":"2026-09-01",
 		"location":{"@type":"Place","name":"Hall","address":"1 Main St"},
 		"offers":{"@type":"Offer","url":"https://tickets.example","availability":"https://schema.org/InStock"}}`)
 	if hasIssue(d.Errors, "Offer") {
 		t.Errorf("Event url-only offer: errors=%v, want NO Offer error (recommended-only there)", d.Errors)
+	}
+	if got := findingProps(d.Warnings, "Offer", "recommended"); !slices.Equal(got, []string{"price", "priceCurrency"}) {
+		t.Errorf("Event url-only offer: Offer warnings=%v, want exactly [price priceCurrency]", got)
 	}
 
 	// SoftwareApplication offer missing price ⇒ price ERROR (matches SF: "'price'
@@ -861,6 +884,146 @@ func TestNestedOfferParentAware(t *testing.T) {
 	dm := extract(t, mbody, func(s *config.StructuredDataConfig) { s.Microdata = true })
 	if !hasIssue(dm.Errors, "Offer") || !hasIssue(dm.Errors, "price") {
 		t.Errorf("microdata SoftwareApplication offer missing price: errors=%v, want an Offer price error", dm.Errors)
+	}
+}
+
+// Google Event rich result, pinned to Screaming Frog v24.1 (STANDARD config)
+// measured behaviour (/tmp/bs-probes/event — both the Validation Errors and
+// Validation Warnings bulk exports). Grounded in Google's Event structured-data
+// docs (developers.google.com/search/docs/appearance/structured-data/event):
+//
+//	Required (error if missing):   name, startDate, location
+//	Recommended (warning if absent): description, endDate, image, offers,
+//	                                 organizer, performer
+//	Nested Event offer:            price, priceCurrency are RECOMMENDED (warnings),
+//	                               NOT required — no merchant recs (Product-only).
+//
+// SF does NOT surface eventStatus/eventAttendanceMode (Google lists them as
+// recommended but SF's curated set omits them), so neither does bluesnake.
+// (SF additionally errors when location.address is a string rather than a
+// PostalAddress — that is SF's property-VALUE type check, a separate dimension
+// bluesnake deliberately does not implement, so it is not asserted here.)
+func TestEventRichResult(t *testing.T) {
+	wantRecommended := []string{"description", "endDate", "image", "offers", "organizer", "performer"}
+
+	// evt_min: only the three required props ⇒ 0 errors, exactly the 6 Event
+	// recommended warnings.
+	d := jsonld(t, `{"@type":"Event","name":"Concert","startDate":"2026-09-01T19:00",
+		"location":{"@type":"Place","name":"Hall","address":"1 Main St"}}`)
+	if len(d.Errors) != 0 {
+		t.Errorf("evt_min: errors=%v, want none", d.Errors)
+	}
+	if got := findingProps(d.Warnings, "Event", "recommended"); !slices.Equal(got, wantRecommended) {
+		t.Errorf("evt_min: Event recommended warnings=%v, want %v", got, wantRecommended)
+	}
+
+	// Each required property, individually missing ⇒ exactly that error (the 6
+	// recommended warnings still ride along, matching SF).
+	for _, tc := range []struct{ name, body, missing string }{
+		{"no name", `{"@type":"Event","startDate":"2026-09-01","location":{"@type":"Place","name":"Hall","address":"1 Main St"}}`, "name"},
+		{"no startDate", `{"@type":"Event","name":"Concert","location":{"@type":"Place","name":"Hall","address":"1 Main St"}}`, "startDate"},
+		{"no location", `{"@type":"Event","name":"Concert","startDate":"2026-09-01"}`, "location"},
+	} {
+		d := jsonld(t, tc.body)
+		if got := findingProps(d.Errors, "Event", "required"); !slices.Equal(got, []string{tc.missing}) {
+			t.Errorf("%s: Event required errors=%v, want exactly [%s]", tc.name, got, tc.missing)
+		}
+	}
+
+	// evt_full: every required + recommended present (incl. a complete offer) ⇒
+	// 0 errors, 0 warnings. eventStatus/eventAttendanceMode are extra props SF
+	// ignores; their presence must not change anything.
+	d = jsonld(t, `{"@type":"Event","name":"Concert","startDate":"2026-09-01T19:00","endDate":"2026-09-01T22:00",
+		"description":"An evening concert.","image":"https://example.com/c.jpg",
+		"eventStatus":"https://schema.org/EventScheduled","eventAttendanceMode":"https://schema.org/OfflineEventAttendanceMode",
+		"location":{"@type":"Place","name":"Hall","address":"1 Main St"},
+		"organizer":{"@type":"Organization","name":"Acme","url":"https://acme.example"},
+		"performer":{"@type":"PerformingGroup","name":"The Band"},
+		"offers":{"@type":"Offer","url":"https://t.example","price":"25","priceCurrency":"USD","availability":"https://schema.org/InStock"}}`)
+	if len(d.Errors) != 0 || len(d.Warnings) != 0 {
+		t.Errorf("evt_full: errors=%v warnings=%v, want both empty", d.Errors, d.Warnings)
+	}
+
+	// Nested Event offer (all Event recommended present, so only the OFFER varies):
+	// price/priceCurrency are recommended warnings, never errors.
+	offerEvent := func(offer string) *PageData {
+		return jsonld(t, `{"@type":"Event","name":"Concert","startDate":"2026-09-01T19:00","endDate":"2026-09-01T22:00",
+			"description":"d","image":"https://example.com/c.jpg",
+			"location":{"@type":"Place","name":"Hall","address":"1 Main St"},
+			"organizer":{"@type":"Organization","name":"Acme","url":"https://acme.example"},
+			"performer":{"@type":"PerformingGroup","name":"The Band"},
+			"offers":`+offer+`}`)
+	}
+	for _, tc := range []struct {
+		name, offer string
+		wantOffer   []string
+	}{
+		{"offer url only", `{"@type":"Offer","url":"https://t.example","availability":"https://schema.org/InStock"}`, []string{"price", "priceCurrency"}},
+		{"offer no price", `{"@type":"Offer","url":"https://t.example","priceCurrency":"USD","availability":"https://schema.org/InStock"}`, []string{"price"}},
+		{"offer no currency", `{"@type":"Offer","url":"https://t.example","price":"25","availability":"https://schema.org/InStock"}`, []string{"priceCurrency"}},
+		{"offer full", `{"@type":"Offer","url":"https://t.example","price":"25","priceCurrency":"USD","availability":"https://schema.org/InStock"}`, nil},
+	} {
+		d := offerEvent(tc.offer)
+		if hasIssue(d.Errors, "Offer") {
+			t.Errorf("%s: errors=%v, want NO Offer error (Event offer is recommended-only)", tc.name, d.Errors)
+		}
+		if got := findingProps(d.Warnings, "Offer", "recommended"); !slices.Equal(got, tc.wantOffer) {
+			t.Errorf("%s: Offer recommended warnings=%v, want %v", tc.name, got, tc.wantOffer)
+		}
+		// Event offer must NOT inherit Product's merchant recommendations.
+		if hasIssue(d.Warnings, "availability") || hasIssue(d.Warnings, "itemCondition") {
+			t.Errorf("%s: warnings=%v, Event offer must not get merchant recs", tc.name, d.Warnings)
+		}
+	}
+
+	// Microdata parity: an Event with a url-only offer warns on Event recommended
+	// breadth AND on the Offer's price/priceCurrency — same shared engine.
+	dm := extract(t, `<html><body>
+		<div itemscope itemtype="https://schema.org/Event">
+		  <span itemprop="name">Concert</span>
+		  <span itemprop="startDate">2026-09-01</span>
+		  <div itemprop="location" itemscope itemtype="https://schema.org/Place">
+		    <span itemprop="name">Hall</span><span itemprop="address">1 Main St</span>
+		  </div>
+		  <div itemprop="offers" itemscope itemtype="https://schema.org/Offer">
+		    <span itemprop="url">https://t.example</span>
+		  </div>
+		</div></body></html>`,
+		func(s *config.StructuredDataConfig) { s.Microdata = true })
+	if hasIssue(dm.Errors, "Offer") {
+		t.Errorf("microdata Event offer: errors=%v, want NO Offer error", dm.Errors)
+	}
+	if got := findingProps(dm.Warnings, "Offer", "recommended"); !slices.Equal(got, []string{"price", "priceCurrency"}) {
+		t.Errorf("microdata Event offer: Offer warnings=%v, want [price priceCurrency]", got)
+	}
+	// This Event carries an offers node, so `offers` is satisfied — the remaining
+	// five recommended props warn (confirming presence suppresses a warning).
+	if got := findingProps(dm.Warnings, "Event", "recommended"); !slices.Equal(got, []string{"description", "endDate", "image", "organizer", "performer"}) {
+		t.Errorf("microdata Event: recommended warnings=%v, want the 5 minus offers", got)
+	}
+}
+
+// Guard against the Event offer's recommended-only profile leaking onto the
+// Product / Software App offer profiles, which keep their stricter (error) rules.
+func TestEventOfferProfileDoesNotLeak(t *testing.T) {
+	// Product offer missing price stays an ERROR (Merchant Listing), not a warning.
+	d := jsonld(t, `{"@type":"Product","name":"P","image":"i.jpg","offers":{"@type":"Offer","url":"https://x"}}`)
+	if !hasIssue(d.Errors, "Offer") || !hasIssue(d.Errors, "price") {
+		t.Errorf("Product offer: errors=%v, want an Offer price error (Event profile must not leak)", d.Errors)
+	}
+	// Software App offer missing price stays an ERROR.
+	d = jsonld(t, `{"@type":"SoftwareApplication","name":"App","review":{"@type":"Review","reviewRating":{"@type":"Rating","ratingValue":"4"},"author":"x"},
+		"offers":{"@type":"Offer","availability":"https://schema.org/InStock"}}`)
+	if !hasIssue(d.Errors, "Offer") || !hasIssue(d.Errors, "price") {
+		t.Errorf("Software App offer: errors=%v, want an Offer price error (Event profile must not leak)", d.Errors)
+	}
+	// A Product co-typed as an Event still treats its offer's missing price as an
+	// ERROR — the stricter parent dominates (offerParentRoot precedence).
+	d = jsonld(t, `{"@type":["Product","Event"],"name":"P","image":"i.jpg","startDate":"2026-09-01",
+		"location":{"@type":"Place","name":"Hall","address":"1 Main St"},
+		"offers":{"@type":"Offer","url":"https://x"}}`)
+	if !hasIssue(d.Errors, "Offer") || !hasIssue(d.Errors, "price") {
+		t.Errorf("Product+Event co-typed offer: errors=%v, want an Offer price error (strictest parent wins)", d.Errors)
 	}
 }
 

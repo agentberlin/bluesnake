@@ -421,6 +421,81 @@ func TestLinkPositionHeaderNotHead(t *testing.T) {
 	}
 }
 
+// Link position is also classified by a region's class/id, not just its tag
+// (R2). Screaming Frog derives Link Position from a substring search of its
+// link path, and that path carries an element's id or single-token class as an
+// XPath qualifier (div[@class='site-footer'], div[@id='footer']) — so "footer"
+// matches a <div class="site-footer"> exactly as it matches a <footer> tag.
+// bluesnake mirrors SF's matching: SF's term set, CASE-SENSITIVE substring,
+// and only a SINGLE-token class participates (a multi-class "col footer-col"
+// is not a footer in SF). It deliberately does NOT copy one SF behaviour: SF
+// only emits the class/id qualifier to disambiguate same-tag siblings, so SF
+// classifies the SAME <div class="footer"> as Footer when it has a sibling div
+// but Content when it is an only child — a proven artifact of SF's path
+// disambiguation, not semantics. bluesnake reads the id/class consistently
+// (sibling-independent), so a sole-child <div class="footer"> is Footer.
+//
+// Every "want" below except the one marked "(consistency)" was confirmed
+// against Screaming Frog v24.1 (STANDARD config) on controlled probe pages.
+func TestLinkPositionClassId(t *testing.T) {
+	cases := []struct {
+		name string
+		frag string // body fragment; the asserted link is href="/<name>"
+		want string
+	}{
+		// single-token class regions SF classifies by class
+		{"class-site-footer", `<div class="site-footer"><a href="/class-site-footer">x</a></div>`, "footer"},
+		{"class-footer-wrapper", `<div class="footer-wrapper"><a href="/class-footer-wrapper">x</a></div>`, "footer"},
+		{"class-navbar", `<div class="navbar"><a href="/class-navbar">x</a></div>`, "nav"},
+		{"class-main-navigation", `<div class="main-navigation"><a href="/class-main-navigation">x</a></div>`, "nav"},
+		{"class-header", `<div class="header"><a href="/class-header">x</a></div>`, "header"},
+		{"class-page-header", `<div class="page-header"><a href="/class-page-header">x</a></div>`, "header"},
+		{"class-aside", `<div class="aside"><a href="/class-aside">x</a></div>`, "aside"},
+		// greedy substring: "nav" matches inside "navy" (SF does this too)
+		{"class-navy-greedy", `<div class="navy"><a href="/class-navy-greedy">x</a></div>`, "nav"},
+		// id-based regions
+		{"id-footer", `<div id="footer"><a href="/id-footer">x</a></div>`, "footer"},
+		{"id-main-footer", `<div id="main-footer"><a href="/id-main-footer">x</a></div>`, "footer"},
+		// not matched by SF -> bluesnake matches SF (Content)
+		{"class-sidebar-no-aside", `<div class="sidebar"><a href="/class-sidebar-no-aside">x</a></div>`, "content"},
+		{"role-navigation-ignored", `<div role="navigation"><a href="/role-navigation-ignored">x</a></div>`, "content"},
+		{"role-contentinfo-ignored", `<div role="contentinfo"><a href="/role-contentinfo-ignored">x</a></div>`, "content"},
+		{"data-attr-ignored", `<div data-section="footer"><a href="/data-attr-ignored">x</a></div>`, "content"},
+		// case-sensitive: a capitalised class does not match the lowercase term
+		{"class-MainFooter-case", `<div class="MainFooter"><a href="/class-MainFooter-case">x</a></div>`, "content"},
+		{"class-NAVBAR-case", `<div class="NAVBAR"><a href="/class-NAVBAR-case">x</a></div>`, "content"},
+		// multi-token class is dropped (matches SF)
+		{"multiclass-col-footer-col", `<div class="col footer-col"><a href="/multiclass-col-footer-col">x</a></div>`, "content"},
+		{"multiclass-extra-footer", `<div class="extra footer"><a href="/multiclass-extra-footer">x</a></div>`, "content"},
+		{"multiclass-nav-bar-utility", `<div class="nav-bar utility"><a href="/multiclass-nav-bar-utility">x</a></div>`, "content"},
+		// a single hyphenated token is kept
+		{"single-footer-x", `<div class="footer-x"><a href="/single-footer-x">x</a></div>`, "footer"},
+		// the anchor's OWN single-token class is read
+		{"anchor-own-class", `<a class="footer-link" href="/anchor-own-class">x</a>`, "footer"},
+		// rule precedence: first matching term in config order (header before footer)
+		{"header-class-over-footer-tag", `<div class="header"><footer><a href="/header-class-over-footer-tag">x</a></footer></div>`, "header"},
+		{"nav-over-footer-class", `<nav><div class="footer"><a href="/nav-over-footer-class">x</a></div></nav>`, "nav"},
+		// a semantic tag still wins regardless of a multi-class on the tag itself
+		{"footer-tag-multiclass", `<footer class="site mod"><a href="/footer-tag-multiclass">x</a></footer>`, "footer"},
+		// (consistency) sole-child class="footer": SF says Content (it omits the
+		// class qualifier when there is no same-tag sibling to disambiguate);
+		// bluesnake reads the class regardless -> Footer (more correct).
+		{"sole-child-footer", `<div class="footer"><a href="/sole-child-footer">x</a></div>`, "footer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := parseHTML(t, "https://ex.com/p", "<html><body>"+tc.frag+"</body></html>", nil, nil)
+			l := findLink(f, Hyperlink, "https://ex.com/"+tc.name)
+			if l == nil {
+				t.Fatalf("link /%s not found", tc.name)
+			}
+			if l.Position != tc.want {
+				t.Errorf("position(%s) = %q, want %q", tc.name, l.Position, tc.want)
+			}
+		})
+	}
+}
+
 // Element-text EXTRACTION (anchors, titles, headings) re-introduces a word
 // boundary across a block-level element but joins across inline ones, matching
 // Screaming Frog's (jsoup's) block/inline classification of extracted text.
