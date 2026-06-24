@@ -200,6 +200,8 @@ input, textarea{ user-select: text; cursor: text; }
 }
 .btn-newcrawl:hover{ background:var(--primary-hover); }
 .btn-newcrawl svg{ width:15px; height:15px; }
+.btn-newcrawl:disabled{ opacity:.45; cursor:default; }
+.btn-newcrawl:disabled:hover{ background:var(--primary); }
 
 .sb-nav{ padding:6px 8px; display:flex; flex-direction:column; gap:1px; }
 .sb-sectlabel{ font-size:10.5px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-faint); padding:10px 10px 5px; }

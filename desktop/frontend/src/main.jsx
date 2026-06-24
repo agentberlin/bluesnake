@@ -200,6 +200,24 @@ function App() {
     ? (hostOf(activeCrawl.seed) || (liveCrawl ? hostOf(liveCrawl.seed) : "crawling…"))
     : (liveCrawl ? hostOf(liveCrawl.seed) : "no crawl");
 
+  // Only one crawl runs at a time, process-wide (see runner.go / app.go), so the
+  // backend rejects a second start while one is live. Mirror that in the UI:
+  // while a crawl is live, disable every "start/resume a crawl" affordance and
+  // explain why. liveCrawlId tracks an actually-live session and clears on
+  // crawl:done (incl. pause/stop), so the gate lifts exactly when the lock does.
+  const crawlActive = liveCrawlId != null;
+  const liveSeed = liveCrawl ? liveCrawl.seed
+    : (activeCrawl && activeCrawl.id === liveCrawlId ? activeCrawl.seed : "");
+  const crawlBusyMsg = crawlActive
+    ? `A crawl is already running${liveSeed ? " (" + hostOf(liveSeed) + ")" : ""} — pause or stop it first.`
+    : null;
+  // Jump back to the running crawl (used by the "View running crawl" link on the
+  // New Crawl form when a crawl starts while it's open).
+  function viewActiveCrawl() {
+    if (!liveCrawlId) return;
+    openLive(liveCrawlId, liveSeed);
+  }
+
   return (
     <div className="win">
       {/* On macOS this bar IS the window title bar: it hosts the native traffic
@@ -242,8 +260,8 @@ function App() {
         <div className={"sidebar" + (collapsed ? " collapsed" : "")}>
           <div className="sb-top">
             {collapsed
-              ? <button className="btn-newcrawl" title="New Crawl" onClick={() => setView("new")} style={{ width: 34, height: 34, padding: 0 }}><Icon name="plus" size={16} /></button>
-              : <button className="btn-newcrawl" onClick={() => setView("new")}><Icon name="plus" size={15} />New Crawl</button>}
+              ? <button className="btn-newcrawl" title={crawlActive ? crawlBusyMsg : "New Crawl"} disabled={crawlActive} onClick={() => setView("new")} style={{ width: 34, height: 34, padding: 0 }}><Icon name="plus" size={16} /></button>
+              : <button className="btn-newcrawl" title={crawlActive ? crawlBusyMsg : null} disabled={crawlActive} onClick={() => setView("new")}><Icon name="plus" size={15} />New Crawl</button>}
           </div>
           <div className="sb-nav">
             {nav.map((n) => (
@@ -297,9 +315,9 @@ function App() {
           crawls.length === 0
             ? <Welcome onStart={startFromWelcome} onConfigure={() => setView("new")}
                 onMcp={() => { setSettingsFocus({ section: "mcp" }); setSettingsBack({ view: "home", label: "Back" }); setView("settings"); }} />
-            : <CrawlManager crawls={crawls} onOpen={openCrawl} onResume={resumeCrawl} onCompare={() => setView("compare")} onNew={() => setView("new")} onDelete={deleteCrawl} storage={storage} />
+            : <CrawlManager crawls={crawls} onOpen={openCrawl} onResume={resumeCrawl} onCompare={() => setView("compare")} onNew={() => setView("new")} onDelete={deleteCrawl} storage={storage} crawlBusyMsg={crawlBusyMsg} />
         )}
-        {view === "new" && <NewCrawl onStart={startCrawl} onOpenSettings={(p) => { setSettingsProfile(p); setSettingsBack({ view: "new", label: "New Crawl" }); setView("settings"); }} />}
+        {view === "new" && <NewCrawl onStart={startCrawl} onOpenSettings={(p) => { setSettingsProfile(p); setSettingsBack({ view: "new", label: "New Crawl" }); setView("settings"); }} crawlBusyMsg={crawlBusyMsg} onViewActiveCrawl={viewActiveCrawl} />}
         {view === "results" && activeCrawl && (
           <ResultsWorkspace
             crawl={activeCrawl}
@@ -311,12 +329,13 @@ function App() {
             onOpenDetail={(url) => setDetail({ crawlId: activeCrawl.id, url })}
             onFilterByIssue={openDataset}
             onResume={() => resumeCrawl(activeCrawl)}
+            crawlBusyMsg={crawlBusyMsg}
           />
         )}
         {view === "settings" && <SettingsView profileName={settingsProfile} focus={settingsFocus}
           onBack={settingsBack ? () => setView(settingsBack.view) : null} backLabel={settingsBack ? settingsBack.label : null} />}
         {view === "compare" && <CompareView crawls={crawls} />}
-        {view === "projects" && <ProjectsView onCrawlSite={(domain) => startCrawl({
+        {view === "projects" && <ProjectsView crawlBusyMsg={crawlBusyMsg} onCrawlSite={(domain) => startCrawl({
           mode: "spider", url: "https://" + domain, listUrls: [], sitemapUrl: "",
           profile: "Default audit", threads: 5, rate: 2, maxDepth: -1, rendering: "text",
         })} />}

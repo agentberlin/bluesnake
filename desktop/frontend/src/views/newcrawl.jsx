@@ -5,7 +5,7 @@ import React, { useEffect, useState } from "react";
 import { Icon, Btn, Seg, Toggle } from "../ui";
 import { api } from "../api";
 
-export function NewCrawl({ onStart, onOpenSettings }) {
+export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCrawl }) {
   const [mode, setMode] = useState("spider");
   const [url, setUrl] = useState("https://");
   const [listSrc, setListSrc] = useState("paste");
@@ -30,6 +30,7 @@ export function NewCrawl({ onStart, onOpenSettings }) {
     : (listSrc === "sitemap" ? /^https?:\/\//.test(sitemapUrl.trim()) : listCount > 0);
 
   async function start() {
+    if (crawlBusyMsg) { setErr(crawlBusyMsg); return; }
     if (!valid || starting) {
       setErr(mode === "spider" ? "Enter a valid URL including http:// or https://" : "Add at least one URL to audit.");
       return;
@@ -67,6 +68,16 @@ export function NewCrawl({ onStart, onOpenSettings }) {
       <div className="scroll" style={{ padding: "40px 24px" }}>
         <div style={{ maxWidth: 660, margin: "0 auto" }} className="fade">
 
+          {/* Only one crawl runs at a time — if one starts while this form is open
+              (e.g. over MCP), block the start and point back at the live crawl. */}
+          {crawlBusyMsg && (
+            <div className="card" style={{ marginBottom: 22, padding: "12px 14px", display: "flex", alignItems: "center", gap: 11, borderColor: "color-mix(in oklab, var(--sev-warn) 40%, var(--border))", background: "color-mix(in oklab, var(--sev-warn) 6%, var(--surface))" }}>
+              <Icon name="circle-pause" size={17} style={{ color: "var(--sev-warn)", flex: "0 0 17px" }} />
+              <span style={{ fontSize: 12.5, color: "var(--ink-2)", flex: 1 }}>{crawlBusyMsg}</span>
+              {onViewActiveCrawl && <Btn size="sm" icon="arrow-right" onClick={onViewActiveCrawl}>View running crawl</Btn>}
+            </div>
+          )}
+
           {/* mode */}
           <div style={{ display: "flex", justifyContent: "center", marginBottom: 26 }}>
             <Seg value={mode} onChange={setMode} options={[{ value: "spider", label: "Spider — discover by following links" }, { value: "list", label: "List — audit exact URLs" }]} />
@@ -83,7 +94,7 @@ export function NewCrawl({ onStart, onOpenSettings }) {
                   placeholder="https://example.com"
                   style={{ height: 52, fontSize: 15, paddingLeft: 46, paddingRight: 130, boxShadow: "var(--shadow-sm)" }} />
                 <div style={{ position: "absolute", right: 8, top: 8 }}>
-                  <Btn variant="primary" icon="play" onClick={start} style={{ height: 36, fontSize: 13.5, padding: "0 16px", opacity: valid ? 1 : 0.55 }}>
+                  <Btn variant="primary" icon="play" onClick={start} disabled={!!crawlBusyMsg} title={crawlBusyMsg} style={{ height: 36, fontSize: 13.5, padding: "0 16px", opacity: (valid && !crawlBusyMsg) ? 1 : 0.55 }}>
                     {starting ? "Starting…" : "Start crawl"}
                   </Btn>
                 </div>
@@ -98,7 +109,7 @@ export function NewCrawl({ onStart, onOpenSettings }) {
                 <Seg value={listSrc} onChange={setListSrc} options={[{ value: "paste", label: "Paste" }, { value: "sitemap", label: "Sitemap URL" }]} />
                 <div style={{ flex: 1 }} />
                 {listSrc === "paste" && <span className="pill mono">{listCount} URLs</span>}
-                <Btn variant="primary" icon="play" onClick={start} size="sm">{starting ? "Starting…" : "Start audit"}</Btn>
+                <Btn variant="primary" icon="play" onClick={start} size="sm" disabled={!!crawlBusyMsg} title={crawlBusyMsg}>{starting ? "Starting…" : "Start audit"}</Btn>
               </div>
               {listSrc === "paste" && <textarea className="input mono" value={listText} placeholder={"https://example.com/\nhttps://example.com/about"} onChange={(e) => { setListText(e.target.value); setErr(""); }} style={{ height: 150, padding: 12, resize: "vertical", lineHeight: 1.6 }} />}
               {listSrc === "sitemap" && <input className="input mono" placeholder="https://example.com/sitemap.xml" value={sitemapUrl} onChange={(e) => { setSitemapUrl(e.target.value); setErr(""); }} />}

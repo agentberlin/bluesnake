@@ -26,7 +26,7 @@ const DATASETS = [
 
 const ROW_LIMIT = 2000;
 
-export function ResultsWorkspace({ crawl, live, tab, setTab, issueFilter, setIssueFilter, onOpenDetail, onFilterByIssue, onResume }) {
+export function ResultsWorkspace({ crawl, live, tab, setTab, issueFilter, setIssueFilter, onOpenDetail, onFilterByIssue, onResume, crawlBusyMsg }) {
   const [toast, setToast] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [analyseMenu, setAnalyseMenu] = useState(false);
@@ -144,7 +144,7 @@ export function ResultsWorkspace({ crawl, live, tab, setTab, issueFilter, setIss
               {data && <span className="pill mono" style={{ height: 20, fontSize: 11 }}>{data.total.toLocaleString()}</span>}
               {tab === "overview" && live && <span style={{ marginLeft: 4 }}>{ovToggle}</span>}
               <div style={{ flex: 1 }} />
-              {crawl.status === "interrupted" && onResume && <Btn icon="play" variant="primary" onClick={onResume}>Resume crawl</Btn>}
+              {crawl.status === "interrupted" && onResume && <Btn icon="play" variant="primary" onClick={onResume} disabled={!!crawlBusyMsg} title={crawlBusyMsg}>Resume crawl</Btn>}
               <div style={{ position: "relative" }}>
                 <Btn icon="git-compare" onClick={() => setAnalyseMenu((v) => !v)}>Re-analyse</Btn>
                 {analyseMenu && <>
