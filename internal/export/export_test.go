@@ -18,7 +18,7 @@ import (
 
 func seededStore(t *testing.T) *store.Crawl {
 	t.Helper()
-	st, err := store.CreateCrawl(t.TempDir(), "", []string{"https://ex.com/"}, "spider", config.Default())
+	st, err := store.CreateCrawl(t.TempDir(), []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestTabExports(t *testing.T) {
 // affected-URL count stays per-URL. This is the regression the (url, issue, detail)
 // key exists for; the old (url, issue) key kept only the last property.
 func TestIssuesExportListsEveryDetail(t *testing.T) {
-	st, err := store.CreateCrawl(t.TempDir(), "", []string{"https://ex.com/"}, "spider", config.Default())
+	st, err := store.CreateCrawl(t.TempDir(), []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -41,14 +41,14 @@ func newCrawlsCmd() *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tPROJECT\tMODE\tSTATUS\tURLS\tCRAWLED\tSEED")
+			fmt.Fprintln(w, "ID\tMODE\tSTATUS\tURLS\tCRAWLED\tSEED")
 			for _, in := range infos {
 				total := in.Total
 				if total == 0 {
 					total = in.Crawled
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\t%s\n",
-					in.ID, in.Project, in.Mode, in.Status, total, in.Crawled, in.Seed)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%s\n",
+					in.ID, in.Mode, in.Status, total, in.Crawled, in.Seed)
 			}
 			return w.Flush()
 		},

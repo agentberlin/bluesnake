@@ -9,7 +9,7 @@ import (
 
 func TestHTTPVersionRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	c, err := CreateCrawl(dir, "", []string{"https://ex.com/"}, "spider", config.Default())
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

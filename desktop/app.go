@@ -90,7 +90,6 @@ func (a *App) invalidate(id string) {
 
 type CrawlSummary struct {
 	ID            string `json:"id"`
-	Project       string `json:"project"`
 	Seed          string `json:"seed"`
 	Mode          string `json:"mode"`
 	Status        string `json:"status"`
@@ -110,7 +109,7 @@ func (a *App) ListCrawls() ([]CrawlSummary, error) {
 	out := make([]CrawlSummary, 0, len(infos))
 	for _, in := range infos {
 		cs := CrawlSummary{
-			ID: in.ID, Project: in.Project, Seed: in.Seed, Mode: in.Mode,
+			ID: in.ID, Seed: in.Seed, Mode: in.Mode,
 			Status: in.Status, Crawled: in.Crawled, Total: in.Total,
 		}
 		if !in.Started.IsZero() {
@@ -166,7 +165,6 @@ type StartRequest struct {
 	URL        string   `json:"url"`
 	ListURLs   []string `json:"listUrls"`
 	SitemapURL string   `json:"sitemapUrl"`
-	Project    string   `json:"project"`
 	Profile    string   `json:"profile"`
 	Threads    int      `json:"threads"`
 	Rate       float64  `json:"rate"`     // URLs/sec, 0 = unlimited
@@ -227,14 +225,7 @@ func (a *App) StartCrawl(req StartRequest) (string, error) {
 		return "", err
 	}
 
-	project := req.Project
-	if project == "" {
-		if u, err := url.Parse(seeds[0]); err == nil {
-			project = strings.TrimPrefix(u.Hostname(), "www.")
-		}
-	}
-
-	st, err := store.CreateCrawl(a.storeDir, project, seeds, mode, cfg)
+	st, err := store.CreateCrawl(a.storeDir, seeds, mode, cfg)
 	if err != nil {
 		return "", err
 	}

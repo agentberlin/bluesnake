@@ -76,7 +76,7 @@ mirrors the current backlog distilled from that log.
 1. **Crawl** any site (spider mode) or URL list (list mode) with full control: scope, limits, speed, include/exclude, URL rewriting, robots.txt handling, auth, custom headers/UA, proxy.
 2. **Extract** the full Screaming Frog per-URL dataset: response data, indexability, on-page elements, directives, canonicals, pagination, hreflang, structured data, content metrics, security signals, link graph with rich edge data.
 3. **Audit**: evaluate the full issues catalogue (issue/warning/opportunity × priority) that doesn't require external APIs.
-4. **Persist**: disk-backed storage with continuous commit (crash-safe), pause/resume, resumable partial crawls, named projects, crawl IDs.
+4. **Persist**: disk-backed storage with continuous commit (crash-safe), pause/resume, resumable partial crawls, crawl IDs.
 5. **Analyze** post-crawl: link score, redirect/canonical chains, near-duplicates, hreflang reciprocity, sitemap set-operations, orphans.
 6. **Report/Export**: all tab/filter exports, bulk exports, reports, XML sitemap generation — CSV/JSON(L)/xlsx.
 7. **Compare** two crawls: filter deltas (Added/New/Removed/Missing), change detection, URL mapping.
@@ -142,7 +142,7 @@ bluesnake serve                        # read-only localhost JSON API over the c
 bluesnake mcp                          # MCP server for LLM agents over streamable HTTP (--addr, default 127.0.0.1:8473)
 ```
 
-Global flags: `--config <file>`, `--store-dir <dir>` (default `~/.bluesnake`), `--project <name>`, `--task <name>`, `--output <dir>`, `--format csv|json|jsonl|xlsx`, `--timestamped-output`, `--overwrite`, `--quiet/--verbose`, `--log json|text`.
+Global flags: `--config <file>`, `--store-dir <dir>` (default `~/.bluesnake`), `--output <dir>`, `--format csv|json|jsonl|xlsx`, `--timestamped-output`, `--overwrite`, `--quiet/--verbose`, `--log json|text`.
 
 Every config key is overridable as a flag using dotted names: `--set spider.limits.max_depth=3 --set speed.max_threads=10` plus dedicated shorthand flags for the common ones (`--depth`, `--threads`, `--rate`, `--include`, `--exclude`, `--user-agent`, ...).
 
@@ -374,7 +374,7 @@ internal/frontier/       dedup set + priority FIFO by depth, per-host queues, po
 internal/crawler/        orchestrator: worker pool, pipeline (fetch→parse→evaluate→store→discover),
                          pause/resume, signal handling, progress events
 internal/store/          SQLite schema + repositories (pages, links, frontier, sitemaps, issues,
-                         analysis results, crawl meta), migrations, crawl manager (IDs/projects)
+                         analysis results, crawl meta), migrations, crawl manager (crawl IDs)
 internal/indexability/   the indexability state machine (status + reason)
 internal/issues/         rule engine: per-URL rules + aggregate rules; catalogue with id/severity/priority
 internal/analyze/        post-crawl: link score, chains (redirect/canonical), near-dup minhash,
@@ -438,7 +438,7 @@ docs/
 
 ### 5.3 Storage schema (SQLite, one DB file per crawl)
 
-`~/.bluesnake/crawls/<crawl-id>.db`, plus a tiny registry DB `~/.bluesnake/registry.db` (crawl id, project, task name, seed, mode, started/finished, status, and two URL counts: `crawled` = fetched and `total` = encountered — Screaming Frog's "URLs Crawled" vs "URLs Encountered" split, where encountered also covers robots-blocked/errored URLs). `total` is the headline count shown across the CLI, desktop and MCP (`crawled` is reported alongside as the fetched subset); crawls finished before `total` existed are backfilled lazily from a `COUNT(*)` over `pages`. Crawl ID = `<yyyymmdd-hhmmss>-<short-rand>`.
+`~/.bluesnake/crawls/<crawl-id>.db`, plus a tiny registry DB `~/.bluesnake/registry.db` (crawl id, seed, mode, started/finished, status, and two URL counts: `crawled` = fetched and `total` = encountered — Screaming Frog's "URLs Crawled" vs "URLs Encountered" split, where encountered also covers robots-blocked/errored URLs). `total` is the headline count shown across the CLI, desktop and MCP (`crawled` is reported alongside as the fetched subset); crawls finished before `total` existed are backfilled lazily from a `COUNT(*)` over `pages`. Crawl ID = `<yyyymmdd-hhmmss>-<short-rand>`.
 
 ```sql
 -- meta

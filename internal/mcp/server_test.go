@@ -57,7 +57,7 @@ func callTool(t *testing.T, s *Server, name string, args any) (string, bool) {
 
 func seedCrawl(t *testing.T, dir string) string {
 	t.Helper()
-	st, err := store.CreateCrawl(dir, "proj", []string{"https://example.com/"}, "spider", config.Default())
+	st, err := store.CreateCrawl(dir, []string{"https://example.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestIssueSummaryEmptyCrawl(t *testing.T) {
 // distinct details plus a second page with one detail is 2 affected URLs, not 3.
 func TestIssueSummaryCountsDistinctURLs(t *testing.T) {
 	s, dir := testServer(t)
-	st, err := store.CreateCrawl(dir, "proj", []string{"https://example.com/"}, "spider", config.Default())
+	st, err := store.CreateCrawl(dir, []string{"https://example.com/"}, "spider", config.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

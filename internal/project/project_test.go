@@ -133,7 +133,7 @@ func TestProjectCRUD(t *testing.T) {
 // (optionally) marks it completed.
 func makeCrawl(t *testing.T, dir, seed, mode string, cfg *config.Config, completed bool, fn func(*store.Crawl)) string {
 	t.Helper()
-	c, err := store.CreateCrawl(dir, "", []string{seed}, mode, cfg)
+	c, err := store.CreateCrawl(dir, []string{seed}, mode, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

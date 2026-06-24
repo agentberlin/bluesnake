@@ -158,7 +158,7 @@ function App() {
     let u = (rawUrl || "").trim();
     if (u && !/^https?:\/\//i.test(u)) u = "https://" + u;
     return startCrawl({
-      mode: "spider", url: u, listUrls: [], sitemapUrl: "", project: "",
+      mode: "spider", url: u, listUrls: [], sitemapUrl: "",
       profile: "Default audit", threads: 5, rate: 2, maxDepth: -1, rendering: "text",
     });
   }
@@ -317,7 +317,7 @@ function App() {
           onBack={settingsBack ? () => setView(settingsBack.view) : null} backLabel={settingsBack ? settingsBack.label : null} />}
         {view === "compare" && <CompareView crawls={crawls} />}
         {view === "projects" && <ProjectsView onCrawlSite={(domain) => startCrawl({
-          mode: "spider", url: "https://" + domain, listUrls: [], sitemapUrl: "", project: "",
+          mode: "spider", url: "https://" + domain, listUrls: [], sitemapUrl: "",
           profile: "Default audit", threads: 5, rate: 2, maxDepth: -1, rendering: "text",
         })} />}
         {view === "robots" && <RobotsTester />}
