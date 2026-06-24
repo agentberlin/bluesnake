@@ -14,7 +14,7 @@ const fmtDate = (v) => {
 };
 const ageDays = (unix) => (unix ? Math.floor((Date.now() - unix * 1000) / 86400000) : null);
 
-export function ProjectsView({ onCrawlSite }) {
+export function ProjectsView({ onCrawlSite, crawlBusyMsg }) {
   const [projects, setProjects] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [selId, setSelId] = useState(null);
@@ -27,7 +27,7 @@ export function ProjectsView({ onCrawlSite }) {
 
   if (sel) {
     return <ProjectDetail project={sel} onBack={() => { setSelId(null); load(); }}
-      onCrawlSite={onCrawlSite}
+      onCrawlSite={onCrawlSite} crawlBusyMsg={crawlBusyMsg}
       onDeleted={() => { setSelId(null); load(); }}
       onRenamed={load} />;
   }
@@ -103,7 +103,7 @@ function CreateProjectModal({ onClose, onCreated }) {
     </>} />;
 }
 
-function ProjectDetail({ project, onBack, onCrawlSite, onDeleted, onRenamed }) {
+function ProjectDetail({ project, onBack, onCrawlSite, onDeleted, onRenamed, crawlBusyMsg }) {
   const [tab, setTab] = useState("overview");
   const [confirmDel, setConfirmDel] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -120,7 +120,7 @@ function ProjectDetail({ project, onBack, onCrawlSite, onDeleted, onRenamed }) {
         <IconBtn icon="trash-2" title="Delete project" onClick={() => setConfirmDel(true)} />
       </div>
       {tab === "overview"
-        ? <Overview project={project} onCrawlSite={onCrawlSite} />
+        ? <Overview project={project} onCrawlSite={onCrawlSite} crawlBusyMsg={crawlBusyMsg} />
         : <Comparison project={project} />}
       {confirmDel && <Modal icon="trash-2" danger title="Delete project?" onClose={() => setConfirmDel(false)}
         body={<>This removes the project <b>{project.name}</b> and its competitor list. Your crawls are not deleted.</>}
@@ -153,7 +153,7 @@ const reasonLabel = {
   "scope-narrowed": "section-scoped",
 };
 
-function Overview({ project, onCrawlSite }) {
+function Overview({ project, onCrawlSite, crawlBusyMsg }) {
   const [sites, setSites] = useState([]);
   const [busy, setBusy] = useState(true);
   const [adding, setAdding] = useState("");
@@ -199,7 +199,7 @@ function Overview({ project, onCrawlSite }) {
                     ))}
                   </div>
                 </div>
-                {onCrawlSite && <Btn size="sm" icon="radar" onClick={() => onCrawlSite(s.domain)}>Crawl</Btn>}
+                {onCrawlSite && <Btn size="sm" icon="radar" onClick={() => onCrawlSite(s.domain)} disabled={!!crawlBusyMsg} title={crawlBusyMsg}>Crawl</Btn>}
                 {s.role !== "main" && <IconBtn icon="x" title="Remove competitor" onClick={async () => { await projectApi.removeCompetitor(project.id, s.domain); load(); }} />}
               </div>
             );
