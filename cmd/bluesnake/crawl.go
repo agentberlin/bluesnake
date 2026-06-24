@@ -1,16 +1,22 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/finalize"
+	"github.com/agentberlin/bluesnake/internal/queue"
+	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 func newCrawlCmd() *cobra.Command {
@@ -70,41 +76,52 @@ func newCrawlCmd() *cobra.Command {
 				return exitErr{2, err}
 			}
 
-			st, err := store.CreateCrawl(storeDir, []string{args[0]}, "spider", cfg)
+			// The crawl runs through the same queue wiring every surface uses: an
+			// in-process dispatcher drains a single job through the shared executor.
+			// The CLI's file/flag config travels as a frozen ConfigYAML spec, and a
+			// cliObserver tallies the live stream for the summary. Ctrl-C cancels the
+			// signal context, which the executor turns into a resumable interrupt.
+			cfgYAML, err := yaml.Marshal(cfg)
 			if err != nil {
 				return exitErr{1, err}
 			}
-			defer st.Close()
+			spec := queue.JobSpec{URL: args[0], ConfigYAML: string(cfgYAML)}
 
-			c, err := crawler.New(cfg, crawler.WithSink(st))
-			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
-				return exitErr{2, err}
-			}
-			defer c.Close()
+			obs := &cliObserver{done: make(chan struct{})}
+			disp := queue.New(queue.NewMemStore(), runner.New(storeDir, obs))
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-
-			res, err := c.Run(ctx, args[0])
-			if err != nil {
+			if err := disp.Start(ctx); err != nil {
 				return exitErr{1, err}
 			}
-			out, ferr := finalize.Crawl(c, st, res, finalize.Params{
-				StoreDir: storeDir, Cfg: cfg, Seeds: []string{args[0]}, Completed: !res.Interrupted,
-			})
+			if _, err := disp.Enqueue(spec, "manual", "", args[0]); err != nil {
+				return exitErr{1, err}
+			}
+			<-obs.done
+			disp.Shutdown()
+
+			out := obs.outcome()
+			if out.Err != nil && out.Status != store.StatusInterrupted && out.CrawlID == "" {
+				// the crawl never started (bad seed, sitemap fetch, ...)
+				fmt.Fprintln(cmd.ErrOrStderr(), out.Err)
+				return exitErr{1, out.Err}
+			}
 			if !quiet {
-				printSummary(cmd, res.Pages, out.Crawled, out.Total, res.Duration)
-				fmt.Fprintf(cmd.OutOrStdout(), "Crawl ID: %s\n", st.ID)
+				obs.tally().print(cmd.OutOrStdout(), out.Crawled, out.Total, time.Duration(out.DurationSec)*time.Second)
+				fmt.Fprintf(cmd.OutOrStdout(), "Crawl ID: %s\n", out.CrawlID)
 			}
-			if res.Interrupted {
-				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", st.ID, storeDir)
-				return exitErr{3, fmt.Errorf("interrupted")}
+			if out.Status == store.StatusInterrupted {
+				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", out.CrawlID, storeDir)
+				return exitErr{3, errors.New("interrupted")}
 			}
-			if ferr != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), "finalize:", ferr)
+			if out.Err != nil {
+				fmt.Fprintln(cmd.ErrOrStderr(), "finalize:", out.Err)
 			} else if !quiet {
-				printAnalysis(cmd, st.ID, out)
+				printAnalysis(cmd, out.CrawlID, finalize.Outcome{
+					Analyzed: out.Analyzed, Chains: out.Chains, NearDups: out.NearDups,
+					IssueTotal: out.IssueTotal, IssueChecks: out.IssueChecks,
+				})
 			}
 			return nil
 		},
@@ -124,47 +141,109 @@ func newCrawlCmd() *cobra.Command {
 	return cmd
 }
 
-// printSummary renders the post-crawl tally. crawled/total are the authoritative
-// full-graph counts (from finalize's Outcome), and pages is the full stored page
-// set to break down — on resume the caller passes the merged two-session graph
-// (st.LoadPages()), not the per-session res.Pages, so every line is cumulative.
-func printSummary(cmd *cobra.Command, pages map[string]*crawler.PageRecord, crawled, total int, dur time.Duration) {
-	var s2, s3, s4, s5, blocked, errs, indexable, nonIndexable, internal, external int
-	for _, p := range pages {
-		switch p.Scope {
-		case "internal":
-			internal++
-		case "external":
-			external++
-		}
-		switch p.State {
-		case crawler.StateBlockedRobots:
-			blocked++
-			continue
-		case crawler.StateError:
-			errs++
-			continue
-		}
-		switch {
-		case p.StatusCode >= 500:
-			s5++
-		case p.StatusCode >= 400:
-			s4++
-		case p.StatusCode >= 300:
-			s3++
-		case p.StatusCode >= 200:
-			s2++
-		}
-		if p.Indexable {
-			indexable++
-		} else {
-			nonIndexable++
-		}
+// cliObserver implements runner.Observer for the one-shot CLI crawl: it tallies
+// the page stream for the summary, captures the crawl id and the terminal
+// outcome, and signals done when the crawl ends (or fails to start).
+type cliObserver struct {
+	done chan struct{}
+
+	mu  sync.Mutex
+	t   crawlTally
+	out runner.Outcome
+}
+
+func (o *cliObserver) OnStart(crawlID, seed string) {
+	o.mu.Lock()
+	o.out.CrawlID = crawlID
+	o.mu.Unlock()
+}
+
+func (o *cliObserver) OnPage(rec *crawler.PageRecord) {
+	o.mu.Lock()
+	o.t.add(rec)
+	o.mu.Unlock()
+}
+
+func (o *cliObserver) OnDone(out runner.Outcome) {
+	o.mu.Lock()
+	id := o.out.CrawlID
+	o.out = out
+	if o.out.CrawlID == "" {
+		o.out.CrawlID = id
 	}
-	out := cmd.OutOrStdout()
+	o.mu.Unlock()
+	close(o.done)
+}
+
+func (o *cliObserver) outcome() runner.Outcome {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.out
+}
+
+func (o *cliObserver) tally() crawlTally {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.t
+}
+
+// crawlTally is the per-status/scope breakdown the CLI summary prints. The
+// pages-based printSummary (used by resume/list) and the streaming cliObserver
+// both feed it, so every surface prints byte-identical summaries.
+type crawlTally struct {
+	s2, s3, s4, s5          int
+	blocked, errs           int
+	indexable, nonIndexable int
+	internal, external      int
+}
+
+func (t *crawlTally) add(rec *crawler.PageRecord) {
+	switch rec.Scope {
+	case "internal":
+		t.internal++
+	case "external":
+		t.external++
+	}
+	switch rec.State {
+	case crawler.StateBlockedRobots:
+		t.blocked++
+		return
+	case crawler.StateError:
+		t.errs++
+		return
+	}
+	switch {
+	case rec.StatusCode >= 500:
+		t.s5++
+	case rec.StatusCode >= 400:
+		t.s4++
+	case rec.StatusCode >= 300:
+		t.s3++
+	case rec.StatusCode >= 200:
+		t.s2++
+	}
+	if rec.Indexable {
+		t.indexable++
+	} else {
+		t.nonIndexable++
+	}
+}
+
+func (t crawlTally) print(out io.Writer, crawled, total int, dur time.Duration) {
 	fmt.Fprintf(out, "Found %d URLs (%d internal, %d external) — %d crawled in %s\n",
-		total, internal, external, crawled, dur.Round(dur/100+1))
+		total, t.internal, t.external, crawled, dur.Round(dur/100+1))
 	fmt.Fprintf(out, "  2xx: %d  3xx: %d  4xx: %d  5xx: %d  blocked: %d  no-response: %d\n",
-		s2, s3, s4, s5, blocked, errs)
-	fmt.Fprintf(out, "  indexable: %d  non-indexable: %d\n", indexable, nonIndexable)
+		t.s2, t.s3, t.s4, t.s5, t.blocked, t.errs)
+	fmt.Fprintf(out, "  indexable: %d  non-indexable: %d\n", t.indexable, t.nonIndexable)
+}
+
+// printSummary renders the post-crawl tally from a stored page set (used by the
+// resume/list paths, which load the full graph). crawled/total are the
+// authoritative full-graph counts from finalize's Outcome.
+func printSummary(cmd *cobra.Command, pages map[string]*crawler.PageRecord, crawled, total int, dur time.Duration) {
+	var t crawlTally
+	for _, p := range pages {
+		t.add(p)
+	}
+	t.print(cmd.OutOrStdout(), crawled, total, dur)
 }

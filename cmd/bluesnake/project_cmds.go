@@ -2,10 +2,17 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"os/signal"
+	"sync"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
+	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/project"
+	"github.com/agentberlin/bluesnake/internal/queue"
+	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/spf13/cobra"
 )
 
@@ -244,6 +251,76 @@ func newProjectCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(createCmd, lsCmd, rmCmd, addCmd, removeCmd, showCmd, compareCmd, diffCmd)
+	crawlAllCmd := &cobra.Command{
+		Use:   "crawl-all <project-id>",
+		Short: "Crawl every member domain of the project, one at a time",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := open()
+			if err != nil {
+				return err
+			}
+			members, err := s.Members(args[0])
+			s.Close()
+			if err != nil {
+				return exitErr{2, err}
+			}
+			if len(members) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "project has no member domains to crawl")
+				return nil
+			}
+			// Synchronous in-process drain: one dispatcher runs every member crawl
+			// sequentially through the shared executor (no parallel crawls).
+			obs := &groupObserver{out: cmd.OutOrStdout(), total: len(members), done: make(chan struct{})}
+			disp := queue.New(queue.NewMemStore(), runner.New(storeDir, obs))
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			if err := disp.Start(ctx); err != nil {
+				return exitErr{1, err}
+			}
+			for _, m := range members {
+				if _, err := disp.Enqueue(queue.JobSpec{URL: "https://" + m.Domain}, "project", args[0], m.Domain); err != nil {
+					return exitErr{1, err}
+				}
+			}
+			<-obs.done
+			disp.Shutdown()
+			return nil
+		},
+	}
+
+	cmd.AddCommand(createCmd, lsCmd, rmCmd, addCmd, removeCmd, showCmd, compareCmd, diffCmd, crawlAllCmd)
 	return cmd
+}
+
+// groupObserver tracks a `projects crawl-all` run, printing a line per crawl and
+// closing done once every member crawl has finished.
+type groupObserver struct {
+	out   io.Writer
+	total int
+	done  chan struct{}
+
+	mu       sync.Mutex
+	finished int
+}
+
+func (o *groupObserver) OnStart(crawlID, seed string) {
+	fmt.Fprintf(o.out, "crawling %s …\n", seed)
+}
+
+func (o *groupObserver) OnPage(*crawler.PageRecord) {}
+
+func (o *groupObserver) OnDone(out runner.Outcome) {
+	o.mu.Lock()
+	o.finished++
+	n := o.finished
+	o.mu.Unlock()
+	status := out.Status
+	if out.Err != nil {
+		status = "error: " + out.Err.Error()
+	}
+	fmt.Fprintf(o.out, "  [%d/%d] %s — %s (%d crawled)\n", n, o.total, out.CrawlID, status, out.Crawled)
+	if n == o.total {
+		close(o.done)
+	}
 }

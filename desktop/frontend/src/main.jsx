@@ -18,6 +18,7 @@ import { SettingsView } from "./views/settings";
 import { CompareView } from "./views/compare";
 import { ProjectsView } from "./views/projects";
 import { RobotsTester } from "./views/robots";
+import { QueueView } from "./views/queue";
 import { MCPControls } from "./mcp-controls";
 
 /* Resolve the host OS synchronously from the WebView user agent. The webview
@@ -43,6 +44,7 @@ function App() {
   const [crawlsLoaded, setCrawlsLoaded] = useState(false); // gates the first-run welcome until we know
   const [activeCrawl, setActiveCrawl] = useState(null);
   const [liveCrawlId, setLiveCrawlId] = useState(null);
+  const [queueJobs, setQueueJobs] = useState([]);
   const [resultsTab, setResultsTab] = useState("internal");
   const [settingsProfile, setSettingsProfile] = useState("Default audit");
   const [detail, setDetail] = useState(null); // {crawlId, url}
@@ -112,8 +114,16 @@ function App() {
     api.storageInfo().then(setStorage).catch(() => {});
   }, []);
 
+  // The crawl queue: every start enqueues a job that the single dispatcher drains
+  // one at a time. We mirror it here so the sidebar shows a pending count and the
+  // Queue view stays live.
+  const refreshQueue = useCallback(() => {
+    api.listQueue().then((j) => setQueueJobs(j || [])).catch(() => {});
+  }, []);
+
   useEffect(() => {
     refresh();
+    refreshQueue();
     // A crawl may already be running (e.g. after a frontend reload). Open it the
     // same way any crawl opens — on its Overview, which renders live progress
     // while the crawl is running (see results-shell.jsx).
@@ -122,20 +132,23 @@ function App() {
     }).catch(() => {});
     const offDone = on("crawl:done", (d) => {
       refresh();
+      refreshQueue();
       // The session has ended: stop treating it as live (its Overview falls back
       // to the static dashboard) and fold the final status into what we're showing.
       setLiveCrawlId((cur) => (d && d.crawlId === cur ? null : cur));
       setActiveCrawl((cur) => (cur && d && cur.id === d.crawlId
         ? { ...cur, status: d.status, crawled: d.crawled, total: d.total } : cur));
     });
-    // crawls started over MCP (by an LLM) take over the screen like any other
+    // a crawl beginning (hand-started, queued, MCP, or project crawl-all) takes
+    // over the screen like any other
     const offStarted = on("crawl:started", (id) => {
       refresh();
+      refreshQueue();
       api.activeProgress().then((p) => openLive(id, p && p.seed)).catch(() => openLive(id, ""));
     });
     return () => { offDone(); offStarted(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refresh]);
+  }, [refresh, refreshQueue]);
 
   // Open a live crawl on its Overview tab; the Overview renders the live progress
   // view while liveCrawlId matches, so it's reachable like any other crawl page.
@@ -149,9 +162,14 @@ function App() {
   }
 
   async function startCrawl(req) {
-    const id = await api.startCrawl(req);
-    openLive(id, req.url || req.sitemapUrl || (req.listUrls && req.listUrls[0]) || "");
+    // Starting enqueues a job. When idle the dispatcher picks it up within a tick
+    // and the crawl:started event opens the live view; when a crawl is already
+    // running the job queues behind it, so we show the queue instead.
+    const busy = crawlActive;
+    await api.startCrawl(req);
     refresh();
+    refreshQueue();
+    if (busy) setView("queue");
   }
   // first-run welcome: a bare domain → a sensible default spider crawl
   function startFromWelcome(rawUrl) {
@@ -163,10 +181,11 @@ function App() {
     });
   }
   async function resumeCrawl(c) {
-    const id = await api.resumeCrawl(c.id);
-    setActiveCrawl({ ...c, id, status: "running" });
-    openLive(id, c.seed);
+    const busy = crawlActive;
+    await api.resumeCrawl(c.id);
     refresh();
+    refreshQueue();
+    if (busy) setView("queue"); // queued behind the running crawl; else crawl:started opens it
   }
   function openCrawl(c) {
     setActiveCrawl(c);
@@ -185,8 +204,10 @@ function App() {
     setView("results");
   }
 
+  const pendingJobs = queueJobs.filter((j) => j.status === "queued" || j.status === "running").length;
   const nav = [
     { id: "home", label: "Crawls", icon: "layout-grid", count: crawls.length },
+    { id: "queue", label: "Queue", icon: "list-checks", count: pendingJobs || null },
     { id: "projects", label: "Projects", icon: "folder" },
     { id: "compare", label: "Compare", icon: "git-compare" },
     { id: "robots", label: "robots.txt Tester", icon: "bot" },
@@ -209,7 +230,7 @@ function App() {
   const liveSeed = liveCrawl ? liveCrawl.seed
     : (activeCrawl && activeCrawl.id === liveCrawlId ? activeCrawl.seed : "");
   const crawlBusyMsg = crawlActive
-    ? `A crawl is already running${liveSeed ? " (" + hostOf(liveSeed) + ")" : ""} — pause or stop it first.`
+    ? `A crawl is already running${liveSeed ? " (" + hostOf(liveSeed) + ")" : ""} — new crawls queue behind it.`
     : null;
   // Jump back to the running crawl (used by the "View running crawl" link on the
   // New Crawl form when a crawl starts while it's open).
@@ -260,8 +281,8 @@ function App() {
         <div className={"sidebar" + (collapsed ? " collapsed" : "")}>
           <div className="sb-top">
             {collapsed
-              ? <button className="btn-newcrawl" title={crawlActive ? crawlBusyMsg : "New Crawl"} disabled={crawlActive} onClick={() => setView("new")} style={{ width: 34, height: 34, padding: 0 }}><Icon name="plus" size={16} /></button>
-              : <button className="btn-newcrawl" title={crawlActive ? crawlBusyMsg : null} disabled={crawlActive} onClick={() => setView("new")}><Icon name="plus" size={15} />New Crawl</button>}
+              ? <button className="btn-newcrawl" title={crawlActive ? "Add a crawl to the queue" : "New Crawl"} onClick={() => setView("new")} style={{ width: 34, height: 34, padding: 0 }}><Icon name="plus" size={16} /></button>
+              : <button className="btn-newcrawl" title={crawlActive ? "Queued behind the running crawl" : "New Crawl"} onClick={() => setView("new")}><Icon name="plus" size={15} />New Crawl</button>}
           </div>
           <div className="sb-nav">
             {nav.map((n) => (
@@ -319,6 +340,11 @@ function App() {
             : <CrawlManager crawls={crawls} onOpen={openCrawl} onResume={resumeCrawl} onCompare={() => setView("compare")} onNew={() => setView("new")} onDelete={deleteCrawl} storage={storage} crawlBusyMsg={crawlBusyMsg} />
         )}
         {view === "new" && <NewCrawl onStart={startCrawl} onOpenSettings={(p) => { setSettingsProfile(p); setSettingsBack({ view: "new", label: "New Crawl" }); setView("settings"); }} crawlBusyMsg={crawlBusyMsg} onViewActiveCrawl={viewActiveCrawl} />}
+        {view === "queue" && <QueueView jobs={queueJobs} liveCrawlId={liveCrawlId} onRefresh={refreshQueue}
+          onCancel={(id) => api.cancelJob(id).then(refreshQueue).catch(() => {})}
+          onClear={(id) => api.clearJob(id).then(refreshQueue).catch(() => {})}
+          onOpenCrawl={(crawlId) => { const c = crawls.find((x) => x.id === crawlId); if (c) openCrawl(c); }}
+          onNew={() => setView("new")} />}
         {view === "results" && activeCrawl && (
           <ResultsWorkspace
             crawl={activeCrawl}

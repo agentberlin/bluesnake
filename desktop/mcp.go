@@ -11,7 +11,7 @@ import (
 	"sync"
 
 	"github.com/agentberlin/bluesnake/internal/mcp"
-	"github.com/agentberlin/bluesnake/internal/store"
+	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/version"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -229,7 +229,11 @@ func (a *App) persistMCP(st MCPStatus) {
 }
 
 // ---------------------------------------------------------------------------
-// desktopBackend adapts the App's session manager to mcp.Backend.
+// desktopBackend adapts the App's crawl queue to mcp.Backend, so an LLM-started
+// crawl streams into the UI exactly like a hand-started one. Like the standalone
+// MCP Runner it keeps one-crawl-at-a-time semantics: a start is rejected while a
+// crawl is running (rather than silently queued behind hand-started work), and
+// it returns the crawl id once the dispatcher has begun the crawl.
 
 type desktopBackend struct{ app *App }
 
@@ -237,41 +241,34 @@ func (b *desktopBackend) StoreDir() string { return b.app.storeDir }
 
 func (b *desktopBackend) StartCrawl(ctx context.Context, req mcp.StartRequest) (string, error) {
 	a := b.app
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.session != nil && !a.session.finished() {
-		return "", fmt.Errorf("a crawl is already running (crawl %s) — pause_crawl or stop_crawl first", a.session.st.ID)
+	a.ensureQueue()
+	if cur := a.disp.Current(); cur != nil {
+		return "", fmt.Errorf("a crawl is already running (crawl %s) — pause_crawl or stop_crawl first", cur.CrawlID)
 	}
-	cfg, err := mcp.BuildConfig(a.storeDir, req)
+	spec := req.Spec()
+	if err := runner.ValidateSpec(a.storeDir, spec); err != nil {
+		return "", err
+	}
+	j, err := a.disp.Enqueue(spec, "manual", "", req.Label())
 	if err != nil {
 		return "", err
 	}
-	seeds, mode, err := mcp.ResolveSeeds(ctx, cfg, req)
-	if err != nil {
-		return "", err
-	}
-	st, err := store.CreateCrawl(a.storeDir, seeds, mode, cfg)
-	if err != nil {
-		return "", err
-	}
-	s, err := newCrawlSession(a, st, cfg, seeds, nil, nil)
-	if err != nil {
-		st.Close()
-		return "", err
-	}
-	a.session = s
-	go s.run()
-	// the UI jumps to the live progress view, same as a hand-started crawl
-	runtime.EventsEmit(a.ctx, "crawl:started", st.ID)
-	return st.ID, nil
+	// the observer emits crawl:started when the dispatcher begins the crawl, so
+	// the UI jumps to the live view just like a hand-started crawl
+	return a.awaitCrawlID(ctx, j.ID)
 }
 
 func (b *desktopBackend) ResumeCrawl(id string) (string, error) {
-	id, err := b.app.ResumeCrawl(id)
-	if err == nil {
-		runtime.EventsEmit(b.app.ctx, "crawl:started", id)
+	a := b.app
+	a.ensureQueue()
+	if cur := a.disp.Current(); cur != nil {
+		return "", fmt.Errorf("a crawl is already running (crawl %s) — pause_crawl or stop_crawl first", cur.CrawlID)
 	}
-	return id, err
+	jobID, err := a.ResumeCrawl(id)
+	if err != nil {
+		return "", err
+	}
+	return a.awaitCrawlID(context.Background(), jobID)
 }
 
 func (b *desktopBackend) PauseCrawl() error {

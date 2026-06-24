@@ -19,6 +19,10 @@ export const api = {
   stopCrawl: () => call("StopCrawl"),
   activeProgress: () => call("ActiveProgress"),
 
+  listQueue: () => call("ListQueue"),
+  cancelJob: (id) => call("CancelJob", id),
+  clearJob: (id) => call("ClearJob", id),
+
   overview: (id) => call("Overview", id),
   dataset: (id, tab, filterIssue, limit) => call("Dataset", id, tab, filterIssue, limit),
   datasetCounts: (id) => call("DatasetCounts", id),
@@ -82,6 +86,7 @@ export const projectApi = {
   sites: (id) => pcall("ProjectSites", id),
   comparison: (id, includeOptional) => pcall("ProjectComparison", id, includeOptional),
   diff: (id, domain) => pcall("ProjectDiff", id, domain),
+  crawlAll: (id) => pcall("CrawlAll", id),
 };
 
 /* Open a URL in the user's default browser (Wails runtime), falling back to a

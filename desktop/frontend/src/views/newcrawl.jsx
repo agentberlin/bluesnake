@@ -30,7 +30,8 @@ export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCr
     : (listSrc === "sitemap" ? /^https?:\/\//.test(sitemapUrl.trim()) : listCount > 0);
 
   async function start() {
-    if (crawlBusyMsg) { setErr(crawlBusyMsg); return; }
+    // Starting while a crawl is running no longer blocks — the job is enqueued
+    // and the dispatcher runs it next (crawlBusyMsg only drives the info banner).
     if (!valid || starting) {
       setErr(mode === "spider" ? "Enter a valid URL including http:// or https://" : "Add at least one URL to audit.");
       return;
@@ -94,8 +95,8 @@ export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCr
                   placeholder="https://example.com"
                   style={{ height: 52, fontSize: 15, paddingLeft: 46, paddingRight: 130, boxShadow: "var(--shadow-sm)" }} />
                 <div style={{ position: "absolute", right: 8, top: 8 }}>
-                  <Btn variant="primary" icon="play" onClick={start} disabled={!!crawlBusyMsg} title={crawlBusyMsg} style={{ height: 36, fontSize: 13.5, padding: "0 16px", opacity: (valid && !crawlBusyMsg) ? 1 : 0.55 }}>
-                    {starting ? "Starting…" : "Start crawl"}
+                  <Btn variant="primary" icon="play" onClick={start} disabled={starting} style={{ height: 36, fontSize: 13.5, padding: "0 16px", opacity: valid ? 1 : 0.55 }}>
+                    {starting ? "Starting…" : (crawlBusyMsg ? "Add to queue" : "Start crawl")}
                   </Btn>
                 </div>
               </div>
@@ -109,7 +110,7 @@ export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCr
                 <Seg value={listSrc} onChange={setListSrc} options={[{ value: "paste", label: "Paste" }, { value: "sitemap", label: "Sitemap URL" }]} />
                 <div style={{ flex: 1 }} />
                 {listSrc === "paste" && <span className="pill mono">{listCount} URLs</span>}
-                <Btn variant="primary" icon="play" onClick={start} size="sm" disabled={!!crawlBusyMsg} title={crawlBusyMsg}>{starting ? "Starting…" : "Start audit"}</Btn>
+                <Btn variant="primary" icon="play" onClick={start} size="sm" disabled={starting}>{starting ? "Starting…" : (crawlBusyMsg ? "Add to queue" : "Start audit")}</Btn>
               </div>
               {listSrc === "paste" && <textarea className="input mono" value={listText} placeholder={"https://example.com/\nhttps://example.com/about"} onChange={(e) => { setListText(e.target.value); setErr(""); }} style={{ height: 150, padding: 12, resize: "vertical", lineHeight: 1.6 }} />}
               {listSrc === "sitemap" && <input className="input mono" placeholder="https://example.com/sitemap.xml" value={sitemapUrl} onChange={(e) => { setSitemapUrl(e.target.value); setErr(""); }} />}

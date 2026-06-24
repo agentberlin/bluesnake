@@ -2,15 +2,8 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 
-	"github.com/agentberlin/bluesnake/internal/config"
-	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/queue"
 )
 
 // StartRequest is the start_crawl tool's payload: seeds plus the same config
@@ -22,6 +15,28 @@ type StartRequest struct {
 	SitemapURL string         `json:"sitemap_url,omitempty"`
 	Profile    string         `json:"profile,omitempty"`
 	Config     map[string]any `json:"config,omitempty"` // dotted path -> value
+}
+
+// Spec turns the tool payload into the neutral queue job spec the executor runs.
+func (r StartRequest) Spec() queue.JobSpec {
+	return queue.JobSpec{
+		Mode: r.Mode, URL: r.URL, URLs: r.URLs,
+		SitemapURL: r.SitemapURL, Profile: r.Profile, Config: r.Config,
+	}
+}
+
+// Label is a short human label for the queue entry.
+func (r StartRequest) Label() string {
+	if r.URL != "" {
+		return r.URL
+	}
+	if r.SitemapURL != "" {
+		return r.SitemapURL
+	}
+	if len(r.URLs) > 0 {
+		return r.URLs[0]
+	}
+	return "list crawl"
 }
 
 // Progress is a live-crawl snapshot for the crawl_status tool.
@@ -53,135 +68,4 @@ type Backend interface {
 	StopCrawl() error
 	Progress() *Progress // nil when no crawl is live
 	StoreDir() string
-}
-
-// ---------------------------------------------------------------------------
-// shared crawl-request semantics (used by Runner and the desktop adapter)
-
-// profileSlug mirrors the desktop app's profile file naming
-// (<store-dir>/profiles/<slug>.yaml).
-func profileSlug(name string) string {
-	s := strings.ToLower(strings.TrimSpace(name))
-	s = strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
-			return r
-		}
-		return '-'
-	}, s)
-	return strings.Trim(s, "-")
-}
-
-const defaultProfileName = "Default audit"
-
-// loadProfile resolves a named profile to a config. An empty name means the
-// default profile when it exists, otherwise built-in defaults; a named
-// profile that doesn't exist is an error (the caller asked for something
-// specific).
-func loadProfile(storeDir, name string) (*config.Config, error) {
-	dir := filepath.Join(storeDir, "profiles")
-	if name == "" {
-		path := filepath.Join(dir, profileSlug(defaultProfileName)+".yaml")
-		if _, err := os.Stat(path); err != nil {
-			return config.Default(), nil
-		}
-		return config.LoadFile(path)
-	}
-	path := filepath.Join(dir, profileSlug(name)+".yaml")
-	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("profile %q not found (list_profiles shows what exists)", name)
-	}
-	return config.LoadFile(path)
-}
-
-// ListProfileNames returns the display names of saved profiles ("# Name"
-// header comment, falling back to the slug), default profile first.
-func ListProfileNames(storeDir string) []string {
-	dir := filepath.Join(storeDir, "profiles")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	var names []string
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
-			continue
-		}
-		name := strings.ReplaceAll(strings.TrimSuffix(e.Name(), ".yaml"), "-", " ")
-		if data, err := os.ReadFile(filepath.Join(dir, e.Name())); err == nil {
-			first, _, _ := strings.Cut(string(data), "\n")
-			if strings.HasPrefix(first, "# ") {
-				name = strings.TrimSpace(strings.TrimPrefix(first, "# "))
-			}
-		}
-		names = append(names, name)
-	}
-	sort.SliceStable(names, func(i, j int) bool {
-		if names[i] == defaultProfileName {
-			return true
-		}
-		if names[j] == defaultProfileName {
-			return false
-		}
-		return names[i] < names[j]
-	})
-	return names
-}
-
-// BuildConfig assembles the effective config for a start_crawl request:
-// profile (or defaults) -> list-mode adjustments -> dotted-path overrides.
-// Overrides win over everything, including the list-mode depth adjustment.
-func BuildConfig(storeDir string, req StartRequest) (*config.Config, error) {
-	cfg, err := loadProfile(storeDir, req.Profile)
-	if err != nil {
-		return nil, err
-	}
-	if req.Mode == "list" {
-		cfg.Mode = "list"
-		cfg.Limits.MaxDepth = cfg.ListMode.CrawlDepth
-		if !cfg.ListMode.RespectRobots {
-			cfg.Robots.Mode = "ignore"
-		}
-	}
-	for key, value := range req.Config {
-		// JSON is valid YAML, so encode each value as JSON and reuse the
-		// config schema's typed Set (same path as the CLI's --set).
-		enc, err := json.Marshal(value)
-		if err != nil {
-			return nil, fmt.Errorf("config[%s]: %w", key, err)
-		}
-		if err := cfg.Set(key + "=" + string(enc)); err != nil {
-			return nil, err
-		}
-	}
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
-	return cfg, nil
-}
-
-// ResolveSeeds turns a StartRequest into seed URLs and the store mode,
-// fetching the sitemap when list mode asks for one.
-func ResolveSeeds(ctx context.Context, cfg *config.Config, req StartRequest) (seeds []string, mode string, err error) {
-	switch req.Mode {
-	case "", "spider":
-		if !strings.HasPrefix(req.URL, "http://") && !strings.HasPrefix(req.URL, "https://") {
-			return nil, "", fmt.Errorf("url must be a full URL including http:// or https:// (got %q)", req.URL)
-		}
-		return []string{req.URL}, "spider", nil
-	case "list":
-		if req.SitemapURL != "" {
-			seeds, err = crawler.FetchSitemapURLs(ctx, cfg, req.SitemapURL)
-			if err != nil {
-				return nil, "", fmt.Errorf("sitemap fetch: %w", err)
-			}
-		} else {
-			seeds = req.URLs
-		}
-		if len(seeds) == 0 {
-			return nil, "", fmt.Errorf("list mode needs urls or sitemap_url")
-		}
-		return seeds, "list", nil
-	default:
-		return nil, "", fmt.Errorf("mode must be spider or list (got %q)", req.Mode)
-	}
 }

@@ -107,6 +107,18 @@ function ProjectDetail({ project, onBack, onCrawlSite, onDeleted, onRenamed, cra
   const [tab, setTab] = useState("overview");
   const [confirmDel, setConfirmDel] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [queuing, setQueuing] = useState(false);
+
+  async function crawlAll() {
+    setQueuing(true);
+    try {
+      await projectApi.crawlAll(project.id);
+    } finally {
+      setQueuing(false);
+    }
+    // the dispatcher starts the first crawl and crawl:started switches to its
+    // live view; the rest run one at a time behind it.
+  }
 
   return (
     <div className="main">
@@ -115,6 +127,10 @@ function ProjectDetail({ project, onBack, onCrawlSite, onDeleted, onRenamed, cra
         <BrandMark seed={"https://" + project.main_domain} size={24} />
         <span className="title" style={{ marginLeft: 2 }}>{project.name}</span>
         <div style={{ flex: 1 }} />
+        <Btn icon="radar" disabled={queuing} onClick={crawlAll}
+          title="Queue a crawl of every member domain (runs one at a time)">
+          {queuing ? "Queuing…" : "Crawl all"}
+        </Btn>
         <Seg value={tab} onChange={setTab} options={[{ value: "overview", label: "Overview" }, { value: "comparison", label: "Comparison" }]} />
         <IconBtn icon="pencil" title="Rename" onClick={() => setRenaming(true)} />
         <IconBtn icon="trash-2" title="Delete project" onClick={() => setConfirmDel(true)} />
@@ -199,7 +215,7 @@ function Overview({ project, onCrawlSite, crawlBusyMsg }) {
                     ))}
                   </div>
                 </div>
-                {onCrawlSite && <Btn size="sm" icon="radar" onClick={() => onCrawlSite(s.domain)} disabled={!!crawlBusyMsg} title={crawlBusyMsg}>Crawl</Btn>}
+                {onCrawlSite && <Btn size="sm" icon="radar" onClick={() => onCrawlSite(s.domain)} title={crawlBusyMsg ? "Queued behind the running crawl" : "Crawl this site"}>Crawl</Btn>}
                 {s.role !== "main" && <IconBtn icon="x" title="Remove competitor" onClick={async () => { await projectApi.removeCompetitor(project.id, s.domain); load(); }} />}
               </div>
             );
