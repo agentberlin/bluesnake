@@ -337,7 +337,7 @@ func (p *parser) handleElement(n *html.Node, path string) {
 			if href := attr(n, "href"); href != "" {
 				f.Links = append(f.Links, Link{
 					Type: Uncrawlable, Raw: href,
-					ElemPath: p.elemPath(n, path), Position: p.position(path),
+					ElemPath: p.elemPath(n, path), Position: p.position(n),
 				})
 			}
 		}
@@ -466,7 +466,7 @@ func (p *parser) handleAnchor(n *html.Node, path string) {
 		if p.cfg.Links.Uncrawlable.Store {
 			p.facts.Links = append(p.facts.Links, Link{
 				Type: Uncrawlable, Raw: href,
-				Anchor: collapseSpace(subtreeText(n)), ElemPath: p.elemPath(n, path), Position: p.position(path),
+				Anchor: collapseSpace(subtreeText(n)), ElemPath: p.elemPath(n, path), Position: p.position(n),
 			})
 		}
 		return
@@ -530,7 +530,7 @@ func (p *parser) addLink(n *html.Node, path string, l Link) {
 	}
 	l.PathType = urlutil.ClassifyPathType(l.Raw).String()
 	l.ElemPath = p.elemPath(n, path)
-	l.Position = p.position(path)
+	l.Position = p.position(n)
 	p.facts.Links = append(p.facts.Links, l)
 }
 
@@ -605,17 +605,61 @@ func sfSegment(n *html.Node) string {
 	return tag
 }
 
-// position applies the ordered link-position rules (first match wins).
-func (p *parser) position(path string) string {
+// position classifies a link's region (Navigation/Header/Aside/Footer/Content/
+// Head) by applying the ordered link-position rules — Screaming Frog's default
+// search terms — as a case-sensitive substring search over the link's
+// positionPath, first match wins.
+func (p *parser) position(n *html.Node) string {
 	if !p.cfg.StoreLinkPaths {
 		return ""
 	}
+	path := positionPath(n)
 	for _, rule := range p.cfg.LinkPositions {
 		if strings.Contains(path, rule.Match) {
 			return rule.Name
 		}
 	}
 	return ""
+}
+
+// positionPath renders the string that link-position rules match against: the
+// element's ancestor chain as /tag steps, each annotated with the element's id
+// and (single-token) class. This mirrors Screaming Frog, which derives a link's
+// Link Position from its link path and carries id/single-class as XPath
+// qualifiers (div[@class='site-footer'], div[@id='footer']) — so the term
+// "footer" matches <div class="site-footer"> or <div id="footer"> just as it
+// matches a <footer> tag, and a lowercase term matches case-sensitively (a
+// class="MainFooter" is not a footer, exactly as in SF, R2).
+//
+// Two deliberate, probe-grounded departures from SF (SF v24.1):
+//   - A multi-token class is skipped: SF drops the @class qualifier when an
+//     element carries more than one class, so class="col footer-col" is Content.
+//   - The id/class is emitted CONSISTENTLY, not only to disambiguate same-tag
+//     siblings the way SF does. SF's sibling-gating makes the SAME
+//     <div class="footer"> classify Footer with a sibling div but Content as an
+//     only child — a proven artifact of SF's path construction, not semantics —
+//     so bluesnake reads the id/class regardless of siblings. This is independent
+//     of the stored elem_path, which stays pure-positional (see sfElemPath):
+//     position and elem_path are separate consumers of the DOM.
+func positionPath(n *html.Node) string {
+	var segs []string
+	for cur := n; cur != nil && cur.Type == html.ElementNode; cur = cur.Parent {
+		seg := cur.Data
+		if id := strings.TrimSpace(attr(cur, "id")); id != "" {
+			seg += "[@id='" + id + "']"
+		}
+		// One class token participates; a whitespace-separated multi-class value
+		// is dropped, matching SF's @class-qualifier behaviour.
+		if fields := strings.Fields(attr(cur, "class")); len(fields) == 1 {
+			seg += "[@class='" + fields[0] + "']"
+		}
+		segs = append(segs, seg)
+		if cur.Data == "html" {
+			break
+		}
+	}
+	slices.Reverse(segs)
+	return "/" + strings.Join(segs, "/")
 }
 
 // --- small node helpers ---
