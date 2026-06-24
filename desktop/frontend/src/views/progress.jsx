@@ -3,7 +3,7 @@
    ("crawl:progress" ~4/s with counters + feed; "crawl:done" once at the end)
    =========================================================================== */
 import React, { useEffect, useState } from "react";
-import { Icon, Btn, StatusBadge, StatusBar, Ring } from "../ui";
+import { Icon, Btn, StatusBadge, StatusBar, Ring, CopyButton } from "../ui";
 import { api, on, urlShort } from "../api";
 
 export function CrawlProgress({ crawlId, onOpenResults, onResume, headerExtra }) {
@@ -121,9 +121,10 @@ export function CrawlProgress({ crawlId, onOpenResults, onResume, headerExtra })
               <div style={{ overflowY: "auto", flex: 1 }}>
                 {feed.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "var(--ink-faint)", fontSize: 12 }}>No problems found yet — all clear.</div>}
                 {feed.map((f) => (
-                  <div key={f.seq} className="fade" style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", borderBottom: "1px solid var(--border-soft)" }}>
+                  <div key={f.seq} className="fade copyhost" style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", borderBottom: "1px solid var(--border-soft)" }}>
                     <StatusBadge status={f.status} statusText={f.state} />
                     <span className="mono" style={{ fontSize: 11.5, color: "var(--ink-2)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>{urlShort(f.url)}</span>
+                    <CopyButton text={f.url} />
                     <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>#{f.seq}</span>
                   </div>
                 ))}

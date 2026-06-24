@@ -253,6 +253,16 @@ input, textarea{ user-select: text; cursor: text; }
 .iconbtn svg{ width:16px;height:16px; }
 .iconbtn:hover{ background:var(--surface-hover); color:var(--ink); }
 
+/* hover-revealed copy affordance for displayed URLs/paths. Hidden at rest;
+   shown only while an ancestor `.copyhost` is hovered, so resting layouts and
+   colours are untouched. */
+.copybtn{ flex:0 0 auto; width:18px; height:18px; padding:0; border:0; border-radius:var(--radius-sm);
+  background:transparent; color:var(--ink-faint); cursor:default; display:inline-flex; align-items:center; justify-content:center;
+  opacity:0; transition:opacity .12s ease, color .12s ease, background .12s ease; }
+.copyhost:hover .copybtn{ opacity:1; }
+.copybtn:hover{ color:var(--ink); background:var(--surface-hover); }
+.copybtn:focus-visible{ opacity:1; outline:none; color:var(--ink); }
+
 .seg{ display:inline-flex; background:var(--surface-2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:2px; gap:2px; }
 .seg button{ height:24px; padding:0 11px; border:0; background:transparent; border-radius:0; color:var(--ink-2); font-size:12px; font-weight:500; cursor:default; }
 .seg button.on{ background:var(--surface); color:var(--ink); box-shadow:var(--shadow-sm); font-weight:600; }

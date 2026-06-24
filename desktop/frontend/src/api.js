@@ -91,6 +91,19 @@ export function openURL(url) {
   else window.open(url, "_blank");
 }
 
+/* Copy text to the clipboard via the Wails runtime, falling back to the web
+   Clipboard API in a plain browser. Returns a promise that resolves on success.
+   The whole app sets `user-select: none`, so this is how any displayed URL/path
+   gets onto the clipboard. */
+export function copyToClipboard(text) {
+  if (!text) return Promise.resolve(false);
+  if (window.runtime && window.runtime.ClipboardSetText) {
+    return Promise.resolve(window.runtime.ClipboardSetText(text)).then(() => true);
+  }
+  if (navigator.clipboard) return navigator.clipboard.writeText(text).then(() => true);
+  return Promise.resolve(false);
+}
+
 /* runtime events — returns an unsubscribe function for THIS listener only
    (EventsOn returns a cancel fn; EventsOff would drop every listener) */
 export function on(event, cb) {
