@@ -627,7 +627,7 @@ Surfaces (engine-first, all three per §0): the CLI `bluesnake projects` subtree
 ### Conventions
 - Every issue in the catalogue must have at least one fixture page that triggers it and one that doesn't — enforced by the catalogue-coverage meta-test (`internal/analyze/coverage_test.go`): a kitchen-sink page set must trigger every catalogue ID, and a fully healthy two-page fixture must trigger zero occurrences. Adding a check without a fixture fails the suite.
 - Golden files under `test/golden/`; regenerate with `-update` flag.
-- Coverage gate: `make test` fails under 85% for `internal/...` (excluding `render`, which needs Chrome and is build-tagged `chrome`).
+- Coverage gate: `make cover` fails when **aggregate** statement coverage across `internal/...` drops below **90%** (the `render` package's Chrome-dependent paths are build-tagged `chrome` and excluded from the default measured set). 90% is the project standard — new code lands with tests that keep the gate green, and meaningful behavioral/integration tests are strongly preferred over line-touching filler (the few statements left uncovered are deliberately the hard-to-reach I/O fault-injection branches, not feature logic). New modules should aim to clear 90% on their own so the aggregate has headroom.
 - `@chrome`-tagged features are excluded from the default acceptance run; on a machine with Chrome run them with `BLUESNAKE_FEATURE_TAGS="@chrome" go test ./test/`. Chrome-dependent Go tests skip themselves when no Chrome is found.
 
 ---
@@ -652,7 +652,7 @@ Surfaces (engine-first, all three per §0): the CLI `bluesnake projects` subtree
 | M13 | Rendering (Chrome) | `render`, custom JS | `rendering.feature` (build-tagged) |
 | M14 | Long tail | AMP validation, HTML validation tab, archive/WARC, accessibility (axe via CDP) | respective features |
 
-Definition of done per milestone: feature file(s) green, unit coverage ≥ 85% for the module, `go vet`/`staticcheck` clean, design doc updated if reality diverged.
+Definition of done per milestone: feature file(s) green, unit coverage ≥ 90% for the module (the project standard; the aggregate gate in §6 enforces it across `internal/...`), `go vet`/`staticcheck` clean, design doc updated if reality diverged.
 
 ---
 
