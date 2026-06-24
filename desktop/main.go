@@ -42,7 +42,7 @@ func main() {
 		// ProjectApp is a SEPARATE bound struct for the opt-in project layer
 		// (project_app.go); it generates its own ProjectApp.js and leaves the
 		// core App binding untouched, so the feature stays cleanly removable.
-		Bind: []interface{}{app, NewProjectApp()},
+		Bind: []interface{}{app, NewProjectApp(app)},
 		Mac: &mac.Options{
 			TitleBar:             mac.TitleBarHiddenInset(),
 			Appearance:           mac.DefaultAppearance,

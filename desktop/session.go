@@ -1,26 +1,22 @@
 package main
 
 import (
-	"context"
 	"sync"
 	"time"
 
-	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
-	"github.com/agentberlin/bluesnake/internal/fetch"
-	"github.com/agentberlin/bluesnake/internal/finalize"
-	"github.com/agentberlin/bluesnake/internal/frontier"
+	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// Realtime model: the crawler already streams every page and frontier
-// mutation through its Sink interface (that is how the store persists a
-// crawl incrementally). uiSink tees that stream — records keep flowing to
-// the real *store.Crawl sink, while a crawlSession aggregates counters and a
-// feed of notable URLs. A ticker goroutine emits a throttled
-// "crawl:progress" Wails event (~4/s) so the UI animates smoothly without
-// flooding the bridge, and "crawl:done" fires once when the run ends.
+// uiObserver turns a queue-driven crawl's lifecycle into the desktop's realtime
+// Wails events. The engine already streams every page through the runner's sink;
+// this observer aggregates the UI-specific bits the core counters don't carry —
+// a feed of notable URLs — and runs the throttled "crawl:progress" emitter
+// (~4/s) reading the executor's live snapshot. "crawl:started" fires when a job
+// begins (so the UI jumps to the live view, whether the crawl was hand-started
+// or started by an MCP agent), and "crawl:done" fires once when it ends.
 
 // FeedItem is one notable (non-2xx) URL for the live feed.
 type FeedItem struct {
@@ -62,266 +58,111 @@ type DoneEvent struct {
 	Error       string `json:"error,omitempty"`
 }
 
-type crawlSession struct {
-	app     *App
-	st      *store.Crawl
-	cfg     *config.Config
-	c       *crawler.Crawler
-	seeds   []string
-	resumed bool
-	cancel  context.CancelFunc
-	ctx     context.Context
-	doneCh  chan struct{}
+// uiObserver implements runner.Observer for the desktop app.
+type uiObserver struct {
+	app *App
 
-	mu         sync.Mutex
-	stopMode   string // "" | "pause" | "stop"
-	done       bool
-	total      int
-	discovered int
-	doneFront  int
-	s2, s3     int
-	s4, s5     int
-	blocked    int
-	noresp     int
-	indexable  int
-	seq        int
-	feed       []FeedItem
-	recent     []time.Time // page completion times for the live rate
-	started    time.Time
+	mu       sync.Mutex
+	seq      int
+	feed     []FeedItem
+	stopTick chan struct{}
 }
 
-func newCrawlSession(a *App, st *store.Crawl, cfg *config.Config, seeds []string, processed []string, pending []frontier.Item) (*crawlSession, error) {
-	s := &crawlSession{
-		app: a, st: st, cfg: cfg, seeds: seeds,
-		resumed: processed != nil,
-		started: time.Now(),
-		doneCh:  make(chan struct{}),
-		// resumed crawls start from what is already on disk
-		total:      len(processed),
-		discovered: len(processed) + len(pending),
-	}
-	opts := []crawler.Option{crawler.WithSink(&uiSink{inner: st, s: s})}
-	if processed != nil || pending != nil {
-		opts = append(opts, crawler.WithResume(processed, pending))
-	}
-	c, err := crawler.New(cfg, opts...)
-	if err != nil {
-		return nil, err
-	}
-	s.c = c
-	s.ctx, s.cancel = context.WithCancel(context.Background())
-	return s, nil
-}
+func (o *uiObserver) OnStart(crawlID, seed string) {
+	o.mu.Lock()
+	o.seq = 0
+	o.feed = nil
+	o.stopTick = make(chan struct{})
+	stop := o.stopTick
+	o.mu.Unlock()
 
-func (s *crawlSession) run() {
-	defer close(s.doneCh)
-	defer s.c.Close()
-	defer s.st.Close()
+	runtime.EventsEmit(o.app.ctx, "crawl:started", crawlID)
 
 	// throttled progress emitter
-	tick := time.NewTicker(250 * time.Millisecond)
-	stopTick := make(chan struct{})
 	go func() {
+		tick := time.NewTicker(250 * time.Millisecond)
+		defer tick.Stop()
 		for {
 			select {
 			case <-tick.C:
-				runtime.EventsEmit(s.app.ctx, "crawl:progress", s.snapshot())
-			case <-stopTick:
-				tick.Stop()
+				if snap, ok := o.app.exec.Snapshot(); ok {
+					runtime.EventsEmit(o.app.ctx, "crawl:progress", o.build(snap, "running"))
+				}
+			case <-stop:
 				return
 			}
 		}
 	}()
-
-	res, runErr := s.c.Run(s.ctx, s.seeds...)
-
-	s.mu.Lock()
-	s.done = true
-	mode := s.stopMode
-	s.mu.Unlock()
-	close(stopTick)
-
-	done := DoneEvent{CrawlID: s.st.ID, Status: store.StatusCompleted}
-	if runErr != nil {
-		done.Error = runErr.Error()
-	}
-	if res != nil {
-		done.DurationSec = int(res.Duration.Seconds())
-		// Pause keeps the crawl resumable; Stop finalises early as completed. The
-		// shared finalize path persists aggregates + status and, when completed,
-		// recomputes depth + inlinks over the full graph (resume) and runs analysis.
-		out, ferr := finalize.Crawl(s.c, s.st, res, finalize.Params{
-			StoreDir:  s.app.storeDir,
-			Cfg:       s.cfg,
-			Seeds:     s.seeds,
-			Resumed:   s.resumed,
-			Completed: !res.Interrupted || mode == "stop",
-		})
-		done.Status = out.Status
-		done.Analyzed = out.Analyzed
-		// Counts come from finalize's full-graph tally (Outcome), not res, so a
-		// resumed crawl reports the cumulative two-session totals, not this
-		// session's slice.
-		done.Crawled = out.Crawled
-		done.Total = out.Total
-		if ferr != nil && done.Error == "" {
-			done.Error = ferr.Error()
-		}
-	}
-	s.app.invalidate(s.st.ID)
-
-	// final snapshot so the UI lands on exact numbers
-	snap := s.snapshot()
-	snap.State = "done"
-	runtime.EventsEmit(s.app.ctx, "crawl:progress", snap)
-	runtime.EventsEmit(s.app.ctx, "crawl:done", done)
 }
 
-func (s *crawlSession) stop(mode string) {
-	s.mu.Lock()
-	if s.stopMode == "" {
-		s.stopMode = mode
-	}
-	s.mu.Unlock()
-	s.cancel()
-}
-
-func (s *crawlSession) wait() { <-s.doneCh }
-
-func (s *crawlSession) finished() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.done
-}
-
-func (s *crawlSession) snapshot() ProgressSnapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// live rate over a 4s sliding window
-	cutoff := time.Now().Add(-4 * time.Second)
-	i := 0
-	for i < len(s.recent) && s.recent[i].Before(cutoff) {
-		i++
-	}
-	s.recent = s.recent[i:]
-	rate := float64(len(s.recent)) / 4.0
-
-	state := "running"
-	if s.done {
-		state = "done"
-	}
-	queue := s.discovered - s.total
-	if queue < 0 {
-		queue = 0
-	}
-	feed := make([]FeedItem, len(s.feed))
-	copy(feed, s.feed)
-	return ProgressSnapshot{
-		CrawlID: s.st.ID, Seed: s.seeds[0], State: state,
-		Total: s.total, Discovered: s.discovered, Queue: queue,
-		S2xx: s.s2, S3xx: s.s3, S4xx: s.s4, S5xx: s.s5,
-		Blocked: s.blocked, NoResp: s.noresp, Indexable: s.indexable,
-		Rate: rate, ElapsedSec: int(time.Since(s.started).Seconds()),
-		Threads: s.cfg.Speed.MaxThreads, Feed: feed,
-	}
-}
-
-func (s *crawlSession) onPage(rec *crawler.PageRecord) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.total++
-	s.recent = append(s.recent, time.Now())
-
+func (o *uiObserver) OnPage(rec *crawler.PageRecord) {
 	notable := false
+	status := rec.StatusCode
 	switch rec.State {
 	case crawler.StateBlockedRobots:
-		s.blocked++
 		notable = true
+		status = -1
 	case crawler.StateError:
-		s.noresp++
 		notable = true
 	default:
-		switch {
-		case rec.StatusCode >= 500:
-			s.s5++
+		if rec.StatusCode >= 300 {
 			notable = true
-		case rec.StatusCode >= 400:
-			s.s4++
-			notable = true
-		case rec.StatusCode >= 300:
-			s.s3++
-			notable = true
-		case rec.StatusCode >= 200:
-			s.s2++
-		}
-		if rec.Indexable {
-			s.indexable++
 		}
 	}
-	if notable && rec.Scope == "internal" {
-		s.seq++
-		status := rec.StatusCode
-		if rec.State == crawler.StateBlockedRobots {
-			status = -1
-		}
-		s.feed = append([]FeedItem{{URL: rec.URL, Status: status, State: rec.State, Seq: s.seq}}, s.feed...)
-		if len(s.feed) > 60 {
-			s.feed = s.feed[:60]
-		}
+	if !notable || rec.Scope != "internal" {
+		return
 	}
-}
-
-func (s *crawlSession) onFrontierAdd() {
-	s.mu.Lock()
-	s.discovered++
-	s.mu.Unlock()
-}
-
-// uiSink tees the crawl stream: persistence first, then UI counters.
-type uiSink struct {
-	inner *store.Crawl
-	s     *crawlSession
-}
-
-// the tee must keep forwarding every optional sink extension the store has
-var (
-	_ crawler.BlobSink    = (*uiSink)(nil)
-	_ crawler.ArchiveSink = (*uiSink)(nil)
-	_ crawler.SitemapSink = (*uiSink)(nil)
-)
-
-func (t *uiSink) Page(rec *crawler.PageRecord) error {
-	if err := t.inner.Page(rec); err != nil {
-		return err
+	o.mu.Lock()
+	o.seq++
+	o.feed = append([]FeedItem{{URL: rec.URL, Status: status, State: rec.State, Seq: o.seq}}, o.feed...)
+	if len(o.feed) > 60 {
+		o.feed = o.feed[:60]
 	}
-	t.s.onPage(rec)
-	return nil
+	o.mu.Unlock()
 }
 
-func (t *uiSink) FrontierAdd(it frontier.Item) error {
-	if err := t.inner.FrontierAdd(it); err != nil {
-		return err
+func (o *uiObserver) OnDone(out runner.Outcome) {
+	o.mu.Lock()
+	if o.stopTick != nil {
+		close(o.stopTick)
+		o.stopTick = nil
 	}
-	t.s.onFrontierAdd()
-	return nil
+	o.mu.Unlock()
+
+	o.app.invalidate(out.CrawlID)
+
+	// final snapshot so the UI lands on exact numbers (the executor's in-flight
+	// state is still live at OnDone, before it clears).
+	if snap, ok := o.app.exec.Snapshot(); ok {
+		runtime.EventsEmit(o.app.ctx, "crawl:progress", o.build(snap, "done"))
+	}
+	done := DoneEvent{
+		CrawlID: out.CrawlID, Status: out.Status,
+		Crawled: out.Crawled, Total: out.Total,
+		DurationSec: out.DurationSec, Analyzed: out.Analyzed,
+	}
+	if done.Status == "" {
+		done.Status = store.StatusCompleted
+	}
+	if out.Err != nil {
+		done.Error = out.Err.Error()
+	}
+	runtime.EventsEmit(o.app.ctx, "crawl:done", done)
 }
 
-func (t *uiSink) FrontierDone(url string) error { return t.inner.FrontierDone(url) }
-
-// Blob keeps the optional BlobSink extension working (stored HTML,
-// screenshots) when the engine asks for it.
-func (t *uiSink) Blob(url, kind string, data []byte) error {
-	return t.inner.Blob(url, kind, data)
-}
-
-// Archive forwards the optional ArchiveSink extension so extraction.store_warc
-// works from the desktop app (the engine reaches it by type assertion).
-func (t *uiSink) Archive(url string, res *fetch.Result) error {
-	return t.inner.Archive(url, res)
-}
-
-// SitemapEntry forwards the optional SitemapSink extension so sitemap
-// entries reach the database from the desktop app.
-func (t *uiSink) SitemapEntry(sitemap, url string) error {
-	return t.inner.SitemapEntry(sitemap, url)
+// build composes a ProgressSnapshot from the executor's live counters plus the
+// observer's notable-URL feed.
+func (o *uiObserver) build(snap runner.Snapshot, state string) ProgressSnapshot {
+	o.mu.Lock()
+	feed := make([]FeedItem, len(o.feed))
+	copy(feed, o.feed)
+	o.mu.Unlock()
+	return ProgressSnapshot{
+		CrawlID: snap.CrawlID, Seed: snap.Seed, State: state,
+		Total: snap.Total, Discovered: snap.Discovered, Queue: snap.Queue,
+		S2xx: snap.S2xx, S3xx: snap.S3xx, S4xx: snap.S4xx, S5xx: snap.S5xx,
+		Blocked: snap.Blocked, NoResp: snap.NoResponse, Indexable: snap.Indexable,
+		Rate: snap.RatePerSec, ElapsedSec: snap.ElapsedSec, Threads: snap.Threads,
+		Feed: feed,
+	}
 }

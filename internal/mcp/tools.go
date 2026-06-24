@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"gopkg.in/yaml.v3"
 )
@@ -100,10 +101,10 @@ func (s *Server) buildTools() []Tool {
 				"Pass a profile name to start_crawl to use it as the base config.",
 			InputSchema: schema(map[string]any{}),
 			handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				names := ListProfileNames(s.backend.StoreDir())
+				names := runner.ListProfileNames(s.backend.StoreDir())
 				out := map[string]any{
 					"profiles": names,
-					"note":     "start_crawl uses \"" + defaultProfileName + "\" semantics when no profile is given: the saved default profile if present, otherwise built-in defaults. get_profile_config shows a profile's effective settings.",
+					"note":     "start_crawl uses \"" + runner.DefaultProfileName + "\" semantics when no profile is given: the saved default profile if present, otherwise built-in defaults. get_profile_config shows a profile's effective settings.",
 				}
 				if len(names) == 0 {
 					out["profiles"] = []string{}
@@ -125,7 +126,7 @@ func (s *Server) buildTools() []Tool {
 				if err := decodeArgs(raw, &a); err != nil {
 					return "", err
 				}
-				cfg, err := loadProfile(s.backend.StoreDir(), a.Profile)
+				cfg, err := runner.LoadProfile(s.backend.StoreDir(), a.Profile)
 				if err != nil {
 					return "", err
 				}

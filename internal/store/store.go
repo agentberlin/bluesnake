@@ -120,7 +120,12 @@ func registryDB(dir string) (*sql.DB, error) {
 			id TEXT PRIMARY KEY, seed TEXT, mode TEXT, status TEXT,
 			started INT, finished INT, crawled INT DEFAULT 0, total INT DEFAULT 0);
 		CREATE TABLE IF NOT EXISTS brands(
-			host TEXT PRIMARY KEY, logo BLOB, logo_type TEXT, fetched INT);`)
+			host TEXT PRIMARY KEY, logo BLOB, logo_type TEXT, fetched INT);
+		CREATE TABLE IF NOT EXISTS jobs(
+			id TEXT PRIMARY KEY, status TEXT NOT NULL, position INTEGER NOT NULL,
+			source TEXT NOT NULL, project_id TEXT, label TEXT, request TEXT NOT NULL,
+			crawl_id TEXT, error TEXT, enqueued INTEGER NOT NULL, started INTEGER, finished INTEGER);
+		CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, position);`)
 	if err != nil {
 		db.Close()
 		return nil, err
