@@ -173,6 +173,7 @@ const stuckIdleWindow = 1500 * time.Millisecond
 //     setTimeout) would otherwise pin the count above zero forever and dwell to
 //     the cap; only the first, top-level schedule of such a chain is counted, so
 //     once it fires the page settles on its DOM-stability/network signals.
+//
 // The AJAX cap still bounds everything, so even a pathological case never hangs.
 //
 // KNOWN RESIDUALS (deferred DOM work the shim does not wait for — bounded, rare,
