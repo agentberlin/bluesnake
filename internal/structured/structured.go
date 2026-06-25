@@ -261,6 +261,15 @@ func dedupStrings(in []string) []string {
 
 func walk(n *html.Node, visit func(*html.Node)) {
 	visit(n)
+	// A <template>'s contents are an inert DocumentFragment — never rendered, so
+	// any JSON-LD / microdata / RDFa inside it is not the page's structured data.
+	// Don't descend (Screaming Frog ignores templated structured data; extracting
+	// it would both invent entities and emit spurious rich-result validation
+	// findings for markup no user or crawler ever sees). Shared by JSON-LD,
+	// microdata and RDFa extraction, so all three stay consistent.
+	if n.Type == html.ElementNode && n.Data == "template" {
+		return
+	}
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		walk(c, visit)
 	}

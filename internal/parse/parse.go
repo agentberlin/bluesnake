@@ -237,6 +237,20 @@ func (p *parser) walk(n *html.Node, path string) {
 	if n.Type == html.ElementNode {
 		childPath = path + "/" + n.Data
 		p.handleElement(n, childPath)
+		// A <template>'s contents are an inert DocumentFragment: never rendered,
+		// not part of the page's link graph, and only ever shown after JS clones
+		// them elsewhere. Don't descend — extracting its links, headings or other
+		// facts would over-report content that no user or crawler ever sees
+		// (Screaming Frog ignores template contents in both static and rendered
+		// modes). content.go already excludes <template> from word count via
+		// nonTextElements; this keeps element-level extraction consistent.
+		// Declarative-shadow-DOM templates (<template shadowrootmode>) never
+		// reach here in rendered mode — Chrome expands them into a real shadow
+		// root before the snapshot — and SF treats them as inert in static mode
+		// too, so skipping them here matches SF on both axes.
+		if n.Data == "template" {
+			return
+		}
 	}
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		p.walk(c, childPath)

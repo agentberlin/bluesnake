@@ -1210,3 +1210,49 @@ func TestMicrodataProductMerchantListing(t *testing.T) {
 		}
 	}
 }
+
+// TestTemplateContentInert pins that structured data inside a <template> is
+// ignored — the template's contents are an inert DocumentFragment, never
+// rendered, so their JSON-LD / microdata / RDFa are not the page's structured
+// data. Screaming Frog v24.1 confirms this: on a probe carrying a Product
+// JSON-LD and a Person microdata name inside <template>, SF extracted neither
+// (only structured data OUTSIDE the template). Before this guard bluesnake
+// over-extracted the templated entities AND emitted spurious rich-result
+// validation findings for them. The fix lives in the shared walk() so JSON-LD,
+// microdata and RDFa are all covered (gap R9).
+func TestTemplateContentInert(t *testing.T) {
+	body := `<html><body>
+		<script type="application/ld+json">
+		{"@context":"https://schema.org","@type":"Organization","name":"RealOrg","logo":"https://x/l.png","url":"https://x"}
+		</script>
+		<div itemscope itemtype="https://schema.org/Person"><span itemprop="name">RealPerson</span></div>
+		<template>
+			<script type="application/ld+json">
+			{"@context":"https://schema.org","@type":"Product","name":"TemplatedProduct","offers":{"@type":"Offer","price":"9.99","priceCurrency":"USD"}}
+			</script>
+			<div itemscope itemtype="https://schema.org/Recipe"><span itemprop="name">TemplatedRecipe</span></div>
+		</template>
+	</body></html>`
+	d := extract(t, body, func(s *config.StructuredDataConfig) { s.JSONLD = true; s.Microdata = true })
+	if d == nil {
+		t.Fatal("expected structured data from the controls outside the template")
+	}
+	// Controls outside the template are extracted.
+	for _, want := range []string{"Organization", "Person"} {
+		if !slices.Contains(d.Types, want) {
+			t.Errorf("types = %v, want %q (outside template)", d.Types, want)
+		}
+	}
+	// Nothing inside the template leaks.
+	for _, bad := range []string{"Product", "Offer", "Recipe"} {
+		if slices.Contains(d.Types, bad) {
+			t.Errorf("types = %v: %q leaked from inside <template> (must be inert)", d.Types, bad)
+		}
+	}
+	// No validation findings should be produced for the inert templated Product.
+	for _, e := range d.Errors {
+		if strings.Contains(e, "Product") {
+			t.Errorf("templated Product produced a validation error: %q", e)
+		}
+	}
+}
