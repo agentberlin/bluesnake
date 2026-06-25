@@ -228,3 +228,10 @@ Verify a built artifact: `spctl -a -vvv -t exec bluesnake.app` →
 The `.exe`/installer are unsigned, so SmartScreen warns on first run ("More info
 → Run anyway"). Authenticode signing slots into the `desktop-windows` job without
 changing the artifact layout.
+
+**When we do it**, see [WINDOWS-SIGNING.md](WINDOWS-SIGNING.md) — the full reference:
+the 2023 hardware-key mandate (no more downloadable `.pfx`), why EV is no longer
+worth it, the recommended cloud-signing path (**Azure Artifact Signing**, ~$10/mo,
+individual-eligible in US/Canada) vs the worldwide fallback (**SSL.com IV +
+eSigner**), the exact account-setup steps, the GitHub Actions wiring, and the
+Wails/NSIS signing-order gotcha ([wails#3716](https://github.com/wailsapp/wails/issues/3716)).
