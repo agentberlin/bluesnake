@@ -567,3 +567,140 @@ func TestAnchorTextBlockInlineBoundaries(t *testing.T) {
 		t.Errorf("H1s = %q, want [Icon Heading]", h.H1s)
 	}
 }
+
+// TestAnchorCardSubtreeScope pins the anchor-extraction SCOPE for "card" links
+// (a heading + description wrapped in one <a>). This is the regression net for
+// gap R4 in the SF-parity decision log, which hypothesised that bluesnake
+// "over-captures nested sibling text" on trigger.dev's footer product cards
+// (SF anchor "Realtime" vs BS "Trigger.dev Realtime Connect your frontend app
+// to your tasks."). Reverse-engineering the EXACT card against Screaming Frog
+// v24.1 (STANDARD config, 15 controlled probes) DISPROVED that: SF extracts the
+// full card subtree identically to bluesnake. The original divergence was a
+// representative-EDGE artifact (trigger.dev links /product/realtime via three
+// separate anchors — the full card, a second card, and an icon link carrying
+// aria-label="Realtime" — and the compare script picked a different edge per
+// crawler), not an extraction bug. Every case below is BS == SF on the probe.
+func TestAnchorCardSubtreeScope(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		frag string
+		want string
+	}{
+		// The exact trigger.dev /product/realtime card: icon <svg> + multi-word
+		// <h4> + <p> description. SF extracts the WHOLE subtree -> so does BS.
+		// (This is the precise structure that surfaced R4.)
+		{"trigger_card", "/realtime",
+			`<div class="p-3"><svg viewBox="0 0 24 24"><path d="M5 13"/></svg></div>` +
+				`<div class="col"><h4>Trigger.dev Realtime</h4><p>Connect your frontend app to your tasks.</p></div>`,
+			"Trigger.dev Realtime Connect your frontend app to your tasks."},
+		// SF reads VISIBLE text, NOT aria-label/title — so a card's accessible
+		// label never narrows or replaces its extracted anchor text.
+		{"aria_label_ignored", "/aria", `<p>VisibleInnerText</p>`, "VisibleInnerText"},
+		{"title_attr_ignored", "/title", `<p>VisibleTitleCard</p>`, "VisibleTitleCard"},
+		// Scope stops at the </a>: trailing text and outside siblings are excluded.
+		{"trailing_excluded", "/trail", `AnchorOnly`, "AnchorOnly"},
+		{"block_child_only", "/block", `<div>Block child text</div>`, "Block child text"},
+		// A list-based card extracts plain text — NO bullet markers injected.
+		// (List markers are a word-COUNTING concern in content.go, not extraction.)
+		{"list_card_no_bullets", "/list", `<ul><li>One</li><li>Two</li></ul>`, "One Two"},
+		// Heavy whitespace collapses; multiple block children join with a space.
+		{"whitespace_card", "/ws", "\n  <h4>Title D5</h4>\n  <p>Desc D5</p>\n", "Title D5 Desc D5"},
+	}
+	var body strings.Builder
+	body.WriteString("<html><body>")
+	for _, c := range cases {
+		switch c.name {
+		case "aria_label_ignored":
+			body.WriteString(`<a aria-label="AriaLabelText" href="` + c.path + `">` + c.frag + `</a>`)
+		case "title_attr_ignored":
+			body.WriteString(`<a title="TitleAttrText" href="` + c.path + `">` + c.frag + `</a>`)
+		case "trailing_excluded":
+			body.WriteString(`<a href="` + c.path + `">` + c.frag + `</a>TrailingOutside`)
+		case "block_child_only":
+			body.WriteString(`<a href="` + c.path + `">` + c.frag + `</a><p>OUTSIDE sibling</p>`)
+		default:
+			body.WriteString(`<a href="` + c.path + `">` + c.frag + `</a>`)
+		}
+	}
+	body.WriteString("</body></html>")
+	f := parseHTML(t, "https://ex.com/p", body.String(), nil, nil)
+	for _, c := range cases {
+		l := findLink(f, Hyperlink, "https://ex.com"+c.path)
+		if l == nil {
+			t.Errorf("%s: link missing", c.name)
+			continue
+		}
+		if l.Anchor != c.want {
+			t.Errorf("%s: anchor = %q, want %q", c.name, l.Anchor, c.want)
+		}
+	}
+
+	// Nested (invalid) anchors split exactly like SF: the outer keeps only the
+	// text BEFORE the inner <a>, the inner is its own edge. SF Link Paths a[1]
+	// ("OuterStart") and a[2] ("InnerLink").
+	nf := parseHTML(t, "https://ex.com/n",
+		`<html><body><a href="/nest-outer">OuterStart <a href="/nest-inner">InnerLink</a> OuterTail</a></body></html>`, nil, nil)
+	if l := findLink(nf, Hyperlink, "https://ex.com/nest-outer"); l == nil || l.Anchor != "OuterStart" {
+		t.Errorf("nested outer anchor = %v, want OuterStart", l)
+	}
+	if l := findLink(nf, Hyperlink, "https://ex.com/nest-inner"); l == nil || l.Anchor != "InnerLink" {
+		t.Errorf("nested inner anchor = %v, want InnerLink", l)
+	}
+
+	// An <img> inside the anchor contributes its alt to the Alt field, never to
+	// the Anchor text (SF keeps "Anchor" and "Alt Text" in separate columns).
+	imf := parseHTML(t, "https://ex.com/i",
+		`<html><body><a href="/imgcard"><img src="/i.png" alt="ImageAltText">VisibleD7</a></body></html>`, nil, nil)
+	if l := findLink(imf, Hyperlink, "https://ex.com/imgcard"); l == nil || l.Anchor != "VisibleD7" || l.Alt != "ImageAltText" {
+		t.Errorf("img-card anchor=%q alt=%q, want anchor=VisibleD7 alt=ImageAltText", l.Anchor, l.Alt)
+	}
+}
+
+// TestTemplateContentInert pins that the contents of a <template> are treated
+// as an inert DocumentFragment and excluded from ALL extraction — links,
+// headings and word count alike. <template> content is never rendered, its
+// links are not part of the page's link graph, and a browser only ever shows
+// it after JS clones it elsewhere. This is the regression net for gap R9
+// (rendered-mode link over-extraction): a controlled probe traced bluesnake's
+// surplus rendered outlinks partly to <template> leakage. Screaming Frog v24.1
+// ignores template contents across links, headings, word count, JSON-LD and
+// microdata in BOTH static and rendered modes (probe-confirmed); content.go
+// already lists "template" in nonTextElements (word count), and this guards the
+// element-level walk (links, headings, …). Declarative-shadow-DOM templates
+// (<template shadowrootmode>) are a separate, rendered-only case: Chrome expands
+// them into a real shadow root before bluesnake ever sees the DOM, so they never
+// reach the parser as an inert template node.
+func TestTemplateContentInert(t *testing.T) {
+	f := parseHTML(t, "https://ex.com/p", `<html><body>
+		<h1>RealHeading</h1>
+		<a href="/real">real link</a>
+		<p>one two three four five</p>
+		<template>
+			<h1>TemplateHeading</h1>
+			<a href="/tpl-link">templated link</a>
+			<p>tpltpl tpltpl tpltpl</p>
+		</template>
+		<a href="/after">after template</a>
+	</body></html>`, nil, nil)
+
+	// Control links outside the template are extracted; the templated one is not.
+	if findLink(f, Hyperlink, "https://ex.com/real") == nil {
+		t.Error("control link /real missing")
+	}
+	if findLink(f, Hyperlink, "https://ex.com/after") == nil {
+		t.Error("control link /after (sibling after template) missing — walk must resume past the template")
+	}
+	if l := findLink(f, Hyperlink, "https://ex.com/tpl-link"); l != nil {
+		t.Errorf("templated link extracted (anchor %q) — <template> links must be inert", l.Anchor)
+	}
+	// The template <h1> must not leak into headings.
+	if len(f.H1s) != 1 || f.H1s[0] != "RealHeading" {
+		t.Errorf("H1s = %v, want [RealHeading] (template <h1> must not leak)", f.H1s)
+	}
+	// Word-count path (content.go nonTextElements) must already exclude template
+	// text — guard it here so the two extraction paths never drift apart.
+	if strings.Contains(f.ContentText, "tpltpl") || strings.Contains(f.ContentText, "TemplateHeading") {
+		t.Errorf("ContentText leaked template text: %q", f.ContentText)
+	}
+}
