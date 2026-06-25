@@ -223,11 +223,11 @@ jobs:
           # notarytool takes a zip/dmg/pkg; submit a zip of the bundle, then
           # staple the ticket onto the .app itself (so the DMG built below and
           # the distribution zip both carry an already-stapled bundle that
-          # passes Gatekeeper offline). --wait makes a rejected build fail here.
+          # passes Gatekeeper offline). The helper uploads once and polls
+          # resiliently — a transient network blip during the (sometimes 30+ min
+          # first-submission) wait won't fail the release — and asserts Accepted.
           ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarize.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
-            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" --wait
+          bash packaging/notarize-macos.sh "$RUNNER_TEMP/notarize.zip"
           xcrun stapler staple "$APP"
           rm -f "$RUNNER_TEMP/notarize.zip"
 
@@ -259,10 +259,9 @@ jobs:
           DMG="dist/bluesnake-${VERSION}-darwin-universal.dmg"
           # The DMG wraps an already-stapled .app; sign + notarize + staple the
           # image itself so the downloaded .dmg also passes Gatekeeper offline.
+          # Same resilient submit/poll/assert-Accepted helper as the .app above.
           codesign --force --timestamp --sign "$IDENTITY" "$DMG"
-          xcrun notarytool submit "$DMG" \
-            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" --wait
+          bash packaging/notarize-macos.sh "$DMG"
           xcrun stapler staple "$DMG"
 
       # Built AFTER stapling so the self-updater's zip carries the stapled

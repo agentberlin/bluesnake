@@ -190,10 +190,16 @@ with **no Gatekeeper prompt**. The flow (see [`release.yml`](../.github/workflow
    [`build/darwin/entitlements.plist`](../desktop/build/darwin/entitlements.plist).
    (Nested Mach-O in `Resources/` isn't sealed by signing the bundle, so it must
    be signed on its own.)
-3. **Notarize the `.app`** (`xcrun notarytool submit --wait`) and `stapler staple`
-   the bundle.
+3. **Notarize the `.app`** via [`packaging/notarize-macos.sh`](../packaging/notarize-macos.sh),
+   then `stapler staple` the bundle.
 4. Build the DMG from the stapled app, then **sign + notarize + staple the DMG**.
 5. Zip the **stapled** `.app` (the self-updater consumes that zip).
+
+The notarize helper uploads each artifact once and then polls Apple with retries
+that tolerate transient network errors, asserting the final status is `Accepted`
+(it does **not** trust an exit code alone). This matters because a brand-new
+Developer ID account's *first* submission can sit "In Progress" for 30+ minutes,
+and a single dropped poll request would otherwise fail the whole release.
 
 Signing is **required** — there is no unsigned fallback. With `set -e` the job
 fails loudly if a secret is missing or any step fails, so a release can never be
