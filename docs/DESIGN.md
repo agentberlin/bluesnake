@@ -585,12 +585,16 @@ Each analyzer reads SQLite, writes back columns/tables; all are idempotent and r
 
 `chromedp` pool (size = min(threads, cores-scaled cap: 2/4/8 tabs); per-page: navigate, wait until the page **settles**, snapshot rendered DOM, optional screenshot, console log capture, custom JS execution (action snippets then extraction snippets). Parse pipeline runs twice (raw + rendered) and diffs element sets → JavaScript tab data (`origin` on link edges, `*_rendered` facts). Resource blocking by robots reported as Blocked Resource.
 
+**Shadow-DOM flattening** (`rendering.flatten_shadow_dom`, default on — R9b): `OuterHTML` does not serialize shadow roots, so links/headings/structured-data inside Web-Components shadow trees would be invisible. When on, the rendered snapshot is produced by a synchronous pass (right before serialization, after any screenshot) that moves each shadow host's children up into the host as light DOM and returns native `outerHTML`; nested roots are flattened a level per pass. Open roots are reached via `element.shadowRoot`; **closed** roots are reached via a document-start `attachShadow` shim that stashes them (mode left unchanged). The flattened HTML feeds the same `parse` + `structured` pipeline, so shadow links surface as `origin=rendered` — matching Screaming Frog, which pierces both open and closed shadow DOM. Residual: closed *declarative* shadow DOM (parser-created, no `attachShadow` call) is unreachable. (`rendering.flatten_iframes` remains unbuilt — see §10.)
+
 **Settle detection** (`internal/render`): navigation does **not** wait for the browser `load` event (background media can hold it open for many seconds after the DOM is done); the anchor is `DOMContentLoaded`. After DCL, a page is settled when any of:
 1. the countable network is fully idle for 500ms — media, websockets, EventSource, ping/beacon, prefetch and `blob:`/`data:` requests are excluded from the in-flight set (they routinely stay open forever);
 2. the DOM node count holds steady across two 500ms probes with no script/stylesheet/XHR/fetch in flight (absorbs third-party widgets and analytics that chatter indefinitely);
 3. the wire is completely silent for 1.5s (only permanently-open requests remain).
 
-`rendering.ajax_timeout_sec` is the **hard cap** on the settle phase after DCL (not a fixed sleep); `advanced.response_timeout_sec` caps the wait for DCL itself. Worst case therefore equals the old fixed-wait behaviour. Regression tests cover early settle, permanently-open streams/iframes, and beacon chatter.
+**None of those three fire while the page still has DOM work scheduled on an in-window timer** (R9a): a shim injected at document-start (`addScriptToEvaluateOnNewDocument`) wraps `setTimeout`/`clearTimeout` and exposes a live count of pending one-shot timers in `window.__bsPendingTimers`, which the settle loop reads each tick. Network-idle is otherwise the wrong sole signal for SPAs that inject content via `setTimeout` with no accompanying request — the wire goes quiet ~500ms after DCL, long before a `setTimeout(…, 1500)` fires (Screaming Frog catches these because it dwells its full AJAX timeout). The count is deliberately narrow so the latency lands only where waiting is correct: `setInterval` is never counted, a one-shot whose delay exceeds the cap is never counted (can't fire in-window), and a timer re-armed from inside another timer's callback is never counted (a self-rescheduling animation/poll loop would otherwise dwell to the cap — only its first top-level schedule counts). Residual deferred work the shim does not wait for (bounded, never a hang): string-code timers (`setTimeout("…", d)`, CSP-gated) and DOM injected via `requestAnimationFrame`/microtask/promise.
+
+`rendering.ajax_timeout_sec` is the **hard cap** on the settle phase after DCL (not a fixed sleep) and bounds the timer wait too; `advanced.response_timeout_sec` caps the wait for DCL itself. Worst case therefore equals the old fixed-wait behaviour. Regression tests cover early settle, permanently-open streams/iframes, beacon chatter, in-window timer injection, and re-arming timer loops.
 
 **Wait strategy knob** (`rendering.wait_strategy: adaptive | fixed`): adaptive is the settle detection above; `fixed` waits for the browser load event and then sleeps the *full* AJAX timeout before snapshotting — slower, but the snapshot moment is deterministic, which keeps `compare` runs stable on pages with flaky widgets.
 
@@ -664,9 +668,14 @@ Definition of done per milestone: feature file(s) green, unit coverage ≥ 90% f
   network-idle window, 1.5s wire-silence window, 2×500ms DOM-stability probes
   (`internal/render`) stay fixed — `rendering.wait_strategy: fixed` is the escape hatch
   when adaptive settling misbehaves, so per-threshold knobs would add config surface
-  without a use case. If pages ever settle wrongly, the precision upgrade is a
-  `MutationObserver` injected at document start ("ms since last DOM mutation") instead
-  of polling node counts.
+  without a use case. (2026-06-25 — R9a: adaptive now *also* gates those three signals
+  on a document-start shim's in-window `setTimeout` count, so it waits for timer-injected
+  DOM that network-idle alone would miss; still no new config knob — the count is bounded
+  by `ajax_timeout_sec` and the existing `wait_strategy: fixed` remains the escape hatch.
+  This is the targeted form of the `MutationObserver` upgrade noted below, scoped to the
+  scheduled-timer case rather than general mutation tracking.) If pages ever settle
+  wrongly beyond this, the next precision upgrade is a `MutationObserver` injected at
+  document start ("ms since last DOM mutation") instead of polling node counts.
 
 - **Schema-floor refusal handling is deferred until a floor is actually raised**
   (decided 2026-06-19). The migration ladder's `min*Version` floors are `0`, so
@@ -1020,8 +1029,8 @@ not *collected* yet — there is no cookies table.)
 **Reserved for unbuilt features:** `extraction.pdf.*` (no PDF parsing),
 `extraction.structured_data.{google_rich_results_validation,case_sensitive}`
 (the curated rich-results check ignores both flags),
-`rendering.flatten_shadow_dom` / `rendering.flatten_iframes` (chromedp
-`OuterHTML` doesn't flatten), `rendering.window` (the preset name is ignored;
+`rendering.flatten_iframes` (chromedp `OuterHTML` doesn't inline iframe
+documents), `rendering.window` (the preset name is ignored;
 `window_width`/`window_height` are honoured), `advanced.html_validation` (the
 Validation-tab checks always run regardless), `http.trusted_cert_dirs` (no
 custom CA pool is built — only the documented insecure-TLS test hook exists).

@@ -195,6 +195,7 @@ func TestValidateErrors(t *testing.T) {
 		{"title min over max", "thresholds:\n  title: {min_chars: 70, max_chars: 60}\n", "title"},
 		{"max_urls zero", "limits:\n  max_urls: 0\n", "max_urls"},
 		{"bad timeout", "advanced:\n  response_timeout_sec: 0\n", "response_timeout_sec"},
+		{"zero ajax timeout", "rendering:\n  ajax_timeout_sec: 0\n", "ajax_timeout_sec"},
 		{"empty link position name", "link_positions:\n  - {name: \"\", match: \"/\"}\n", "link_positions"},
 		{"bad custom search regex", "custom_search:\n  - {name: s, mode: contains, pattern: \"[a\", regex: true}\n", "custom_search"},
 		{"bad custom search mode", "custom_search:\n  - {name: s, mode: never, pattern: \"x\"}\n", "custom_search"},
