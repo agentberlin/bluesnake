@@ -16,6 +16,7 @@ import (
 // extension, recording every Archive call.
 type archiveRecorder struct {
 	mu    sync.Mutex
+	pages map[string]*PageRecord
 	calls map[string][]*fetch.Result
 }
 
@@ -24,7 +25,25 @@ var (
 	_ ArchiveSink = (*archiveRecorder)(nil)
 )
 
-func (a *archiveRecorder) Page(*PageRecord) error          { return nil }
+func (a *archiveRecorder) Page(rec *PageRecord) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pages == nil {
+		a.pages = map[string]*PageRecord{}
+	}
+	cp := *rec
+	a.pages[rec.URL] = &cp
+	return nil
+}
+func (a *archiveRecorder) snapshot() map[string]*PageRecord {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make(map[string]*PageRecord, len(a.pages))
+	for k, v := range a.pages {
+		out[k] = v
+	}
+	return out
+}
 func (a *archiveRecorder) FrontierAdd(frontier.Item) error { return nil }
 func (a *archiveRecorder) FrontierDone(string) error       { return nil }
 
@@ -72,10 +91,7 @@ func TestArchiveSinkReceivesFetchedResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := c.Run(context.Background(), s.server.URL+"/")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runCap(t, c, sink, s.server.URL+"/")
 
 	if rec := s.page(res, "/private/x"); rec == nil || rec.State != StateBlockedRobots {
 		t.Fatalf("/private/x = %+v, want blocked by robots", rec)

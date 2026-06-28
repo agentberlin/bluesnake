@@ -9,6 +9,7 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/minhash"
 )
 
 func mkSig(f func(i int) uint64) signature {
@@ -140,14 +141,14 @@ func TestLSHEquivalentToAllPairs(t *testing.T) {
 	}
 	sigs := make([]signature, len(docs))
 	for i, d := range docs {
-		sigs[i] = minhash(d)
+		sigs[i] = minhash.Of(d)
 	}
 
 	const threshold = 0.9
 	want := map[[2]int]bool{}
 	for i := range sigs {
 		for j := i + 1; j < len(sigs); j++ {
-			if sigs[i].similarity(sigs[j]) >= threshold {
+			if sigs[i].Similarity(sigs[j]) >= threshold {
 				want[[2]int{i, j}] = true
 			}
 		}
@@ -160,14 +161,14 @@ func TestLSHEquivalentToAllPairs(t *testing.T) {
 
 	got := map[[2]int]bool{}
 	for p := range pairSet(t, lshCandidates(sigs, 4), len(sigs)) {
-		if sigs[p[0]].similarity(sigs[p[1]]) >= threshold {
+		if sigs[p[0]].Similarity(sigs[p[1]]) >= threshold {
 			got[p] = true
 		}
 	}
 	for p := range want {
 		if !got[p] {
 			t.Errorf("pair %v (similarity %.4f) missed by LSH candidates",
-				p, sigs[p[0]].similarity(sigs[p[1]]))
+				p, sigs[p[0]].Similarity(sigs[p[1]]))
 		}
 	}
 	for p := range got {

@@ -2,10 +2,63 @@ package frontier
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/agentberlin/bluesnake/internal/config"
 )
+
+// TestAdmitExactlyOnceUnderConcurrency (FR-04/FR-19) is the load-bearing dedup
+// invariant: a heavily-duplicated URL stream pushed through Admit by many workers
+// at once admits each distinct URL EXACTLY once — never dropping a novel URL,
+// never admitting a duplicate. With per-bucket caps off, Admit is pure dedup, so
+// the admitted set must equal the distinct input set. Run under -race; this is
+// the gate any Bloom/SQLite-authority rework of dedup must keep green.
+func TestAdmitExactlyOnceUnderConcurrency(t *testing.T) {
+	f := newFrontier(t, func(c *config.Config) {
+		c.Limits.MaxDepth = -1
+		c.Limits.MaxURLsPerDepth = -1
+		c.Limits.MaxPerSubdomain = -1
+	})
+
+	const distinct = 500
+	var stream []string
+	for r := 0; r < 5; r++ { // each URL appears 5× across the stream
+		for i := 0; i < distinct; i++ {
+			stream = append(stream, fmt.Sprintf("https://ex.com/p%d", i))
+		}
+	}
+
+	var mu sync.Mutex
+	admitted := map[string]int{}
+	var wg sync.WaitGroup
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for _, u := range stream {
+				if f.Admit(Item{URL: u, Depth: 1}) {
+					mu.Lock()
+					admitted[u]++
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(admitted) != distinct {
+		t.Fatalf("admitted %d distinct URLs, want %d", len(admitted), distinct)
+	}
+	for u, n := range admitted {
+		if n != 1 {
+			t.Errorf("%s admitted %d times, want exactly 1 (dedup not exactly-once)", u, n)
+		}
+	}
+	if f.Admitted() != distinct {
+		t.Errorf("Admitted() = %d, want %d", f.Admitted(), distinct)
+	}
+}
 
 func newFrontier(t *testing.T, mutate func(*config.Config)) *Frontier {
 	t.Helper()

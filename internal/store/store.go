@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS pages(
   link_score REAL DEFAULT 0, unique_inlinks INT DEFAULT 0, unique_outlinks INT DEFAULT 0,
   closest_similarity REAL DEFAULT 0, near_dup_count INT DEFAULT 0,
   duplicate_of TEXT,
+  minhash BLOB,
   headers JSON, structured JSON, jsdiff JSON, facts JSON
 );
 CREATE TABLE IF NOT EXISTS links(
@@ -73,6 +74,15 @@ CREATE TABLE IF NOT EXISTS links(
 );
 CREATE INDEX IF NOT EXISTS links_src ON links(src);
 CREATE INDEX IF NOT EXISTS links_dst ON links(dst);
+-- edges is the GATED, REWRITTEN discovery graph (one row per followed edge the
+-- crawler actually admitted: src page -> rewritten dst), unlike the raw ungated
+-- links table. hyperlink marks the inlink-counting subset; seq is the monotonic
+-- discovery order that makes first-wins discovered_from run-to-run stable
+-- (MEMORY-SCALING.md §5.5). It lets finalize derive inlinks/discovered_from/depth
+-- without re-applying the Go rewrite+filter chain in SQL.
+CREATE TABLE IF NOT EXISTS edges(src TEXT, dst TEXT, hyperlink INT, seq INTEGER);
+CREATE INDEX IF NOT EXISTS edges_dst ON edges(dst);
+CREATE INDEX IF NOT EXISTS edges_src ON edges(src);
 CREATE TABLE IF NOT EXISTS frontier(url TEXT PRIMARY KEY, depth INT, redirect_hops INT, source TEXT);
 CREATE TABLE IF NOT EXISTS issues(url TEXT, issue TEXT, detail TEXT, PRIMARY KEY(url, issue, detail));
 CREATE TABLE IF NOT EXISTS custom_results(url TEXT, kind TEXT, name TEXT, value TEXT, PRIMARY KEY(url, kind, name));
@@ -280,6 +290,7 @@ var crawlMigrations = []migration{
 	{1, "pages.http_version", func(tx *sql.Tx) error { return addColumn(tx, "pages", "http_version TEXT") }},
 	{2, "pages.duplicate_of", func(tx *sql.Tx) error { return addColumn(tx, "pages", "duplicate_of TEXT") }},
 	{3, "issues.detail_in_pk", migrateIssuesDetailPK},
+	{4, "pages.minhash", func(tx *sql.Tx) error { return addColumn(tx, "pages", "minhash BLOB") }},
 }
 
 // registryMigrations is the ladder for the single shared registry DB. APPEND ONLY.
@@ -598,13 +609,13 @@ func (c *Crawl) Page(rec *crawler.PageRecord) error {
 		(url, scope, state, depth, status_code, status, content_type, http_version,
 		 response_time_ms, size, fetch_error, redirect_url, redirect_type,
 		 matched_robots_line, indexable, indexability_status,
-		 discovered_from, outside_start_folder, duplicate_of, headers, structured, jsdiff, facts)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 discovered_from, outside_start_folder, duplicate_of, minhash, headers, structured, jsdiff, facts)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rec.URL, rec.Scope, rec.State, rec.Depth, rec.StatusCode, rec.Status,
 		rec.ContentType, rec.HTTPVersion, rec.ResponseTimeMs, rec.Size, rec.FetchError,
 		rec.RedirectURL, rec.RedirectType, rec.MatchedRobotsLine,
 		boolInt(rec.Indexable), rec.IndexabilityStatus,
-		rec.DiscoveredFrom, boolInt(rec.OutsideStartFolder), rec.DuplicateOf, headersJSON, structuredJSON, jsdiffJSON, factsJSON)
+		rec.DiscoveredFrom, boolInt(rec.OutsideStartFolder), rec.DuplicateOf, minhashBlob(rec.Minhash), headersJSON, structuredJSON, jsdiffJSON, factsJSON)
 	if err != nil {
 		return err
 	}
@@ -638,6 +649,22 @@ func (c *Crawl) Page(rec *crawler.PageRecord) error {
 			return err
 		}
 	}
+	// The gated/rewritten discovery edges (re-crawl replaces them, like links).
+	if _, err := tx.Exec(`DELETE FROM edges WHERE src = ?`, rec.URL); err != nil {
+		return err
+	}
+	if len(rec.GatedEdges) > 0 {
+		estmt, err := tx.Prepare(`INSERT INTO edges(src, dst, hyperlink, seq) VALUES(?,?,?,?)`)
+		if err != nil {
+			return err
+		}
+		defer estmt.Close()
+		for _, e := range rec.GatedEdges {
+			if _, err := estmt.Exec(rec.URL, e.Dst, boolInt(e.Hyperlink), e.Seq); err != nil {
+				return err
+			}
+		}
+	}
 	return tx.Commit()
 }
 
@@ -650,6 +677,59 @@ func (c *Crawl) FrontierAdd(it frontier.Item) error {
 func (c *Crawl) FrontierDone(url string) error {
 	_, err := c.db.Exec(`DELETE FROM frontier WHERE url = ?`, url)
 	return err
+}
+
+// --- frontier.Dedup: the on-disk visited-set authority -----------------------
+// These let the crawler drop its in-memory dedup set: a URL is "seen" iff it is
+// an un-done frontier row OR a crawled pages row, derivable from the tables the
+// store already writes (MEMORY-SCALING.md §5.1). Admit is the atomic, exactly-
+// once gate; it runs OUTSIDE the frontier's cap mutex, so its (microsecond,
+// WAL-cached) DB work never serialises the in-memory cap accounting.
+
+// Admit records the URL as a frontier row iff it is novel — neither an existing
+// frontier row (the url PRIMARY KEY) nor a crawled pages row — returning
+// firstSeen=true only on the first admission. The WHERE-NOT-EXISTS(pages) clause
+// is what stops a re-discovered, already-crawled URL from being re-admitted after
+// FrontierDone deleted its frontier row (EC-14).
+func (c *Crawl) Admit(it frontier.Item) (bool, error) {
+	res, err := c.db.Exec(
+		`INSERT OR IGNORE INTO frontier(url, depth, redirect_hops, source)
+		 SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM pages WHERE url = ?)`,
+		it.URL, it.Depth, it.RedirectHops, it.Source, it.URL)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// Remove undoes a just-admitted frontier row (the frontier's cap-overflow
+// rollback). It is the same delete as FrontierDone but named for the dedup role.
+func (c *Crawl) Remove(url string) error {
+	_, err := c.db.Exec(`DELETE FROM frontier WHERE url = ?`, url)
+	return err
+}
+
+// Seen reports whether the URL is already known (a frontier or pages row).
+func (c *Crawl) Seen(url string) (bool, error) {
+	var seen bool
+	err := c.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM frontier WHERE url=?) OR EXISTS(SELECT 1 FROM pages WHERE url=?)`,
+		url, url).Scan(&seen)
+	return seen, err
+}
+
+// MarkSeen is a no-op for the on-disk authority: a resume's already-processed
+// URLs ARE the pages rows, so the authority already knows them — there is no
+// in-memory set to preseed.
+func (c *Crawl) MarkSeen([]string) error { return nil }
+
+// Count returns the number of distinct admitted URLs (frontier ∪ pages).
+func (c *Crawl) Count() (int, error) {
+	var n int
+	err := c.db.QueryRow(
+		`SELECT COUNT(*) FROM (SELECT url FROM frontier UNION SELECT url FROM pages)`).Scan(&n)
+	return n, err
 }
 
 // --- resume support ---
@@ -733,6 +813,29 @@ func (c *Crawl) SaveDepths(pages map[string]*crawler.PageRecord) error {
 	return tx.Commit()
 }
 
+// SaveDepthsMap writes a url->depth map computed by the depth CSR (NoDepth -> SQL
+// NULL). The SQL-cutover counterpart to SaveDepths, taking the CSR result instead
+// of a page map, so finalize's depth step never materialises the page records.
+func (c *Crawl) SaveDepthsMap(depths map[string]int) error {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`UPDATE pages SET depth = ? WHERE url = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for url, d := range depths {
+		depth := sql.NullInt64{Int64: int64(d), Valid: d != crawler.NoDepth}
+		if _, err := stmt.Exec(depth, url); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // SaveInlinks rewrites only the inlinks column for every supplied page. Resume
 // uses it to persist inlink counts recomputed over the full two-session graph
 // (crawler.RecomputeInlinks); UpdateInlinks alone counts a resumed session's
@@ -752,6 +855,231 @@ func (c *Crawl) SaveInlinks(pages map[string]*crawler.PageRecord) error {
 	defer stmt.Close()
 	for url, rec := range pages {
 		if _, err := stmt.Exec(rec.Inlinks, url); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// LinkRows returns every stored raw link (the ungated superset) for the depth
+// CSR; the crawler re-applies the follow gate over them.
+func (c *Crawl) LinkRows() ([]crawler.LinkRow, error) {
+	rows, err := c.db.Query(`SELECT src, dst, type, nofollow FROM links`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []crawler.LinkRow
+	for rows.Next() {
+		var l crawler.LinkRow
+		var nofollow int
+		if err := rows.Scan(&l.Src, &l.Dst, &l.Type, &nofollow); err != nil {
+			return nil, err
+		}
+		l.Nofollow = nofollow == 1
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// Redirects returns the redirect edges (page url -> redirect target) for the
+// depth CSR — a redirect counts as a hop.
+func (c *Crawl) Redirects() (map[string]string, error) {
+	rows, err := c.db.Query(`SELECT url, redirect_url FROM pages WHERE redirect_url IS NOT NULL AND redirect_url != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var url, dst string
+		if err := rows.Scan(&url, &dst); err != nil {
+			return nil, err
+		}
+		out[url] = dst
+	}
+	return out, rows.Err()
+}
+
+// MaxEdgeSeq returns the highest gated-edge seq recorded so far (0 when empty).
+// A resumed crawl seeds its edge counter past this so its new edges sort AFTER
+// the prior session's — keeping MIN(seq) first-wins discovered_from stable across
+// the resume boundary (the rowid-instability trap, MEMORY-SCALING.md §5.5).
+func (c *Crawl) MaxEdgeSeq() (int64, error) {
+	var n int64
+	err := c.db.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM edges`).Scan(&n)
+	return n, err
+}
+
+// InlinksFromEdges derives the raw hyperlink inlink count per URL from the gated
+// edges table — the SQL equivalent of replaying discoverLinks→noteInlink in RAM
+// (RecomputeInlinks). Self-links count, matching the in-RAM semantics. This is
+// the Phase-2 SQL/CSR finalize path that lets the depth/inlinks recompute drop
+// the in-RAM page map (MEMORY-SCALING.md §5.5).
+func (c *Crawl) InlinksFromEdges() (map[string]int, error) {
+	rows, err := c.db.Query(`SELECT dst, COUNT(*) FROM edges WHERE hyperlink = 1 GROUP BY dst`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var dst string
+		var n int
+		if err := rows.Scan(&dst, &n); err != nil {
+			return nil, err
+		}
+		out[dst] = n
+	}
+	return out, rows.Err()
+}
+
+// DiscoveredFromEdges derives first-wins discovered_from per URL: the source of
+// the lowest-seq edge into each target (any edge type, like noteInlink's first-
+// wins). seq is the monotonic crawl order, so this is run-to-run stable and
+// stable across resume (later sessions get higher seq) — unlike a rowid-based MIN.
+// Seed-locking ("" for seeds) is applied by the caller.
+func (c *Crawl) DiscoveredFromEdges() (map[string]string, error) {
+	rows, err := c.db.Query(
+		`SELECT dst, src FROM edges e WHERE e.seq = (SELECT MIN(seq) FROM edges WHERE dst = e.dst)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var dst, src string
+		if err := rows.Scan(&dst, &src); err != nil {
+			return nil, err
+		}
+		if _, dup := out[dst]; !dup { // guard against ties (same min seq is impossible — seq is unique)
+			out[dst] = src
+		}
+	}
+	return out, rows.Err()
+}
+
+// DuplicateIssues computes the cross-page duplicate occurrences (content hash /
+// title / description / h1 / h2) in pure SQL — the Phase-2 dup-rule-SQL path,
+// byte-equal to issues.duplicates() over the page map. It reproduces every
+// nuance: the multi-clause eligibility gate (crawled ∧ internal ∧ HTML ∧ — when
+// configured — indexable ∧ not-paginated, the last via json_array_length of the
+// rel=prev arrays, so no precomputed column is needed), the H1/H2 "either of the
+// first two" matching (json_each with index < 2, which also makes a page whose two
+// h1s are identical its own duplicate), and the per-(url,key) detail rows.
+func (c *Crawl) DuplicateIssues(ignoreNonIndexable, ignorePaginated bool) ([]issues.Occurrence, error) {
+	elig := `state = 'crawled' AND scope = 'internal' AND facts IS NOT NULL
+		AND (content_type LIKE '%text/html%' OR content_type LIKE '%application/xhtml%')`
+	if ignoreNonIndexable {
+		elig += ` AND indexable = 1`
+	}
+	if ignorePaginated {
+		elig += ` AND COALESCE(json_array_length(facts, '$.PrevHTML'), 0) = 0
+			AND COALESCE(json_array_length(facts, '$.PrevHTTP'), 0) = 0`
+	}
+
+	var occs []issues.Occurrence
+	scan := func(q, issueID string) error {
+		rows, err := c.db.Query(q)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var url, key string
+			if err := rows.Scan(&url, &key); err != nil {
+				return err
+			}
+			occs = append(occs, issues.Occurrence{URL: url, IssueID: issueID, Detail: key})
+		}
+		return rows.Err()
+	}
+
+	// single-key duplicates: hash, title[0], description[0]
+	single := func(keyExpr, issueID string) error {
+		q := fmt.Sprintf(`WITH e AS (SELECT url, %s AS k FROM pages WHERE %s)
+			SELECT url, k FROM e WHERE k IS NOT NULL AND k != ''
+			  AND k IN (SELECT k FROM e WHERE k IS NOT NULL AND k != '' GROUP BY k HAVING COUNT(*) >= 2)`,
+			keyExpr, elig)
+		return scan(q, issueID)
+	}
+	if err := single(`json_extract(facts, '$.Hash')`, "content_exact_duplicate"); err != nil {
+		return nil, err
+	}
+	if err := single(`json_extract(facts, '$.Titles[0]')`, "title_duplicate"); err != nil {
+		return nil, err
+	}
+	if err := single(`json_extract(facts, '$.Descriptions[0]')`, "description_duplicate"); err != nil {
+		return nil, err
+	}
+
+	// either-of-first-2 duplicates: h1, h2 (each of the first two values is a key)
+	either := func(arrayPath, issueID string) error {
+		q := fmt.Sprintf(`WITH e AS (SELECT url, facts FROM pages WHERE %s),
+			keys AS (SELECT e.url AS url, je.value AS k FROM e, json_each(e.facts, '%s') je
+			         WHERE je.key < 2 AND je.value IS NOT NULL AND je.value != '')
+			SELECT url, k FROM keys WHERE k IN (SELECT k FROM keys GROUP BY k HAVING COUNT(*) >= 2)`,
+			elig, arrayPath)
+		return scan(q, issueID)
+	}
+	if err := either(`$.H1s`, "h1_duplicate"); err != nil {
+		return nil, err
+	}
+	if err := either(`$.H2s`, "h2_duplicate"); err != nil {
+		return nil, err
+	}
+	return occs, nil
+}
+
+// SaveInlinksFromEdges is the Phase-2 SQL cutover: it persists the raw hyperlink
+// inlink count and first-wins (seq-MIN) discovered_from for every page, computed
+// purely in SQL over the gated edges table — no in-RAM RecomputeInlinks, no page
+// map. Seeds are seed-locked to "". Over the full edges table (both sessions on
+// resume) this yields full-graph inlinks, so it subsumes the old resume recompute.
+func (c *Crawl) SaveInlinksFromEdges(seeds []string) error {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE pages SET inlinks = (
+		SELECT COUNT(*) FROM edges WHERE dst = pages.url AND hyperlink = 1)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE pages SET discovered_from = COALESCE(
+		(SELECT src FROM edges e WHERE e.dst = pages.url ORDER BY seq LIMIT 1), '')`); err != nil {
+		return err
+	}
+	for _, s := range seeds { // seed-lock: a backlink must not become a seed's discoverer
+		if _, err := tx.Exec(`UPDATE pages SET discovered_from = '' WHERE url = ?`, s); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// SaveInlinkSources persists the per-URL discovery aggregate the crawler hands
+// back after a stream-and-drop crawl: the raw hyperlink inlink count and the
+// first-wins, seed-locked discovered_from. It is the always-run aggregate write
+// (fresh and interrupted alike) that the old UpdateInlinks(res.Pages) performed,
+// minus depth — depth is recomputed over the stored graph by the completed-crawl
+// finalize path (SaveDepths). An interrupted crawl keeps the admit-time depth
+// record() already wrote until a resume recomputes it over the full graph.
+// Aggregate entries for URLs with no pages row (discovered but never crawled)
+// no-op, exactly as the old per-record UPDATE did.
+func (c *Crawl) SaveInlinkSources(agg map[string]crawler.InlinkAgg) error {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`UPDATE pages SET inlinks = ?, discovered_from = ? WHERE url = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for url, a := range agg {
+		if _, err := stmt.Exec(a.Count, a.First, url); err != nil {
 			return err
 		}
 	}
@@ -782,13 +1110,33 @@ func (c *Crawl) PageCount() (int, error) {
 	return n, err
 }
 
+// LoadPages reconstructs every stored page record, including the full Facts
+// (with ContentText). Used by re-analysis, compare, and any path that needs the
+// page body text.
 func (c *Crawl) LoadPages() (map[string]*crawler.PageRecord, error) {
+	return c.loadPages(false)
+}
+
+// LoadPagesLite reconstructs every page record but frees Facts.ContentText
+// per-row as it loads, so the returned map never holds the page bodies — the
+// dominant per-record cost. The finalize aggregates (depth, inlinks, link graph,
+// PageRank, duplicate keys, every issue check except the two content-text scans)
+// read only Links + scalars, so they run identically over this lighter map; the
+// two ContentText checks (lorem/soft-404) and near-duplicates are fed the body
+// text separately (StreamContentText / a full LoadPages when near-dup is on).
+// This is what keeps the finalize peak off the page-body axis (MEMORY-SCALING.md
+// §4 regime 3 / Phase 2).
+func (c *Crawl) LoadPagesLite() (map[string]*crawler.PageRecord, error) {
+	return c.loadPages(true)
+}
+
+func (c *Crawl) loadPages(stripContent bool) (map[string]*crawler.PageRecord, error) {
 	rows, err := c.db.Query(`SELECT url, scope, state, COALESCE(depth, -1), status_code, status,
 		content_type, COALESCE(http_version,''), response_time_ms, size, fetch_error, redirect_url,
 		redirect_type, matched_robots_line, indexable, indexability_status,
 		inlinks, COALESCE(discovered_from,''), outside_start_folder,
 		link_score, unique_inlinks, unique_outlinks, closest_similarity,
-		COALESCE(duplicate_of,''), headers, structured, jsdiff, facts FROM pages`)
+		COALESCE(duplicate_of,''), minhash, headers, structured, jsdiff, facts FROM pages`)
 	if err != nil {
 		return nil, err
 	}
@@ -804,7 +1152,7 @@ func (c *Crawl) LoadPages() (map[string]*crawler.PageRecord, error) {
 			&rec.MatchedRobotsLine, &indexable, &rec.IndexabilityStatus,
 			&rec.Inlinks, &rec.DiscoveredFrom, &outside,
 			&rec.LinkScore, &rec.UniqueInlinks, &rec.UniqueOutlinks, &rec.ClosestSimilarity,
-			&rec.DuplicateOf, &headersJSON, &structuredJSON, &jsdiffJSON, &factsJSON); err != nil {
+			&rec.DuplicateOf, &rec.Minhash, &headersJSON, &structuredJSON, &jsdiffJSON, &factsJSON); err != nil {
 			return nil, err
 		}
 		rec.Indexable = indexable == 1
@@ -831,10 +1179,36 @@ func (c *Crawl) LoadPages() (map[string]*crawler.PageRecord, error) {
 			if err := json.Unmarshal(factsJSON, rec.Facts); err != nil {
 				return nil, err
 			}
+			if stripContent {
+				rec.Facts.ContentText = "" // freed per-row: never retained in the map
+			}
 		}
 		pages[rec.URL] = rec
 	}
 	return pages, rows.Err()
+}
+
+// StreamContentText yields each page's URL and body text one row at a time,
+// holding only a single ContentText in memory. finalize uses it to run the two
+// ContentText-dependent issue checks (lorem/soft-404) over a LoadPagesLite map
+// without ever materialising all page bodies at once.
+func (c *Crawl) StreamContentText(fn func(url, text string) error) error {
+	rows, err := c.db.Query(
+		`SELECT url, COALESCE(json_extract(facts, '$.ContentText'), '') FROM pages`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var url, text string
+		if err := rows.Scan(&url, &text); err != nil {
+			return err
+		}
+		if err := fn(url, text); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // SaveIssues replaces all stored issue occurrences.
@@ -1171,4 +1545,14 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// minhashBlob stores an empty signature as SQL NULL (not a zero-length blob) so
+// "has a precomputed signature" is a clean IS NOT NULL test and a near-dup-off
+// crawl leaves the column unset.
+func minhashBlob(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
 }

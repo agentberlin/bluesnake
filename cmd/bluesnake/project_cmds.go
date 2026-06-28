@@ -9,7 +9,9 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/project"
 	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/runner"
@@ -251,9 +253,10 @@ func newProjectCmd() *cobra.Command {
 		},
 	}
 
+	var parallel int
 	crawlAllCmd := &cobra.Command{
 		Use:   "crawl-all <project-id>",
-		Short: "Crawl every member domain of the project, one at a time",
+		Short: "Crawl every member domain of the project (up to --parallel at once)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := open()
@@ -269,10 +272,17 @@ func newProjectCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "project has no member domains to crawl")
 				return nil
 			}
-			// Synchronous in-process drain: one dispatcher runs every member crawl
-			// sequentially through the shared executor (no parallel crawls).
+			// In-process drain: the dispatcher runs up to --parallel member crawls
+			// at once through the shared executor, with one process-wide limiter
+			// bounding total concurrent fetches across them.
+			if parallel < 1 {
+				parallel = 1
+			}
+			lim := limiter.New(parallel*config.Default().Speed.MaxThreads, parallel)
 			obs := &groupObserver{out: cmd.OutOrStdout(), total: len(members), done: make(chan struct{})}
-			disp := queue.New(queue.NewMemStore(), runner.New(storeDir, obs))
+			disp := queue.New(queue.NewMemStore(),
+				runner.New(storeDir, obs, runner.WithLimiter(lim)),
+				queue.WithConcurrency(parallel))
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 			if err := disp.Start(ctx); err != nil {
@@ -289,6 +299,7 @@ func newProjectCmd() *cobra.Command {
 		},
 	}
 
+	crawlAllCmd.Flags().IntVar(&parallel, "parallel", 1, "number of member crawls to run at once")
 	cmd.AddCommand(createCmd, lsCmd, rmCmd, addCmd, removeCmd, showCmd, compareCmd, diffCmd, crawlAllCmd)
 	return cmd
 }

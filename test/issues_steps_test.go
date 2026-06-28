@@ -46,10 +46,11 @@ func (w *world) crawlIntoStore() error {
 	if err != nil {
 		return err
 	}
-	if w.crawlResult, err = c.Run(context.Background(), srv.URL+"/"); err != nil {
+	seed := srv.URL + "/"
+	if w.crawlResult, err = c.Run(context.Background(), seed); err != nil {
 		return err
 	}
-	return st.UpdateInlinks(w.crawlResult.Pages)
+	return w.finalizeCrawlPages(c, st, w.crawlResult, seed)
 }
 
 func (w *world) runAnalysisStep() error {
@@ -114,7 +115,7 @@ func (w *world) evaluateIssues() error {
 }
 
 func (w *world) crawlPageCustomResult(path, name, want string) error {
-	rec := w.crawlResult.Pages[w.server.URL+path]
+	rec := w.crawlPages[w.server.URL+path]
 	if rec == nil {
 		return fmt.Errorf("no record for %s", path)
 	}

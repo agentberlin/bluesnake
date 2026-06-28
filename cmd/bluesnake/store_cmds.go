@@ -12,6 +12,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/finalize"
+	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -139,7 +140,8 @@ func newResumeCmd() *cobra.Command {
 			}
 
 			c, err := crawler.New(cfg,
-				crawler.WithSink(st), crawler.WithResume(processed, pending))
+				crawler.WithSink(st), crawler.WithResume(processed, pending),
+				crawler.WithLimiter(limiter.New(cfg.Speed.MaxGlobalThreads, 1)))
 			if err != nil {
 				return exitErr{2, err}
 			}
@@ -161,12 +163,9 @@ func newResumeCmd() *cobra.Command {
 				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", st.ID, storeDir)
 				return exitErr{3, errors.New("interrupted")}
 			}
-			// Break down the full two-session graph, not just this session's pages
-			// (res.Pages), so the summary is cumulative like the registry counts.
-			pages := res.Pages
-			if all, lerr := st.LoadPages(); lerr == nil {
-				pages = all
-			}
+			// Break down the full two-session graph (the registry counts are
+			// cumulative); records are streamed to the store, not held in res.
+			pages, _ := st.LoadPages()
 			printSummary(cmd, pages, out.Crawled, out.Total, res.Duration)
 			if ferr != nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), "finalize:", ferr)

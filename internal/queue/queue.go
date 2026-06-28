@@ -82,8 +82,11 @@ type Store interface {
 // the crawl's terminal store status (store.StatusCompleted | store.StatusInterrupted).
 type Executor interface {
 	Run(ctx context.Context, spec JobSpec, onStart func(crawlID string)) (status string, err error)
-	Pause()
-	Stop()
+	Pause() // pause every in-flight crawl (left resumable)
+	Stop()  // stop every in-flight crawl (finalised as completed)
+	// StopCrawl stops one specific crawl by id, so Cancel can target a single job
+	// when several run in parallel; a no-op when that crawl is not in flight.
+	StopCrawl(crawlID string)
 }
 
 // jobStatusFor maps a finished crawl's outcome to the terminal job status.

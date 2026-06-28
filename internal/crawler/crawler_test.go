@@ -51,24 +51,30 @@ func (s *site) hitCount(path string) int {
 
 func link(path string) string { return fmt.Sprintf(`<a href="%s">x</a>`, path) }
 
-func crawl(t *testing.T, s *site, mutate func(*config.Config)) *Result {
+// crawl runs a one-seed spider crawl into a capturing sink and returns the
+// captured records with the finalize aggregate pass (depth/inlinks/
+// discovered_from) applied — the stand-in for the live page map the crawler no
+// longer retains (stream-and-drop). See capSink/capFinalize in streamdrop_test.go.
+func crawl(t *testing.T, s *site, mutate func(*config.Config)) *crawlT {
 	t.Helper()
 	cfg := config.Default()
 	if mutate != nil {
 		mutate(cfg)
 	}
-	c, err := New(cfg)
+	sink := newCapSink()
+	c, err := New(cfg, WithSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := c.Run(context.Background(), s.server.URL+"/")
+	seed := s.server.URL + "/"
+	res, err := c.Run(context.Background(), seed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return res
+	return capFinalize(c, sink.snapshot(), res, seed)
 }
 
-func (s *site) page(res *Result, path string) *PageRecord {
+func (s *site) page(res *crawlT, path string) *PageRecord {
 	return res.Pages[s.server.URL+path]
 }
 
@@ -254,11 +260,9 @@ func TestStartFolderScoping(t *testing.T) {
 	t.Run("default: outside checked but not followed", func(t *testing.T) {
 		s := newSite(t, pages)
 		cfg := config.Default()
-		c, _ := New(cfg)
-		res, err := c.Run(context.Background(), s.server.URL+"/blog/")
-		if err != nil {
-			t.Fatal(err)
-		}
+		sink := newCapSink()
+		c, _ := New(cfg, WithSink(sink))
+		res := runCap(t, c, sink, s.server.URL+"/blog/")
 		if rec := res.Pages[s.server.URL+"/about"]; rec == nil || !rec.OutsideStartFolder {
 			t.Errorf("/about = %+v", rec)
 		}
@@ -529,18 +533,32 @@ func TestInvalidLinksSkipped(t *testing.T) {
 	}
 }
 
-// recordingSink captures sink calls including sitemap entries.
+// recordingSink captures sink calls including sitemap entries, and the full page
+// records (so it doubles as a pageSnapshotter for capFinalize).
 type recordingSink struct {
 	mu       sync.Mutex
-	pages    []string
+	pages    map[string]*PageRecord
 	sitemaps map[string][]string
 }
 
 func (s *recordingSink) Page(rec *PageRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pages = append(s.pages, rec.URL)
+	if s.pages == nil {
+		s.pages = map[string]*PageRecord{}
+	}
+	cp := *rec
+	s.pages[rec.URL] = &cp
 	return nil
+}
+func (s *recordingSink) snapshot() map[string]*PageRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]*PageRecord, len(s.pages))
+	for k, v := range s.pages {
+		out[k] = v
+	}
+	return out
 }
 func (s *recordingSink) FrontierAdd(frontier.Item) error { return nil }
 func (s *recordingSink) FrontierDone(string) error       { return nil }
@@ -572,10 +590,7 @@ func TestSitemapCrawling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := c.Run(context.Background(), s.server.URL+"/")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runCap(t, c, sink, s.server.URL+"/")
 	if rec := s.page(res, "/orphan"); rec == nil || rec.State != StateCrawled {
 		t.Errorf("sitemap-only page must be crawled: %+v", rec)
 	}
@@ -597,14 +612,12 @@ func TestSitemapAutoDiscovery(t *testing.T) {
 	cfg := config.Default()
 	cfg.Sitemaps.CrawlLinked = true
 	cfg.Sitemaps.AutoDiscoverViaRobots = true
-	c, err := New(cfg)
+	sink := newCapSink()
+	c, err := New(cfg, WithSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := c.Run(context.Background(), s.server.URL+"/")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runCap(t, c, sink, s.server.URL+"/")
 	if rec := s.page(res, "/from-robots"); rec == nil || rec.State != StateCrawled {
 		t.Errorf("robots-discovered sitemap URL must be crawled: %+v", rec)
 	}
@@ -637,14 +650,12 @@ func TestSitemapAutoDiscoveryPerHost(t *testing.T) {
 	cfg.Sitemaps.CrawlLinked = true
 	cfg.Sitemaps.AutoDiscoverViaRobots = true
 	cfg.Scope.CDNs = []string{urlutil.Authority(b.server.URL)} // 2nd host is in-scope
-	c, err := New(cfg)
+	sink := newCapSink()
+	c, err := New(cfg, WithSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := c.Run(context.Background(), s.server.URL+"/")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runCap(t, c, sink, s.server.URL+"/")
 	if rec := res.Pages[b.server.URL+"/linked"]; rec == nil || rec.State != StateCrawled {
 		t.Fatalf("second-host linked page must be crawled (host must be entered): %+v", rec)
 	}
@@ -687,14 +698,12 @@ func TestRobotsRedirectFollowed(t *testing.T) {
 	cfg := config.Default()
 	cfg.Sitemaps.CrawlLinked = true
 	cfg.Sitemaps.AutoDiscoverViaRobots = true
-	c, err := New(cfg)
+	sink := newCapSink()
+	c, err := New(cfg, WithSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := c.Run(context.Background(), srv.URL+"/")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runCap(t, c, sink, srv.URL+"/")
 	if rec := res.Pages[srv.URL+"/orphan"]; rec == nil || rec.State != StateCrawled {
 		t.Errorf("sitemap URL behind redirected robots.txt not crawled: %+v", rec)
 	}
@@ -725,14 +734,12 @@ func TestExternalRedirectTargetNotFetched(t *testing.T) {
 	defer srv.Close()
 
 	cfg := config.Default() // external links: store/crawl off
-	c, err := New(cfg)
+	sink := newCapSink()
+	c, err := New(cfg, WithSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := c.Run(context.Background(), srv.URL+"/")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runCap(t, c, sink, srv.URL+"/")
 	if rec := res.Pages[srv.URL+"/away"]; rec == nil || rec.RedirectURL == "" {
 		t.Fatalf("redirect source = %+v, want recorded redirect", rec)
 	}
@@ -763,14 +770,12 @@ func TestInlinksCountHyperlinksOnly(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c, err := New(config.Default())
+	sink := newCapSink()
+	c, err := New(config.Default(), WithSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := c.Run(context.Background(), srv.URL+"/")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runCap(t, c, sink, srv.URL+"/")
 	moved, final := res.Pages[srv.URL+"/moved"], res.Pages[srv.URL+"/final"]
 	if moved == nil || moved.Inlinks != 1 {
 		t.Errorf("/moved inlinks = %+v, want 1 (the hyperlink)", moved)
@@ -803,20 +808,17 @@ func TestIdenticalContentShortCircuit(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	run := func(skip bool) *Result {
+	run := func(skip bool) *crawlT {
 		t.Helper()
 		cfg := config.Default()
 		cfg.Advanced.SkipIdenticalContentLinks = skip
 		cfg.Limits.MaxDepth = 3 // bounds the control crawl; the fix needs no bound
-		c, err := New(cfg)
+		sink := newCapSink()
+		c, err := New(cfg, WithSink(sink))
 		if err != nil {
 			t.Fatal(err)
 		}
-		res, err := c.Run(context.Background(), srv.URL+"/")
-		if err != nil {
-			t.Fatal(err)
-		}
-		return res
+		return runCap(t, c, sink, srv.URL+"/")
 	}
 
 	on := run(true)
@@ -922,15 +924,13 @@ func TestRecomputeDepthsReconstructsFreshDepths(t *testing.T) {
 		"/e": "<p>leaf</p>",
 	})
 	cfg := config.Default()
-	c, err := New(cfg)
+	sink := newCapSink()
+	c, err := New(cfg, WithSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
 	seed := s.server.URL + "/"
-	res, err := c.Run(context.Background(), seed)
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runCap(t, c, sink, seed)
 
 	// Baseline: a fresh crawl already computes shortest-path depths.
 	for path, d := range map[string]int{"/": 0, "/a": 1, "/c": 1, "/b": 2, "/e": 2, "/d": 3} {
@@ -978,17 +978,15 @@ func TestResumePreservesDiscoveredFrom(t *testing.T) {
 	})
 	seed := s.server.URL + "/"
 	cfg := config.Default()
+	sink := newCapSink()
 	c, err := New(cfg, WithResume(
 		[]string{seed}, // already processed: the seed is not re-crawled
 		[]frontier.Item{{URL: s.server.URL + "/pending", Depth: 1, Source: seed}},
-	))
+	), WithSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := c.Run(context.Background(), seed)
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runCap(t, c, sink, seed)
 	rec := s.page(res, "/pending")
 	if rec == nil {
 		t.Fatal("/pending was not crawled on resume")

@@ -15,6 +15,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/indexability"
 	"github.com/agentberlin/bluesnake/internal/isocodes"
 	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/minhash"
 	"github.com/agentberlin/bluesnake/internal/parse"
 )
 
@@ -77,7 +78,18 @@ type LlmsTxtData struct {
 }
 
 // Run executes every enabled analysis over the crawl's pages.
-func Run(pages map[string]*crawler.PageRecord, sitemaps SitemapIndex, llmstxt *LlmsTxtData, cfg *config.Config) *Results {
+// Option configures a Run.
+type Option func(*analyzer)
+
+// WithLinks supplies the stored link superset so the link graph (unique in/out +
+// PageRank) and the hyperlinked set are computed in CSR form over it instead of
+// each page's in-RAM Facts.Links — the Phase-2 PageRank-CSR path. Without it the
+// analyzer falls back to Facts.Links (unchanged behaviour for existing callers).
+func WithLinks(links []crawler.LinkRow) Option {
+	return func(a *analyzer) { a.links = links }
+}
+
+func Run(pages map[string]*crawler.PageRecord, sitemaps SitemapIndex, llmstxt *LlmsTxtData, cfg *config.Config, opts ...Option) *Results {
 	r := &Results{
 		LinkScores: map[string]float64{},
 		UniqueIn:   map[string]int{},
@@ -85,6 +97,9 @@ func Run(pages map[string]*crawler.PageRecord, sitemaps SitemapIndex, llmstxt *L
 		NearDups:   map[string]NearDup{},
 	}
 	a := &analyzer{pages: pages, cfg: cfg, res: r}
+	for _, o := range opts {
+		o(a)
+	}
 	if cfg.Analysis.Links || cfg.Analysis.LinkScore {
 		a.linkGraph()
 	}
@@ -111,6 +126,7 @@ func Run(pages map[string]*crawler.PageRecord, sitemaps SitemapIndex, llmstxt *L
 
 type analyzer struct {
 	pages       map[string]*crawler.PageRecord
+	links       []crawler.LinkRow // stored link superset; nil ⇒ use Facts.Links
 	cfg         *config.Config
 	res         *Results
 	hyperlinked map[string]bool // memoized by hyperlinkedSet
@@ -128,6 +144,14 @@ func (a *analyzer) hyperlinkedSet() map[string]bool {
 		return a.hyperlinked
 	}
 	a.hyperlinked = map[string]bool{}
+	if a.links != nil {
+		for _, l := range a.links {
+			if l.Type == string(parse.Hyperlink) && l.Dst != "" && l.Dst != l.Src {
+				a.hyperlinked[l.Dst] = true
+			}
+		}
+		return a.hyperlinked
+	}
 	for src, rec := range a.pages {
 		if rec.Facts == nil {
 			continue
@@ -147,22 +171,46 @@ func (a *analyzer) linkGraph() {
 	// self-links count towards unique in/outlinks (Screaming Frog parity);
 	// PageRank below skips them so a page cannot vote for itself
 	edges := map[string]map[string]bool{} // src -> set of dst
-	for url, rec := range a.pages {
-		if rec.Facts == nil || rec.Scope != "internal" {
-			continue
+	internal := func(url string) bool {
+		rec, ok := a.pages[url]
+		return ok && rec.Scope == "internal"
+	}
+	if a.links != nil {
+		// CSR over the stored link superset: same gate as the Facts.Links walk —
+		// hyperlink, followed, internal src (with facts) -> internal dst.
+		for _, l := range a.links {
+			if l.Type != string(parse.Hyperlink) || l.Nofollow {
+				continue
+			}
+			if src, ok := a.pages[l.Src]; !ok || src.Facts == nil || src.Scope != "internal" {
+				continue
+			}
+			if !internal(l.Dst) {
+				continue
+			}
+			if edges[l.Src] == nil {
+				edges[l.Src] = map[string]bool{}
+			}
+			edges[l.Src][l.Dst] = true
 		}
-		for _, l := range rec.Facts.Links {
-			if l.Type != parse.Hyperlink || l.Nofollow {
+	} else {
+		for url, rec := range a.pages {
+			if rec.Facts == nil || rec.Scope != "internal" {
 				continue
 			}
-			target, ok := a.pages[l.URL]
-			if !ok || target.Scope != "internal" {
-				continue
+			for _, l := range rec.Facts.Links {
+				if l.Type != parse.Hyperlink || l.Nofollow {
+					continue
+				}
+				target, ok := a.pages[l.URL]
+				if !ok || target.Scope != "internal" {
+					continue
+				}
+				if edges[url] == nil {
+					edges[url] = map[string]bool{}
+				}
+				edges[url][l.URL] = true
 			}
-			if edges[url] == nil {
-				edges[url] = map[string]bool{}
-			}
-			edges[url][l.URL] = true
 		}
 	}
 	for src, dsts := range edges {
@@ -331,7 +379,15 @@ func (a *analyzer) nearDuplicates() {
 		if rec.Facts.WordCount == 0 {
 			continue
 		}
-		cands = append(cands, cand{url, minhash(rec.Facts.ContentText)})
+		// Prefer the signature precomputed at crawl time (the pages.minhash
+		// column, populated when near-dup was enabled) so we never re-materialise
+		// ContentText. Older crawls / near-dup-off crawls carry no column; fall
+		// back to hashing the body, which finalize loads in that case.
+		sig := minhash.Decode(rec.Minhash)
+		if len(rec.Minhash) != minhash.EncodedLen {
+			sig = minhash.Of(rec.Facts.ContentText)
+		}
+		cands = append(cands, cand{url, sig})
 	}
 	exact := map[string]string{} // hash -> first url, to exclude exact dups
 	for _, c := range cands {
@@ -350,7 +406,7 @@ func (a *analyzer) nearDuplicates() {
 		if exact[cands[i].url] == exact[cands[j].url] {
 			continue // exact duplicates are a separate check
 		}
-		sim := cands[i].sig.similarity(cands[j].sig) * 100
+		sim := cands[i].sig.Similarity(cands[j].sig) * 100
 		if sim < threshold {
 			continue
 		}

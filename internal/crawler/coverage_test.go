@@ -69,14 +69,12 @@ func TestWithFetchOptionsAppliesToClient(t *testing.T) {
 
 	// With the option threaded through WithFetchOptions, the cert is accepted
 	// and the crawl proceeds.
-	c, err := New(config.Default(), WithFetchOptions(fetch.WithInsecureTLS()))
+	sink := newCapSink()
+	c, err := New(config.Default(), WithFetchOptions(fetch.WithInsecureTLS()), WithSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := c.Run(context.Background(), srv.URL+"/")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runCap(t, c, sink, srv.URL+"/")
 	if res.Crawled < 2 {
 		t.Errorf("with WithInsecureTLS the TLS server must be crawled, crawled = %d, want >= 2", res.Crawled)
 	}
@@ -425,10 +423,7 @@ func TestCrawlLlmsTxtAdmitsCuratedLinks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := c.Run(context.Background(), s.server.URL+"/")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runCap(t, c, sink, s.server.URL+"/")
 
 	if rec := s.page(res, "/docs"); rec == nil || rec.State != StateCrawled {
 		t.Errorf("curated llms.txt link /docs must be crawled: %+v", rec)
@@ -634,6 +629,7 @@ func (s *errSink) FrontierDone(string) error       { return nil }
 // base Sink methods.
 type llmsRecordingSink struct {
 	mu    sync.Mutex
+	pages map[string]*PageRecord
 	files []LlmsTxtRecord
 	links []llmsLinkRow
 }
@@ -642,7 +638,25 @@ type llmsLinkRow struct {
 	src, url, section, anchor string
 }
 
-func (s *llmsRecordingSink) Page(*PageRecord) error          { return nil }
+func (s *llmsRecordingSink) Page(rec *PageRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pages == nil {
+		s.pages = map[string]*PageRecord{}
+	}
+	cp := *rec
+	s.pages[rec.URL] = &cp
+	return nil
+}
+func (s *llmsRecordingSink) snapshot() map[string]*PageRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]*PageRecord, len(s.pages))
+	for k, v := range s.pages {
+		out[k] = v
+	}
+	return out
+}
 func (s *llmsRecordingSink) FrontierAdd(frontier.Item) error { return nil }
 func (s *llmsRecordingSink) FrontierDone(string) error       { return nil }
 func (s *llmsRecordingSink) LlmsTxtFile(rec LlmsTxtRecord) error {

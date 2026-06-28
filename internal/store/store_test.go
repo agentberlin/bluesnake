@@ -1015,6 +1015,104 @@ func TestSaveDepths(t *testing.T) {
 	}
 }
 
+// TestLoadPagesLiteAndStreamContentText pins the Phase-2 finalize plumbing:
+// LoadPagesLite returns every record with Facts intact but ContentText freed,
+// while StreamContentText hands the bodies back one row at a time and LoadPages
+// still round-trips them in full.
+func TestLoadPagesLiteAndStreamContentText(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	const body = "the quick brown fox jumps over the lazy dog every single day"
+	rec := &crawler.PageRecord{
+		URL: "https://ex.com/", Scope: "internal", State: crawler.StateCrawled, StatusCode: 200,
+		Facts: &parse.Facts{
+			ContentText: body, WordCount: 12,
+			Links: []parse.Link{{Type: parse.Hyperlink, URL: "https://ex.com/a"}},
+		},
+	}
+	if err := c.Page(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	lite, err := c.LoadPagesLite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lr := lite["https://ex.com/"]
+	if lr == nil || lr.Facts == nil {
+		t.Fatal("lite record missing facts")
+	}
+	if lr.Facts.ContentText != "" {
+		t.Errorf("LoadPagesLite retained ContentText (%d bytes), want freed", len(lr.Facts.ContentText))
+	}
+	if len(lr.Facts.Links) != 1 || lr.Facts.WordCount != 12 {
+		t.Errorf("lite record lost non-ContentText Facts: links=%d wc=%d", len(lr.Facts.Links), lr.Facts.WordCount)
+	}
+
+	full, err := c.LoadPages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full["https://ex.com/"].Facts.ContentText != body {
+		t.Errorf("LoadPages ContentText = %q, want full body", full["https://ex.com/"].Facts.ContentText)
+	}
+
+	got := map[string]string{}
+	if err := c.StreamContentText(func(url, text string) error { got[url] = text; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got["https://ex.com/"] != body {
+		t.Errorf("StreamContentText body = %q, want %q", got["https://ex.com/"], body)
+	}
+}
+
+// TestSaveInlinkSources pins the always-run aggregate write the stream-and-drop
+// finalize uses in place of UpdateInlinks(res.Pages): it persists inlink counts
+// and first-wins/seed-locked discovered_from from the crawler's slim aggregate,
+// leaves depth untouched (SaveDepths owns it), and no-ops URLs with no page row.
+func TestSaveInlinkSources(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, u := range []string{"https://ex.com/", "https://ex.com/a"} {
+		if err := c.Page(&crawler.PageRecord{
+			URL: u, Scope: "internal", State: crawler.StateCrawled, Depth: 3,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agg := map[string]crawler.InlinkAgg{
+		"https://ex.com/":        {Count: 0, First: ""},                 // seed: discovered_from stays empty
+		"https://ex.com/a":       {Count: 2, First: "https://ex.com/"},  // first-wins discoverer
+		"https://ex.com/missing": {Count: 9, First: "https://ex.com/x"}, // no page row -> no-op UPDATE
+	}
+	if err := c.SaveInlinkSources(agg); err != nil {
+		t.Fatal(err)
+	}
+	pages, err := c.LoadPages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := pages["https://ex.com/a"]
+	if a == nil || a.Inlinks != 2 || a.DiscoveredFrom != "https://ex.com/" {
+		t.Errorf("/a = %+v, want inlinks 2 / discovered_from seed", a)
+	}
+	if a.Depth != 3 {
+		t.Errorf("/a depth = %d, want 3 (SaveInlinkSources must not touch depth)", a.Depth)
+	}
+	if _, ok := pages["https://ex.com/missing"]; ok {
+		t.Error("aggregate entry for a non-existent page must not create a row")
+	}
+}
+
 // TestDropProjectMigration proves the registry ladder removes the retired
 // legacy "project" column from a pre-existing registry while preserving rows.
 func TestDropProjectMigration(t *testing.T) {

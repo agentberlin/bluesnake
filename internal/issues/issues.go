@@ -277,14 +277,26 @@ func Lookup(id string) (Def, bool) {
 }
 
 type evaluator struct {
-	cfg   *config.Config
-	pages map[string]*crawler.PageRecord
-	occs  []Occurrence
+	cfg     *config.Config
+	pages   map[string]*crawler.PageRecord
+	skipDup bool
+	occs    []Occurrence
 }
 
+// EvalOption configures Evaluate.
+type EvalOption func(*evaluator)
+
+// SkipDuplicates omits the cross-page duplicate checks (hash/title/desc/h1/h2);
+// the caller computes them in SQL via store.DuplicateIssues instead (Phase-2
+// dup-rule-SQL). The rest of the catalogue is unchanged.
+func SkipDuplicates() EvalOption { return func(e *evaluator) { e.skipDup = true } }
+
 // Evaluate runs the whole catalogue over a crawl's pages.
-func Evaluate(pages map[string]*crawler.PageRecord, cfg *config.Config) []Occurrence {
+func Evaluate(pages map[string]*crawler.PageRecord, cfg *config.Config, opts ...EvalOption) []Occurrence {
 	e := &evaluator{cfg: cfg, pages: pages}
+	for _, o := range opts {
+		o(e)
+	}
 	for _, rec := range pages {
 		e.responseCodes(rec)
 		if rec.State != crawler.StateCrawled || rec.Scope != "internal" {
@@ -318,7 +330,9 @@ func Evaluate(pages map[string]*crawler.PageRecord, cfg *config.Config) []Occurr
 		e.links(rec)
 		e.images(rec)
 	}
-	e.duplicates()
+	if !e.skipDup {
+		e.duplicates()
+	}
 	e.inlinkAggregates()
 	return e.occs
 }
@@ -670,6 +684,38 @@ func (e *evaluator) elements(rec *crawler.PageRecord) {
 			prev = level
 		}
 	}
+}
+
+// ContentTextChecks evaluates exactly the two ContentText-dependent issue checks
+// — content_lorem_ipsum and content_soft_404 — for one page, given its body text
+// separately from the record. It is the streaming counterpart to the lorem/
+// soft-404 lines in content(): finalize runs Evaluate over a ContentText-free
+// map (where those two never fire on the empty text) and re-adds them here from
+// StreamContentText, so the merged set is byte-identical to a whole-map Evaluate
+// while the page bodies are never all held in RAM at once. The eligibility gate
+// mirrors content()'s call site in Evaluate (crawled ∧ internal ∧ Facts ∧ not
+// skipped-for-indexability); keep the two in lockstep.
+func ContentTextChecks(rec *crawler.PageRecord, text string, cfg *config.Config) []Occurrence {
+	if rec.State != crawler.StateCrawled || rec.Scope != "internal" || rec.Facts == nil {
+		return nil
+	}
+	if cfg.Advanced.IgnoreNonIndexableForIssues && !rec.Indexable {
+		return nil
+	}
+	var occs []Occurrence
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "lorem ipsum") {
+		occs = append(occs, Occurrence{URL: rec.URL, IssueID: "content_lorem_ipsum"})
+	}
+	if rec.StatusCode == 200 {
+		for _, pat := range cfg.Thresholds.Soft404Patterns {
+			if strings.Contains(lower, strings.ToLower(pat)) {
+				occs = append(occs, Occurrence{URL: rec.URL, IssueID: "content_soft_404", Detail: pat})
+				break
+			}
+		}
+	}
+	return occs
 }
 
 func (e *evaluator) content(rec *crawler.PageRecord) {

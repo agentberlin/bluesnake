@@ -33,7 +33,7 @@ type Params struct {
 	StoreDir  string
 	Cfg       *config.Config
 	Seeds     []string // every seed Run() was given (resume re-roots depth from all)
-	Resumed   bool     // this run resumed a stored crawl
+	Resumed   bool     // this run resumed a stored crawl (informational; depth/inlinks now recompute for fresh and resume alike)
 	Completed bool     // caller resolves pause-vs-stop into completed/interrupted
 }
 
@@ -54,7 +54,11 @@ func Crawl(c *crawler.Crawler, st *store.Crawl, res *crawler.Result, p Params) (
 		}
 	}
 
-	note(st.UpdateInlinks(res.Pages))
+	// Inlinks + first-wins discovered_from come from the gated edges table in pure
+	// SQL (Phase-2 cutover) — no in-RAM RecomputeInlinks, no page map. Over the
+	// full edges table this is already the full-graph count, so resume needs no
+	// separate recompute. Seeds are seed-locked.
+	note(st.SaveInlinksFromEdges(c.NormalizeSeeds(p.Seeds...)))
 	status := store.StatusInterrupted
 	if p.Completed {
 		status = store.StatusCompleted
@@ -74,24 +78,34 @@ func Crawl(c *crawler.Crawler, st *store.Crawl, res *crawler.Result, p Params) (
 		return out, firstErr
 	}
 
-	// On resume this session rewrote depth and inlinks only for its own pages;
-	// recompute both over the full two-session graph so the finalised result
-	// matches a fresh crawl: depth = shortest followed-link path (Screaming Frog
+	// A completed crawl — fresh or resumed — derives shortest-path depth and the
+	// full-graph hyperlink inlink count from the stored link graph. Stream-and-
+	// drop freed the in-RAM page map a fresh crawl used to compute these from, so
+	// both paths now converge on the same store-backed recompute (guarded by
+	// TestResumeEquivalence): depth = shortest followed-link path (Screaming Frog
 	// parity), inlinks = full-graph hyperlink count. The BFS re-roots from every
 	// seed Run() was given — all of them, including each uploaded list seed — so
-	// list and spider resumes alike land on shortest-path depths. discovered_from
-	// needs no recompute: it is preserved per-session (frontier-carried) and
-	// seed-locked in the crawler. Guard on a non-empty seed set: rooting from
-	// nothing would NULL every page's depth. Fresh crawls already hold both from
-	// Run().
-	if p.Resumed && len(p.Seeds) > 0 {
-		if all, err := st.LoadPages(); err != nil {
-			note(err)
-		} else {
-			c.RecomputeDepths(all, p.Seeds...)
-			c.RecomputeInlinks(all)
-			note(st.SaveDepths(all))
-			note(st.SaveInlinks(all))
+	// list and spider crawls alike land on shortest-path depths. discovered_from
+	// needs no recompute: it is already persisted by SaveInlinkSources above
+	// (first-wins + seed-locked, per session). Guard on a non-empty seed set:
+	// rooting the BFS from nothing would NULL every page's depth.
+	if len(p.Seeds) > 0 {
+		// Depth + inlinks read only Facts.Links and scalars, never the page body,
+		// so the ContentText-free map keeps this off the page-body RAM axis.
+		// Depth is a CSR BFS over the stored links superset (re-applying the
+		// follow gate) + redirect edges — no page map materialised here.
+		links, lerr := st.LinkRows()
+		redirects, rerr := st.Redirects()
+		urls, uerr := st.ProcessedURLs()
+		switch {
+		case lerr != nil:
+			note(lerr)
+		case rerr != nil:
+			note(rerr)
+		case uerr != nil:
+			note(uerr)
+		default:
+			note(st.SaveDepthsMap(c.RecomputeDepthsFromLinks(links, redirects, urls, p.Seeds)))
 		}
 	}
 
@@ -113,11 +127,18 @@ func Crawl(c *crawler.Crawler, st *store.Crawl, res *crawler.Result, p Params) (
 // Used by Crawl and by standalone re-analysis (the `analyze` command, desktop
 // Reanalyze). The returned Outcome.Status is always StatusCompleted.
 func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
-	pages, err := st.LoadPages()
+	// The ContentText-free map carries everything the issue catalogue and graph
+	// analyses need except the two content-text scans (streamed below) and
+	// near-duplicates (which needs the bodies — loaded fully only when enabled).
+	lite, err := st.LoadPagesLite()
 	if err != nil {
 		return Outcome{}, err
 	}
-	if err := st.SaveIssues(issues.Evaluate(pages, cfg)); err != nil {
+	occs, err := evaluateIssues(st, lite, cfg)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if err := st.SaveIssues(occs); err != nil {
 		return Outcome{}, err
 	}
 	sitemaps, err := st.SitemapIndex()
@@ -128,7 +149,27 @@ func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
-	results := analyze.Run(pages, sitemaps, llmstxt, cfg)
+	analyzePages := lite
+	if cfg.Analysis.NearDuplicates && cfg.Content.NearDuplicates.Enabled && !hasMinhashSignatures(lite) {
+		// Near-duplicates need each page's minhash signature. When near-dup was
+		// enabled at crawl time the signatures are persisted (the pages.minhash
+		// column) and the ContentText-free lite map already carries them — analyze
+		// reads them directly, so the page bodies are never re-materialised. Only
+		// an older crawl, or one crawled with near-dup OFF, lacks the column; fall
+		// back to the full map (the sole pass that re-loads ContentText) then.
+		full, ferr := st.LoadPages()
+		if ferr != nil {
+			return Outcome{}, ferr
+		}
+		analyzePages = full
+	}
+	// PageRank/unique link graph is computed in CSR form over the stored links
+	// superset (Phase-2 PageRank-CSR), not each page's in-RAM Facts.Links.
+	links, err := st.LinkRows()
+	if err != nil {
+		return Outcome{}, err
+	}
+	results := analyze.Run(analyzePages, sitemaps, llmstxt, cfg, analyze.WithLinks(links))
 	if err := st.SaveAnalysis(results); err != nil {
 		return Outcome{}, err
 	}
@@ -153,13 +194,53 @@ func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
 	}, nil
 }
 
+// hasMinhashSignatures reports whether any page in the (lite) map carries a
+// precomputed near-dup signature — i.e. the crawl persisted the minhash column.
+// When true, near-dup runs over the lite map and never reloads ContentText.
+func hasMinhashSignatures(pages map[string]*crawler.PageRecord) bool {
+	for _, rec := range pages {
+		if len(rec.Minhash) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// evaluateIssues runs the full issue catalogue with bounded page-body memory: the
+// whole-map checks run over the ContentText-free lite map (where the two content-
+// text checks naturally no-op on the empty body), and those two — lorem/soft-404
+// — are re-added from a one-row-at-a-time ContentText stream. The merged set is
+// byte-identical to issues.Evaluate over a full map.
+func evaluateIssues(st *store.Crawl, lite map[string]*crawler.PageRecord, cfg *config.Config) ([]issues.Occurrence, error) {
+	// Cross-page duplicate detection runs in pure SQL (Phase-2 dup-rule-SQL); the
+	// rest of the catalogue runs over the lite map with the two ContentText checks
+	// streamed in.
+	occs := issues.Evaluate(lite, cfg, issues.SkipDuplicates())
+	dups, err := st.DuplicateIssues(cfg.Advanced.IgnoreNonIndexableForIssues, cfg.Advanced.IgnorePaginatedForDuplicates)
+	if err != nil {
+		return nil, err
+	}
+	occs = append(occs, dups...)
+	err = st.StreamContentText(func(url, text string) error {
+		if rec, ok := lite[url]; ok {
+			occs = append(occs, issues.ContentTextChecks(rec, text, cfg)...)
+		}
+		return nil
+	})
+	return occs, err
+}
+
 // Issues re-evaluates only the issue catalogue over the full stored graph
 // (without the graph analyses), persisting the occurrences. Used by the `issues`
 // command, which lists issues and wants a cheap refresh, not a full re-analysis.
 func Issues(st *store.Crawl, cfg *config.Config) error {
-	pages, err := st.LoadPages()
+	lite, err := st.LoadPagesLite()
 	if err != nil {
 		return err
 	}
-	return st.SaveIssues(issues.Evaluate(pages, cfg))
+	occs, err := evaluateIssues(st, lite, cfg)
+	if err != nil {
+		return err
+	}
+	return st.SaveIssues(occs)
 }

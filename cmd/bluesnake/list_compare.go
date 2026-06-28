@@ -13,6 +13,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/export"
 	"github.com/agentberlin/bluesnake/internal/finalize"
+	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -87,7 +88,8 @@ func newListCmd() *cobra.Command {
 				return exitErr{1, err}
 			}
 			defer st.Close()
-			c, err := crawler.New(cfg, crawler.WithSink(st))
+			c, err := crawler.New(cfg, crawler.WithSink(st),
+				crawler.WithLimiter(limiter.New(cfg.Speed.MaxGlobalThreads, 1)))
 			if err != nil {
 				return exitErr{2, err}
 			}
@@ -102,7 +104,11 @@ func newListCmd() *cobra.Command {
 				StoreDir: storeDir, Cfg: cfg, Seeds: seeds, Completed: !res.Interrupted,
 			})
 			if !quiet {
-				printSummary(cmd, res.Pages, out.Crawled, out.Total, res.Duration)
+				// Page records are streamed to the store, not held in res; the
+				// summary tally reads them back (best-effort — the headline counts
+				// come from finalize regardless).
+				pages, _ := st.LoadPages()
+				printSummary(cmd, pages, out.Crawled, out.Total, res.Duration)
 				fmt.Fprintf(cmd.OutOrStdout(), "Crawl ID: %s\n", st.ID)
 			}
 			if res.Interrupted {

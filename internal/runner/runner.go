@@ -17,6 +17,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/fetch"
 	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/frontier"
+	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
@@ -68,19 +69,37 @@ type Observer interface {
 	OnDone(o Outcome)
 }
 
-// Executor runs crawls one at a time for a single surface. It holds the one
-// in-flight crawl; Pause/Stop signal it, Snapshot reads its live counters.
+// Executor runs crawls for a single surface. It can hold several in flight at
+// once (parallel multi-crawl); each is keyed by its crawl id so Pause/Stop/
+// Snapshot can address one specific crawl. The no-argument Pause/Stop fan out to
+// every in-flight crawl (used by Shutdown), preserving single-crawl behaviour.
 type Executor struct {
 	storeDir string
 	obs      Observer
+	lim      *limiter.Limiter // shared process-wide fetch cap across all crawls
 
 	mu  sync.Mutex
-	cur *run // in-flight crawl, nil when idle
+	cur map[string]*run // crawl id -> in-flight crawl
 }
 
-// New builds an executor rooted at storeDir. obs may be nil.
-func New(storeDir string, obs Observer) *Executor {
-	return &Executor{storeDir: storeDir, obs: obs}
+// New builds an executor rooted at storeDir. obs may be nil. The optional limiter
+// caps total concurrent fetches across every crawl this executor runs (nil =
+// unlimited); it is shared, so M parallel crawls honour one global ceiling.
+func New(storeDir string, obs Observer, opts ...Option) *Executor {
+	e := &Executor{storeDir: storeDir, obs: obs, cur: map[string]*run{}}
+	for _, o := range opts {
+		o(e)
+	}
+	return e
+}
+
+// Option configures an Executor.
+type Option func(*Executor)
+
+// WithLimiter shares one process-wide concurrency limiter across every crawl the
+// executor runs (the parallel-mode global fetch ceiling).
+func WithLimiter(l *limiter.Limiter) Option {
+	return func(e *Executor) { e.lim = l }
 }
 
 // StoreDir reports the store directory the executor runs against.
@@ -127,7 +146,17 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 		total:      len(processed),
 		discovered: len(processed) + len(pending),
 	}
-	opts := []crawler.Option{crawler.WithSink(&sink{inner: st, r: r, obs: e.obs})}
+	// One global limiter shared across every crawl this executor runs, so M
+	// parallel crawls honour a single process-wide fetch ceiling. Fall back to a
+	// per-crawl limiter from this crawl's config when none was injected.
+	lim := e.lim
+	if lim == nil {
+		lim = limiter.New(cfg.Speed.MaxGlobalThreads, 1)
+	}
+	opts := []crawler.Option{
+		crawler.WithSink(&sink{inner: st, r: r, obs: e.obs}),
+		crawler.WithLimiter(lim),
+	}
 	if resumed {
 		opts = append(opts, crawler.WithResume(processed, pending))
 	}
@@ -148,11 +177,11 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 	runCtx, r.cancel = context.WithCancel(ctx)
 
 	e.mu.Lock()
-	e.cur = r
+	e.cur[st.ID] = r
 	e.mu.Unlock()
 	defer func() {
 		e.mu.Lock()
-		e.cur = nil
+		delete(e.cur, st.ID)
 		e.mu.Unlock()
 	}()
 
@@ -290,16 +319,41 @@ type errNoSeed string
 
 func (e errNoSeed) Error() string { return "crawl " + string(e) + " has no stored seed" }
 
-// Pause asks the in-flight crawl to pause (left resumable); no-op when idle.
-func (e *Executor) Pause() { e.signal("pause") }
+// Pause asks every in-flight crawl to pause (left resumable); no-op when idle.
+// Used by the dispatcher's Shutdown to turn all running crawls around.
+func (e *Executor) Pause() { e.signalAll("pause") }
 
-// Stop asks the in-flight crawl to stop and finalise as completed; no-op when idle.
-func (e *Executor) Stop() { e.signal("stop") }
+// Stop asks every in-flight crawl to stop and finalise as completed.
+func (e *Executor) Stop() { e.signalAll("stop") }
 
-func (e *Executor) signal(mode string) {
+// PauseCrawl pauses one specific crawl (left resumable); no-op if not running.
+func (e *Executor) PauseCrawl(crawlID string) { e.signalCrawl(crawlID, "pause") }
+
+// StopCrawl stops one specific crawl, finalising it as completed.
+func (e *Executor) StopCrawl(crawlID string) { e.signalCrawl(crawlID, "stop") }
+
+// signalCrawl latches the first stop mode for one crawl and cancels its context.
+// First-wins: a pause already requested is not upgraded to a stop (or vice versa).
+func (e *Executor) signalCrawl(crawlID, mode string) {
 	e.mu.Lock()
-	r := e.cur
+	r := e.cur[crawlID]
 	e.mu.Unlock()
+	signalRun(r, mode)
+}
+
+func (e *Executor) signalAll(mode string) {
+	e.mu.Lock()
+	runs := make([]*run, 0, len(e.cur))
+	for _, r := range e.cur {
+		runs = append(runs, r)
+	}
+	e.mu.Unlock()
+	for _, r := range runs {
+		signalRun(r, mode)
+	}
+}
+
+func signalRun(r *run, mode string) {
 	if r == nil {
 		return
 	}
@@ -311,10 +365,27 @@ func (e *Executor) signal(mode string) {
 	r.cancel()
 }
 
-// Snapshot returns the in-flight crawl's live progress, ok=false when idle.
+// Snapshot returns one in-flight crawl's live progress (any, for single-crawl
+// surfaces), ok=false when idle. Use SnapshotCrawl to address a specific crawl.
 func (e *Executor) Snapshot() (Snapshot, bool) {
 	e.mu.Lock()
-	r := e.cur
+	var r *run
+	for _, v := range e.cur {
+		r = v
+		break
+	}
+	e.mu.Unlock()
+	if r == nil {
+		return Snapshot{}, false
+	}
+	return r.snapshot(), true
+}
+
+// SnapshotCrawl returns one specific crawl's live progress, ok=false if it is not
+// currently in flight.
+func (e *Executor) SnapshotCrawl(crawlID string) (Snapshot, bool) {
+	e.mu.Lock()
+	r := e.cur[crawlID]
 	e.mu.Unlock()
 	if r == nil {
 		return Snapshot{}, false

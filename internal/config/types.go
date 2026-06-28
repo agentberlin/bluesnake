@@ -282,6 +282,14 @@ type URLRewritingConfig struct {
 type SpeedConfig struct {
 	MaxThreads    int     `yaml:"max_threads"`
 	MaxURLsPerSec float64 `yaml:"max_urls_per_sec"` // 0 = unlimited
+	// MaxGlobalThreads caps total concurrent fetches across ALL running crawls
+	// in this process (parallel multi-crawl). 0 = unlimited — a single crawl then
+	// behaves exactly as before, bounded only by MaxThreads (MEMORY-SCALING.md §5.6).
+	MaxGlobalThreads int `yaml:"max_global_threads"`
+	// MaxConcurrentCrawls caps how many crawls the dispatcher runs in parallel
+	// (each with its own worker pool/DB/buffers — a distinct overhead axis from
+	// the fetch cap, GL-18). 0/1 = one crawl at a time, the default.
+	MaxConcurrentCrawls int `yaml:"max_concurrent_crawls"`
 }
 
 type BasicAuth struct {
