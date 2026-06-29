@@ -1286,6 +1286,21 @@ func (c *Crawler) rateWait(ctx context.Context) {
 // not expand the page (outside-folder, not crawled) pass claim=false so they
 // never become canonical for content whose links they did not contribute.
 func (c *Crawler) firstWithContent(hash, url string, claim bool) (canonical string, first bool) {
+	// With a store-backed sink the content_hash table is the authority, so the
+	// in-RAM seenContent map is never grown (it stays O(0) in production) — the
+	// #70 M4 bound. A non-store sink (library/tests) keeps the in-memory set.
+	if fc, ok := c.sink.(interface {
+		FirstWithContent(hash, url string, claim bool) (string, bool, error)
+	}); ok {
+		canonical, first, err := fc.FirstWithContent(hash, url, claim)
+		if err != nil {
+			// On a store error, conservatively treat the page as first/novel (never
+			// silently mark a page a duplicate) and surface the error via the sink.
+			c.noteSinkErr(err)
+			return url, true
+		}
+		return canonical, first
+	}
 	c.hashMu.Lock()
 	defer c.hashMu.Unlock()
 	if existing, ok := c.seenContent[hash]; ok {

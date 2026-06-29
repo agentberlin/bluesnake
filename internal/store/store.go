@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/agentberlin/bluesnake/internal/analyze"
+	"github.com/agentberlin/bluesnake/internal/bloom"
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/fetch"
@@ -84,6 +85,11 @@ CREATE TABLE IF NOT EXISTS edges(src TEXT, dst TEXT, hyperlink INT, seq INTEGER)
 CREATE INDEX IF NOT EXISTS edges_dst ON edges(dst);
 CREATE INDEX IF NOT EXISTS edges_src ON edges(src);
 CREATE TABLE IF NOT EXISTS frontier(url TEXT PRIMARY KEY, depth INT, redirect_hops INT, source TEXT);
+-- content_hash is the on-disk authority for the raw-body identical-content
+-- short-circuit (R8): hash -> the first (canonical) URL that claimed it. It bounds
+-- the formerly-unbounded in-RAM seenContent map (MEMORY-SCALING.md §5.4 / #70 M4),
+-- preserving first-writer-wins via the hash PRIMARY KEY.
+CREATE TABLE IF NOT EXISTS content_hash(hash TEXT PRIMARY KEY, url TEXT);
 CREATE TABLE IF NOT EXISTS issues(url TEXT, issue TEXT, detail TEXT, PRIMARY KEY(url, issue, detail));
 CREATE TABLE IF NOT EXISTS custom_results(url TEXT, kind TEXT, name TEXT, value TEXT, PRIMARY KEY(url, kind, name));
 CREATE TABLE IF NOT EXISTS sitemap_entries(sitemap TEXT, url TEXT, PRIMARY KEY(sitemap, url));
@@ -96,11 +102,24 @@ CREATE TABLE IF NOT EXISTS analysis(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS blobs(url TEXT, kind TEXT, path TEXT, PRIMARY KEY(url, kind));
 `
 
+// bloomCapacity sizes each crawl's dedup Bloom filter: enough bits for ~1M
+// admitted URLs at a 1% false-positive rate (~1.2 MB). It is a RAM-cheap fast
+// negative in front of the SQLite authority — a miss skips the DB, a hit (or a
+// rare false positive) is confirmed against the tables, so correctness never
+// depends on the sizing. Larger crawls just see a higher FP rate (more confirm
+// reads), never a wrong dedup decision (MEMORY-SCALING.md §0.4/§7).
+const bloomCapacity = 1 << 20
+
 // Crawl is an open per-crawl database.
 type Crawl struct {
 	ID  string
 	dir string
 	db  *sql.DB
+
+	// bloom is the fast-negative dedup filter in front of the SQLite authority.
+	// Per-crawl and in-memory; a fresh (cold) filter on resume is fine — the
+	// authoritative INSERT … WHERE NOT EXISTS(pages) backstops every miss.
+	bloom *bloom.Filter
 
 	// WARC archive (extraction.store_warc), created lazily on first Archive.
 	// archiveMu guards the lazy init and the writes — the crawler calls
@@ -264,7 +283,7 @@ func openCrawlDB(dir, id string) (*Crawl, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Crawl{ID: id, dir: dir, db: db}, nil
+	return &Crawl{ID: id, dir: dir, db: db, bloom: bloom.New(bloomCapacity, 0.01)}, nil
 }
 
 // --- schema versioning & migrations ---------------------------------------
@@ -692,12 +711,32 @@ func (c *Crawl) FrontierDone(url string) error {
 // is what stops a re-discovered, already-crawled URL from being re-admitted after
 // FrontierDone deleted its frontier row (EC-14).
 func (c *Crawl) Admit(it frontier.Item) (bool, error) {
+	// Bloom fast-negative (MEMORY-SCALING.md §5.1/§7): a miss is a guarantee the
+	// URL was never admitted, so go straight to the authoritative insert. A hit is
+	// only "maybe seen" — the high-frequency re-discovery case — so confirm cheaply
+	// against the tables and reject a true duplicate with a READ instead of a
+	// serialized INSERT write-attempt (the win under WAL + single-writer conn + M
+	// parallel crawls). A rare false positive falls through to the same exact
+	// insert, so the Bloom can never drop a novel URL or re-admit a seen one — the
+	// DB PK + WHERE NOT EXISTS(pages) stay the authority.
+	if c.bloom != nil && c.bloom.Has(it.URL) {
+		seen, err := c.Seen(it.URL)
+		if err != nil {
+			return false, err
+		}
+		if seen {
+			return false, nil
+		}
+	}
 	res, err := c.db.Exec(
 		`INSERT OR IGNORE INTO frontier(url, depth, redirect_hops, source)
 		 SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM pages WHERE url = ?)`,
 		it.URL, it.Depth, it.RedirectHops, it.Source, it.URL)
 	if err != nil {
 		return false, err
+	}
+	if c.bloom != nil {
+		c.bloom.Add(it.URL)
 	}
 	n, err := res.RowsAffected()
 	return n > 0, err
@@ -730,6 +769,37 @@ func (c *Crawl) Count() (int, error) {
 	err := c.db.QueryRow(
 		`SELECT COUNT(*) FROM (SELECT url FROM frontier UNION SELECT url FROM pages)`).Scan(&n)
 	return n, err
+}
+
+// FirstWithContent is the on-disk authority for the raw-body identical-content
+// short-circuit (R8), bounding the formerly-unbounded in-RAM seenContent map
+// (#70 M4). It reports the canonical URL for a content hash and whether url is the
+// first page seen with it. claim=false (a page that will NOT expand) never records
+// itself as canonical — so it can't shadow a later in-folder twin's outlinks —
+// exactly mirroring the in-RAM firstWithContent. First-writer-wins under races is
+// preserved by the hash PRIMARY KEY: concurrent claimers all INSERT OR IGNORE then
+// read back the single winner.
+func (c *Crawl) FirstWithContent(hash, url string, claim bool) (canonical string, first bool, err error) {
+	var existing string
+	switch err = c.db.QueryRow(`SELECT url FROM content_hash WHERE hash = ?`, hash).Scan(&existing); err {
+	case nil:
+		return existing, false, nil // already claimed
+	case sql.ErrNoRows:
+		// novel hash so far
+	default:
+		return "", false, err
+	}
+	if !claim {
+		return url, true, nil // first, but does not record itself (won't expand)
+	}
+	if _, err = c.db.Exec(`INSERT OR IGNORE INTO content_hash(hash, url) VALUES(?, ?)`, hash, url); err != nil {
+		return "", false, err
+	}
+	var winner string
+	if err = c.db.QueryRow(`SELECT url FROM content_hash WHERE hash = ?`, hash).Scan(&winner); err != nil {
+		return "", false, err
+	}
+	return winner, winner == url, nil
 }
 
 // --- resume support ---

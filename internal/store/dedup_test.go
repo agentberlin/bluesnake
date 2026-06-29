@@ -109,6 +109,114 @@ func TestFrontierDBDedupCapRollback(t *testing.T) {
 	}
 }
 
+// TestFirstWithContentAuthority pins the store-backed identical-content
+// short-circuit (#70 M4): first-writer-wins per hash, a non-claiming page never
+// becomes canonical, and concurrent claimers resolve to exactly one winner.
+func TestFirstWithContentAuthority(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// First claimer of hash "h1" becomes canonical.
+	if canon, first, err := c.FirstWithContent("h1", "https://ex.com/a", true); err != nil || !first || canon != "https://ex.com/a" {
+		t.Fatalf("first claim of h1 = (%q,%v,%v), want (a,true,nil)", canon, first, err)
+	}
+	// A second page with the same hash is a duplicate of the canonical.
+	if canon, first, err := c.FirstWithContent("h1", "https://ex.com/b", true); err != nil || first || canon != "https://ex.com/a" {
+		t.Fatalf("second h1 = (%q,%v,%v), want (a,false,nil)", canon, first, err)
+	}
+	// A non-claiming page (won't expand) on a novel hash is "first" but does NOT
+	// record itself — so a later claiming twin still becomes the recorded canonical.
+	if _, first, err := c.FirstWithContent("h2", "https://ex.com/x", false); err != nil || !first {
+		t.Fatalf("non-claiming novel h2 first = %v (err %v), want true", first, err)
+	}
+	if canon, first, err := c.FirstWithContent("h2", "https://ex.com/y", true); err != nil || !first || canon != "https://ex.com/y" {
+		t.Fatalf("claiming h2 after a non-claiming peek = (%q,%v,%v), want (y,true,nil)", canon, first, err)
+	}
+
+	// Concurrent claimers of one hash resolve to exactly one winner.
+	var mu sync.Mutex
+	firsts := 0
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, first, err := c.FirstWithContent("race", fmt.Sprintf("https://ex.com/r%d", i), true)
+			if err != nil {
+				t.Errorf("concurrent claim err: %v", err)
+				return
+			}
+			if first {
+				mu.Lock()
+				firsts++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if firsts != 1 {
+		t.Errorf("concurrent claimers of one hash produced %d winners, want exactly 1", firsts)
+	}
+}
+
+// TestBloomDedupMatchesExactOracle is the T4 property guard (#70 H3/T4, doc §8
+// test #2): the Bloom-fronted store dedup must equal an exact in-memory set
+// oracle on a randomised, heavily-duplicated stream — admit every URL exactly
+// once on its first appearance and never again, including URLs that became pages
+// rows (EC-14). The Bloom is only a fast negative; a false positive may cost an
+// extra confirm read but can never drop a novel URL or re-admit a seen one.
+func TestBloomDedupMatchesExactOracle(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	cfg := config.Default()
+	cfg.Limits.MaxDepth = -1
+	cfg.Limits.MaxURLsPerDepth = -1
+	cfg.Limits.MaxPerSubdomain = -1
+	f := frontier.New(cfg, frontier.WithDedup(c))
+
+	// A deterministic pseudo-random duplicated stream (fixed seed: no Math.rand
+	// flakiness, reproducible across runs).
+	const distinct = 500
+	oracle := map[string]bool{} // exact "ever admitted" set
+	seed := uint64(0x9e3779b97f4a7c15)
+	next := func() uint64 { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; return seed }
+
+	// Pre-crawl a handful so they are pages rows (not frontier) — EC-14 territory.
+	for i := 0; i < 20; i++ {
+		u := fmt.Sprintf("https://ex.com/p%d", i)
+		if err := c.Page(&crawler.PageRecord{URL: u, Scope: "internal", State: crawler.StateCrawled}); err != nil {
+			t.Fatal(err)
+		}
+		oracle[u] = true // already seen — must never be admitted
+	}
+
+	for i := 0; i < distinct*8; i++ {
+		u := fmt.Sprintf("https://ex.com/p%d", int(next()%distinct))
+		admitted := f.Admit(frontier.Item{URL: u, Depth: 1})
+		if admitted {
+			if oracle[u] {
+				t.Fatalf("re-admitted an already-seen URL %s (Bloom/DB dedup leaked)", u)
+			}
+			oracle[u] = true
+		} else if !oracle[u] {
+			t.Fatalf("dropped a novel URL %s (Bloom false-negative — must never happen)", u)
+		}
+	}
+	// Every distinct URL p0..p499 must end up admitted-or-already-a-page exactly once.
+	if len(oracle) != distinct {
+		t.Errorf("oracle holds %d distinct URLs, want %d", len(oracle), distinct)
+	}
+}
+
 // TestAdmittedItemsUnionForResume (FR-08 / #70 M3) pins that AdmittedItems returns
 // every admitted URL — crawled pages plus pending frontier rows — each carrying
 // its admit-time depth. This is the input the frontier replays through its
