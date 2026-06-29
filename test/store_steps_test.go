@@ -204,7 +204,8 @@ func (w *world) storedCrossLinkedCrawl() error {
 		}
 	}
 	// /shortcut was discovered (depth 1) but not yet crawled — left in the frontier
-	if err := st.FrontierAdd(frontier.Item{URL: abs("/shortcut"), Depth: 1, Source: abs("/")}); err != nil {
+	// (Admit is the admission authority — the durable frontier write)
+	if _, err := st.Admit(frontier.Item{URL: abs("/shortcut"), Depth: 1, Source: abs("/")}); err != nil {
 		return err
 	}
 	return store.SetStatus(w.storeDirPath(), st.ID, store.StatusInterrupted, len(sess1), len(sess1))
@@ -240,7 +241,7 @@ func (w *world) storedListModeCrawl() error {
 		return err
 	}
 	// /b is the other uploaded seed, still pending at depth 0
-	if err := st.FrontierAdd(frontier.Item{URL: abs("/b"), Depth: 0}); err != nil {
+	if _, err := st.Admit(frontier.Item{URL: abs("/b"), Depth: 0}); err != nil {
 		return err
 	}
 	return store.SetStatus(w.storeDirPath(), st.ID, store.StatusInterrupted, 1, 1)
