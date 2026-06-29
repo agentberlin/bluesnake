@@ -8,6 +8,7 @@ package analyze
 import (
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/agentberlin/bluesnake/internal/config"
@@ -234,6 +235,41 @@ func (a *analyzer) linkGraph() {
 	if len(nodes) == 0 {
 		return
 	}
+	// Canonical accumulation order (FIN-CSRID). Go map iteration is randomized and
+	// float addition is non-associative, so iterating `edges`/`dsts` in map order
+	// made the stored link_score jitter run-to-run at ~1e-12. Sort the node set and
+	// precompute each source's self-loop-excluded out-degree + sorted destination
+	// list ONCE, then accumulate in that fixed order every iteration — making the
+	// score bit-stable while reproducing the previous values exactly (a non-node or
+	// dangling source contributes 0, as before).
+	sort.Strings(nodes)
+	srcs := make([]string, 0, len(edges))
+	for src := range edges {
+		srcs = append(srcs, src)
+	}
+	sort.Strings(srcs)
+	out := make(map[string]int, len(srcs))
+	dstsBySrc := make(map[string][]string, len(srcs))
+	for _, src := range srcs {
+		set := edges[src]
+		n := len(set)
+		if set[src] {
+			n-- // self-loops count for link metrics, not for PageRank
+		}
+		out[src] = n
+		if n == 0 {
+			continue
+		}
+		dsts := make([]string, 0, n)
+		for dst := range set {
+			if dst != src {
+				dsts = append(dsts, dst)
+			}
+		}
+		sort.Strings(dsts)
+		dstsBySrc[src] = dsts
+	}
+
 	rank := make(map[string]float64, len(nodes))
 	for _, n := range nodes {
 		rank[n] = 1.0 / float64(len(nodes))
@@ -244,24 +280,19 @@ func (a *analyzer) linkGraph() {
 		for _, n := range nodes {
 			next[n] = base
 		}
-		for src, dsts := range edges {
-			out := len(dsts)
-			if dsts[src] {
-				out-- // self-loops count for link metrics, not for PageRank
-			}
-			if out == 0 {
+		for _, src := range srcs {
+			if out[src] == 0 {
 				continue
 			}
-			share := damping * rank[src] / float64(out)
-			for dst := range dsts {
-				if dst == src {
-					continue
-				}
+			share := damping * rank[src] / float64(out[src])
+			for _, dst := range dstsBySrc[src] {
 				next[dst] += share
 			}
 		}
 		rank = next
 	}
+	// max and the scaling assignment are reductions/keyed writes, so map iteration
+	// order does not affect them — only the accumulation above had to be ordered.
 	max := 0.0
 	for _, v := range rank {
 		if v > max {

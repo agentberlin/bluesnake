@@ -11,7 +11,6 @@ package finalize
 import (
 	"context"
 	"fmt"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -68,7 +67,9 @@ func TestDupSQLParity(t *testing.T) {
 
 // TestPageRankCSRParity (FIN-PR) proves the PageRank/unique link graph computed
 // in CSR form over the stored links superset (analyze.WithLinks) reproduces the
-// Facts.Links computation within 1e-9 (link_score) and exactly (unique in/out).
+// Facts.Links computation EXACTLY (link_score and unique in/out). The exact match
+// is now possible because PageRank accumulates in a canonical (sorted) order, so
+// both paths produce the same float sum bit-for-bit — no 1e-9 fudge needed.
 func TestPageRankCSRParity(t *testing.T) {
 	st, _, _ := crawlGraph(t)
 	pages, err := st.LoadPages()
@@ -86,8 +87,8 @@ func TestPageRankCSRParity(t *testing.T) {
 	csr := analyze.Run(pages, sm, lt, cfg, analyze.WithLinks(links)) // CSR over links table
 
 	for url, want := range ram.LinkScores {
-		if math.Abs(csr.LinkScores[url]-want) > 1e-9 {
-			t.Errorf("link_score(%s): CSR=%g, Facts.Links=%g", url, csr.LinkScores[url], want)
+		if csr.LinkScores[url] != want {
+			t.Errorf("link_score(%s): CSR=%g, Facts.Links=%g (canonical order must match bit-for-bit)", url, csr.LinkScores[url], want)
 		}
 	}
 	for url, want := range ram.UniqueIn {

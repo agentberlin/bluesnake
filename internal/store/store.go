@@ -1016,9 +1016,11 @@ func (c *Crawl) SaveInlinks(pages map[string]*crawler.PageRecord) error {
 }
 
 // LinkRows returns every stored raw link (the ungated superset) for the depth
-// CSR; the crawler re-applies the follow gate over them.
+// CSR; the crawler re-applies the follow gate over them. The ORDER BY makes the
+// returned slice canonical for a given DB (independent of insertion/rowid order),
+// so any order-sensitive consumer is reproducible run-to-run.
 func (c *Crawl) LinkRows() ([]crawler.LinkRow, error) {
-	rows, err := c.db.Query(`SELECT src, dst, type, nofollow FROM links`)
+	rows, err := c.db.Query(`SELECT src, dst, type, nofollow FROM links ORDER BY src, dst, type`)
 	if err != nil {
 		return nil, err
 	}
