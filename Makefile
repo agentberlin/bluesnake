@@ -52,8 +52,15 @@ acceptance: build
 race:
 	$(GO) test -race $(RACE_PKGS)
 
-cover:
-	$(GO) test -coverprofile=coverage.out $(COVER_PKGS)
+# Coverage of internal/... measured by BOTH the unit tests AND the acceptance/BDD
+# suite (./test/...), attributed via -coverpkg so a package exercised only through
+# the acceptance flow still counts toward the gate (P19). Caveat: scenarios that
+# exec the bluesnake binary as a subprocess are NOT captured by in-process
+# instrumentation (that would need GOCOVERDIR integration-test coverage), so the
+# acceptance contribution is partial; the @chrome scenarios (excluded by default)
+# are what fill the render package's coverage on a Chrome-equipped CI toolchain.
+cover: build
+	$(GO) test -coverpkg=$(COVER_PKGS) -coverprofile=coverage.out $(COVER_PKGS) ./test/...
 	@$(GO) tool cover -func=coverage.out | tail -1
 	@total=$$($(GO) tool cover -func=coverage.out | tail -1 | awk '{gsub("%","",$$3); print int($$3)}'); \
 	if [ $$total -lt $(COVER_MIN) ]; then echo "coverage $$total% is below $(COVER_MIN)%"; exit 1; fi
