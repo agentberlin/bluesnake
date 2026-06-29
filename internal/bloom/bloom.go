@@ -48,6 +48,10 @@ func New(expectedItems int, fpRate float64) *Filter {
 	}
 }
 
+// Bits returns the filter's bit-array size — its sizing footprint, for metrics
+// and tests. Larger ⇒ sized for more expected items at the target FP rate.
+func (f *Filter) Bits() uint64 { return f.m }
+
 // hashes returns the k bit positions for s via double hashing over two 64-bit
 // FNV-1a variants (Kirsch–Mitzenmacher), avoiding k separate hash passes.
 func (f *Filter) probes(s string) (h1, h2 uint64) {

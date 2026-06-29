@@ -102,13 +102,56 @@ CREATE TABLE IF NOT EXISTS analysis(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS blobs(url TEXT, kind TEXT, path TEXT, PRIMARY KEY(url, kind));
 `
 
-// bloomCapacity sizes each crawl's dedup Bloom filter: enough bits for ~1M
-// admitted URLs at a 1% false-positive rate (~1.2 MB). It is a RAM-cheap fast
-// negative in front of the SQLite authority — a miss skips the DB, a hit (or a
-// rare false positive) is confirmed against the tables, so correctness never
-// depends on the sizing. Larger crawls just see a higher FP rate (more confirm
-// reads), never a wrong dedup decision (MEMORY-SCALING.md §0.4/§7).
-const bloomCapacity = 1 << 20
+// The dedup Bloom filter is sized from a crawl's admitted-URL ceiling
+// (cfg.Limits.MaxURLs) so its false-positive rate stays near the target 1% across
+// the whole crawl. A fixed 1M-capacity filter saturated on the multi-million-URL
+// crawls this engine targets (≈16% FP at 2M, >99% near the 5M default cap), at
+// which point almost every Admit became a Bloom hit → a confirm READ plus the
+// authority INSERT — i.e. MORE work than no Bloom, exactly in the regime the
+// filter exists to speed up. Correctness never depends on the sizing (the DB PK +
+// WHERE NOT EXISTS(pages) stay authoritative); sizing only trades RAM for confirm
+// reads (MEMORY-SCALING.md §0.4/§7).
+//
+// The capacity is clamped to a band: a floor so tiny crawls still get a usable
+// filter, and a ceiling so a pathological MaxURLs can't allocate unbounded RAM —
+// beyond the ceiling the filter degrades gracefully to DB-only.
+const (
+	bloomCapacityMin     = 1 << 16 // 64K URLs  (~96 KB) — floor for small/uncapped-low crawls
+	bloomCapacityDefault = 1 << 23 // 8M URLs   (~9.6 MB) — used when MaxURLs is unlimited (0)
+	bloomCapacityMax     = 1 << 23 // 8M URLs   (~9.6 MB) — ceiling; beyond it, DB-only
+)
+
+// bloomCapacityFor maps a crawl's MaxURLs limit to its dedup-filter capacity.
+// MaxURLs <= 0 means unlimited → the default band; otherwise the cap itself,
+// clamped into [min, max].
+func bloomCapacityFor(maxURLs int) int {
+	if maxURLs <= 0 {
+		return bloomCapacityDefault
+	}
+	if maxURLs < bloomCapacityMin {
+		return bloomCapacityMin
+	}
+	if maxURLs > bloomCapacityMax {
+		return bloomCapacityMax
+	}
+	return maxURLs
+}
+
+// storedMaxURLs reads the frozen crawl config's MaxURLs limit from meta
+// (best-effort: 0 on any miss, treated as unlimited by bloomCapacityFor). It lets
+// a reopened/resumed crawl size its Bloom from the same ceiling the fresh crawl
+// used, without the caller threading the config back in.
+func storedMaxURLs(db *sql.DB) int {
+	var y string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'config'`).Scan(&y); err != nil {
+		return 0
+	}
+	cfg, err := config.Load([]byte(y))
+	if err != nil {
+		return 0
+	}
+	return cfg.Limits.MaxURLs
+}
 
 // Crawl is an open per-crawl database.
 type Crawl struct {
@@ -193,7 +236,9 @@ func CreateCrawl(dir string, seeds []string, mode string, cfg *config.Config) (*
 	if err != nil {
 		return nil, err
 	}
-	c, err := openCrawlDB(dir, id)
+	// Size the dedup Bloom from this crawl's MaxURLs ceiling (the config isn't in
+	// meta yet — written below — so pass it explicitly).
+	c, err := openCrawlDB(dir, id, bloomCapacityFor(cfg.Limits.MaxURLs))
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +271,9 @@ func OpenCrawl(dir, id string) (*Crawl, error) {
 	if _, err := os.Stat(crawlPath(dir, id)); err != nil {
 		return nil, fmt.Errorf("crawl %q not found", id)
 	}
-	return openCrawlDB(dir, id)
+	// Derive the Bloom capacity from the frozen config (bloomCap <= 0), so a
+	// resumed large crawl gets the same sizing the fresh crawl had.
+	return openCrawlDB(dir, id, 0)
 }
 
 // validCrawlID rejects ids that aren't a plain filename (path separators,
@@ -260,7 +307,12 @@ func CrawlDBPath(dir, id string) (string, error) {
 	return path, nil
 }
 
-func openCrawlDB(dir, id string) (*Crawl, error) {
+// openCrawlDB opens (creating if absent) the per-crawl database. bloomCap sizes
+// the dedup Bloom filter; pass <= 0 to derive it from the stored crawl config
+// (the reopen/resume path, which has no config in hand). A fresh crawl passes its
+// config-derived capacity explicitly, since its config meta is written only after
+// this returns.
+func openCrawlDB(dir, id string, bloomCap int) (*Crawl, error) {
 	path := crawlPath(dir, id)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -283,7 +335,10 @@ func openCrawlDB(dir, id string) (*Crawl, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Crawl{ID: id, dir: dir, db: db, bloom: bloom.New(bloomCapacity, 0.01)}, nil
+	if bloomCap <= 0 {
+		bloomCap = bloomCapacityFor(storedMaxURLs(db))
+	}
+	return &Crawl{ID: id, dir: dir, db: db, bloom: bloom.New(bloomCap, 0.01)}, nil
 }
 
 // --- schema versioning & migrations ---------------------------------------
