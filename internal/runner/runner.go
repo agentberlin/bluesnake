@@ -203,6 +203,15 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 	out := Outcome{CrawlID: st.ID, Status: store.StatusInterrupted, Err: runErr}
 	if res != nil {
 		out.DurationSec = int(res.Duration.Seconds())
+		// Bound how many crawls materialise a finalize/analysis working set at once
+		// (§5.6 item 2 / H2): the CSR + analysis passes are CPU+RAM-bursty, so M
+		// parallel crawls finishing together must not each build one simultaneously.
+		// Acquire on a fresh context — NOT runCtx — because a paused/stopped crawl
+		// (runCtx already cancelled) must still persist its aggregates and terminal
+		// status here; finalize always releases its slot, so this never blocks for
+		// long. A nil limiter makes Acquire/Release no-ops (single-crawl default).
+		finCtx := context.Background()
+		lim.AcquireFinalize(finCtx)
 		// Pause keeps the crawl resumable; Stop finalises early as completed. The
 		// shared finalize path persists aggregates + status and, when completed,
 		// recomputes depth + inlinks over the full graph (resume) and runs analysis.
@@ -213,6 +222,7 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 			Resumed:   resumed,
 			Completed: !res.Interrupted || mode == "stop",
 		})
+		lim.ReleaseFinalize()
 		out.Status, out.Crawled, out.Total, out.Analyzed = fo.Status, fo.Crawled, fo.Total, fo.Analyzed
 		out.Chains, out.NearDups, out.IssueTotal, out.IssueChecks = fo.Chains, fo.NearDups, fo.IssueTotal, fo.IssueChecks
 		if ferr != nil && out.Err == nil {

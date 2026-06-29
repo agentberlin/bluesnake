@@ -16,6 +16,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 // newProjectCmd is the `bluesnake projects` subtree: an opt-in competitor-study
@@ -253,7 +254,10 @@ func newProjectCmd() *cobra.Command {
 		},
 	}
 
-	var parallel int
+	var (
+		parallel       int
+		crawlAllConfig string
+	)
 	crawlAllCmd := &cobra.Command{
 		Use:   "crawl-all <project-id>",
 		Short: "Crawl every member domain of the project (up to --parallel at once)",
@@ -272,13 +276,32 @@ func newProjectCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "project has no member domains to crawl")
 				return nil
 			}
-			// In-process drain: the dispatcher runs up to --parallel member crawls
-			// at once through the shared executor, with one process-wide limiter
-			// bounding total concurrent fetches across them.
+			cfg := config.Default()
+			if crawlAllConfig != "" {
+				if cfg, err = config.LoadFile(crawlAllConfig); err != nil {
+					return exitErr{2, err}
+				}
+			}
+			// Parallelism comes from --parallel when set, else the config's
+			// max_concurrent_crawls knob (M2), so off-CLI surfaces and the CLI agree.
+			if !cmd.Flags().Changed("parallel") && cfg.Speed.MaxConcurrentCrawls > 0 {
+				parallel = cfg.Speed.MaxConcurrentCrawls
+			}
 			if parallel < 1 {
 				parallel = 1
 			}
-			lim := limiter.New(parallel*config.Default().Speed.MaxThreads, parallel)
+			cfgYAML, err := yaml.Marshal(cfg)
+			if err != nil {
+				return exitErr{1, err}
+			}
+			// In-process drain: the dispatcher runs up to `parallel` member crawls at
+			// once through the shared executor, with ONE process-wide limiter bounding
+			// total concurrent fetches across them. The global cap is the user's
+			// speed.max_global_threads knob (0 = unlimited) — NOT parallel × per-crawl
+			// threads, which equals the sum of the per-crawl maxima and so could never
+			// bind (H1). A single finalize pass runs at a time so M crawls finishing
+			// together don't each materialise an analysis working set (§5.6 / H2).
+			lim := limiter.New(cfg.Speed.MaxGlobalThreads, 1)
 			obs := &groupObserver{out: cmd.OutOrStdout(), total: len(members), done: make(chan struct{})}
 			disp := queue.New(queue.NewMemStore(),
 				runner.New(storeDir, obs, runner.WithLimiter(lim)),
@@ -289,7 +312,7 @@ func newProjectCmd() *cobra.Command {
 				return exitErr{1, err}
 			}
 			for _, m := range members {
-				if _, err := disp.Enqueue(queue.JobSpec{URL: "https://" + m.Domain}, "project", args[0], m.Domain); err != nil {
+				if _, err := disp.Enqueue(queue.JobSpec{URL: "https://" + m.Domain, ConfigYAML: string(cfgYAML)}, "project", args[0], m.Domain); err != nil {
 					return exitErr{1, err}
 				}
 			}
@@ -299,7 +322,8 @@ func newProjectCmd() *cobra.Command {
 		},
 	}
 
-	crawlAllCmd.Flags().IntVar(&parallel, "parallel", 1, "number of member crawls to run at once")
+	crawlAllCmd.Flags().IntVar(&parallel, "parallel", 1, "member crawls to run at once (default: speed.max_concurrent_crawls)")
+	crawlAllCmd.Flags().StringVar(&crawlAllConfig, "config", "", "config file (YAML) applied to every member crawl")
 	cmd.AddCommand(createCmd, lsCmd, rmCmd, addCmd, removeCmd, showCmd, compareCmd, diffCmd, crawlAllCmd)
 	return cmd
 }
