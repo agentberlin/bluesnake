@@ -309,7 +309,29 @@ var crawlMigrations = []migration{
 	{1, "pages.http_version", func(tx *sql.Tx) error { return addColumn(tx, "pages", "http_version TEXT") }},
 	{2, "pages.duplicate_of", func(tx *sql.Tx) error { return addColumn(tx, "pages", "duplicate_of TEXT") }},
 	{3, "issues.detail_in_pk", migrateIssuesDetailPK},
-	{4, "pages.minhash", func(tx *sql.Tx) error { return addColumn(tx, "pages", "minhash BLOB") }},
+	{4, "pages.minhash+pre_edges", migrateMinhashMarkPreEdges},
+}
+
+// migrateMinhashMarkPreEdges adds the nullable near-dup minhash column and marks
+// the database as predating the gated `edges` table. The edges table arrived in
+// the same change as this v4 column, so any DB that REACHES this migration step —
+// i.e. any DB stamped below v4 — was crawled before edges existed: its discovery
+// graph lives only in the legacy `links` table and its `edges` table is empty. A
+// v4+ (edges-era) DB never runs this step, and a fresh DB is stamped straight to
+// the top without running any step, so the marker lands on exactly the pre-edges
+// DBs. The SQL finalize derives inlinks / first-wins discovered_from SOLELY from
+// edges, so RESUMING a pre-edges crawl to completion would overwrite both with
+// empty/partial values (the edges authority is empty). The durable `pre_edges`
+// meta marker — which survives the user_version bump, unlike the version itself —
+// lets the resume path refuse such a crawl loudly (re-crawl) instead of silently
+// corrupting it. Reading/querying a completed pre-edges crawl stays fully
+// supported: the additive column still rides the ladder (reconciled §0.3).
+func migrateMinhashMarkPreEdges(tx *sql.Tx) error {
+	if err := addColumn(tx, "pages", "minhash BLOB"); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`INSERT OR REPLACE INTO meta(key, value) VALUES('pre_edges', '1')`)
+	return err
 }
 
 // registryMigrations is the ladder for the single shared registry DB. APPEND ONLY.
@@ -810,6 +832,26 @@ func (c *Crawl) FirstWithContent(hash, url string, claim bool) (canonical string
 }
 
 // --- resume support ---
+
+// PreEdges reports whether this crawl predates the gated `edges` table (set by
+// the v4 forward-migration, migrateMinhashMarkPreEdges). Such a crawl's discovery
+// graph lives only in the legacy `links` table; the SQL finalize derives
+// inlinks/discovered_from solely from the empty `edges` table, so resuming it to
+// completion would corrupt both. The resume path consults this to refuse loudly.
+// Reading/querying a completed pre-edges crawl is unaffected. The marker is
+// durable (a meta row), so it survives the version bump the forward-migration
+// performs — a later resume attempt still sees it.
+func (c *Crawl) PreEdges() (bool, error) {
+	var v string
+	switch err := c.db.QueryRow(`SELECT value FROM meta WHERE key = 'pre_edges'`).Scan(&v); err {
+	case nil:
+		return v == "1", nil
+	case sql.ErrNoRows:
+		return false, nil
+	default:
+		return false, err
+	}
+}
 
 // PendingFrontier returns the admitted-but-unprocessed items. It excludes any
 // frontier row whose URL already has a pages row: a crash between Page() and

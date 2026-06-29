@@ -292,6 +292,20 @@ func openForResume(storeDir, id string) (
 		return
 	}
 	closeOnErr := func() { st.Close(); st = nil }
+	// A crawl created before the gated `edges` table existed cannot be safely
+	// resumed: the SQL finalize derives inlinks/discovered_from solely from edges,
+	// which is empty for such a crawl, so completing it would overwrite both with
+	// empty/partial values. Refuse loudly (re-crawl) rather than silently corrupt;
+	// reading/querying the completed crawl is unaffected (P3).
+	if pre, perr := st.PreEdges(); perr != nil {
+		err = perr
+		closeOnErr()
+		return
+	} else if pre {
+		err = errPreEdges(id)
+		closeOnErr()
+		return
+	}
 	cfgYAML, err := st.Meta("config")
 	if err != nil {
 		closeOnErr()
@@ -328,6 +342,15 @@ func openForResume(storeDir, id string) (
 type errNoSeed string
 
 func (e errNoSeed) Error() string { return "crawl " + string(e) + " has no stored seed" }
+
+// errPreEdges is returned when a resume targets a crawl that predates the gated
+// edges table — it cannot be finalized without corrupting inlinks/discovered_from,
+// so the user must re-crawl.
+type errPreEdges string
+
+func (e errPreEdges) Error() string {
+	return "crawl " + string(e) + " predates this version's link-graph format and cannot be resumed — please re-crawl"
+}
 
 // Pause asks every in-flight crawl to pause (left resumable); no-op when idle.
 // Used by the dispatcher's Shutdown to turn all running crawls around.
