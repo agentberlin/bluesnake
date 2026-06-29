@@ -811,9 +811,15 @@ func (c *Crawl) FirstWithContent(hash, url string, claim bool) (canonical string
 
 // --- resume support ---
 
-// PendingFrontier returns the admitted-but-unprocessed items.
+// PendingFrontier returns the admitted-but-unprocessed items. It excludes any
+// frontier row whose URL already has a pages row: a crash between Page() and
+// FrontierDone() (two non-atomic writes) can leave that stale pair, and returning
+// it would make a resume re-fetch an already-crawled page — a wasted round-trip
+// and a double-charge against MaxURLs (EC-02). The WHERE-NOT-EXISTS guard mirrors
+// Admit's, so the resume frontier carries exactly the genuinely-unprocessed tail.
 func (c *Crawl) PendingFrontier() ([]frontier.Item, error) {
-	rows, err := c.db.Query(`SELECT url, depth, redirect_hops, source FROM frontier`)
+	rows, err := c.db.Query(`SELECT url, depth, redirect_hops, source FROM frontier
+		WHERE NOT EXISTS (SELECT 1 FROM pages WHERE pages.url = frontier.url)`)
 	if err != nil {
 		return nil, err
 	}
