@@ -752,6 +752,35 @@ func (c *Crawl) PendingFrontier() ([]frontier.Item, error) {
 	return items, rows.Err()
 }
 
+// AdmittedItems returns every URL the crawl has admitted, with its admit-time
+// depth — the union of crawled pages and pending frontier rows. The two sets are
+// disjoint: Admit refuses a URL that already has a pages row, and FrontierDone
+// drops a frontier row the moment its page is recorded. Resume replays these
+// through the frontier's per-bucket counters (RehydrateCounters) so a resumed
+// crawl enforces MaxURLsPerDepth / per-subdomain / per-path caps against the same
+// running totals a straight crawl had, instead of granting a fresh bucket budget
+// per session (FR-08 / MEMORY-SCALING.md §5.1). A resume only ever follows an
+// interrupted crawl, whose depths are still admit-time (the completed-crawl depth
+// recompute never ran), so pages.depth is the bucket each page was admitted into.
+func (c *Crawl) AdmittedItems() ([]frontier.Item, error) {
+	rows, err := c.db.Query(`SELECT url, COALESCE(depth, 0), 0, '' FROM pages
+		UNION ALL
+		SELECT url, depth, redirect_hops, source FROM frontier`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []frontier.Item
+	for rows.Next() {
+		var it frontier.Item
+		if err := rows.Scan(&it.URL, &it.Depth, &it.RedirectHops, &it.Source); err != nil {
+			return nil, err
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
 // ProcessedURLs returns every URL already recorded (must not be re-fetched).
 func (c *Crawl) ProcessedURLs() ([]string, error) {
 	rows, err := c.db.Query(`SELECT url FROM pages`)

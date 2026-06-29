@@ -108,3 +108,56 @@ func TestFrontierDBDedupCapRollback(t *testing.T) {
 		t.Errorf("frontier has %d rows, want 2 (over-cap rows must be rolled back)", rows)
 	}
 }
+
+// TestAdmittedItemsUnionForResume (FR-08 / #70 M3) pins that AdmittedItems returns
+// every admitted URL — crawled pages plus pending frontier rows — each carrying
+// its admit-time depth. This is the input the frontier replays through its
+// per-bucket counters on resume so the per-depth/-subdomain/-path caps bind across
+// the interrupt boundary; a wrong depth here would mis-bucket the rehydration.
+func TestAdmittedItemsUnionForResume(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// Two crawled pages (depth 0 and 1) ...
+	for _, p := range []struct {
+		url   string
+		depth int
+	}{{"https://ex.com/", 0}, {"https://ex.com/a", 1}} {
+		if err := c.Page(&crawler.PageRecord{URL: p.url, Scope: "internal", State: crawler.StateCrawled, Depth: p.depth}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// ... plus two still-pending frontier rows (depth 1 and 2).
+	for _, it := range []frontier.Item{{URL: "https://ex.com/b", Depth: 1}, {URL: "https://ex.com/c", Depth: 2}} {
+		if first, err := c.Admit(it); err != nil || !first {
+			t.Fatalf("Admit(%s) = (%v,%v), want first", it.URL, first, err)
+		}
+	}
+
+	items, err := c.AdmittedItems()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, it := range items {
+		got[it.URL] = it.Depth
+	}
+	want := map[string]int{
+		"https://ex.com/":  0,
+		"https://ex.com/a": 1,
+		"https://ex.com/b": 1,
+		"https://ex.com/c": 2,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("AdmittedItems returned %d urls, want %d: %v", len(got), len(want), got)
+	}
+	for u, d := range want {
+		if got[u] != d {
+			t.Errorf("AdmittedItems[%s] depth = %d, want %d", u, got[u], d)
+		}
+	}
+}

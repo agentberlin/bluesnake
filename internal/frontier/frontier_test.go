@@ -175,6 +175,35 @@ func TestPerPathLimit(t *testing.T) {
 	}
 }
 
+// TestRehydrateCountersEnforcesCapsOnResume is the FR-08 guard (#70 M3): after a
+// resume rehydrates the per-bucket counters from the already-admitted set, the
+// per-depth / per-subdomain / per-path caps must bind against those carried-over
+// totals — not restart at zero and grant a fresh bucket budget.
+func TestRehydrateCountersEnforcesCapsOnResume(t *testing.T) {
+	f := newFrontier(t, func(c *config.Config) {
+		c.Limits.MaxURLsPerDepth = 2
+		c.Limits.MaxPerSubdomain = 2
+		c.Limits.ByPath = []config.PathLimit{{Pattern: "/blog/", Max: 2}}
+	})
+	// Replay two items the earlier session already admitted into every bucket
+	// (depth 1, host a.ex.com, /blog/), exactly filling each cap.
+	f.RehydrateCounters([]Item{
+		{URL: "https://a.ex.com/blog/1", Depth: 1},
+		{URL: "https://a.ex.com/blog/2", Depth: 1},
+	})
+	// A novel URL that lands in all three full buckets must now be rejected — with
+	// the counters restarted at zero (the bug) it would slip in as the "first" of
+	// its bucket.
+	if f.Admit(Item{URL: "https://a.ex.com/blog/3", Depth: 1}) {
+		t.Error("resume over-admitted past a per-bucket cap (FR-08): counters not rehydrated")
+	}
+	// A different depth / host / path is unaffected — rehydration touches only the
+	// buckets the prior session used.
+	if !f.Admit(Item{URL: "https://c.ex.com/shop/1", Depth: 2}) {
+		t.Error("an unrelated bucket must still admit after rehydration")
+	}
+}
+
 func TestSeenAndCount(t *testing.T) {
 	f := newFrontier(t, nil)
 	f.Admit(Item{URL: "https://ex.com/a"})

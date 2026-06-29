@@ -111,11 +111,11 @@ type JSDiff struct {
 }
 
 // Sink receives crawl output as it is produced (the store implements this).
-// FrontierAdd/FrontierDone mirror the in-memory frontier so an interrupted
-// crawl can resume exactly where it stopped.
+// Pending frontier rows are persisted by the dedup authority's Admit (the store
+// when present, see frontier.Dedup), not a separate sink call; FrontierDone marks
+// a row processed so an interrupted crawl resumes exactly where it stopped.
 type Sink interface {
 	Page(*PageRecord) error
-	FrontierAdd(frontier.Item) error
 	FrontierDone(url string) error
 }
 
@@ -347,6 +347,25 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 		}
 	}
 
+	// Rehydrate the per-bucket admission counters from the stored admitted set so
+	// this resumed session enforces per-depth / per-subdomain / per-path caps
+	// against the totals the earlier session(s) accrued, instead of restarting each
+	// bucket at zero and over-admitting (FR-08 / MEMORY-SCALING.md §5.1, M3). Only
+	// needed when such a cap is configured and the sink can supply the admitted set
+	// (the store can; an in-memory test sink keeps its own running counters).
+	if c.resuming() && c.anyBucketCapSet() {
+		if ai, ok := c.sink.(interface {
+			AdmittedItems() ([]frontier.Item, error)
+		}); ok {
+			items, err := ai.AdmittedItems()
+			if err != nil {
+				c.noteSinkErr(err)
+			} else {
+				c.frontier.RehydrateCounters(items)
+			}
+		}
+	}
+
 	// Bounded worker pool (MEMORY-SCALING.md §5.2): N persistent workers drain a
 	// deadlock-free unbounded in-RAM queue, with an atomic in-flight counter
 	// replacing the old goroutine-per-URL model and its wg.Wait(). in-flight =
@@ -475,6 +494,19 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 	}
 	c.mu.Unlock()
 	return res, c.sinkErr
+}
+
+// resuming reports whether this crawl was preseeded from a stored crawl.
+func (c *Crawler) resuming() bool {
+	return len(c.resumeProcessed) > 0 || len(c.resumePending) > 0
+}
+
+// anyBucketCapSet reports whether a per-bucket admission cap (per-depth,
+// per-subdomain, or per-path) is configured — i.e. whether the resume counter
+// rehydration is needed at all.
+func (c *Crawler) anyBucketCapSet() bool {
+	lim := &c.cfg.Limits
+	return lim.MaxURLsPerDepth >= 0 || lim.MaxPerSubdomain >= 0 || len(lim.ByPath) > 0
 }
 
 // NoDepth marks pages with no followed-link path from a seed (discovered
@@ -690,12 +722,6 @@ func (c *Crawler) followsForDepth(l parse.Link) bool {
 func (c *Crawler) noteSinkErr(err error) {
 	if err != nil {
 		c.sinkErrOnce.Do(func() { c.sinkErr = err })
-	}
-}
-
-func (c *Crawler) sinkFrontierAdd(it frontier.Item) {
-	if c.sink != nil {
-		c.noteSinkErr(c.sink.FrontierAdd(it))
 	}
 }
 

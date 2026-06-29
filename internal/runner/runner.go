@@ -450,8 +450,15 @@ func (r *run) onPage(rec *crawler.PageRecord) {
 }
 
 // sink tees the crawl stream: persistence first (the real store sink), then the
-// executor's live counters and the surface observer's per-page hook. It forwards
-// every optional sink extension the store implements (blobs, WARC, sitemaps).
+// executor's live counters and the surface observer's per-page hook. It also IS
+// the crawl's frontier dedup authority (MEMORY-SCALING.md §5.1): forwarding the
+// five Dedup methods to the store makes store.Admit the on-disk visited-set
+// authority on every production surface. That is what persists pending frontier
+// rows (so a paused crawl resumes without losing pages) and bounds the visited
+// set to disk — previously this struct didn't satisfy frontier.Dedup, so the
+// engine silently fell back to the in-RAM set and never wrote frontier rows,
+// losing pages on resume (the C1 regression). It forwards every optional sink
+// extension the store implements (blobs, WARC, sitemaps).
 type sink struct {
 	inner *store.Crawl
 	r     *run
@@ -463,6 +470,7 @@ var (
 	_ crawler.BlobSink    = (*sink)(nil)
 	_ crawler.ArchiveSink = (*sink)(nil)
 	_ crawler.SitemapSink = (*sink)(nil)
+	_ frontier.Dedup      = (*sink)(nil)
 )
 
 func (t *sink) Page(rec *crawler.PageRecord) error {
@@ -476,17 +484,44 @@ func (t *sink) Page(rec *crawler.PageRecord) error {
 	return nil
 }
 
-func (t *sink) FrontierAdd(it frontier.Item) error {
-	if err := t.inner.FrontierAdd(it); err != nil {
+func (t *sink) FrontierDone(url string) error { return t.inner.FrontierDone(url) }
+
+// --- frontier.Dedup: the store is the visited-set authority on every surface ---
+// Admission now happens here (not via a separate FrontierAdd), so this is also
+// where the live Discovered counter advances — fixing the frozen-at-0 progress
+// on MCP/desktop (M1). Admit/Remove/Seen/MarkSeen/Count forward to the store;
+// the engine's frontier calls them outside its cap mutex.
+
+// Admit records a novel URL as a durable frontier row (the resume authority) and,
+// on a first admission, advances Discovered. A re-discovered URL (already a
+// frontier or pages row) returns first=false and is not counted again.
+func (t *sink) Admit(it frontier.Item) (first bool, err error) {
+	first, err = t.inner.Admit(it)
+	if err == nil && first {
+		t.r.mu.Lock()
+		t.r.discovered++
+		t.r.mu.Unlock()
+	}
+	return first, err
+}
+
+// Remove undoes a just-admitted row (the frontier's cap-overflow rollback), so it
+// also rolls back the Discovered bump Admit made for it.
+func (t *sink) Remove(url string) error {
+	if err := t.inner.Remove(url); err != nil {
 		return err
 	}
 	t.r.mu.Lock()
-	t.r.discovered++
+	if t.r.discovered > 0 {
+		t.r.discovered--
+	}
 	t.r.mu.Unlock()
 	return nil
 }
 
-func (t *sink) FrontierDone(url string) error { return t.inner.FrontierDone(url) }
+func (t *sink) Seen(url string) (bool, error) { return t.inner.Seen(url) }
+func (t *sink) MarkSeen(urls []string) error  { return t.inner.MarkSeen(urls) }
+func (t *sink) Count() (int, error)           { return t.inner.Count() }
 
 func (t *sink) Blob(url, kind string, data []byte) error { return t.inner.Blob(url, kind, data) }
 

@@ -363,8 +363,10 @@ func TestSinkPageErrorPropagates(t *testing.T) {
 	}
 }
 
-// TestSinkFrontierAddErrorPropagates covers the sink's FrontierAdd inner-error arm.
-func TestSinkFrontierAddErrorPropagates(t *testing.T) {
+// TestSinkAdmitErrorPropagates covers the sink's Admit (dedup authority)
+// inner-error arm: when the store can't persist, Admit returns the error and the
+// Discovered counter does not advance.
+func TestSinkAdmitErrorPropagates(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.CreateCrawl(dir, []string{"http://ex.com/"}, "spider", config.Default())
 	if err != nil {
@@ -374,8 +376,8 @@ func TestSinkFrontierAddErrorPropagates(t *testing.T) {
 	s := &sink{inner: st, r: r}
 	st.Close()
 
-	if err := s.FrontierAdd(frontier.Item{URL: "http://ex.com/q"}); err == nil {
-		t.Error("sink.FrontierAdd should propagate the inner store error")
+	if _, err := s.Admit(frontier.Item{URL: "http://ex.com/q"}); err == nil {
+		t.Error("sink.Admit should propagate the inner store error")
 	}
 	if r.discovered != 0 {
 		t.Errorf("discovered counter advanced despite a persist failure: %d", r.discovered)
@@ -398,8 +400,8 @@ func TestSinkPageAndFrontierHappy(t *testing.T) {
 	if err := s.Page(&crawler.PageRecord{URL: "http://ex.com/a", StatusCode: 200, State: crawler.StateCrawled, Indexable: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FrontierAdd(frontier.Item{URL: "http://ex.com/b"}); err != nil {
-		t.Fatal(err)
+	if first, err := s.Admit(frontier.Item{URL: "http://ex.com/b"}); err != nil || !first {
+		t.Fatalf("Admit(novel) = (%v, %v), want (true, nil)", first, err)
 	}
 	if r.total != 1 || r.discovered != 1 || r.s2 != 1 || r.indexable != 1 {
 		t.Errorf("counters after one page+frontier: %+v", r)

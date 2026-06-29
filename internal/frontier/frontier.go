@@ -193,6 +193,29 @@ func (f *Frontier) Readmit(it Item) bool {
 	return true
 }
 
+// RehydrateCounters replays already-admitted items through the per-bucket
+// counters (perDepth, perSub, perPath) without touching dedup or applying caps,
+// so a resumed crawl carries the running bucket totals from the session(s) that
+// first admitted them. Without it the counters restart at zero on resume and a
+// crawl with MaxURLsPerDepth / MaxPerSubdomain / a ByPath cap could admit up to a
+// full extra bucket past what a straight crawl allowed (FR-08). It mirrors Admit's
+// increment block exactly (perDepth + perSub always; the first matching ByPath).
+func (f *Frontier) RehydrateCounters(items []Item) {
+	lim := &f.cfg.Limits
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, it := range items {
+		f.perDepth[it.Depth]++
+		f.perSub[urlutil.Host(it.URL)]++
+		for i, pl := range lim.ByPath {
+			if strings.Contains(it.URL, pl.Pattern) {
+				f.perPath[i]++
+				break
+			}
+		}
+	}
+}
+
 // MarkSeen records URLs as already processed (resume preseeding) without
 // counting them against any limit.
 func (f *Frontier) MarkSeen(urls []string) { _ = f.dedup.MarkSeen(urls) }
