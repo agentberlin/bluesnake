@@ -50,3 +50,6 @@ jobs:
 
       - name: Unit + acceptance tests
         run: make test
+
+      - name: Race detector (concurrency-critical packages)
+        run: make race

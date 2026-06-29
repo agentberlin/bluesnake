@@ -160,13 +160,11 @@ func TestNoPageRecordRetainedAfterRun(t *testing.T) {
 	}
 }
 
-// TestGoroutinesBoundedByThreads (§8.2 #1, the Phase-3/6 done-gate) pins the
-// live goroutine count to the worker-pool size, independent of the discovered
-// frontier. A high-fan-out fixture (one page → thousands of children) makes the
-// gap glaring: goroutine-per-URL spawns ~one goroutine per admitted URL, all
-// parked on the thread semaphore. A bounded worker pool keeps it at ~N.
-func TestGoroutinesBoundedByThreads(t *testing.T) {
-	const fanout = 1500
+// goroutinePeakForFanout crawls a one-page → `fanout` children fixture with N
+// worker threads and returns (peak live goroutines during the crawl, the
+// pre-crawl baseline). It is the measurement core of TestGoroutinesBoundedByThreads.
+func goroutinePeakForFanout(t *testing.T, fanout, threads int) (peak, base int) {
+	t.Helper()
 	var b strings.Builder
 	for i := 0; i < fanout; i++ {
 		b.WriteString(link(fmt.Sprintf("/p%d", i)))
@@ -178,14 +176,14 @@ func TestGoroutinesBoundedByThreads(t *testing.T) {
 	s := newSite(t, bodies)
 
 	cfg := config.Default()
-	cfg.Speed.MaxThreads = 5
+	cfg.Speed.MaxThreads = threads
 	sink := newCapSink()
 	c, err := New(cfg, WithSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	base := runtime.NumGoroutine()
+	base = runtime.NumGoroutine()
 	var maxG int64
 	done := make(chan struct{})
 	go func() {
@@ -214,14 +212,28 @@ func TestGoroutinesBoundedByThreads(t *testing.T) {
 	if res.Crawled < fanout {
 		t.Fatalf("crawled %d, want >= %d (whole fan-out)", res.Crawled, fanout)
 	}
+	return int(atomic.LoadInt64(&maxG)), base
+}
 
-	peak := int(atomic.LoadInt64(&maxG))
-	// workers (N) + the crawl's own helpers + httptest's per-conn goroutines +
-	// this sampler, with generous slack — but nowhere near the frontier size.
-	limit := base + cfg.Speed.MaxThreads + 40
-	if peak > limit {
-		t.Errorf("peak live goroutines = %d, want <= %d (base %d + threads %d + slack); "+
-			"goroutine count scales with the admitted frontier, not the worker pool",
-			peak, limit, base, cfg.Speed.MaxThreads)
+// TestGoroutinesBoundedByThreads (§8.2 #1, the Phase-3/6 done-gate) pins the
+// live goroutine count to the worker-pool size, independent of the discovered
+// frontier. A high-fan-out fixture (one page → thousands of children) makes the
+// gap glaring: goroutine-per-URL spawns ~one goroutine per admitted URL, all
+// parked on the thread semaphore. A bounded worker pool keeps it at ~N. Run at
+// TWO fan-out sizes (doc §8.2 #1 asks for two): the peak must stay under the same
+// N-based bound at both, proving it does not scale with the frontier.
+func TestGoroutinesBoundedByThreads(t *testing.T) {
+	const threads = 5
+	for _, fanout := range []int{1500, 3000} {
+		peak, base := goroutinePeakForFanout(t, fanout, threads)
+		// workers (N) + the crawl's own helpers + httptest's per-conn goroutines +
+		// this sampler, with generous slack — but nowhere near the frontier size.
+		// The SAME bound at fanout=1500 and fanout=3000 is the independence proof.
+		limit := base + threads + 40
+		if peak > limit {
+			t.Errorf("fanout=%d: peak live goroutines = %d, want <= %d (base %d + threads %d + slack); "+
+				"goroutine count scales with the admitted frontier, not the worker pool",
+				fanout, peak, limit, base, threads)
+		}
 	}
 }

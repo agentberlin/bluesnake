@@ -11,7 +11,13 @@ APP_NAME := bluesnake.app
 APP_BUNDLE := desktop/build/bin/$(APP_NAME)
 APP_INSTALL_DIR ?= $(HOME)/Applications
 
-.PHONY: build tunnel-server test unit acceptance cover lint clean desktop desktop-build desktop-dev dist-cli package-deb
+.PHONY: build tunnel-server test unit acceptance race cover lint clean desktop desktop-build desktop-dev dist-cli package-deb
+
+# Concurrency-critical packages exercised under the race detector (T9). Scoped to
+# the packages with real goroutine interplay — worker pool, dispatcher, the store
+# dedup/content authority, runner sink — so the gate stays fast while covering the
+# shared-state paths the bounded-RAM / parallel rework introduced.
+RACE_PKGS := ./internal/crawler/... ./internal/runner/... ./internal/frontier/... ./internal/store/... ./internal/queue/...
 
 build:
 	$(GO) build -o bin/bluesnake ./cmd/bluesnake
@@ -42,6 +48,9 @@ unit:
 
 acceptance: build
 	$(GO) test ./test/...
+
+race:
+	$(GO) test -race $(RACE_PKGS)
 
 cover:
 	$(GO) test -coverprofile=coverage.out $(COVER_PKGS)
