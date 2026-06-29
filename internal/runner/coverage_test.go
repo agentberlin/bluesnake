@@ -407,9 +407,27 @@ func TestSinkPageAndFrontierHappy(t *testing.T) {
 		t.Errorf("counters after one page+frontier: %+v", r)
 	}
 	obs.mu.Lock()
-	defer obs.mu.Unlock()
 	if obs.pages != 1 {
 		t.Errorf("observer OnPage fired %d times, want 1", obs.pages)
+	}
+	obs.mu.Unlock()
+
+	// The remaining Dedup forwarders: Seen and Count read through to the store,
+	// and Remove (the cap-overflow rollback) rolls back the Discovered bump.
+	if seen, err := s.Seen("http://ex.com/b"); err != nil || !seen {
+		t.Errorf("Seen(admitted) = (%v,%v), want (true,nil)", seen, err)
+	}
+	if err := s.MarkSeen([]string{"http://ex.com/a"}); err != nil {
+		t.Errorf("MarkSeen: %v", err)
+	}
+	if n, err := s.Count(); err != nil || n < 1 {
+		t.Errorf("Count = (%d,%v), want (>=1,nil)", n, err)
+	}
+	if err := s.Remove("http://ex.com/b"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if r.discovered != 0 {
+		t.Errorf("discovered after Remove = %d, want 0 (rollback of the Admit bump)", r.discovered)
 	}
 }
 
