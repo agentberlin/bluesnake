@@ -28,10 +28,13 @@ type Dispatcher struct {
 }
 
 // inFlightJob is a job whose crawl is currently running; crawlID fills in once
-// the crawl exists (so Cancel/Current can address it).
+// the crawl exists (so Cancel/Current can address it). cancelled latches a Cancel
+// that arrives in the startup window — after the job is registered in-flight but
+// before its crawlID is known — so the crawl is stopped the moment its id lands.
 type inFlightJob struct {
-	job     Job
-	crawlID string
+	job       Job
+	crawlID   string
+	cancelled bool
 }
 
 // New builds a dispatcher over a job store and a crawl executor. By default it
@@ -143,11 +146,18 @@ func (d *Dispatcher) Cancel(jobID string) (bool, error) {
 	f := d.inflight[jobID]
 	crawlID := ""
 	if f != nil {
+		f.cancelled = true // honored by runJob's onStart if the id isn't known yet
 		crawlID = f.crawlID
 	}
 	d.mu.Unlock()
 	if f != nil {
-		d.exec.StopCrawl(crawlID)
+		// Address the running crawl by id. In the ms-wide startup window crawlID is
+		// still empty — calling StopCrawl("") would silently no-op while falsely
+		// reporting success, so skip it; the latched cancelled flag makes the crawl
+		// stop the instant its id lands (see runJob's onStart).
+		if crawlID != "" {
+			d.exec.StopCrawl(crawlID)
+		}
 		return true, nil
 	}
 	return d.store.Cancel(jobID)
@@ -213,8 +223,14 @@ func (d *Dispatcher) runJob(ctx context.Context, job *Job) {
 	status, runErr := d.exec.Run(ctx, job.Spec, func(crawlID string) {
 		d.mu.Lock()
 		f.crawlID = crawlID
+		cancelled := f.cancelled
 		d.mu.Unlock()
 		_ = d.store.SetCrawlID(job.ID, crawlID)
+		if cancelled {
+			// A Cancel landed during the startup window before this id was known;
+			// honor it now that the crawl is addressable.
+			d.exec.StopCrawl(crawlID)
+		}
 	})
 
 	errMsg := ""

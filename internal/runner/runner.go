@@ -148,7 +148,12 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 	}
 	// One global limiter shared across every crawl this executor runs, so M
 	// parallel crawls honour a single process-wide fetch ceiling. Fall back to a
-	// per-crawl limiter from this crawl's config when none was injected.
+	// per-crawl limiter from this crawl's config when none was injected. INVARIANT
+	// (P17): the fallback is sound only because the surfaces that omit WithLimiter
+	// (MCP, desktop) run one crawl at a time — that single crawl's limiter then IS
+	// the process-wide cap. Any surface that runs crawls in parallel (the CLI's
+	// `projects crawl-all --parallel`) MUST inject one shared limiter, else
+	// SUM(in-flight fetches) across crawls would be unbounded.
 	lim := e.lim
 	if lim == nil {
 		lim = limiter.New(cfg.Speed.MaxGlobalThreads, 1)

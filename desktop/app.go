@@ -100,6 +100,12 @@ func (a *App) ensureQueue() {
 	}
 	a.obs = &uiObserver{app: a}
 	a.exec = runner.New(a.storeDir, a.obs)
+	// One crawl at a time by design: the desktop's realtime progress UI is built
+	// around a single active crawl (no WithConcurrency). Because of that the
+	// executor's per-crawl fallback limiter IS the process-wide fetch cap — there
+	// is only ever one in-flight crawl. Parallel project crawl-all is the CLI's
+	// `projects crawl-all --parallel`; driving concurrency>1 here would also need
+	// one shared limiter injected via runner.WithLimiter (P7/P17).
 	a.disp = queue.New(queue.NewSQLiteStore(a.storeDir), a.exec)
 }
 

@@ -87,7 +87,7 @@ const SECTIONS = [
     num("speed.max_threads", "Max threads", "Parallel downloads per crawl."),
     num("speed.max_urls_per_sec", "Max URLs per second", "Politeness throttle. 0 = unlimited.", "URL/s"),
     num("speed.max_global_threads", "Max global threads", "Total concurrent fetches across all running crawls. 0 = unlimited."),
-    num("speed.max_concurrent_crawls", "Max concurrent crawls", "How many crawls run in parallel. 0/1 = one at a time."),
+    num("speed.max_concurrent_crawls", "Max concurrent crawls", "Parallel member crawls for 'projects crawl-all' on the CLI. Crawls started from this app run one at a time."),
   ]},
   { id: "http", label: "HTTP & Identity", icon: "fingerprint", fields: [
     txt("http.user_agent", "User-agent"),

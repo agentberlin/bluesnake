@@ -193,7 +193,7 @@ var descriptions = map[string]string{
 	"speed.max_threads":           "Parallel download workers (per crawl).",
 	"speed.max_urls_per_sec":      "Politeness throttle across all workers. 0 = unlimited.",
 	"speed.max_global_threads":    "Cap on total concurrent fetches across ALL running crawls in this process. 0 = unlimited (single-crawl behaviour).",
-	"speed.max_concurrent_crawls": "How many crawls the dispatcher runs in parallel (each with its own worker pool). 0/1 = one crawl at a time.",
+	"speed.max_concurrent_crawls": "Parallel member crawls for the CLI 'projects crawl-all'. This server runs one crawl at a time regardless.",
 
 	"http.user_agent":        "HTTP User-Agent header sent with every request.",
 	"http.robots_user_agent": "Token used when matching robots.txt rules.",
