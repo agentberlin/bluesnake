@@ -106,7 +106,7 @@ func (d *Dispatcher) List() ([]Job, error) { return d.store.List() }
 
 // Current returns one in-flight job (with its crawl id once known), or nil when
 // idle. With several crawls running it returns an arbitrary one — enough for the
-// single-crawl surfaces to answer "is a crawl running"; CurrentAll lists them all.
+// single-crawl surfaces to answer "is a crawl running".
 func (d *Dispatcher) Current() *Job {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -116,20 +116,6 @@ func (d *Dispatcher) Current() *Job {
 		return &j
 	}
 	return nil
-}
-
-// CurrentAll returns every in-flight job (with crawl ids), for surfaces that
-// drive parallel crawls.
-func (d *Dispatcher) CurrentAll() []Job {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	out := make([]Job, 0, len(d.inflight))
-	for _, f := range d.inflight {
-		j := f.job
-		j.CrawlID = f.crawlID
-		out = append(out, j)
-	}
-	return out
 }
 
 // Pause asks every in-flight crawl to pause (left resumable); no-op when idle.

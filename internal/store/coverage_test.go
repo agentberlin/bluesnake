@@ -361,7 +361,7 @@ func TestOperationsOnClosedCrawlReturnErrors(t *testing.T) {
 
 	checks := map[string]func() error{
 		"Page":            func() error { return c.Page(page) },
-		"FrontierAdd":     func() error { return c.FrontierAdd(frontier.Item{URL: "https://ex.com/a"}) },
+		"Admit":           func() error { _, err := c.Admit(frontier.Item{URL: "https://ex.com/a"}); return err },
 		"FrontierDone":    func() error { return c.FrontierDone("https://ex.com/a") },
 		"PendingFrontier": func() error { _, err := c.PendingFrontier(); return err },
 		"ProcessedURLs":   func() error { _, err := c.ProcessedURLs(); return err },

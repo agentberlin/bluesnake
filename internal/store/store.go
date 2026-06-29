@@ -771,12 +771,6 @@ func (c *Crawl) Page(rec *crawler.PageRecord) error {
 	return tx.Commit()
 }
 
-func (c *Crawl) FrontierAdd(it frontier.Item) error {
-	_, err := c.db.Exec(`INSERT OR IGNORE INTO frontier(url, depth, redirect_hops, source) VALUES(?,?,?,?)`,
-		it.URL, it.Depth, it.RedirectHops, it.Source)
-	return err
-}
-
 func (c *Crawl) FrontierDone(url string) error {
 	_, err := c.db.Exec(`DELETE FROM frontier WHERE url = ?`, url)
 	return err
@@ -1120,54 +1114,6 @@ func (c *Crawl) MaxEdgeSeq() (int64, error) {
 	var n int64
 	err := c.db.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM edges`).Scan(&n)
 	return n, err
-}
-
-// InlinksFromEdges derives the raw hyperlink inlink count per URL from the gated
-// edges table — the SQL equivalent of replaying discoverLinks→noteInlink in RAM
-// (RecomputeInlinks). Self-links count, matching the in-RAM semantics. This is
-// the Phase-2 SQL/CSR finalize path that lets the depth/inlinks recompute drop
-// the in-RAM page map (MEMORY-SCALING.md §5.5).
-func (c *Crawl) InlinksFromEdges() (map[string]int, error) {
-	rows, err := c.db.Query(`SELECT dst, COUNT(*) FROM edges WHERE hyperlink = 1 GROUP BY dst`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]int{}
-	for rows.Next() {
-		var dst string
-		var n int
-		if err := rows.Scan(&dst, &n); err != nil {
-			return nil, err
-		}
-		out[dst] = n
-	}
-	return out, rows.Err()
-}
-
-// DiscoveredFromEdges derives first-wins discovered_from per URL: the source of
-// the lowest-seq edge into each target (any edge type, like noteInlink's first-
-// wins). seq is the monotonic crawl order, so this is run-to-run stable and
-// stable across resume (later sessions get higher seq) — unlike a rowid-based MIN.
-// Seed-locking ("" for seeds) is applied by the caller.
-func (c *Crawl) DiscoveredFromEdges() (map[string]string, error) {
-	rows, err := c.db.Query(
-		`SELECT dst, src FROM edges e WHERE e.seq = (SELECT MIN(seq) FROM edges WHERE dst = e.dst)`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]string{}
-	for rows.Next() {
-		var dst, src string
-		if err := rows.Scan(&dst, &src); err != nil {
-			return nil, err
-		}
-		if _, dup := out[dst]; !dup { // guard against ties (same min seq is impossible — seq is unique)
-			out[dst] = src
-		}
-	}
-	return out, rows.Err()
 }
 
 // DuplicateIssues computes the cross-page duplicate occurrences (content hash /

@@ -37,20 +37,6 @@ func TestEdgesAndDepthSQLMethods(t *testing.T) {
 		[]crawler.GatedEdge{{Dst: "https://ex.com/b", Hyperlink: true, Seq: 3}}, hl("https://ex.com/b"))
 	page("https://ex.com/b", "Dup", "", nil) // /a and /b share title "Dup"
 
-	inl, err := c.InlinksFromEdges()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inl["https://ex.com/a"] != 1 || inl["https://ex.com/b"] != 2 {
-		t.Errorf("InlinksFromEdges = %v, want /a:1 /b:2", inl)
-	}
-	from, err := c.DiscoveredFromEdges()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if from["https://ex.com/a"] != "https://ex.com/" || from["https://ex.com/b"] != "https://ex.com/" {
-		t.Errorf("DiscoveredFromEdges = %v, want both from /", from)
-	}
 	if m, _ := c.MaxEdgeSeq(); m != 3 {
 		t.Errorf("MaxEdgeSeq = %d, want 3", m)
 	}
@@ -77,11 +63,13 @@ func TestEdgesAndDepthSQLMethods(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pages["https://ex.com/b"].Inlinks != 2 {
-		t.Errorf("/b inlinks = %d, want 2", pages["https://ex.com/b"].Inlinks)
+	// inlinks (hyperlink-gated, from edges) + first-wins discovered_from, asserted
+	// on the finalized columns the production path writes.
+	if pages["https://ex.com/a"].Inlinks != 1 || pages["https://ex.com/b"].Inlinks != 2 {
+		t.Errorf("inlinks = /a:%d /b:%d, want /a:1 /b:2", pages["https://ex.com/a"].Inlinks, pages["https://ex.com/b"].Inlinks)
 	}
-	if pages["https://ex.com/a"].DiscoveredFrom != "https://ex.com/" {
-		t.Errorf("/a discovered_from = %q, want /", pages["https://ex.com/a"].DiscoveredFrom)
+	if pages["https://ex.com/a"].DiscoveredFrom != "https://ex.com/" || pages["https://ex.com/b"].DiscoveredFrom != "https://ex.com/" {
+		t.Errorf("discovered_from = /a:%q /b:%q, want both /", pages["https://ex.com/a"].DiscoveredFrom, pages["https://ex.com/b"].DiscoveredFrom)
 	}
 	if pages["https://ex.com/a"].Depth != 1 {
 		t.Errorf("/a depth = %d, want 1", pages["https://ex.com/a"].Depth)
@@ -138,13 +126,6 @@ func TestRedirectPageEdgePersisted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	from, err := c.DiscoveredFromEdges()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if from["https://ex.com/new"] != "https://ex.com/old" {
-		t.Errorf("DiscoveredFromEdges[/new] = %q, want /old (redirect edge dropped — H5 bug)", from["https://ex.com/new"])
-	}
 	if err := c.SaveInlinksFromEdges([]string{"https://ex.com/"}); err != nil {
 		t.Fatal(err)
 	}
@@ -152,8 +133,10 @@ func TestRedirectPageEdgePersisted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The redirect edge was persisted (the #70 H5 fix): /new's first-wins
+	// discovered_from is /old even though /old had no Facts (a 3xx isn't parsed).
 	if got := pages["https://ex.com/new"].DiscoveredFrom; got != "https://ex.com/old" {
-		t.Errorf("/new discovered_from = %q, want /old", got)
+		t.Errorf("/new discovered_from = %q, want /old (redirect edge dropped — H5 bug)", got)
 	}
 	// The hyperlink=1 inlink gate (P10): the redirect edge /old -> /new is NOT a
 	// hyperlink, so it must NOT count as an inlink. Dropping `AND hyperlink=1` from

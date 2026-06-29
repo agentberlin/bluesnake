@@ -91,15 +91,3 @@ func TestTinyFilterStillNoFalseNegatives(t *testing.T) {
 		}
 	}
 }
-
-// TestTestAndAdd pins the add-if-absent convenience: first sight reports absent,
-// thereafter present.
-func TestTestAndAdd(t *testing.T) {
-	f := New(100, 0.01)
-	if f.TestAndAdd("x") {
-		t.Error("TestAndAdd reported a never-seen key as present")
-	}
-	if !f.TestAndAdd("x") {
-		t.Error("TestAndAdd reported an added key as absent")
-	}
-}

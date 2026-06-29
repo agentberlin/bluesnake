@@ -105,12 +105,3 @@ func (f *Filter) Has(s string) bool {
 	}
 	return true
 }
-
-// TestAndAdd atomically checks membership and adds s, returning whether s was
-// already present. (A maybe-present here still warrants an authority check; this
-// is a convenience for the common add-if-absent flow.)
-func (f *Filter) TestAndAdd(s string) bool {
-	present := f.Has(s)
-	f.Add(s)
-	return present
-}

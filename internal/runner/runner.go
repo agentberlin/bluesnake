@@ -404,7 +404,7 @@ func signalRun(r *run, mode string) {
 }
 
 // Snapshot returns one in-flight crawl's live progress (any, for single-crawl
-// surfaces), ok=false when idle. Use SnapshotCrawl to address a specific crawl.
+// surfaces), ok=false when idle.
 func (e *Executor) Snapshot() (Snapshot, bool) {
 	e.mu.Lock()
 	var r *run
@@ -412,18 +412,6 @@ func (e *Executor) Snapshot() (Snapshot, bool) {
 		r = v
 		break
 	}
-	e.mu.Unlock()
-	if r == nil {
-		return Snapshot{}, false
-	}
-	return r.snapshot(), true
-}
-
-// SnapshotCrawl returns one specific crawl's live progress, ok=false if it is not
-// currently in flight.
-func (e *Executor) SnapshotCrawl(crawlID string) (Snapshot, bool) {
-	e.mu.Lock()
-	r := e.cur[crawlID]
 	e.mu.Unlock()
 	if r == nil {
 		return Snapshot{}, false

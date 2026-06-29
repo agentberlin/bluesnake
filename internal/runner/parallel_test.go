@@ -56,13 +56,9 @@ func TestExecutorPauseFansOutToAll(t *testing.T) {
 	}
 }
 
-// TestExecutorSnapshotAddressed pins SnapshotCrawl returns the targeted crawl's
-// reading and ok=false for an unknown id.
-func TestExecutorSnapshotAddressed(t *testing.T) {
+// TestExecutorSnapshotIdle pins Snapshot returns ok=false when no crawl is in flight.
+func TestExecutorSnapshotIdle(t *testing.T) {
 	e := New(t.TempDir(), nil)
-	if _, ok := e.SnapshotCrawl("nope"); ok {
-		t.Error("SnapshotCrawl of an unknown crawl returned ok=true")
-	}
 	if _, ok := e.Snapshot(); ok {
 		t.Error("Snapshot with no crawls returned ok=true")
 	}

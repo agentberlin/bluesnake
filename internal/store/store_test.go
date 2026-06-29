@@ -71,11 +71,11 @@ func TestCrawlLifecycle(t *testing.T) {
 		t.Errorf("links = %d, want 2", linkCount)
 	}
 
-	// frontier round trip
-	if err := c.FrontierAdd(frontier.Item{URL: "https://ex.com/a", Depth: 1, Source: "https://ex.com/"}); err != nil {
+	// frontier round trip (Admit is the admission authority — the durable write)
+	if _, err := c.Admit(frontier.Item{URL: "https://ex.com/a", Depth: 1, Source: "https://ex.com/"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.FrontierAdd(frontier.Item{URL: "https://ex.com/b", Depth: 1}); err != nil {
+	if _, err := c.Admit(frontier.Item{URL: "https://ex.com/b", Depth: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.FrontierDone("https://ex.com/a"); err != nil {
@@ -920,7 +920,7 @@ func TestListModeResumeRestoresAllSeeds(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.FrontierAdd(frontier.Item{URL: seedB, Depth: 0}); err != nil {
+		if _, err := st.Admit(frontier.Item{URL: seedB, Depth: 0}); err != nil {
 			t.Fatal(err)
 		}
 		if err := SetStatus(dir, st.ID, StatusInterrupted, 1, 1); err != nil {

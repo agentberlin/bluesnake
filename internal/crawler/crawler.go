@@ -284,9 +284,14 @@ func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
 	c.rewriter = urlutil.NewRewriter(cfg.URLRewriting.RemoveParams, replaces, cfg.URLRewriting.Lowercase, uopts)
 	c.filter = urlutil.NewFilter(cfg.Scope.IncludeRE(), cfg.Scope.ExcludeRE())
 	c.robots = robots
-	// When the sink is the SQLite store, it doubles as the frontier dedup
-	// authority (frontier ∪ pages on disk), so the in-memory visited set is
-	// dropped; otherwise the frontier keeps an exact in-memory set.
+	// When the sink also implements frontier.Dedup (the SQLite store does), it is
+	// the on-disk dedup authority (frontier ∪ pages), so the unbounded in-memory
+	// visited set is dropped — the bounded-RAM contract. CONTRACT: every PERSISTENT
+	// production sink MUST implement frontier.Dedup; the silent in-RAM memDedup
+	// fallback below is intended ONLY for library/no-persistence sinks (small crawls,
+	// no resume). The production sinks enforce this at compile time, not by luck:
+	// runner.sink pins `_ frontier.Dedup = (*sink)(nil)` (the C1 fix), so a sink that
+	// drops Dedup fails to build rather than silently degrading to the unbounded set.
 	var dedup frontier.Dedup
 	if d, ok := c.sink.(frontier.Dedup); ok {
 		dedup = d
