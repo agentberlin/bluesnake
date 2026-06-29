@@ -1,6 +1,10 @@
 # Crawler memory scaling + parallel crawling — investigation & implementation plan
 
-Status: **complete** — Phases 0–8 landed (memory + parallel). **Phase 2 SQL/CSR body is fully cut over & live:** inlinks/discovered_from (gated `edges` table), depth (CSR over `links`), PageRank (CSR via `analyze.WithLinks`), dup-rule (`store.DuplicateIssues`), and the near-dup minhash column (`internal/minhash` leaf pkg + `pages.minhash`, migration v4) — each parity-proven against the in-RAM path and verified by EC24 golden + resume_equivalence + acceptance. Residual (lowest value, no RAM win): the lite map still carries `Facts.Links` (optional links-table-only CSR); Phase 4 `c.inlinks` field removal + FR-08 counter rehydration; Phase 5 `seenContent` bound.
+Status: **landed, with the PR-#69 review follow-ups (#70/#71) applied.** The two biggest memory wins are real and live: the goroutine-per-URL model is gone (bounded worker pool) and page records stream-and-drop instead of being retained. The Phase-2 SQL/CSR finalize body is fully cut over & live: inlinks/discovered_from (gated `edges` table), depth (CSR over `links`), PageRank (CSR via `analyze.WithLinks`), dup-rule (`store.DuplicateIssues`), and the near-dup minhash column (`internal/minhash` leaf pkg + `pages.minhash`, migration v4) — each parity-proven against the in-RAM path and verified by EC24 golden + resume_equivalence + acceptance.
+
+**Review follow-ups now applied (#70/#71):** the store is the frontier dedup authority on *every* surface (runner.sink forwards `frontier.Dedup`), so pause/resume no longer silently loses pages (C1) and the live Discovered counter advances on MCP/desktop (M1); per-bucket admission counters are rehydrated on resume so caps bind across the interrupt boundary (FR-08/M3); the global fetch limiter is derived from `speed.max_global_threads` (not `parallel × per-crawl threads`, which never bound — H1), the finalize/analysis pass is bounded by the finalize semaphore (H2), and `speed.max_concurrent_crawls` drives crawl-all parallelism (M2) with both knobs surfaced on MCP/desktop (M5).
+
+**Still open (tracked, lowest value / no RAM win unless noted):** the Bloom fast-path in front of the SQLite dedup authority (Phase 5/H3) and the §5.3 bounded SQLite ready-buffer (Phase 4 frontier-independence) are not wired; the `seenContent` short-circuit map is still unbounded (Phase 5/M4); and several old in-RAM twins (`c.inlinks`/`Result.Inlinks`, the old finalize writers) remain pending the full cutover cleanup (#71).
 Code baseline: all `file:line` references are as of commit **`f1b1d45`**; re-confirm with `grep` on pickup (the crawler moves fast).
 
 > **Progress (2026-06-28).** Phases 0, 1, 3 implemented with TDD, full suite + acceptance + `-race` green, coverage 92.4% (gate 90%):
@@ -29,10 +33,17 @@ These were decided up front so the plan doesn't drift. They materially simplify 
    + a competitor) is rare and explicitly **not** worth optimising. **Drop** the shared per-host token-bucket
    machinery. Per-crawl rate limiting (`speed.max_urls_per_sec`, robots `Crawl-delay`) stays exactly as it is
    today. This is the single biggest simplification vs. the original "governor" design.
-3. **Clean break on storage — no legacy code.** New schema columns mean crawls stored before this work
-   cannot be re-analysed for new features. That is fine: **re-crawl, or delete the old crawl (with user
-   permission)**. Do **not** write migration/backfill code, compatibility shims, or "this crawl is old"
-   warnings. Bump the crawl-DB schema version; an incompatible DB is a re-crawl-or-delete, nothing more.
+3. **Clean break on storage — no backfill, no compat shims.** New schema columns mean crawls stored before
+   this work cannot be re-analysed for new features. That is fine: **re-crawl, or delete the old crawl (with
+   user permission)**. Do **not** write *backfill* code, compatibility shims, or "this crawl is old" warnings
+   that reconstruct a new feature from old data. **Reconciliation (#70 L4 / #71 Group 6):** an *additive,
+   nullable* new column (e.g. `pages.minhash`, migration v4) may ride the append-only migration ladder — a
+   forward `ALTER … ADD COLUMN` that adds the empty column and backfills **nothing**, so the column stays NULL
+   until the crawl is re-run. That keeps existing crawls *openable* (not refused) while still leaving the new
+   feature unavailable for them — it is not a compatibility shim. A genuinely *incompatible* (non-additive)
+   change instead raises the schema floor (`minCrawlVersion`) and an old DB is refused with a re-crawl message.
+   This is the chosen reconciliation: the additive-nullable migration is the safer option, so the decision text
+   matches the code rather than the two diverging silently.
 4. **Dedup stays exact; Bloom is sized sensibly (impl. choice).** Use a Bloom filter as a RAM-cheap fast
    path, DB as the authority (see §7). Auto-growing or a fixed conservative size are both acceptable — pick
    the sensible implementation. **We never start revisiting URLs** (see §7.1 — this was the owner's explicit
@@ -214,7 +225,7 @@ distinct host count under `scope.crawl_all_subdomains` (hosts ≪ URLs, so secon
 |---|---|---|---|
 | **5** | `issues.Evaluate(pages, cfg)` + dup maps `byHash/byTitle/byDesc/byH1/byH2` + `inlinkAggregates` | [issues.go:286](../internal/issues/issues.go), dup [:1114](../internal/issues/issues.go), inlink agg [:1186](../internal/issues/issues.go) | Whole-map scan; aggregate dup detection in Go maps. **Zero SQL in the package.** |
 | **6** | `analyze.Run(pages, …)` PageRank **`edges map[string]map[string]bool`** + `rank/next/nodes` | [analyze.go:80](../internal/analyze/analyze.go), edges [:149](../internal/analyze/analyze.go), vectors [:180](../internal/analyze/analyze.go) | Nested string-keyed maps over every edge — heaviest analysis structure. |
-| **7** | Near-dup minhash `cands` (128-int sig/page) + `exact` + LSH buckets | [analyze.go:334](../internal/analyze/analyze.go), [:336](../internal/analyze/analyze.go) | Also the *reason* `Facts.ContentText` is retained. Gated off by default (`near_duplicates.enabled=false`). |
+| **7** | Near-dup minhash `cands` (64×uint64 sig/page) + `exact` + LSH buckets | [analyze.go:334](../internal/analyze/analyze.go), [:336](../internal/analyze/analyze.go) | Also the *reason* `Facts.ContentText` is retained. Gated off by default (`near_duplicates.enabled=false`). |
 | **8** | `recomputeDepths` adjacency over all pages | [crawler.go:383](../internal/crawler/crawler.go), follow-gate `followsForDepth` [:483](../internal/crawler/crawler.go) | Shortest-followed-path depth (SF parity). Runs after the crawl loop. |
 
 **Already-persisted data the rework reads from instead:** `pages`, `links` (`idx_links_src`/`idx_links_dst`),
@@ -462,7 +473,7 @@ Parallel crawling requires Phases 1–8: 1–6 prevent per-crawl OOM (the prereq
   [analyze.go:436](../internal/analyze/analyze.go)), NOT discovery order.
 - **PageRank:** d=0.85, 40 iters, init 1/N, internal∧StateCrawled nodes, self-loops excluded from rank but counted in
   unique metrics, scale `v/max·100`, within ~1e-9.
-- **Near-dup:** 128-int minhash over ContentText, LSH banding, exact-hash pairs excluded, symmetric.
+- **Near-dup:** 64×uint64 minhash over ContentText (`internal/minhash`, `SigSize=64`), LSH banding, exact-hash pairs excluded, symmetric. (Older notes said "128-int"; the implementation signature is and has been 64 uint64s — confirmed byte-identical to the pre-extraction `analyze/minhash`, which is now a thin re-export shim of the same primitive.)
 - **Identical-content short-circuit** determinism (`firstWithContent`, first-owner-wins, `claim=willExpand`).
 - **WAL crash-safety**; graceful pause on Ctrl-C.
 - **Determinism** for `compare`-stability (no run-to-run ordering changes in outputs) — protected by `seq` total order.

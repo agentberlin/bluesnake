@@ -543,6 +543,61 @@ func TestIssuesDetailPKMigration(t *testing.T) {
 	}
 }
 
+// TestMinhashColumnForwardMigration is the L4 guard (#70 L4 / #71 Group 6): a
+// pre-minhash crawl DB (v3, no pages.minhash column) forward-migrates to v4 on
+// open — the additive nullable column is added by the migration ladder, the
+// existing rows survive (the column reads NULL), and the DB stamps to the ladder
+// top. This pins the reconciled §0.3 decision: an additive nullable column rides
+// the ladder (no backfill, openable) rather than refusing the old DB.
+func TestMinhashColumnForwardMigration(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := c.ID
+	if err := c.Page(&crawler.PageRecord{URL: "https://ex.com/", Scope: "internal", State: crawler.StateCrawled, StatusCode: 200}); err != nil {
+		t.Fatal(err)
+	}
+	// Reconstruct a pre-minhash crawl DB: drop the minhash column and stamp the
+	// stored revision back to v3 (the version before the column was introduced).
+	if _, err := c.db.Exec(`ALTER TABLE pages DROP COLUMN minhash;
+		PRAGMA user_version = 3;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopening runs the v4 additive-column migration.
+	c2, err := OpenCrawl(dir, id)
+	if err != nil {
+		t.Fatalf("opening a v3 DB should forward-migrate, not fail: %v", err)
+	}
+	defer c2.Close()
+
+	has, err := columnExists(c2.db, "pages", "minhash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has {
+		t.Fatal("pages.minhash column missing after forward-migration from v3")
+	}
+	// The pre-existing row survives; the new column reads NULL (no backfill).
+	var minhash []byte
+	if err := c2.db.QueryRow(`SELECT minhash FROM pages WHERE url = 'https://ex.com/'`).Scan(&minhash); err != nil {
+		t.Fatalf("row lost or column unqueryable after migration: %v", err)
+	}
+	if minhash != nil {
+		t.Errorf("migrated column backfilled a value (%v); an additive column must stay NULL", minhash)
+	}
+	var ver int
+	c2.db.QueryRow(`PRAGMA user_version`).Scan(&ver)
+	if want := ladderTop(crawlMigrations); ver != want {
+		t.Errorf("user_version after migration = %d, want %d", ver, want)
+	}
+}
+
 // TestFreshDBSchemaVersion pins that newly created databases are stamped to the
 // top of their ladder, so a later raised floor can tell a fresh DB (current)
 // from a genuinely old un-stamped one (revision 0).

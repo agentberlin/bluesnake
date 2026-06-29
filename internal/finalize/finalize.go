@@ -154,9 +154,11 @@ func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
 		// Near-duplicates need each page's minhash signature. When near-dup was
 		// enabled at crawl time the signatures are persisted (the pages.minhash
 		// column) and the ContentText-free lite map already carries them — analyze
-		// reads them directly, so the page bodies are never re-materialised. Only
-		// an older crawl, or one crawled with near-dup OFF, lacks the column; fall
-		// back to the full map (the sole pass that re-loads ContentText) then.
+		// reads them directly, so the page bodies are never re-materialised. The
+		// fallback below fires only when the column is NULL for every page — i.e.
+		// the crawl ran with near-dup OFF and the operator turned it on for this
+		// re-analysis (a pre-minhash crawl migrates the column in as NULL, the same
+		// case). It re-loads the full map (the sole pass that re-reads ContentText).
 		full, ferr := st.LoadPages()
 		if ferr != nil {
 			return Outcome{}, ferr
