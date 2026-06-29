@@ -644,7 +644,12 @@ func (c *Crawl) Page(rec *crawler.PageRecord) error {
 			return err
 		}
 	}
-	if rec.Facts == nil {
+	// links come from Facts.Links (HTML only); the gated discovery edges ride
+	// rec.GatedEdges. A redirect page has a GatedEdge (its redirect target) but no
+	// Facts, so the edges write must NOT be gated on Facts — otherwise the redirect
+	// target's first-wins discovered_from is lost from the edges table, which is
+	// the sole source for SaveInlinksFromEdges in the SQL finalize (#70 H5).
+	if rec.Facts == nil && len(rec.GatedEdges) == 0 {
 		return nil
 	}
 	tx, err := c.db.Begin()
@@ -652,20 +657,22 @@ func (c *Crawl) Page(rec *crawler.PageRecord) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM links WHERE src = ?`, rec.URL); err != nil {
-		return err
-	}
-	stmt, err := tx.Prepare(`INSERT INTO links
-		(src, dst, type, anchor, alt, nofollow, rel, target, path_type, elem_path, position)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	for _, l := range rec.Facts.Links {
-		if _, err := stmt.Exec(rec.URL, l.URL, string(l.Type), l.Anchor, l.Alt,
-			boolInt(l.Nofollow), l.Rel, l.Target, l.PathType, l.ElemPath, l.Position); err != nil {
+	if rec.Facts != nil {
+		if _, err := tx.Exec(`DELETE FROM links WHERE src = ?`, rec.URL); err != nil {
 			return err
+		}
+		stmt, err := tx.Prepare(`INSERT INTO links
+			(src, dst, type, anchor, alt, nofollow, rel, target, path_type, elem_path, position)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for _, l := range rec.Facts.Links {
+			if _, err := stmt.Exec(rec.URL, l.URL, string(l.Type), l.Anchor, l.Alt,
+				boolInt(l.Nofollow), l.Rel, l.Target, l.PathType, l.ElemPath, l.Position); err != nil {
+				return err
+			}
 		}
 	}
 	// The gated/rewritten discovery edges (re-crawl replaces them, like links).

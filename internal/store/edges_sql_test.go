@@ -108,3 +108,51 @@ func TestEdgesAndDepthSQLMethods(t *testing.T) {
 		}
 	}
 }
+
+// TestRedirectPageEdgePersisted is the #70 H5 regression guard: a redirect page
+// has a GatedEdge to its target but NO Facts (no HTML parsed), and store.Page used
+// to return early when Facts==nil — dropping the redirect edge so the SQL finalize
+// lost the target's discovered_from. The edge must persist regardless of Facts.
+func TestRedirectPageEdgePersisted(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// A redirect page: StateCrawled, a redirect target, a non-hyperlink GatedEdge,
+	// and NO Facts (a 3xx response is never parsed into HTML).
+	if err := c.Page(&crawler.PageRecord{
+		URL: "https://ex.com/old", Scope: "internal", State: crawler.StateCrawled, StatusCode: 301,
+		RedirectURL: "https://ex.com/new",
+		GatedEdges:  []crawler.GatedEdge{{Dst: "https://ex.com/new", Hyperlink: false, Seq: 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The redirect target page itself.
+	if err := c.Page(&crawler.PageRecord{
+		URL: "https://ex.com/new", Scope: "internal", State: crawler.StateCrawled, StatusCode: 200,
+		ContentType: "text/html", Facts: &parse.Facts{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	from, err := c.DiscoveredFromEdges()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if from["https://ex.com/new"] != "https://ex.com/old" {
+		t.Errorf("DiscoveredFromEdges[/new] = %q, want /old (redirect edge dropped — H5 bug)", from["https://ex.com/new"])
+	}
+	if err := c.SaveInlinksFromEdges([]string{"https://ex.com/"}); err != nil {
+		t.Fatal(err)
+	}
+	pages, err := c.LoadPages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pages["https://ex.com/new"].DiscoveredFrom; got != "https://ex.com/old" {
+		t.Errorf("/new discovered_from = %q, want /old", got)
+	}
+}

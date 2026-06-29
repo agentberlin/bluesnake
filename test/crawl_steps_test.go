@@ -298,25 +298,33 @@ func (w *world) crawlSiteAt(path string) error {
 	return w.finalizeCrawlPages(c, st, w.crawlResult, seed)
 }
 
-// finalizeCrawlPages reproduces the store-backed finalize aggregate pass (the
-// production path now that records stream to the store and are dropped from the
-// live Result): persist seed-locked discovered_from + inlinks, recompute
-// shortest-path depth and full-graph inlinks over the stored graph, and reload
-// the finalized records into w.crawlPages for assertions.
-func (w *world) finalizeCrawlPages(c *crawler.Crawler, st *store.Crawl, res *crawler.Result, seeds ...string) error {
-	if err := st.SaveInlinkSources(res.Inlinks); err != nil {
+// finalizeCrawlPages runs the SAME store-backed aggregate pass production uses
+// (the depth/inlink half of finalize.Crawl): inlinks + seed-locked first-wins
+// discovered_from from the gated `edges` table in SQL, and shortest-followed-path
+// depth via the CSR over the stored `links` superset (re-applying the follow
+// gate). This is the production path — it replaces the old hand-rolled in-RAM
+// RecomputeDepths/RecomputeInlinks + SaveDepths/SaveInlinks twins, which
+// production no longer calls (#70 H5), so the acceptance suite now validates the
+// SQL/CSR finalize the CLI/desktop/MCP actually run. res is unused (the edges
+// table, not res.Inlinks, is the source). It reloads the finalized records into
+// w.crawlPages for assertions.
+func (w *world) finalizeCrawlPages(c *crawler.Crawler, st *store.Crawl, _ *crawler.Result, seeds ...string) error {
+	if err := st.SaveInlinksFromEdges(c.NormalizeSeeds(seeds...)); err != nil {
 		return err
 	}
-	pages, err := st.LoadPages()
+	links, err := st.LinkRows()
 	if err != nil {
 		return err
 	}
-	c.RecomputeDepths(pages, seeds...)
-	c.RecomputeInlinks(pages)
-	if err := st.SaveDepths(pages); err != nil {
+	redirects, err := st.Redirects()
+	if err != nil {
 		return err
 	}
-	if err := st.SaveInlinks(pages); err != nil {
+	urls, err := st.ProcessedURLs()
+	if err != nil {
+		return err
+	}
+	if err := st.SaveDepthsMap(c.RecomputeDepthsFromLinks(links, redirects, urls, seeds)); err != nil {
 		return err
 	}
 	if w.crawlPages, err = st.LoadPages(); err != nil {
