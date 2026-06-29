@@ -168,10 +168,11 @@ func TestAnalyzeSaveIssuesError(t *testing.T) {
 	}
 }
 
-// TestCrawlResumeLoadPagesError covers the resume branch's LoadPages error path:
-// with the pages table dropped, the full-graph reload inside the resume recompute
-// fails, and Crawl surfaces it while still recording status.
-func TestCrawlResumeLoadPagesError(t *testing.T) {
+// TestCrawlCompletedTailError covers the completed-tail error path under the
+// EC-05 ordering guarantee: with the pages table dropped, the depth recompute
+// fails, and Crawl both surfaces the error AND leaves the crawl StatusInterrupted
+// (resumable) rather than sealing it completed with stale/partial aggregates.
+func TestCrawlCompletedTailError(t *testing.T) {
 	st, c, res, dir := crawlInto(t)
 	if _, err := st.DB().Exec(`DROP TABLE pages`); err != nil {
 		t.Fatalf("drop pages: %v", err)
@@ -184,10 +185,10 @@ func TestCrawlResumeLoadPagesError(t *testing.T) {
 		Completed: true,
 	})
 	if err == nil {
-		t.Error("Crawl should surface the resume LoadPages failure")
+		t.Error("Crawl should surface the completed-tail failure")
 	}
-	if out.Status != store.StatusCompleted {
-		t.Errorf("status = %q, want completed (best-effort records status)", out.Status)
+	if out.Status != store.StatusInterrupted {
+		t.Errorf("status = %q, want interrupted — a tail failure must not seal completed (EC-05)", out.Status)
 	}
 }
 

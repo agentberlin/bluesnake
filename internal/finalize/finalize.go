@@ -37,15 +37,23 @@ type Params struct {
 	Completed bool     // caller resolves pause-vs-stop into completed/interrupted
 }
 
-// Crawl finalizes a crawl that has just drained. It always persists the
-// per-page aggregates (UpdateInlinks) and the final status; only when the crawl
-// completed does it recompute depth over the full two-session graph (resume
-// only) and run the analysis phase. The *crawler.Crawler is required for the
-// resume depth recompute (it carries the config-derived follow predicate).
+// Crawl finalizes a crawl that has just drained. It always persists the per-page
+// aggregates (inlinks / first-wins discovered_from from the gated edges table)
+// and records the final status; only when the crawl completed does it recompute
+// depth over the full stored graph and run the analysis phase. The
+// *crawler.Crawler is required for the depth recompute (it carries the
+// config-derived follow predicate).
 //
-// It is best-effort: every step is attempted and the first error is returned so
-// the caller can surface it without losing later side effects (e.g. status is
-// still recorded even if persisting aggregates failed).
+// Completion ordering is crash-safe (EC-05). The crawl is recorded
+// StatusInterrupted up front — its resumable interim state — and only sealed
+// StatusCompleted as the final step, once depth + analysis are durable on disk.
+// A hard crash (OS kill / OOM / power loss) anywhere in the completed tail below
+// therefore leaves a resumable, re-finalizable crawl, never a `completed` crawl
+// carrying stale admit-time depths or an empty/partial issues+analysis table.
+// Each tail step is idempotent, so a resume re-runs them to a byte-identical end
+// state. The aggregate writes are best-effort (first error returned via note),
+// but a tail-step failure aborts completion: the crawl stays StatusInterrupted
+// rather than sealing a wrong result.
 func Crawl(c *crawler.Crawler, st *store.Crawl, res *crawler.Result, p Params) (Outcome, error) {
 	var firstErr error
 	note := func(err error) {
@@ -59,10 +67,6 @@ func Crawl(c *crawler.Crawler, st *store.Crawl, res *crawler.Result, p Params) (
 	// full edges table this is already the full-graph count, so resume needs no
 	// separate recompute. Seeds are seed-locked.
 	note(st.SaveInlinksFromEdges(c.NormalizeSeeds(p.Seeds...)))
-	status := store.StatusInterrupted
-	if p.Completed {
-		status = store.StatusCompleted
-	}
 	// The registry counts come from the full stored graph, never the per-session
 	// Result: on resume res counts only this session's pages. Best-effort — fall
 	// back to the Result if the store read fails, consistent with note().
@@ -72,53 +76,69 @@ func Crawl(c *crawler.Crawler, st *store.Crawl, res *crawler.Result, p Params) (
 	} else {
 		crawled, total = c2, t2
 	}
-	note(store.SetStatus(p.StoreDir, st.ID, status, crawled, total))
-	out := Outcome{Status: status, Crawled: crawled, Total: total}
+
+	// Record the resumable interim status FIRST (EC-05). StatusCompleted is written
+	// only after the completed tail below succeeds, so a crash mid-tail leaves the
+	// crawl interrupted/resumable instead of completed-with-stale-data.
+	note(store.SetStatus(p.StoreDir, st.ID, store.StatusInterrupted, crawled, total))
+	out := Outcome{Status: store.StatusInterrupted, Crawled: crawled, Total: total}
 	if !p.Completed {
 		return out, firstErr
 	}
 
-	// A completed crawl — fresh or resumed — derives shortest-path depth and the
-	// full-graph hyperlink inlink count from the stored link graph. Stream-and-
-	// drop freed the in-RAM page map a fresh crawl used to compute these from, so
-	// both paths now converge on the same store-backed recompute (guarded by
-	// TestResumeEquivalence): depth = shortest followed-link path (Screaming Frog
-	// parity), inlinks = full-graph hyperlink count. The BFS re-roots from every
-	// seed Run() was given — all of them, including each uploaded list seed — so
-	// list and spider crawls alike land on shortest-path depths. discovered_from
-	// needs no recompute: it is already persisted by SaveInlinkSources above
-	// (first-wins + seed-locked, per session). Guard on a non-empty seed set:
-	// rooting the BFS from nothing would NULL every page's depth.
-	if len(p.Seeds) > 0 {
-		// Depth + inlinks read only Facts.Links and scalars, never the page body,
-		// so the ContentText-free map keeps this off the page-body RAM axis.
-		// Depth is a CSR BFS over the stored links superset (re-applying the
-		// follow gate) + redirect edges — no page map materialised here.
-		links, lerr := st.LinkRows()
-		redirects, rerr := st.Redirects()
-		urls, uerr := st.ProcessedURLs()
-		switch {
-		case lerr != nil:
-			note(lerr)
-		case rerr != nil:
-			note(rerr)
-		case uerr != nil:
-			note(uerr)
-		default:
-			note(st.SaveDepthsMap(c.RecomputeDepthsFromLinks(links, redirects, urls, p.Seeds)))
-		}
+	// --- completed tail (idempotent) ---------------------------------------------
+	// A completed crawl — fresh or resumed — derives shortest-path depth from the
+	// stored link graph (depth = shortest followed-link path, Screaming Frog
+	// parity). Stream-and-drop freed the in-RAM page map a fresh crawl used to
+	// compute this from, so both paths converge on the same store-backed recompute
+	// (guarded by TestResumeEquivalence). A failure here is fatal to completion: we
+	// return with the crawl still StatusInterrupted so a resume repairs it.
+	if err := recomputeDepths(c, st, p.Seeds); err != nil {
+		note(err)
+		return out, firstErr
 	}
-
 	if p.Cfg.Analysis.Auto {
 		a, err := Analyze(st, p.Cfg)
-		note(err)
-		if err == nil {
-			out.Analyzed = true
-			out.Chains, out.NearDups = a.Chains, a.NearDups
-			out.IssueTotal, out.IssueChecks = a.IssueTotal, a.IssueChecks
+		if err != nil {
+			note(err)
+			return out, firstErr // leave StatusInterrupted; do not seal completed
 		}
+		out.Analyzed = true
+		out.Chains, out.NearDups = a.Chains, a.NearDups
+		out.IssueTotal, out.IssueChecks = a.IssueTotal, a.IssueChecks
 	}
+
+	// Depth + analysis are durable: NOW seal the crawl as completed.
+	note(store.SetStatus(p.StoreDir, st.ID, store.StatusCompleted, crawled, total))
+	out.Status = store.StatusCompleted
 	return out, firstErr
+}
+
+// recomputeDepths recomputes shortest-followed-path depth over the full stored
+// link graph (re-applying the follow gate) + redirect edges and persists it.
+// Idempotent: re-running over the same graph yields the same depths, so a resume
+// after a partial-crash finalize converges on the same result (EC-05). Reads only
+// Facts.Links and scalars, never the page body, so it stays off the page-body RAM
+// axis. Guards on a non-empty seed set — rooting the BFS from nothing would NULL
+// every page's depth. discovered_from needs no recompute here: it is already
+// persisted by SaveInlinksFromEdges (first-wins + seed-locked).
+func recomputeDepths(c *crawler.Crawler, st *store.Crawl, seeds []string) error {
+	if len(seeds) == 0 {
+		return nil
+	}
+	links, err := st.LinkRows()
+	if err != nil {
+		return err
+	}
+	redirects, err := st.Redirects()
+	if err != nil {
+		return err
+	}
+	urls, err := st.ProcessedURLs()
+	if err != nil {
+		return err
+	}
+	return st.SaveDepthsMap(c.RecomputeDepthsFromLinks(links, redirects, urls, seeds))
 }
 
 // Analyze runs the post-crawl analysis phase over the full stored graph: issue
