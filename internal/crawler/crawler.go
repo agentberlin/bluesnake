@@ -133,6 +133,19 @@ type ArchiveSink interface {
 	Archive(url string, res *fetch.Result) error
 }
 
+// ContentSink is the optional sink extension for the on-disk identical-content
+// authority (the content_hash table). When a sink implements it, the crawler
+// delegates the raw-body byte-identical short-circuit (skip_identical_content_links)
+// to it instead of an in-RAM map — so the visited-content set stays bounded
+// (#70 M4) AND survives a resume (the canonical owner persists). A sink that omits
+// it (library/tests) keeps the in-memory set.
+type ContentSink interface {
+	// FirstWithContent reports the canonical URL for a raw-body hash and whether
+	// url is the first page seen with it. claim=false records nothing — a page that
+	// will not expand must not become canonical and shadow a later in-folder twin.
+	FirstWithContent(hash, url string, claim bool) (canonical string, first bool, err error)
+}
+
 // Option configures a Crawler.
 type Option func(*Crawler)
 
@@ -1289,9 +1302,7 @@ func (c *Crawler) firstWithContent(hash, url string, claim bool) (canonical stri
 	// With a store-backed sink the content_hash table is the authority, so the
 	// in-RAM seenContent map is never grown (it stays O(0) in production) — the
 	// #70 M4 bound. A non-store sink (library/tests) keeps the in-memory set.
-	if fc, ok := c.sink.(interface {
-		FirstWithContent(hash, url string, claim bool) (string, bool, error)
-	}); ok {
+	if fc, ok := c.sink.(ContentSink); ok {
 		canonical, first, err := fc.FirstWithContent(hash, url, claim)
 		if err != nil {
 			// On a store error, conservatively treat the page as first/novel (never

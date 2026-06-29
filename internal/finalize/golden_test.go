@@ -159,70 +159,15 @@ func goldenGraph(t *testing.T) (*store.Crawl, string) {
 	return st, seed
 }
 
-// TestEdgesSQLParity (FIN-INLINK/FIN-DFROM) proves the Phase-2 SQL path over the
-// gated edges table reproduces the in-RAM finalize EXACTLY: per-URL inlinks match
-// the persisted RecomputeInlinks count, and the seq-MIN discovered_from matches
-// the first-wins value — including the self-link-counted quirk and the seed lock.
-// This is the parity gate that must hold before the SQL path replaces the in-RAM
-// recompute (the cutover), so a wrong SQL never silently corrupts the output.
-func TestEdgesSQLParity(t *testing.T) {
-	st, _, seed := crawlGraph(t)
-	pages, err := st.LoadPages()
-	if err != nil {
-		t.Fatal(err)
-	}
-	sqlInlinks, err := st.InlinksFromEdges()
-	if err != nil {
-		t.Fatal(err)
-	}
-	sqlFrom, err := st.DiscoveredFromEdges()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for url, rec := range pages {
-		if got := sqlInlinks[url]; got != rec.Inlinks {
-			t.Errorf("inlinks(%s): SQL-over-edges=%d, in-RAM finalize=%d", url, got, rec.Inlinks)
-		}
-		gotFrom := sqlFrom[url]
-		if url == seed {
-			gotFrom = "" // seed-lock (applied by the caller, as finalize does)
-		}
-		if gotFrom != rec.DiscoveredFrom {
-			t.Errorf("discovered_from(%s): SQL-over-edges=%q, in-RAM finalize=%q", url, gotFrom, rec.DiscoveredFrom)
-		}
-	}
-}
-
-// TestDepthCSRParity (FIN-DEPTH) proves the depth CSR over the stored links
-// superset reproduces the in-RAM RecomputeDepths BFS EXACTLY — re-applying the
-// followsForDepth gate and the redirect-as-hop edge, including NoDepth pages.
-func TestDepthCSRParity(t *testing.T) {
-	st, c, seed := crawlGraph(t)
-	pages, err := st.LoadPages()
-	if err != nil {
-		t.Fatal(err)
-	}
-	links, err := st.LinkRows()
-	if err != nil {
-		t.Fatal(err)
-	}
-	redirects, err := st.Redirects()
-	if err != nil {
-		t.Fatal(err)
-	}
-	urls := make([]string, 0, len(pages))
-	for u := range pages {
-		urls = append(urls, u)
-	}
-
-	csr := c.RecomputeDepthsFromLinks(links, redirects, urls, []string{seed})
-	for url, rec := range pages {
-		if csr[url] != rec.Depth {
-			t.Errorf("depth(%s): CSR-over-links=%d, in-RAM finalize=%d", url, csr[url], rec.Depth)
-		}
-	}
-}
+// Depth and inlink parity are covered NON-circularly elsewhere, so the former
+// TestDepthCSRParity / TestEdgesSQLParity here were removed (P9): they compared
+// the SQL/CSR output against rec.Depth/rec.Inlinks — values produced by the SAME
+// finalize path inside crawlGraph, so a wrong recompute could pass in lockstep
+// (mutation-verified: depth+100 left them green). The genuine oracles are
+// TestDepthAndInlinkGateDivergenceOracle (hand-derived, gate-divergent) here and
+// TestRecomputeDepthsFromLinksParity in the crawler package; TestEdgesSQLParity
+// additionally exercised InlinksFromEdges/DiscoveredFromEdges, which production
+// never calls.
 
 func TestFinalizeGolden_CapturedRAMContract(t *testing.T) {
 	st, seed := goldenGraph(t)

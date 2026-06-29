@@ -508,6 +508,7 @@ var (
 	_ crawler.BlobSink    = (*sink)(nil)
 	_ crawler.ArchiveSink = (*sink)(nil)
 	_ crawler.SitemapSink = (*sink)(nil)
+	_ crawler.ContentSink = (*sink)(nil) // the identical-content authority must reach the store, not the in-RAM fallback
 	_ frontier.Dedup      = (*sink)(nil)
 )
 
@@ -560,6 +561,15 @@ func (t *sink) Remove(url string) error {
 func (t *sink) Seen(url string) (bool, error) { return t.inner.Seen(url) }
 func (t *sink) MarkSeen(urls []string) error  { return t.inner.MarkSeen(urls) }
 func (t *sink) Count() (int, error)           { return t.inner.Count() }
+
+// FirstWithContent delegates the raw-body identical-content authority to the
+// store's content_hash table (crawler.ContentSink). Without this the engine fell
+// back to its in-RAM seenContent map on every surface — the #70 M4 bound was inert
+// in production, and a resume's cold map re-minted a second canonical for content
+// already claimed in the prior session (P11).
+func (t *sink) FirstWithContent(hash, url string, claim bool) (string, bool, error) {
+	return t.inner.FirstWithContent(hash, url, claim)
+}
 
 func (t *sink) Blob(url, kind string, data []byte) error { return t.inner.Blob(url, kind, data) }
 

@@ -155,4 +155,10 @@ func TestRedirectPageEdgePersisted(t *testing.T) {
 	if got := pages["https://ex.com/new"].DiscoveredFrom; got != "https://ex.com/old" {
 		t.Errorf("/new discovered_from = %q, want /old", got)
 	}
+	// The hyperlink=1 inlink gate (P10): the redirect edge /old -> /new is NOT a
+	// hyperlink, so it must NOT count as an inlink. Dropping `AND hyperlink=1` from
+	// SaveInlinksFromEdges would make this 1 — exactly the miscount this pins.
+	if got := pages["https://ex.com/new"].Inlinks; got != 0 {
+		t.Errorf("/new inlinks = %d, want 0 (a non-hyperlink redirect edge must not count as an inlink)", got)
+	}
 }
