@@ -173,50 +173,6 @@ func TestSetTotalBackfill(t *testing.T) {
 	}
 }
 
-// TestSaveInlinks covers the resume-time inlink rewrite: it updates only the
-// inlinks column, leaving depth and discovered_from (owned by SaveDepths and the
-// preserved per-session discoverer) untouched.
-func TestSaveInlinks(t *testing.T) {
-	dir := t.TempDir()
-	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-
-	rec := &crawler.PageRecord{
-		URL: "https://ex.com/p", Scope: "internal", State: crawler.StateCrawled,
-		StatusCode: 200, Depth: 2, Inlinks: 1, DiscoveredFrom: "https://ex.com/",
-	}
-	if err := c.Page(rec); err != nil {
-		t.Fatal(err)
-	}
-
-	// SaveInlinks with a record whose depth/discovered_from differ — those must
-	// be ignored; only inlinks is rewritten.
-	update := map[string]*crawler.PageRecord{
-		"https://ex.com/p": {Inlinks: 9, Depth: 99, DiscoveredFrom: "https://ex.com/wrong"},
-	}
-	if err := c.SaveInlinks(update); err != nil {
-		t.Fatal(err)
-	}
-
-	pages, err := c.LoadPages()
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := pages["https://ex.com/p"]
-	if got.Inlinks != 9 {
-		t.Errorf("inlinks = %d, want 9 (rewritten)", got.Inlinks)
-	}
-	if got.Depth != 2 {
-		t.Errorf("depth = %d, want 2 (untouched)", got.Depth)
-	}
-	if got.DiscoveredFrom != "https://ex.com/" {
-		t.Errorf("discovered_from = %q, want untouched", got.DiscoveredFrom)
-	}
-}
-
 // TestCrawlIDValidation locks the path-traversal guard shared by OpenCrawl and
 // CrawlDBPath: a network-exposed id can never escape the crawls dir. Valid ids
 // resolve to the on-disk path; separators, "..", absolute, and empty are
@@ -357,31 +313,26 @@ func TestOperationsOnClosedCrawlReturnErrors(t *testing.T) {
 	}
 
 	page := &crawler.PageRecord{URL: "https://ex.com/", State: crawler.StateCrawled, Facts: &parse.Facts{}}
-	one := map[string]*crawler.PageRecord{"https://ex.com/": {Inlinks: 1}}
 
 	checks := map[string]func() error{
-		"Page":            func() error { return c.Page(page) },
-		"Admit":           func() error { _, err := c.Admit(frontier.Item{URL: "https://ex.com/a"}); return err },
-		"FrontierDone":    func() error { return c.FrontierDone("https://ex.com/a") },
-		"PendingFrontier": func() error { _, err := c.PendingFrontier(); return err },
-		"ProcessedURLs":   func() error { _, err := c.ProcessedURLs(); return err },
-		"UpdateInlinks":   func() error { return c.UpdateInlinks(one) },
-		"SaveInlinkSources": func() error {
-			return c.SaveInlinkSources(map[string]crawler.InlinkAgg{"https://ex.com/": {Count: 1}})
-		},
-		"SaveDepths":   func() error { return c.SaveDepths(one) },
-		"SaveInlinks":  func() error { return c.SaveInlinks(one) },
-		"LoadPages":    func() error { _, err := c.LoadPages(); return err },
-		"SaveIssues":   func() error { return c.SaveIssues(nil) },
-		"AddIssues":    func() error { return c.AddIssues([]issues.Occurrence{{URL: "u", IssueID: "i"}}) },
-		"IssueCounts":  func() error { _, err := c.IssueCounts(); return err },
-		"IssueURLs":    func() error { _, err := c.IssueURLs("i"); return err },
-		"SitemapIndex": func() error { _, err := c.SitemapIndex(); return err },
-		"LlmsTxt":      func() error { _, err := c.LlmsTxt(); return err },
-		"Chains":       func() error { _, err := c.Chains(); return err },
-		"Counts":       func() error { _, _, err := c.Counts(); return err },
-		"PageCount":    func() error { _, err := c.PageCount(); return err },
-		"Meta":         func() error { _, err := c.Meta("config"); return err },
+		"Page":                 func() error { return c.Page(page) },
+		"Admit":                func() error { _, err := c.Admit(frontier.Item{URL: "https://ex.com/a"}); return err },
+		"FrontierDone":         func() error { return c.FrontierDone("https://ex.com/a") },
+		"PendingFrontier":      func() error { _, err := c.PendingFrontier(); return err },
+		"ProcessedURLs":        func() error { _, err := c.ProcessedURLs(); return err },
+		"SaveInlinksFromEdges": func() error { return c.SaveInlinksFromEdges([]string{"https://ex.com/"}) },
+		"SaveDepthsMap":        func() error { return c.SaveDepthsMap(map[string]int{"https://ex.com/": 0}) },
+		"LoadPages":            func() error { _, err := c.LoadPages(); return err },
+		"SaveIssues":           func() error { return c.SaveIssues(nil) },
+		"AddIssues":            func() error { return c.AddIssues([]issues.Occurrence{{URL: "u", IssueID: "i"}}) },
+		"IssueCounts":          func() error { _, err := c.IssueCounts(); return err },
+		"IssueURLs":            func() error { _, err := c.IssueURLs("i"); return err },
+		"SitemapIndex":         func() error { _, err := c.SitemapIndex(); return err },
+		"LlmsTxt":              func() error { _, err := c.LlmsTxt(); return err },
+		"Chains":               func() error { _, err := c.Chains(); return err },
+		"Counts":               func() error { _, _, err := c.Counts(); return err },
+		"PageCount":            func() error { _, err := c.PageCount(); return err },
+		"Meta":                 func() error { _, err := c.Meta("config"); return err },
 	}
 	for name, fn := range checks {
 		if err := fn(); err == nil {

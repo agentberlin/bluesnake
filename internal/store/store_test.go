@@ -390,16 +390,8 @@ func TestLoadPagesAndIssues(t *testing.T) {
 		t.Errorf("counts after replace = %v", counts)
 	}
 
-	// inlink aggregates
-	rec.Inlinks = 7
-	rec.DiscoveredFrom = "https://ex.com/from"
-	if err := c.UpdateInlinks(map[string]*crawler.PageRecord{rec.URL: rec}); err != nil {
-		t.Fatal(err)
-	}
-	pages, _ = c.LoadPages()
-	if pages["https://ex.com/"].Inlinks != 7 {
-		t.Errorf("inlinks = %d", pages["https://ex.com/"].Inlinks)
-	}
+	// (inlink/discovered_from persistence is the gated-edges path, covered by
+	// edges_sql_test.go's TestEdgesAndDepthSQLMethods over SaveInlinksFromEdges.)
 
 	// meta set/get
 	if err := c.SetMeta("k", "v"); err != nil {
@@ -958,12 +950,21 @@ func TestListModeResumeRestoresAllSeeds(t *testing.T) {
 		if _, err := c.Run(context.Background(), seeds...); err != nil {
 			t.Fatal(err)
 		}
-		all, err := st.LoadPages()
+		// Reproduce finalize's completed-crawl depth step over the stored graph (the
+		// production path; the store package can't import finalize — it imports us).
+		links, err := st.LinkRows()
 		if err != nil {
 			t.Fatal(err)
 		}
-		c.RecomputeDepths(all, seeds...)
-		if err := st.SaveDepths(all); err != nil {
+		redirects, err := st.Redirects()
+		if err != nil {
+			t.Fatal(err)
+		}
+		urls, err := st.ProcessedURLs()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SaveDepthsMap(c.RecomputeDepthsFromLinks(links, redirects, urls, seeds)); err != nil {
 			t.Fatal(err)
 		}
 		pages, err := st.LoadPages()
@@ -1016,34 +1017,30 @@ func TestSaveDepths(t *testing.T) {
 	}
 	defer c.Close()
 
-	// seed three pages with stale depths and a non-zero inlink count
-	seeded := map[string]*crawler.PageRecord{}
+	// seed three pages with stale depths
 	for _, p := range []struct {
 		url   string
 		depth int
 	}{{"https://ex.com/", 0}, {"https://ex.com/a", 5}, {"https://ex.com/b", 5}} {
 		rec := &crawler.PageRecord{
 			URL: p.url, Scope: "internal", State: crawler.StateCrawled,
-			StatusCode: 200, Depth: p.depth, Inlinks: 7,
+			StatusCode: 200, Depth: p.depth,
 		}
 		if err := c.Page(rec); err != nil {
 			t.Fatal(err)
 		}
-		seeded[p.url] = rec
 	}
-	// inlinks are persisted by UpdateInlinks, not Page; set the baseline so the
-	// "SaveDepths must not disturb inlinks" assertion below is meaningful.
-	if err := c.UpdateInlinks(seeded); err != nil {
+	// inlinks baseline (a depth-only write must not disturb it); set it directly,
+	// since Page() does not write the inlinks column (the edges path does).
+	if _, err := c.db.Exec(`UPDATE pages SET inlinks = 7`); err != nil {
 		t.Fatal(err)
 	}
 
-	// recomputed depths: /a corrected to 1, /b has no path (NoDepth -> NULL)
-	corrected := map[string]*crawler.PageRecord{
-		"https://ex.com/":  {URL: "https://ex.com/", Depth: 0},
-		"https://ex.com/a": {URL: "https://ex.com/a", Depth: 1},
-		"https://ex.com/b": {URL: "https://ex.com/b", Depth: crawler.NoDepth},
-	}
-	if err := c.SaveDepths(corrected); err != nil {
+	// recomputed depths via the production writer: /a -> 1, /b has no path
+	// (NoDepth -> SQL NULL).
+	if err := c.SaveDepthsMap(map[string]int{
+		"https://ex.com/": 0, "https://ex.com/a": 1, "https://ex.com/b": crawler.NoDepth,
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1126,47 +1123,10 @@ func TestLoadPagesLiteAndStreamContentText(t *testing.T) {
 	}
 }
 
-// TestSaveInlinkSources pins the always-run aggregate write the stream-and-drop
-// finalize uses in place of UpdateInlinks(res.Pages): it persists inlink counts
-// and first-wins/seed-locked discovered_from from the crawler's slim aggregate,
-// leaves depth untouched (SaveDepths owns it), and no-ops URLs with no page row.
-func TestSaveInlinkSources(t *testing.T) {
-	dir := t.TempDir()
-	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-	for _, u := range []string{"https://ex.com/", "https://ex.com/a"} {
-		if err := c.Page(&crawler.PageRecord{
-			URL: u, Scope: "internal", State: crawler.StateCrawled, Depth: 3,
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	agg := map[string]crawler.InlinkAgg{
-		"https://ex.com/":        {Count: 0, First: ""},                 // seed: discovered_from stays empty
-		"https://ex.com/a":       {Count: 2, First: "https://ex.com/"},  // first-wins discoverer
-		"https://ex.com/missing": {Count: 9, First: "https://ex.com/x"}, // no page row -> no-op UPDATE
-	}
-	if err := c.SaveInlinkSources(agg); err != nil {
-		t.Fatal(err)
-	}
-	pages, err := c.LoadPages()
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := pages["https://ex.com/a"]
-	if a == nil || a.Inlinks != 2 || a.DiscoveredFrom != "https://ex.com/" {
-		t.Errorf("/a = %+v, want inlinks 2 / discovered_from seed", a)
-	}
-	if a.Depth != 3 {
-		t.Errorf("/a depth = %d, want 3 (SaveInlinkSources must not touch depth)", a.Depth)
-	}
-	if _, ok := pages["https://ex.com/missing"]; ok {
-		t.Error("aggregate entry for a non-existent page must not create a row")
-	}
-}
+// Inlink counts + first-wins/seed-locked discovered_from persistence is the
+// gated-edges path (store.SaveInlinksFromEdges), covered by edges_sql_test.go's
+// TestEdgesAndDepthSQLMethods and TestRedirectPageEdgePersisted — the in-RAM
+// aggregate writer (SaveInlinkSources) it replaced is gone.
 
 // TestDropProjectMigration proves the registry ladder removes the retired
 // legacy "project" column from a pre-existing registry while preserving rows.

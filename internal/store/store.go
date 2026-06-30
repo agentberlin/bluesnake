@@ -973,52 +973,8 @@ func (c *Crawl) ProcessedURLs() ([]string, error) {
 	return urls, rows.Err()
 }
 
-// UpdateInlinks writes the post-crawl page aggregates: inlink counts and the
-// recomputed crawl depth (NULL when no followed-link path reaches the URL).
-func (c *Crawl) UpdateInlinks(pages map[string]*crawler.PageRecord) error {
-	tx, err := c.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for url, rec := range pages {
-		depth := sql.NullInt64{Int64: int64(rec.Depth), Valid: rec.Depth != crawler.NoDepth}
-		if _, err := tx.Exec(`UPDATE pages SET inlinks = ?, discovered_from = ?, depth = ? WHERE url = ?`,
-			rec.Inlinks, rec.DiscoveredFrom, depth, url); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-// SaveDepths rewrites only the crawl-depth column for every supplied page
-// (NULL when no followed-link path reaches the URL). Resume uses it to persist
-// depths recomputed over the full two-session graph — UpdateInlinks alone
-// touches only the resumed session's pages, leaving the original run's depths
-// stale. Inlinks/discovered_from are intentionally left untouched here.
-func (c *Crawl) SaveDepths(pages map[string]*crawler.PageRecord) error {
-	tx, err := c.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	stmt, err := tx.Prepare(`UPDATE pages SET depth = ? WHERE url = ?`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	for url, rec := range pages {
-		depth := sql.NullInt64{Int64: int64(rec.Depth), Valid: rec.Depth != crawler.NoDepth}
-		if _, err := stmt.Exec(depth, url); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
 // SaveDepthsMap writes a url->depth map computed by the depth CSR (NoDepth -> SQL
-// NULL). The SQL-cutover counterpart to SaveDepths, taking the CSR result instead
-// of a page map, so finalize's depth step never materialises the page records.
+// NULL), so finalize's depth step never materialises the page records.
 func (c *Crawl) SaveDepthsMap(depths map[string]int) error {
 	tx, err := c.db.Begin()
 	if err != nil {
@@ -1033,31 +989,6 @@ func (c *Crawl) SaveDepthsMap(depths map[string]int) error {
 	for url, d := range depths {
 		depth := sql.NullInt64{Int64: int64(d), Valid: d != crawler.NoDepth}
 		if _, err := stmt.Exec(depth, url); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-// SaveInlinks rewrites only the inlinks column for every supplied page. Resume
-// uses it to persist inlink counts recomputed over the full two-session graph
-// (crawler.RecomputeInlinks); UpdateInlinks alone counts a resumed session's
-// own edges, under-reporting pages linked across the interrupt boundary. depth
-// and discovered_from are owned by SaveDepths and the preserved per-session
-// discoverer, so they are left untouched here.
-func (c *Crawl) SaveInlinks(pages map[string]*crawler.PageRecord) error {
-	tx, err := c.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	stmt, err := tx.Prepare(`UPDATE pages SET inlinks = ? WHERE url = ?`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	for url, rec := range pages {
-		if _, err := stmt.Exec(rec.Inlinks, url); err != nil {
 			return err
 		}
 	}
@@ -1209,34 +1140,6 @@ func (c *Crawl) SaveInlinksFromEdges(seeds []string) error {
 	}
 	for _, s := range seeds { // seed-lock: a backlink must not become a seed's discoverer
 		if _, err := tx.Exec(`UPDATE pages SET discovered_from = '' WHERE url = ?`, s); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-// SaveInlinkSources persists the per-URL discovery aggregate the crawler hands
-// back after a stream-and-drop crawl: the raw hyperlink inlink count and the
-// first-wins, seed-locked discovered_from. It is the always-run aggregate write
-// (fresh and interrupted alike) that the old UpdateInlinks(res.Pages) performed,
-// minus depth — depth is recomputed over the stored graph by the completed-crawl
-// finalize path (SaveDepths). An interrupted crawl keeps the admit-time depth
-// record() already wrote until a resume recomputes it over the full graph.
-// Aggregate entries for URLs with no pages row (discovered but never crawled)
-// no-op, exactly as the old per-record UPDATE did.
-func (c *Crawl) SaveInlinkSources(agg map[string]crawler.InlinkAgg) error {
-	tx, err := c.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	stmt, err := tx.Prepare(`UPDATE pages SET inlinks = ?, discovered_from = ? WHERE url = ?`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	for url, a := range agg {
-		if _, err := stmt.Exec(a.Count, a.First, url); err != nil {
 			return err
 		}
 	}

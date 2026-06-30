@@ -173,22 +173,12 @@ func WithResume(processed []string, pending []frontier.Item) Option {
 	}
 }
 
-// InlinkAgg is the per-URL discovery aggregate the crawler hands to finalize in
-// place of the full page map: the raw hyperlink inlink count and the first
-// (seed-locked) discoverer. It is frontier-sized, not page-sized — it carries no
-// page content, so retaining it costs orders of magnitude less than the records.
-type InlinkAgg struct {
-	Count int    // raw hyperlink inlinks (self-excluded, nofollow-gated)
-	First string // first discoverer; "" for seeds (seed-lock)
-}
-
 // Result is the outcome of a crawl. Page records are streamed to the Sink as the
 // crawl runs and are NOT retained here (stream-and-drop, MEMORY-SCALING.md §5.4);
-// finalize reads them back from the store. Inlinks carries the slim discovery
-// aggregate the store-backed finalize needs that the store cannot yet derive on
-// its own (first-wins discovered_from), keyed by URL.
+// finalize reads them — and every per-page aggregate (inlinks, first-wins
+// discovered_from, depth) — back from the store's gated `edges`/`links` tables, so
+// the Result carries only process-wide counters, not a frontier-sized map.
 type Result struct {
-	Inlinks     map[string]InlinkAgg
 	Crawled     int // URLs fetched (state == crawled); excludes robots-blocked/errored
 	Total       int // all URLs recorded (crawled + robots-blocked + errored): SF's "URLs Encountered"
 	Interrupted bool
@@ -221,9 +211,6 @@ type Crawler struct {
 	sinkErrOnce     sync.Once
 	sinkErr         error
 
-	mu      sync.Mutex
-	inlinks map[string]inlinkInfo
-
 	// Page records are streamed straight to the sink and never retained
 	// (stream-and-drop); these atomic tallies replace counting over a held map.
 	crawledCount atomic.Int64
@@ -237,11 +224,6 @@ type Crawler struct {
 
 	sitemapMu    sync.Mutex
 	sitemapHosts map[string]bool // authority -> sitemap auto-discovery already run (R17)
-}
-
-type inlinkInfo struct {
-	count int
-	first string
 }
 
 func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
@@ -297,7 +279,6 @@ func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
 		dedup = d
 	}
 	c.frontier = frontier.New(cfg, frontier.WithDedup(dedup))
-	c.inlinks = make(map[string]inlinkInfo)
 	c.seenContent = make(map[string]string)
 	c.sitemapHosts = make(map[string]bool)
 	return c, nil
@@ -420,24 +401,11 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 			enqueue(item)
 		}
 	}
-	// On resume, preserve each pending URL's original (session-1) discoverer,
-	// captured in the frontier when it was first admitted, so a page first
-	// linked before the interrupt keeps its true DiscoveredFrom instead of
-	// whichever this-session page happens to re-link it first. Seed before any
-	// pending enqueue so the first-wins rule in noteInlink respects it.
-	if len(c.resumePending) > 0 {
-		c.mu.Lock()
-		for _, item := range c.resumePending {
-			if item.Source == "" {
-				continue
-			}
-			if info := c.inlinks[item.URL]; info.first == "" {
-				info.first = item.Source
-				c.inlinks[item.URL] = info
-			}
-		}
-		c.mu.Unlock()
-	}
+	// A page first linked before an interrupt keeps its true (session-1)
+	// discovered_from across resume because that discovery edge persists in the
+	// store's gated `edges` table; finalize's first-wins (seq-MIN) read recovers it
+	// — no in-RAM seeding needed (the dropped c.inlinks map is gone).
+	//
 	// Resume's pending rows are ALREADY admitted (they survive in the frontier
 	// table / the in-memory set), so Admit would dedup-reject them. Readmit re-
 	// records them without consuming limit budget and re-queues them for crawling.
@@ -480,37 +448,17 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 	}
 	wg.Wait()
 
-	// Page records were streamed to the store and dropped; the per-page
-	// aggregates a fresh crawl used to write into the live map — shortest-path
-	// depth and full-graph inlinks — are now recomputed by finalize over the
-	// stored graph (the same store-backed path resume already uses). Run hands
-	// finalize only the slim discovery aggregate the store cannot derive itself:
-	// the seed-locked first-wins discovered_from, plus the inlink count as a
-	// fallback. (MEMORY-SCALING.md §5.4/§5.5.)
+	// Page records were streamed to the store and dropped; every per-page aggregate
+	// — shortest-path depth, full-graph inlinks, first-wins (seed-locked)
+	// discovered_from — is derived by finalize over the stored gated `edges`/`links`
+	// tables (the same store-backed path resume uses), so Run returns only the
+	// process-wide counters. (MEMORY-SCALING.md §5.4/§5.5.)
 	res := &Result{
-		Inlinks:     make(map[string]InlinkAgg, len(c.inlinks)),
 		Crawled:     int(c.crawledCount.Load()),
 		Total:       int(c.totalCount.Load()),
 		Interrupted: ctx.Err() != nil,
 		Duration:    time.Since(start),
 	}
-	seedSet := make(map[string]bool, len(seeds))
-	for _, s := range seeds {
-		seedSet[s] = true
-	}
-	c.mu.Lock()
-	for url, info := range c.inlinks {
-		// A seed is a discovery root: a backlink to it must not become its
-		// "discovered from" — that both misrepresents provenance and loops the
-		// discovery path. Empty also makes resume match a fresh crawl, where the
-		// seed is processed before any page that could link back to it.
-		first := info.first
-		if seedSet[url] {
-			first = ""
-		}
-		res.Inlinks[url] = InlinkAgg{Count: info.count, First: first}
-	}
-	c.mu.Unlock()
 	return res, c.sinkErr
 }
 
@@ -531,75 +479,6 @@ func (c *Crawler) anyBucketCapSet() bool {
 // via sitemaps only, or linked solely from such pages).
 const NoDepth = -1
 
-// RecomputeDepths reruns the depth BFS over an externally supplied page set —
-// used on resume, where the full two-session graph (this session's pages plus
-// the previously-processed pages reloaded from the store) is needed for the
-// shortest-path search to root from the already-crawled seed. Seeds are raw
-// (un-normalised) URLs, matching Run's inputs; it mutates each record's Depth.
-// A fresh crawl recomputes internally over c.pages, so a resumed crawl that
-// recomputes over the merged graph yields identical depths (SF parity).
-func (c *Crawler) RecomputeDepths(pages map[string]*PageRecord, seedsRaw ...string) {
-	seeds := make([]string, 0, len(seedsRaw))
-	for _, raw := range seedsRaw {
-		if s, err := urlutil.Normalize(raw, c.opts); err == nil {
-			seeds = append(seeds, s)
-		}
-	}
-	c.recomputeDepthsOver(pages, seeds)
-}
-
-// recomputeDepthsOver assigns the shortest-followed-link-path depth from a seed
-// to every page in pages. Seeds must already be normalised (page-map keys are).
-func (c *Crawler) recomputeDepthsOver(pages map[string]*PageRecord, seeds []string) {
-	adj := make(map[string][]string, len(pages))
-	for url, rec := range pages {
-		var out []string
-		if rec.RedirectURL != "" && rec.RedirectURL != url {
-			out = append(out, rec.RedirectURL)
-		}
-		if rec.Facts != nil {
-			for _, l := range rec.Facts.Links {
-				if l.URL == "" || l.URL == url {
-					continue
-				}
-				// A link contributes to depth iff the crawler would actually
-				// follow it — reuse the same crawl gate discoverLinks applied
-				// (typeFlags by link type + scope, plus the per-scope nofollow
-				// rule) rather than hardcoding a subset. This keeps depth
-				// correct for canonical/pagination/hreflang/amp/mobile-alternate
-				// edges when their crawling is enabled, instead of leaving those
-				// pages blank.
-				if !c.followsForDepth(l) {
-					continue
-				}
-				out = append(out, l.URL)
-			}
-		}
-		adj[url] = out
-	}
-	for _, rec := range pages {
-		rec.Depth = NoDepth
-	}
-	queue := make([]string, 0, len(seeds))
-	for _, s := range seeds {
-		if rec, ok := pages[s]; ok && rec.Depth == NoDepth {
-			rec.Depth = 0
-			queue = append(queue, s)
-		}
-	}
-	for len(queue) > 0 {
-		u := queue[0]
-		queue = queue[1:]
-		d := pages[u].Depth
-		for _, v := range adj[u] {
-			if rec, ok := pages[v]; ok && rec.Depth == NoDepth {
-				rec.Depth = d + 1
-				queue = append(queue, v)
-			}
-		}
-	}
-}
-
 // NormalizeSeeds normalizes raw seed URLs to the form used as page-map / edges
 // keys, so finalize can seed-lock their discovered_from. Unparseable seeds drop.
 func (c *Crawler) NormalizeSeeds(raw ...string) []string {
@@ -610,33 +489,6 @@ func (c *Crawler) NormalizeSeeds(raw ...string) []string {
 		}
 	}
 	return out
-}
-
-// RecomputeInlinks recounts the raw hyperlink inlinks for every page over an
-// externally supplied page set, by replaying the exact crawl-time discovery
-// gate (discoverLinks → noteInlink) every crawled page's links pass through.
-// Resume uses it so a resumed crawl's Inlinks equal a fresh crawl's: the
-// per-session count (UpdateInlinks) sees only this session's edges and
-// under-counts pages linked across the interrupt boundary. The count is
-// order-independent, so a replay over the merged two-session graph reproduces
-// the fresh-crawl value. Only the raw inlink count is rewritten on the records;
-// discovered_from (the discovery-tree parent) is preserved per-session and
-// seed-locked in Run, so it is intentionally left untouched here.
-func (c *Crawler) RecomputeInlinks(pages map[string]*PageRecord) {
-	c.mu.Lock()
-	c.inlinks = make(map[string]inlinkInfo)
-	c.mu.Unlock()
-	for url, rec := range pages {
-		if rec.Facts == nil {
-			continue // only crawled pages have parsed outlinks, as during the crawl
-		}
-		c.discoverLinks(frontier.Item{URL: url, Depth: rec.Depth}, rec.Facts, nil)
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for url, rec := range pages {
-		rec.Inlinks = c.inlinks[url].count
-	}
 }
 
 // LinkRow is a stored raw link (links table) fed to the depth CSR. Type round-
@@ -706,26 +558,6 @@ func (c *Crawler) followsForDepthRow(typeStr, dst string, nofollow bool) bool {
 		return false
 	}
 	if nofollow {
-		follow := c.cfg.Scope.FollowInternalNofollow
-		if targetScope == urlutil.External {
-			follow = c.cfg.Scope.FollowExternalNofollow
-		}
-		if !follow {
-			return false
-		}
-	}
-	return true
-}
-
-// followsForDepth reports whether a parsed link is a followed edge for the
-// depth BFS — the same predicate discoverLinks uses to enqueue it (the link
-// type's crawl flag for its scope, gated by the per-scope nofollow rule).
-func (c *Crawler) followsForDepth(l parse.Link) bool {
-	targetScope := c.classify(l.URL)
-	if _, crawl := c.typeFlags(l.Type, targetScope); !crawl {
-		return false
-	}
-	if l.Nofollow {
 		follow := c.cfg.Scope.FollowInternalNofollow
 		if targetScope == urlutil.External {
 			follow = c.cfg.Scope.FollowExternalNofollow
@@ -879,7 +711,6 @@ func (c *Crawler) handleContent(it frontier.Item, scopeClass urlutil.ScopeClass,
 					if c.cfg.Advanced.AlwaysFollowRedirects {
 						d.Depth = it.Depth
 					}
-					c.noteInlink(d.URL, it.URL, false)
 					rec.GatedEdges = append(rec.GatedEdges, GatedEdge{Dst: d.URL, Hyperlink: false, Seq: c.edgeSeq.Add(1)})
 					discoveries = append(discoveries, d)
 				}
@@ -1164,7 +995,6 @@ func (c *Crawler) discoverLinks(it frontier.Item, facts *parse.Facts, edges *[]G
 				d.Depth = it.Depth
 			}
 			hyperlink := l.Type == parse.Hyperlink
-			c.noteInlink(d.URL, it.URL, hyperlink)
 			if edges != nil {
 				*edges = append(*edges, GatedEdge{Dst: d.URL, Hyperlink: hyperlink, Seq: c.edgeSeq.Add(1)})
 			}
@@ -1357,23 +1187,6 @@ func (c *Crawler) record(rec *PageRecord) {
 		}
 		rec.GatedEdges = nil // persisted to the edges table; free the RAM
 	}
-}
-
-// noteInlink records a discovery edge. countIt distinguishes hyperlink
-// edges — the only kind Screaming Frog's "Inlinks" column counts — from
-// redirect/iframe/meta-refresh discoveries, which still set the
-// discovered-from source but don't inflate the inlink count.
-func (c *Crawler) noteInlink(target, source string, countIt bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	info := c.inlinks[target]
-	if countIt {
-		info.count++
-	}
-	if info.first == "" {
-		info.first = source
-	}
-	c.inlinks[target] = info
 }
 
 func isHTML(contentType string) bool {

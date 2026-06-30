@@ -8,12 +8,12 @@ import (
 	"github.com/agentberlin/bluesnake/internal/parse"
 )
 
-// TestRecomputeDepthsFromLinksParity (FIN-DEPTH, in-package) proves the depth CSR
-// over the stored link superset reproduces the in-RAM RecomputeDepths BFS exactly,
-// without crossing into the finalize/store packages. It crawls an all-internal-
-// hyperlink graph, reconstructs the link rows from the captured gated edges, and
-// asserts RecomputeDepthsFromLinks == RecomputeDepths (and the hand-derived depths).
-func TestRecomputeDepthsFromLinksParity(t *testing.T) {
+// TestRecomputeDepthsFromLinks (FIN-DEPTH, in-package) proves the depth CSR over
+// the stored link superset computes shortest-followed-path depth, without crossing
+// into the finalize/store packages. It crawls an all-internal-hyperlink graph,
+// reconstructs the link rows from the captured gated edges, and asserts the
+// hand-derived depths (the production path finalize uses).
+func TestRecomputeDepthsFromLinks(t *testing.T) {
 	s := newSite(t, map[string]string{
 		"/":  link("/a") + link("/b"),
 		"/a": link("/c"),
@@ -48,14 +48,6 @@ func TestRecomputeDepthsFromLinksParity(t *testing.T) {
 	}
 
 	fromLinks := c.RecomputeDepthsFromLinks(links, nil, urls, []string{seed})
-
-	// In-RAM reference over the same captured snapshot.
-	c.RecomputeDepths(snap, seed)
-	for url, rec := range snap {
-		if fromLinks[url] != rec.Depth {
-			t.Errorf("depth(%s): CSR-over-links=%d, in-RAM=%d", url, fromLinks[url], rec.Depth)
-		}
-	}
 
 	want := map[string]int{seed: 0, seed + "a": 1, seed + "b": 1, seed + "c": 2}
 	// seed ends with "/", so seed+"a" == ".../a".

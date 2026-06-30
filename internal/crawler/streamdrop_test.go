@@ -75,17 +75,65 @@ type crawlT struct {
 	Duration    time.Duration
 }
 
-// capFinalize reproduces, over the captured records, exactly what finalize does
-// for a completed crawl: shortest-path depth + raw inlinks via the exported
-// recompute entry points, and first-wins/seed-locked discovered_from from the
-// crawl's edge aggregate (Result.Inlinks). Used by the crawler-package tests in
-// place of the dropped live page map. The snapshot comes from any capturing sink.
+// capFinalize reproduces, over the captured records, exactly what the PRODUCTION
+// finalize does for a completed crawl — using the same entry points, not a
+// parallel in-RAM path: shortest-path depth via the depth CSR over the stored
+// `links` superset (RecomputeDepthsFromLinks), and hyperlink-gated inlinks +
+// first-wins/seed-locked discovered_from over the gated `edges` the crawl recorded
+// (the GatedEdges the records carry — store.SaveInlinksFromEdges semantics). The
+// crawler-package tests use it in place of the dropped live page map; building the
+// finalize inputs from the captured records keeps it in this package (the store /
+// finalize packages import crawler, so a crawler-package test cannot import them).
 func capFinalize(c *Crawler, pages map[string]*PageRecord, res *Result, seeds ...string) *crawlT {
-	c.RecomputeDepths(pages, seeds...)
-	c.RecomputeInlinks(pages)
-	for url, agg := range res.Inlinks {
+	// Depth: feed RecomputeDepthsFromLinks the link superset + redirect edges built
+	// from the captured Facts.Links, exactly as finalize feeds it store.LinkRows.
+	var links []LinkRow
+	redirects := map[string]string{}
+	urls := make([]string, 0, len(pages))
+	for url, rec := range pages {
+		urls = append(urls, url)
+		if rec.RedirectURL != "" {
+			redirects[url] = rec.RedirectURL
+		}
+		if rec.Facts != nil {
+			for _, l := range rec.Facts.Links {
+				links = append(links, LinkRow{Src: url, Dst: l.URL, Type: string(l.Type), Nofollow: l.Nofollow})
+			}
+		}
+	}
+	for url, d := range c.RecomputeDepthsFromLinks(links, redirects, urls, seeds) {
 		if rec, ok := pages[url]; ok {
-			rec.DiscoveredFrom = agg.First
+			rec.Depth = d
+		}
+	}
+
+	// Inlinks (hyperlink-gated count) + first-wins discovered_from (lowest-seq edge
+	// source, seed-locked) over the captured gated edges — the same computation
+	// store.SaveInlinksFromEdges runs in SQL over the edges table.
+	inl := map[string]int{}
+	firstSeq := map[string]int64{}
+	from := map[string]string{}
+	for src, rec := range pages {
+		for _, e := range rec.GatedEdges {
+			if e.Hyperlink {
+				inl[e.Dst]++
+			}
+			if s, seen := firstSeq[e.Dst]; !seen || e.Seq < s {
+				firstSeq[e.Dst] = e.Seq
+				from[e.Dst] = src
+			}
+		}
+	}
+	seedSet := map[string]bool{}
+	for _, s := range c.NormalizeSeeds(seeds...) {
+		seedSet[s] = true
+	}
+	for url, rec := range pages {
+		rec.Inlinks = inl[url]
+		if seedSet[url] {
+			rec.DiscoveredFrom = "" // seed-lock
+		} else {
+			rec.DiscoveredFrom = from[url]
 		}
 	}
 	return &crawlT{

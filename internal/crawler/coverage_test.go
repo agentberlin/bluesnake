@@ -83,81 +83,11 @@ func TestWithFetchOptionsAppliesToClient(t *testing.T) {
 	}
 }
 
-// TestRecomputeInlinksReplaysGraph verifies RecomputeInlinks recounts raw
-// hyperlink inlinks over an externally supplied page set by replaying the
-// crawl-time discovery gate. /target is linked by two pages (count 2), /solo
-// by one (count 1), and a page with nil Facts contributes nothing. Pre-set
-// (stale) Inlinks values must be overwritten.
-func TestRecomputeInlinksReplaysGraph(t *testing.T) {
-	const base = "http://site.test"
-	c := newCrawlerWithScope(t, nil, base+"/")
-
-	hl := func(u string) parse.Link { return parse.Link{Type: parse.Hyperlink, URL: u} }
-	pages := map[string]*PageRecord{
-		base + "/": {
-			URL: base + "/", Depth: 0, Inlinks: 999, // stale value, must be overwritten
-			Facts: &parse.Facts{Links: []parse.Link{hl(base + "/a"), hl(base + "/target")}},
-		},
-		base + "/a": {
-			URL: base + "/a", Depth: 1, Inlinks: 42,
-			Facts: &parse.Facts{Links: []parse.Link{hl(base + "/target"), hl(base + "/solo")}},
-		},
-		base + "/target": {URL: base + "/target", Depth: 2, Facts: &parse.Facts{}},
-		base + "/solo":   {URL: base + "/solo", Depth: 2, Facts: &parse.Facts{}},
-		// no Facts: skipped entirely, never linked, count stays 0
-		base + "/orphan": {URL: base + "/orphan", Depth: NoDepth, Inlinks: 7},
-	}
-
-	c.RecomputeInlinks(pages)
-
-	want := map[string]int{
-		base + "/":       0,
-		base + "/a":      1,
-		base + "/target": 2,
-		base + "/solo":   1,
-		base + "/orphan": 0, // nil Facts: rewritten to the replayed count (0)
-	}
-	for url, w := range want {
-		if got := pages[url].Inlinks; got != w {
-			t.Errorf("%s inlinks = %d, want %d", url, got, w)
-		}
-	}
-}
-
-// TestRecomputeInlinksRespectsTypeAndNofollow checks the replay honours the
-// same gate discoverLinks applies: a nofollow hyperlink (default config does
-// not follow internal nofollow) and a non-crawled link type (image, off by
-// default) contribute no inlink count, while a plain hyperlink does.
-func TestRecomputeInlinksRespectsTypeAndNofollow(t *testing.T) {
-	const base = "http://site.test"
-	c := newCrawlerWithScope(t, nil, base+"/")
-
-	pages := map[string]*PageRecord{
-		base + "/": {
-			URL: base + "/", Depth: 0,
-			Facts: &parse.Facts{Links: []parse.Link{
-				{Type: parse.Hyperlink, URL: base + "/counted"},
-				{Type: parse.Hyperlink, URL: base + "/nofollowed", Nofollow: true},
-				{Type: parse.Image, URL: base + "/img.png"},
-			}},
-		},
-		base + "/counted":    {URL: base + "/counted", Facts: &parse.Facts{}},
-		base + "/nofollowed": {URL: base + "/nofollowed", Facts: &parse.Facts{}},
-		base + "/img.png":    {URL: base + "/img.png", Facts: &parse.Facts{}},
-	}
-
-	c.RecomputeInlinks(pages)
-
-	if got := pages[base+"/counted"].Inlinks; got != 1 {
-		t.Errorf("/counted inlinks = %d, want 1", got)
-	}
-	if got := pages[base+"/nofollowed"].Inlinks; got != 0 {
-		t.Errorf("/nofollowed inlinks = %d, want 0 (default does not follow internal nofollow)", got)
-	}
-	if got := pages[base+"/img.png"].Inlinks; got != 0 {
-		t.Errorf("/img.png inlinks = %d, want 0 (images not crawled by default)", got)
-	}
-}
+// Inlink counting + its gate (a nofollow hyperlink or an image must not count as
+// an inlink) is now derived from the gated `edges` the crawl records, not an
+// in-RAM RecomputeInlinks replay. It is pinned non-circularly over a real
+// crawl+finalize by TestDepthAndInlinkGateDivergenceOracle (finalize package) and
+// by the capFinalize-backed inlink assertions in this package's crawl() tests.
 
 // TestStartFolderOf covers the seed start-folder extraction for the root, a
 // file at the root, a subfolder, a file inside a subfolder, and a path that
@@ -301,20 +231,22 @@ func TestTypeFlagsExternalGate(t *testing.T) {
 	}
 }
 
-// TestFollowsForDepth exercises followsForDepth: a plain internal hyperlink is
-// followed, a non-crawled type is not, an internal nofollow link is not (unless
-// the config follows it), and an external nofollow link obeys the external rule.
-func TestFollowsForDepth(t *testing.T) {
+// TestFollowsForDepthRow exercises followsForDepthRow (the depth CSR's follow
+// gate over a stored link row): a plain internal hyperlink is followed, a
+// non-crawled type is not, an internal nofollow link is not (unless the config
+// follows it), and an external nofollow link obeys the external rule.
+func TestFollowsForDepthRow(t *testing.T) {
 	const base = "http://site.test"
+	hl, img := string(parse.Hyperlink), string(parse.Image)
 
 	c := newCrawlerWithScope(t, nil, base+"/")
-	if !c.followsForDepth(parse.Link{Type: parse.Hyperlink, URL: base + "/x"}) {
+	if !c.followsForDepthRow(hl, base+"/x", false) {
 		t.Error("plain internal hyperlink must be a followed edge")
 	}
-	if c.followsForDepth(parse.Link{Type: parse.Image, URL: base + "/i.png"}) {
+	if c.followsForDepthRow(img, base+"/i.png", false) {
 		t.Error("image (not crawled by default) must not be a followed edge")
 	}
-	if c.followsForDepth(parse.Link{Type: parse.Hyperlink, URL: base + "/x", Nofollow: true}) {
+	if c.followsForDepthRow(hl, base+"/x", true) {
 		t.Error("internal nofollow link must not be followed by default")
 	}
 
@@ -322,7 +254,7 @@ func TestFollowsForDepth(t *testing.T) {
 	cFollow := newCrawlerWithScope(t, func(cfg *config.Config) {
 		cfg.Scope.FollowInternalNofollow = true
 	}, base+"/")
-	if !cFollow.followsForDepth(parse.Link{Type: parse.Hyperlink, URL: base + "/x", Nofollow: true}) {
+	if !cFollow.followsForDepthRow(hl, base+"/x", true) {
 		t.Error("follow_internal_nofollow must make a nofollow internal link a followed edge")
 	}
 
@@ -331,14 +263,14 @@ func TestFollowsForDepth(t *testing.T) {
 		cfg.Links.External = config.StoreCrawl{Store: true, Crawl: true}
 		cfg.Scope.FollowExternalNofollow = true
 	}, base+"/")
-	if !cExt.followsForDepth(parse.Link{Type: parse.Hyperlink, URL: "http://other.test/x", Nofollow: true}) {
+	if !cExt.followsForDepthRow(hl, "http://other.test/x", true) {
 		t.Error("external nofollow link must be followed when external crawl + follow_external_nofollow are on")
 	}
 	// External nofollow with external crawl on but follow_external_nofollow off.
 	cExtNo := newCrawlerWithScope(t, func(cfg *config.Config) {
 		cfg.Links.External = config.StoreCrawl{Store: true, Crawl: true}
 	}, base+"/")
-	if cExtNo.followsForDepth(parse.Link{Type: parse.Hyperlink, URL: "http://other.test/x", Nofollow: true}) {
+	if cExtNo.followsForDepthRow(hl, "http://other.test/x", true) {
 		t.Error("external nofollow must not be followed when follow_external_nofollow is off")
 	}
 }

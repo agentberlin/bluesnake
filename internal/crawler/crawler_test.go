@@ -944,57 +944,45 @@ func TestRecomputeDepthsReconstructsFreshDepths(t *testing.T) {
 	}
 
 	// Simulate the resume state: the full two-session graph reloaded from the
-	// store, but with stale/admit-time depths (here scrambled to a wrong value).
-	// This is exactly what the resume finalize feeds RecomputeDepths.
+	// store. This is exactly what the resume finalize feeds the depth CSR
+	// (RecomputeDepthsFromLinks over store.LinkRows). Build the link superset from
+	// the merged graph and recompute; an orphan with no followed path is NoDepth.
 	merged := map[string]*PageRecord{}
 	for url, rec := range res.Pages {
 		cp := *rec
-		cp.Depth = 999
 		merged[url] = &cp
 	}
-	// An orphan with no followed-link path must end up NoDepth, not 999.
 	orphan := s.server.URL + "/orphan"
-	merged[orphan] = &PageRecord{URL: orphan, Depth: 999}
+	merged[orphan] = &PageRecord{URL: orphan}
 
-	c.RecomputeDepths(merged, seed)
+	var links []LinkRow
+	urls := make([]string, 0, len(merged))
+	for url, rec := range merged {
+		urls = append(urls, url)
+		if rec.Facts != nil {
+			for _, l := range rec.Facts.Links {
+				links = append(links, LinkRow{Src: url, Dst: l.URL, Type: string(l.Type), Nofollow: l.Nofollow})
+			}
+		}
+	}
+	depths := c.RecomputeDepthsFromLinks(links, nil, urls, []string{seed})
 
 	for url, w := range want {
-		if got := merged[url].Depth; got != w {
+		if got := depths[url]; got != w {
 			t.Errorf("recomputed %s depth = %d, want %d", url, got, w)
 		}
 	}
-	if got := merged[orphan].Depth; got != NoDepth {
+	if got := depths[orphan]; got != NoDepth {
 		t.Errorf("orphan depth = %d, want NoDepth (%d)", got, NoDepth)
 	}
 }
 
-// TestResumePreservesDiscoveredFrom verifies a page first linked before an
-// interrupt keeps its original discoverer on resume: the crawler seeds the
-// first-discoverer from the stored frontier Source, since the page that linked
-// it is not re-processed this session.
-func TestResumePreservesDiscoveredFrom(t *testing.T) {
-	s := newSite(t, map[string]string{
-		"/pending": "<p>leaf</p>",
-	})
-	seed := s.server.URL + "/"
-	cfg := config.Default()
-	sink := newCapSink()
-	c, err := New(cfg, WithResume(
-		[]string{seed}, // already processed: the seed is not re-crawled
-		[]frontier.Item{{URL: s.server.URL + "/pending", Depth: 1, Source: seed}},
-	), WithSink(sink))
-	if err != nil {
-		t.Fatal(err)
-	}
-	res := runCap(t, c, sink, seed)
-	rec := s.page(res, "/pending")
-	if rec == nil {
-		t.Fatal("/pending was not crawled on resume")
-	}
-	if rec.DiscoveredFrom != seed {
-		t.Errorf("DiscoveredFrom = %q, want the stored frontier source %q", rec.DiscoveredFrom, seed)
-	}
-}
+// Resume's cross-session discovered_from preservation is now a property of the
+// persisted `edges` table (the prior session's discovery edges carry the
+// first-wins source via seq-MIN), not an in-RAM seed of the dropped c.inlinks
+// map — so it is exercised end-to-end over a real store by the resume_equivalence
+// acceptance test (which asserts straight==resumed discovered_from), not here with
+// an in-memory capSink that cannot replay a prior session's edges.
 
 // TestResumeRespectsMaxURLs pins that the crawl-total budget (limits.max_urls)
 // is cumulative across a resume: a resumed session must not be granted a fresh
