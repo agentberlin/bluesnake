@@ -7,6 +7,7 @@ import { api, urlShort } from "../api";
 import { DataTable } from "./results";
 import { IssuesBrowser } from "./issues";
 import { CrawlProgress } from "./progress";
+import { CrawlSetup } from "./setup";
 
 /* rail metadata for the export tabs (label + icon per backend tab name) */
 const DATASETS = [
@@ -26,7 +27,7 @@ const DATASETS = [
 
 const ROW_LIMIT = 2000;
 
-export function ResultsWorkspace({ crawl, live, tab, setTab, issueFilter, setIssueFilter, onOpenDetail, onFilterByIssue, onResume, crawlBusyMsg }) {
+export function ResultsWorkspace({ crawl, live, tab, setTab, issueFilter, setIssueFilter, onOpenDetail, onFilterByIssue, onResume, onRerun, crawlBusyMsg }) {
   const [toast, setToast] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [analyseMenu, setAnalyseMenu] = useState(false);
@@ -65,7 +66,7 @@ export function ResultsWorkspace({ crawl, live, tab, setTab, issueFilter, setIss
   }, [crawl.id]);
 
   useEffect(() => {
-    if (tab === "overview" || tab === "issues") { setData(null); return; }
+    if (tab === "overview" || tab === "issues" || tab === "setup") { setData(null); return; }
     let alive = true;
     setLoading(true);
     setError("");
@@ -117,6 +118,7 @@ export function ResultsWorkspace({ crawl, live, tab, setTab, issueFilter, setIss
           <RailItem active={tab === "overview"} icon="layout-dashboard" label="Overview" onClick={() => setTab("overview")} />
           <RailItem active={tab === "issues"} icon="octagon-alert" label="Issues" onClick={() => setTab("issues")}
             right={<span style={{ display: "flex", gap: 5 }}>{["issue", "warning", "opportunity"].map((s) => <span key={s} className="statusdot" style={{ background: SEV[s].c }} />)}</span>} />
+          <RailItem active={tab === "setup"} icon="settings-2" label="Setup" onClick={() => setTab("setup")} />
         </div>
         <div className="sb-sectlabel">Datasets</div>
         <div className="sb-recents" style={{ paddingTop: 0 }}>
@@ -140,6 +142,8 @@ export function ResultsWorkspace({ crawl, live, tab, setTab, issueFilter, setIss
         {showProgress ? (
           <CrawlProgress crawlId={crawl.id} headerExtra={ovToggle}
             onResume={onResume} onOpenResults={() => setOvMode("static")} />
+        ) : tab === "setup" ? (
+          <CrawlSetup crawl={crawl} onRerun={onRerun} crawlBusyMsg={crawlBusyMsg} />
         ) : (
           <>
             <div className="toolbar">

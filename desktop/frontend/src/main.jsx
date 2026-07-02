@@ -187,9 +187,26 @@ function App() {
     refreshQueue();
     if (busy) setView("queue"); // queued behind the running crawl; else crawl:started opens it
   }
+  // Re-run: start a fresh crawl of the same site with this crawl's frozen config.
+  // Enqueues like any start — when idle the dispatcher opens the live view; when a
+  // crawl is already running it queues behind it (so we show the queue).
+  async function rerunCrawl(c) {
+    const busy = crawlActive;
+    await api.rerunCrawl(c.id);
+    refresh();
+    refreshQueue();
+    if (busy) setView("queue");
+  }
   function openCrawl(c) {
     setActiveCrawl(c);
     setResultsTab("overview");
+    setIssueFilter(null);
+    setView("results");
+  }
+  // open a crawl straight on its read-only Setup (frozen configuration) tab
+  function openCrawlSetup(c) {
+    setActiveCrawl(c);
+    setResultsTab("setup");
     setIssueFilter(null);
     setView("results");
   }
@@ -337,7 +354,7 @@ function App() {
           crawls.length === 0
             ? <Welcome onStart={startFromWelcome} onConfigure={() => setView("new")}
                 onMcp={() => { setSettingsFocus({ section: "mcp" }); setSettingsBack({ view: "home", label: "Back" }); setView("settings"); }} />
-            : <CrawlManager crawls={crawls} onOpen={openCrawl} onResume={resumeCrawl} onCompare={() => setView("compare")} onNew={() => setView("new")} onDelete={deleteCrawl} storage={storage} crawlBusyMsg={crawlBusyMsg} />
+            : <CrawlManager crawls={crawls} onOpen={openCrawl} onOpenSetup={openCrawlSetup} onResume={resumeCrawl} onCompare={() => setView("compare")} onNew={() => setView("new")} onDelete={deleteCrawl} storage={storage} crawlBusyMsg={crawlBusyMsg} />
         )}
         {view === "new" && <NewCrawl onStart={startCrawl} onOpenSettings={(p) => { setSettingsProfile(p); setSettingsBack({ view: "new", label: "New Crawl" }); setView("settings"); }} crawlBusyMsg={crawlBusyMsg} onViewActiveCrawl={viewActiveCrawl} />}
         {view === "queue" && <QueueView jobs={queueJobs} liveCrawlId={liveCrawlId} onRefresh={refreshQueue}
@@ -356,6 +373,7 @@ function App() {
             onOpenDetail={(url) => setDetail({ crawlId: activeCrawl.id, url })}
             onFilterByIssue={openDataset}
             onResume={() => resumeCrawl(activeCrawl)}
+            onRerun={() => rerunCrawl(activeCrawl)}
             crawlBusyMsg={crawlBusyMsg}
           />
         )}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/robots"
+	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/agentberlin/bluesnake/internal/version"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -167,10 +168,35 @@ func newConfigCmd() *cobra.Command {
 
 	var cfgFile string
 	var sets []string
+	var crawlID string
+	var storeDir string
 	showCmd := &cobra.Command{
 		Use:   "show",
-		Short: "Print the effective configuration (file + overrides over defaults)",
+		Short: "Print the effective configuration (file + overrides over defaults), or a stored crawl's frozen config with --crawl",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// --crawl prints the exact config frozen into a stored crawl at start —
+			// the same config resume/analyze reuse, and what the desktop Setup tab
+			// shows. It's a standalone source: combining it with --config/--set would
+			// be ambiguous, so that's rejected.
+			if crawlID != "" {
+				if cfgFile != "" || len(sets) > 0 {
+					err := errors.New("--crawl reads the crawl's frozen config; it can't be combined with --config or --set")
+					fmt.Fprintln(cmd.ErrOrStderr(), err)
+					return exitErr{2, err}
+				}
+				st, err := store.OpenCrawl(storeDir, crawlID)
+				if err != nil {
+					fmt.Fprintln(cmd.ErrOrStderr(), err)
+					return exitErr{2, err}
+				}
+				defer st.Close()
+				cfgYAML, err := st.Meta("config")
+				if err != nil {
+					return err
+				}
+				cmd.OutOrStdout().Write([]byte(cfgYAML))
+				return nil
+			}
 			c := config.Default()
 			var err error
 			if cfgFile != "" {
@@ -200,6 +226,8 @@ func newConfigCmd() *cobra.Command {
 	}
 	showCmd.Flags().StringVar(&cfgFile, "config", "", "config file")
 	showCmd.Flags().StringArrayVar(&sets, "set", nil, "dotted-path override (key.path=value), repeatable")
+	showCmd.Flags().StringVar(&crawlID, "crawl", "", "print the config frozen into this stored crawl id")
+	showCmd.Flags().StringVar(&storeDir, "store-dir", defaultStoreDir(), "crawl storage directory")
 
 	cfgCmd.AddCommand(initCmd, validateCmd, showCmd)
 	return cfgCmd
