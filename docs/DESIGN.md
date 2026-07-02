@@ -877,7 +877,9 @@ beats an autoincrement id here precisely for that idempotency. Affected-URL
 tallies are unchanged: the count paths now use `COUNT(DISTINCT url)`
 (`store.IssueCounts`/`IssueURLs`, the MCP `issue_summary` query), so the headline
 numbers across CLI/serve/MCP/desktop stay per-URL while exports and the issues
-table now list all details. Existing crawl DBs migrate on open
+table now list all details. *(The "clears via `SaveIssues` then re-adds"
+mechanism referenced here was superseded 2026-07-02 by ownership-partitioned
+replace semantics — see that note.)* Existing crawl DBs migrate on open
 (a transactional `issues` table rebuild, detected via `PRAGMA table_info`,
 idempotent) — required so re-analysing an old crawl doesn't keep collapsing on
 the very path meant to fix it. Pinned, mutation-verified, by
@@ -974,6 +976,40 @@ Product `gtin`/`description` — bluesnake under-warns vs SF on Product-with-off
 pages by exactly these), SF's property-VALUE *type* checks ("address must be of
 type PostalAddress" — a different validation dimension), and standalone-`Offer`
 merchant depth.
+
+**2026-07-02 — finalize/analyze staleness: ownership-partitioned replace
+semantics + PageRank node-set pruning (#75).** The post-crawl write path had two
+writers sharing persisted analysis state with mismatched replace scopes, and
+PageRank's edge gate contradicted its own node-set predicate. Three pre-existing
+bugs, one design: **every finalize writer atomically replaces exactly the state
+it owns.** (1) The issues table is partitioned between its two writers by the
+analysis-phase check set (`issues.AnalysisIDs`, declared next to the catalogue
+and pinned against what each phase *actually emits* by
+`analyze.TestIssuePartitionMatchesEmitters`): `store.SaveIssues` replaces every
+row *except* that partition, so the cheap catalogue-only refresh (`bluesnake
+issues`) no longer silently wipes a completed crawl's redirect-chain / near-dup /
+hreflang / pagination / sitemap / llms.txt findings until the next full Analyze.
+(2) `store.SaveAnalysis` — now a single transaction — resets the five
+analysis-owned per-page columns (`link_score`, `unique_inlinks`,
+`unique_outlinks`, `closest_similarity`, `near_dup_count`) to their schema
+defaults before applying the new result maps, and replaces its own issue
+partition (the append-only `AddIssues` is deleted): re-analysing with
+near-duplicates off or different thresholds no longer leaves the previous run's
+metrics or occurrence rows mixed into the new result. (3) PageRank computes over
+the graph **induced on its documented node set** (internal ∧ crawled): an edge
+to a never-crawled internal target (robots-blocked, errored, still-queued)
+neither receives a rank share — it used to hold rank mass, shift the `v/max·100`
+scaling, and appear in `LinkScores` — nor dilutes its source's out-degree; the
+same "counts for link metrics, not for PageRank" treatment self-loops already
+had, and the classic dangling-link removal from the original PageRank
+formulation. Unique in/outlink metrics deliberately keep such edges (SF parity).
+All three flow through every surface (CLI, MCP, desktop) via the shared
+finalize/store/analyze path. Pinned by
+`finalize.TestIssuesCmdPreservesAnalysisIssues` (full crawl → byte-identical
+issues table across an `issues` refresh), `store.TestSaveIssuesPreservesAnalysisPartition`,
+`store.TestReanalyzeClearsStaleScoreColumns`, and
+`analyze.TestPageRank_NonCrawledDstsPruned` (bit-exact induced-subgraph scores
+on both the CSR and Facts.Links paths).
 
 **Implemented but scoped down (extension points exist):**
 - Issues catalogue: **164 = the full issues library computable on the current
