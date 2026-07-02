@@ -68,6 +68,9 @@ type Store interface {
 	Finish(jobID, status, errMsg string) error
 	// Cancel cancels a still-queued job, reporting whether it changed anything.
 	Cancel(jobID string) (bool, error)
+	// Unclaim returns a claimed-but-never-started job to queued (the dispatcher
+	// claimed it, then a shutdown landed before the crawl began).
+	Unclaim(jobID string) error
 	// Reconcile marks every job left running (host died mid-crawl) as interrupted
 	// and returns the count. Called once before the dispatcher starts draining.
 	Reconcile() (int, error)

@@ -3,7 +3,16 @@ package queue
 import (
 	"context"
 	"sync"
+	"time"
+
+	"github.com/agentberlin/bluesnake/internal/store"
 )
+
+// claimRetryDelay is how long a drain loop waits after a TRANSIENT ClaimNext
+// error before retrying. Waiting solely on wakeCh would strand every queued
+// job until the next Enqueue happens to wake the loop (#74 N8). Package-level
+// so tests can shorten it.
+var claimRetryDelay = 500 * time.Millisecond
 
 // Dispatcher is the crawl consumer. It runs up to `concurrency` crawls at once
 // (default 1): each of W drain loops claims the oldest queued job via the atomic
@@ -23,6 +32,11 @@ type Dispatcher struct {
 	started  bool
 	stopping bool
 	inflight map[string]*inFlightJob // jobID -> running job
+	// pendingCancel latches a Cancel that lands in the claim→register gap —
+	// the job's store row already says running but runJob has not yet
+	// registered it in-flight — so runJob drops the job before its crawl
+	// starts instead of Cancel silently no-opping (#74 N6).
+	pendingCancel map[string]bool
 
 	wg sync.WaitGroup // the W drain loops
 }
@@ -41,12 +55,13 @@ type inFlightJob struct {
 // runs one crawl at a time; WithConcurrency raises the parallelism.
 func New(s Store, e Executor, opts ...Option) *Dispatcher {
 	d := &Dispatcher{
-		store:       s,
-		exec:        e,
-		concurrency: 1,
-		wakeCh:      make(chan struct{}, 1),
-		stopCh:      make(chan struct{}),
-		inflight:    map[string]*inFlightJob{},
+		store:         s,
+		exec:          e,
+		concurrency:   1,
+		wakeCh:        make(chan struct{}, 1),
+		stopCh:        make(chan struct{}),
+		inflight:      map[string]*inFlightJob{},
+		pendingCancel: map[string]bool{},
 	}
 	for _, o := range opts {
 		o(d)
@@ -71,9 +86,23 @@ func WithConcurrency(n int) Option {
 
 // Start reconciles any job left running by a previous crash (-> interrupted, the
 // partial crawl stays resumable) and launches the W drain loops. Idempotent.
+// A Reconcile failure leaves the dispatcher UNSTARTED so the caller can retry —
+// latching `started` before it would permanently kill the dispatcher on one
+// transient registry error: jobs accepted forever, never drained (#74 N4).
 func (d *Dispatcher) Start(ctx context.Context) error {
 	d.mu.Lock()
 	if d.started {
+		d.mu.Unlock()
+		return nil
+	}
+	d.mu.Unlock()
+
+	if _, err := d.store.Reconcile(); err != nil {
+		return err
+	}
+
+	d.mu.Lock()
+	if d.started { // a concurrent Start won the race while we reconciled
 		d.mu.Unlock()
 		return nil
 	}
@@ -81,9 +110,6 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	n := d.concurrency
 	d.mu.Unlock()
 
-	if _, err := d.store.Reconcile(); err != nil {
-		return err
-	}
 	d.wg.Add(n)
 	for i := 0; i < n; i++ {
 		go d.loop(ctx)
@@ -126,27 +152,65 @@ func (d *Dispatcher) Stop() { d.exec.Stop() }
 
 // Cancel cancels a job. A still-queued job is dropped; an in-flight job is
 // stopped by crawl id (finalised as completed), targeting just that one crawl
-// even when several run in parallel. Reports whether anything changed.
+// even when several run in parallel. A job caught in the claim→register gap —
+// its store row already running, runJob not yet started — is latched so runJob
+// drops it before the crawl begins (#74 N6). Reports whether anything changed.
 func (d *Dispatcher) Cancel(jobID string) (bool, error) {
+	if ok := d.cancelInFlight(jobID); ok {
+		return true, nil
+	}
+	if changed, err := d.store.Cancel(jobID); changed || err != nil {
+		return changed, err
+	}
+	// Neither queued nor registered in-flight. If the store row says running,
+	// the job sits in the claim gap (or registered while we looked): latch a
+	// pending cancel — runJob checks the latch, under the same mutex, before
+	// starting the crawl — then re-check the in-flight path once.
+	d.mu.Lock()
+	d.pendingCancel[jobID] = true
+	d.mu.Unlock()
+	if ok := d.cancelInFlight(jobID); ok {
+		d.mu.Lock()
+		delete(d.pendingCancel, jobID)
+		d.mu.Unlock()
+		return true, nil
+	}
+	jobs, err := d.store.List()
+	if err == nil {
+		for _, j := range jobs {
+			if j.ID == jobID && j.Status == store.JobRunning {
+				return true, nil // the latch will drop it (or runJob already honored it)
+			}
+		}
+	}
+	// Unknown or already terminal: nothing to cancel; clear the latch.
+	d.mu.Lock()
+	delete(d.pendingCancel, jobID)
+	d.mu.Unlock()
+	return false, err
+}
+
+// cancelInFlight cancels a registered in-flight job, reporting whether one was
+// found. In the ms-wide startup window crawlID is still empty — StopCrawl("")
+// would silently no-op while falsely reporting success, so it is skipped; the
+// latched cancelled flag makes the crawl stop the instant its id lands (see
+// runJob's onStart).
+func (d *Dispatcher) cancelInFlight(jobID string) bool {
 	d.mu.Lock()
 	f := d.inflight[jobID]
 	crawlID := ""
 	if f != nil {
-		f.cancelled = true // honored by runJob's onStart if the id isn't known yet
+		f.cancelled = true
 		crawlID = f.crawlID
 	}
 	d.mu.Unlock()
-	if f != nil {
-		// Address the running crawl by id. In the ms-wide startup window crawlID is
-		// still empty — calling StopCrawl("") would silently no-op while falsely
-		// reporting success, so skip it; the latched cancelled flag makes the crawl
-		// stop the instant its id lands (see runJob's onStart).
-		if crawlID != "" {
-			d.exec.StopCrawl(crawlID)
-		}
-		return true, nil
+	if f == nil {
+		return false
 	}
-	return d.store.Cancel(jobID)
+	if crawlID != "" {
+		d.exec.StopCrawl(crawlID)
+	}
+	return true
 }
 
 // Shutdown pauses every in-flight crawl (leaving them resumable) and stops all
@@ -184,8 +248,21 @@ func (d *Dispatcher) loop(ctx context.Context) {
 		}
 
 		job, err := d.store.ClaimNext()
-		if err != nil || job == nil {
-			// nothing to do (or a transient claim error) — wait for a wake/stop
+		if err != nil {
+			// A transient claim error must not park the loop on wakeCh alone:
+			// with no further Enqueue to wake it, every queued job would strand
+			// (#74 N8). Retry on a timer instead.
+			select {
+			case <-time.After(claimRetryDelay):
+			case <-d.stopCh:
+				return
+			case <-ctx.Done():
+				return
+			}
+			continue
+		}
+		if job == nil {
+			// nothing to do — wait for a wake/stop
 			select {
 			case <-d.wakeCh:
 			case <-d.stopCh:
@@ -195,6 +272,18 @@ func (d *Dispatcher) loop(ctx context.Context) {
 			}
 			continue
 		}
+		// A stop can land between ClaimNext and here (a loop already inside
+		// ClaimNext when Shutdown fires). Starting a whole new crawl now would
+		// make Shutdown block on it (#74 N5) — return the job to the queue.
+		select {
+		case <-d.stopCh:
+			_ = d.store.Unclaim(job.ID)
+			return
+		case <-ctx.Done():
+			_ = d.store.Unclaim(job.ID)
+			return
+		default:
+		}
 		d.wake() // wake-the-next: another idle loop can grab the next queued job
 		d.runJob(ctx, job)
 	}
@@ -203,6 +292,14 @@ func (d *Dispatcher) loop(ctx context.Context) {
 func (d *Dispatcher) runJob(ctx context.Context, job *Job) {
 	f := &inFlightJob{job: *job}
 	d.mu.Lock()
+	if d.pendingCancel[job.ID] {
+		// A Cancel landed in the claim→register gap; honor it before any crawl
+		// starts (#74 N6).
+		delete(d.pendingCancel, job.ID)
+		d.mu.Unlock()
+		_ = d.store.Finish(job.ID, store.JobCanceled, "")
+		return
+	}
 	d.inflight[job.ID] = f
 	d.mu.Unlock()
 

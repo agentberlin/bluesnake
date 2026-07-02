@@ -184,6 +184,20 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 	runCtx, r.cancel = context.WithCancel(ctx)
 
 	e.mu.Lock()
+	if _, dup := e.cur[st.ID]; dup {
+		// The same crawl is already in flight (two resume jobs racing for one
+		// crawl id). Registering would overwrite the map entry and make the
+		// FIRST run unaddressable — Pause/Stop/Cancel would signal the wrong
+		// one and its cleanup would delete ours (#74 N7). Refuse the duplicate.
+		e.mu.Unlock()
+		c.Close()
+		st.Close()
+		err = fmt.Errorf("crawl %s is already running — not starting a duplicate session", st.ID)
+		if e.obs != nil {
+			e.obs.OnDone(Outcome{CrawlID: st.ID, Err: err})
+		}
+		return "", err
+	}
 	e.cur[st.ID] = r
 	e.mu.Unlock()
 	defer func() {

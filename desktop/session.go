@@ -50,7 +50,7 @@ type ProgressSnapshot struct {
 // DoneEvent is the payload of the "crawl:done" event.
 type DoneEvent struct {
 	CrawlID     string `json:"crawlId"`
-	Status      string `json:"status"`  // completed | interrupted
+	Status      string `json:"status"`  // completed | interrupted | error (failed to start)
 	Crawled     int    `json:"crawled"` // URLs fetched
 	Total       int    `json:"total"`   // URLs encountered (fetched + blocked + errored)
 	DurationSec int    `json:"durationSec"`
@@ -137,17 +137,28 @@ func (o *uiObserver) OnDone(out runner.Outcome) {
 		runtime.EventsEmit(o.app.ctx, "crawl:progress", o.build(snap, "done"))
 	}
 	done := DoneEvent{
-		CrawlID: out.CrawlID, Status: out.Status,
+		CrawlID: out.CrawlID, Status: doneStatus(out),
 		Crawled: out.Crawled, Total: out.Total,
 		DurationSec: out.DurationSec, Analyzed: out.Analyzed,
-	}
-	if done.Status == "" {
-		done.Status = store.StatusCompleted
 	}
 	if out.Err != nil {
 		done.Error = out.Err.Error()
 	}
 	runtime.EventsEmit(o.app.ctx, "crawl:done", done)
+}
+
+// doneStatus maps an Outcome to the UI's terminal status. A crawl that FAILED
+// TO START (no status, an error, typically no crawl id) must read "error", not
+// "completed" — the empty-status default used to make a failed start render as
+// a successful crawl (#74 N10).
+func doneStatus(out runner.Outcome) string {
+	if out.Status != "" {
+		return out.Status
+	}
+	if out.Err != nil {
+		return "error"
+	}
+	return store.StatusCompleted
 }
 
 // build composes a ProgressSnapshot from the executor's live counters plus the

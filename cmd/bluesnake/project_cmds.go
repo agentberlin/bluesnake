@@ -316,9 +316,22 @@ func newProjectCmd() *cobra.Command {
 					return exitErr{1, err}
 				}
 			}
-			<-obs.done
-			disp.Shutdown()
-			return nil
+			// A SIGINT with members still queued means obs.done can never close
+			// (the queued members' OnDone never fires) — waiting solely on it
+			// hung forever, with the deferred stop() also swallowing the second
+			// Ctrl-C (#74 N3). Race the group against the signal context; on
+			// interrupt, restore default signal handling FIRST (a second Ctrl-C
+			// kills), then shut down (pauses in-flight crawls, resumable).
+			select {
+			case <-obs.done:
+				disp.Shutdown()
+				return nil
+			case <-ctx.Done():
+				stop()
+				disp.Shutdown()
+				fmt.Fprintln(cmd.ErrOrStderr(), "interrupted — in-flight member crawls paused (resumable); queued members not started")
+				return exitErr{3, fmt.Errorf("interrupted")}
+			}
 		},
 	}
 

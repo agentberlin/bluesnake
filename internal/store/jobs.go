@@ -200,6 +200,16 @@ func CancelJob(dir, id string) (bool, error) {
 	return n > 0, nil
 }
 
+// UnclaimJob returns a claimed-but-never-started job to the queue (running →
+// queued, clearing the start stamp). The dispatcher uses it when a shutdown
+// lands between claiming a job and starting its crawl: the job must neither
+// run after the stop signal nor be lost to "interrupted" (no crawl ever
+// existed to resume) — it simply waits for the next drain.
+func UnclaimJob(dir, id string) error {
+	return execReg(dir, `UPDATE jobs SET status = ?, started = NULL WHERE id = ? AND status = ?`,
+		JobQueued, id, JobRunning)
+}
+
 // ReconcileRunningJobs marks every job left running (the host died mid-crawl) as
 // interrupted, returning how many were reconciled. The crawl each spawned is a
 // resumable registry entry, so nothing is lost; the dispatcher calls this once
