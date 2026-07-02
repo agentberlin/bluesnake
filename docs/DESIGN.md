@@ -668,6 +668,13 @@ Definition of done per milestone: feature file(s) green, unit coverage ≥ 90% f
 ## 8. Open questions / future
 - Spelling/grammar: candidate libs need evaluation; schema already reserves columns.
 - Distributed crawling: out of scope; single-process concurrency is the design point.
+  In-process **parallel multi-crawl** is that design point delivered (issue #78, 2026-07-02):
+  the core queue's dispatcher drains up to `speed.max_concurrent_crawls` jobs at once with
+  identical semantics on CLI (`projects crawl-all`, flag > config > 1), desktop, and MCP
+  (both read the knob from the default profile at start via `runner.ProcessWiring` — restart
+  to apply) under ONE shared process-wide limiter (global fetch cap, one finalize pass,
+  the Chrome render pool). Per-crawl control/status is crawl-id-addressed on every surface;
+  the default stays 1, keeping single-crawl behaviour unchanged.
 - Windows support: nothing platform-specific except Chrome discovery; CI matrix later.
 - **Settle thresholds are code constants, not config** (decided 2026-06-11): 500ms
   network-idle window, 1.5s wire-silence window, 2×500ms DOM-stability probes
