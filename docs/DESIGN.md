@@ -1027,15 +1027,16 @@ Facts.Links paths stay bit-identical (`TestPageRankCSRParity`).
   not the full official AMP validator rule set.
 - Sitemap orphan detection approximates "only discoverable via sitemap" as
   zero inlinks + sitemap-seeded.
-- Concurrency: goroutine-per-URL behind a semaphore + sink-mirrored frontier.
-  Correct and crash-safe, but RAM grows ~linearly with crawled pages and
-  **explosively with the discovered frontier** — one parked goroutine per
-  *admitted* URL, plus the full result set retained in memory. Measured peak
-  **~1.7–1.9 GB at only ~4,000 crawled pages** on a faceted e-commerce site
-  (frontier hit ~239k in 30 s), so it bites at *thousands*, not millions, of
-  URLs. Full investigation, root-cause sink list, and a test-first fix plan
-  (bounded worker pool + persistent SQLite frontier + stream-to-SQLite, sized
-  for the future parallel multi-site mode): **[docs/MEMORY-SCALING.md](MEMORY-SCALING.md)**.
+- Concurrency: FIXED — bounded worker pool over a persistent SQLite frontier.
+  The historical model (goroutine-per-URL + in-memory visited set + retained
+  result map) measured **~1.7–1.9 GB at only ~4,000 crawled pages** on a
+  faceted e-commerce site (frontier hit ~239k in 30 s). Shipped replacement:
+  N workers + one feeder over a bounded ready-buffer window; the frontier
+  lives in the crawl DB (`claimed`/`seq` columns), records stream-and-drop,
+  and finalize reads SQL/CSR. Per-crawl RAM is now flat on both the
+  crawled-page AND discovered-frontier axes (gated by `TestFrontierRAMSlopeFlat`).
+  Full investigation, architecture and phase history:
+  **[docs/MEMORY-SCALING.md](MEMORY-SCALING.md)**.
 
 **Not implemented (documented cuts):**
 - Spelling & grammar (planned cut, §1 non-goals).
@@ -1127,7 +1128,7 @@ uncertainty.
 | Shadow-DOM/iframe flattening (`rendering.flatten_*`) | Med | Med-High | Med | Web-component sites currently lose rendered text/links that SF sees |
 | Rich-result matrix breadth (G5 residual, narrowed again) | Low | Low | Low-Med | SoftwareApplication/Review/AggregateRating (2026-06-19), the full schema.org subtype hierarchy (264 types incl. all 150 LocalBusiness subtypes, 2026-06-19), AND nested integral-object validation (`offers.price`, `reviewRating.ratingValue`, parent-aware, single-count — 2026-06-21, SF-cross-checked, error parity EXACT in Product context) all landed; HowTo + deprecated/wrong-feature subtypes deliberately excluded. Residual: per-feature Offer profiles (Software-App `price`, Event recommended), merchant-listing RECOMMENDED breadth (Offer `itemCondition`/`availability`, Product `gtin`/`description`), SF property-VALUE *type* checks ("address must be PostalAddress"), standalone-`Offer` depth |
 | Cookie collection (`url_details.cookies`) | Med | Med | Low-Med | Whole SF report we lack; GDPR/consent audits use it. Needs a cookies table + rendered-mode capture |
-| Persistent-frontier worker pool (scale) | Indirect | High | Med-High | Gates large-site (e-commerce) crawls — and the future **parallel multi-site** mode. Goroutine-per-URL + in-memory visited-set/result map → **measured peak ~1.7–1.9 GB at only ~4k crawled pages** on a faceted site (frontier exploded to ~239k). This is **RAM** (distinct from on-disk stores). Full root-cause sink list, fix, and TDD plan: **[docs/MEMORY-SCALING.md](MEMORY-SCALING.md)** |
+| ~~Persistent-frontier worker pool (scale)~~ DONE | — | — | — | SHIPPED across PR #69 (worker pool, stream-and-drop, SQL/CSR finalize, store dedup, global limiter) + issue #77 (bounded ready-buffer + SQLite feeder: `frontier.claimed/seq`, single-producer claim batches). Per-crawl RAM is flat on the crawled-page axis AND the discovered-frontier axis — the ~1.7–1.9 GB @4k-pages faceted-site OOM class is closed, gated by `TestFrontierRAMSlopeFlat`. History + architecture: **[docs/MEMORY-SCALING.md](MEMORY-SCALING.md)** |
 | ~~Fragment self-edges (G28)~~ → rendered remainder folded into R9 | — | — | — | RE-VERIFIED 2026-06-21: the static-HTML gap is GONE — current BS matches SF exactly on every fragment-anchor pattern (empty/named/dup/`#`/svg-icon permalinks; SF page set = BS page set). The SF dedup-semantics probe this row asked for confirmed SF keeps distinct empty self-frag edges with the fragment stripped, exactly as BS does; the prior KeepFragments + R3/R10 work resolved it. The original "44 vs 18" was a rendered-DOM discovery effect (greptile/artisan emit `href="#…"` only after JS render) → tracked under R9, not a static link-extraction bug |
 | Schema.org vocabulary validation | Low-Med | Low | Med | SF's plain validation found zero issues across all 5 test domains — rich-results is what fires. Big build, small payoff |
 | Store-flag enforcement (§9.1) | Low | Low-Med | Low | DB size on big crawls; SF-visible counts already match |
