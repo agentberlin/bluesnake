@@ -114,7 +114,7 @@ func TestPauseResumeStopToolsSuccess(t *testing.T) {
 	}
 	json.Unmarshal([]byte(startText), &started)
 
-	waitFor(t, func() bool { return r.Progress() != nil }, "crawl to go live")
+	waitFor(t, func() bool { return len(r.Running()) != 0 }, "crawl to go live")
 	text, isErr := callTool(t, s, "pause_crawl", map[string]any{})
 	if isErr || !strings.Contains(text, "pausing") {
 		t.Fatalf("pause_crawl tool: isErr=%v text=%s", isErr, text)
@@ -122,7 +122,7 @@ func TestPauseResumeStopToolsSuccess(t *testing.T) {
 	// Pause cancels the in-flight (slow) requests; the home page is already crawled,
 	// so the crawl finalises as interrupted and stays resumable. Wait for the
 	// dispatcher to go idle, then assert the resumable status.
-	waitFor(t, func() bool { return r.Progress() == nil }, "dispatcher idle after pause")
+	waitFor(t, func() bool { return len(r.Running()) == 0 }, "dispatcher idle after pause")
 	if infos, _ := store.ListCrawls(dir); len(infos) != 1 || infos[0].Status != store.StatusInterrupted {
 		t.Fatalf("after pause: %+v, want one interrupted crawl", infos)
 	}
@@ -142,7 +142,7 @@ func TestPauseResumeStopToolsSuccess(t *testing.T) {
 	}
 
 	// The resumed crawl drains; the dispatcher returns to idle.
-	waitFor(t, func() bool { return r.Progress() == nil }, "resumed crawl to wind down")
+	waitFor(t, func() bool { return len(r.Running()) == 0 }, "resumed crawl to wind down")
 
 	// stop_crawl with no live crawl now is a clean tool error (signal guard).
 	if errText, isErr := callTool(t, s, "stop_crawl", map[string]any{}); !isErr ||

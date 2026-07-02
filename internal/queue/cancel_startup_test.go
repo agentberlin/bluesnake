@@ -29,9 +29,10 @@ func (g *gateExec) Run(ctx context.Context, spec JobSpec, onStart func(string)) 
 	onStart("crawl-" + spec.URL)
 	return store.StatusCompleted, nil
 }
-func (g *gateExec) Pause()              {}
-func (g *gateExec) Stop()               {}
-func (g *gateExec) StopCrawl(id string) { g.stopped <- id }
+func (g *gateExec) Pause()               {}
+func (g *gateExec) Stop()                {}
+func (g *gateExec) PauseCrawl(id string) {}
+func (g *gateExec) StopCrawl(id string)  { g.stopped <- id }
 
 func TestCancel_StartupWindow_NoStopWithEmptyID(t *testing.T) {
 	g := &gateExec{running: make(chan string, 1), proceed: make(chan struct{}), stopped: make(chan string, 4)}

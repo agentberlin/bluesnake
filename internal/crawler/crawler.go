@@ -696,13 +696,10 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) ([]frontier.It
 	// itself. A cancel while waiting for a slot leaves the item pending, like a
 	// pause mid-fetch. The slot is released the moment Fetch returns — even on a
 	// panic — so the rest of the pipeline (parse/evaluate) never holds it.
-	if !c.limiter.AcquireFetch(ctx) {
+	res := c.fetchCapped(ctx, it.URL)
+	if res == nil {
 		return nil, false
 	}
-	res := func() *fetch.Result {
-		defer c.limiter.ReleaseFetch()
-		return c.client.Fetch(ctx, it.URL)
-	}()
 	// A fetch that failed because the crawl was paused/stopped (parent context
 	// cancelled) is not a real error: abandon the URL without recording it and
 	// leave it pending for resume. A genuine per-request timeout leaves the
@@ -767,6 +764,25 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) ([]frontier.It
 
 	c.record(rec)
 	return discoveries, true
+}
+
+// fetchCapped runs ONE network fetch under the process-wide fetch cap,
+// releasing the slot the moment Fetch returns — even on a panic. It is the
+// single capped fetch path for worker page fetches AND the out-of-band
+// crawl-start fetches (/llms.txt, /llms-full.txt, the sitemap enumeration
+// walk), so M parallel crawls' start-up traffic counts against the same global
+// ceiling as page traffic (H1) — bypassing it there let each starting crawl
+// exceed the cap by its out-of-band fetches. Returns nil when the crawl was
+// cancelled while waiting for a slot. robots.txt keeps its documented bypass:
+// it is fetched under the per-crawl robots mutex (serialized, cached per
+// host), so it adds at most one uncapped fetch per crawl, and gating it would
+// stall every worker of the crawl behind the slot wait.
+func (c *Crawler) fetchCapped(ctx context.Context, url string) *fetch.Result {
+	if !c.limiter.AcquireFetch(ctx) {
+		return nil
+	}
+	defer c.limiter.ReleaseFetch()
+	return c.client.Fetch(ctx, url)
 }
 
 // handleContent parses HTML, evaluates indexability, and produces discoveries.

@@ -10,6 +10,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -62,11 +63,13 @@ type Outcome struct {
 }
 
 // Observer receives a crawl's lifecycle so a surface can render it live. All
-// methods may be called from the executor's goroutine; implementations must not
-// block. A nil observer is fine (headless).
+// methods may be called from the executor's goroutines; implementations must
+// not block. Every event names its crawl, so an observer watching several
+// parallel crawls can keep their streams apart (a feed without the id would
+// interleave pages from unrelated crawls). A nil observer is fine (headless).
 type Observer interface {
 	OnStart(crawlID, seed string)
-	OnPage(rec *crawler.PageRecord) // for surfaces that build a live feed
+	OnPage(crawlID string, rec *crawler.PageRecord) // for surfaces that build a live feed
 	OnDone(o Outcome)
 }
 
@@ -152,11 +155,12 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 	// One global limiter shared across every crawl this executor runs, so M
 	// parallel crawls honour a single process-wide fetch ceiling. Fall back to a
 	// per-crawl limiter from this crawl's config when none was injected. INVARIANT
-	// (P17): the fallback is sound only because the surfaces that omit WithLimiter
-	// (MCP, desktop) run one crawl at a time — that single crawl's limiter then IS
-	// the process-wide cap. Any surface that runs crawls in parallel (the CLI's
-	// `projects crawl-all --parallel`) MUST inject one shared limiter, else
-	// SUM(in-flight fetches) across crawls would be unbounded.
+	// (P17): the fallback is sound only for a dispatcher running one crawl at a
+	// time — that single crawl's limiter then IS the process-wide cap. Every
+	// surface that runs crawls in parallel (CLI `projects crawl-all --parallel`;
+	// desktop and MCP when speed.max_concurrent_crawls > 1, via
+	// runner.ProcessWiring) MUST inject one shared limiter through WithLimiter,
+	// else SUM(in-flight fetches) across crawls would be unbounded.
 	lim := e.lim
 	if lim == nil {
 		lim = limiter.New(cfg.Speed.MaxGlobalThreads, 1, render.GlobalRenderCap(cfg))
@@ -496,20 +500,34 @@ func signalRun(r *run, mode string) {
 	r.cancel()
 }
 
-// Snapshot returns one in-flight crawl's live progress (any, for single-crawl
-// surfaces), ok=false when idle.
-func (e *Executor) Snapshot() (Snapshot, bool) {
+// SnapshotCrawl returns one specific in-flight crawl's live progress;
+// ok=false when that crawl is not running.
+func (e *Executor) SnapshotCrawl(crawlID string) (Snapshot, bool) {
 	e.mu.Lock()
-	var r *run
-	for _, v := range e.cur {
-		r = v
-		break
-	}
+	r := e.cur[crawlID]
 	e.mu.Unlock()
 	if r == nil {
 		return Snapshot{}, false
 	}
 	return r.snapshot(), true
+}
+
+// Snapshots returns a live progress reading for every in-flight crawl, oldest
+// start first (stable across ticks); empty when idle.
+func (e *Executor) Snapshots() []Snapshot {
+	e.mu.Lock()
+	runs := make([]*run, 0, len(e.cur))
+	for _, r := range e.cur {
+		runs = append(runs, r)
+	}
+	e.mu.Unlock()
+	// started is set once at construction, so reading it lock-free here is safe.
+	sort.Slice(runs, func(i, j int) bool { return runs[i].started.Before(runs[j].started) })
+	out := make([]Snapshot, len(runs))
+	for i, r := range runs {
+		out[i] = r.snapshot()
+	}
+	return out
 }
 
 func (r *run) snapshot() Snapshot {
@@ -607,7 +625,7 @@ func (t *sink) Page(rec *crawler.PageRecord) error {
 	}
 	t.r.onPage(rec)
 	if t.obs != nil {
-		t.obs.OnPage(rec)
+		t.obs.OnPage(t.Crawl.ID, rec)
 	}
 	return nil
 }

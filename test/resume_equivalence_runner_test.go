@@ -42,7 +42,7 @@ func (o *pauseObs) OnStart(crawlID, seed string) {
 	o.mu.Unlock()
 }
 
-func (o *pauseObs) OnPage(*crawler.PageRecord) {
+func (o *pauseObs) OnPage(string, *crawler.PageRecord) {
 	o.mu.Lock()
 	o.pages++
 	n := o.pages

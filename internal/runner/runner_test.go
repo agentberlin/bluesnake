@@ -50,7 +50,7 @@ func (o *recObs) OnStart(crawlID, seed string) {
 	o.mu.Unlock()
 }
 
-func (o *recObs) OnPage(rec *crawler.PageRecord) {
+func (o *recObs) OnPage(_ string, rec *crawler.PageRecord) {
 	o.mu.Lock()
 	o.pages++
 	n := o.pages
@@ -101,8 +101,8 @@ func TestExecutorRunCompletes(t *testing.T) {
 	}
 
 	// idle now: no live snapshot
-	if _, ok := e.Snapshot(); ok {
-		t.Error("Snapshot ok=true after the crawl finished, want idle")
+	if snaps := e.Snapshots(); len(snaps) != 0 {
+		t.Errorf("Snapshots after the crawl finished = %d, want idle", len(snaps))
 	}
 
 	// registry records it completed

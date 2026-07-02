@@ -134,7 +134,13 @@ func (c *Crawler) enumerateSitemaps(ctx context.Context, sitemapURLs []string, s
 			return
 		}
 		seen[sitemapURL] = true
-		res := c.client.Fetch(ctx, sitemapURL)
+		// Under the global fetch cap like every crawl fetch (H1): the sitemap
+		// walk can touch dozens of files, and with M crawls starting in
+		// parallel an uncapped walk would exceed the cap.
+		res := c.fetchCapped(ctx, sitemapURL)
+		if res == nil { // crawl cancelled while waiting for a slot
+			return
+		}
 		if res.FetchError != "" || res.StatusCode != 200 {
 			return
 		}

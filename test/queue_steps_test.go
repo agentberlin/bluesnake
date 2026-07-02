@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
@@ -17,6 +18,8 @@ import (
 func (w *world) registerQueueSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a fixture page "([^"]*)" and a fixture page "([^"]*)"$`, w.twoFixturePages)
 	sc.Step(`^spider crawls of "([^"]*)" and "([^"]*)" are queued$`, w.queueTwoCrawls)
+	sc.Step(`^spider crawls of "([^"]*)" and "([^"]*)" are queued on a parallel queue of (\d+)$`, w.queueTwoCrawlsParallel)
+	sc.Step(`^the crawls ran concurrently$`, w.crawlsRanConcurrently)
 	sc.Step(`^the queue is drained$`, w.drainQueue)
 	sc.Step(`^both crawls complete in the registry$`, w.bothCrawlsComplete)
 	sc.Step(`^the crawls ran one at a time in the order they were queued$`, w.crawlsRanInOrder)
@@ -48,7 +51,7 @@ func (o *queueObserver) OnStart(crawlID, seed string) {
 	}
 }
 
-func (o *queueObserver) OnPage(*crawler.PageRecord) {}
+func (o *queueObserver) OnPage(string, *crawler.PageRecord) {}
 
 func (o *queueObserver) OnDone(runner.Outcome) {
 	o.mu.Lock()
@@ -80,6 +83,40 @@ func (w *world) queueTwoCrawls(a, b string) error {
 		if _, err := w.queueDisp.Enqueue(queue.JobSpec{URL: seed, Config: map[string]any{"speed.max_threads": 1}}, "manual", "", seed); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// queueTwoCrawlsParallel queues two single-page crawls on a dispatcher running
+// `parallel` drain loops with ONE shared limiter (the #78 wiring every parallel
+// surface uses). Each page holds its response long enough that the two crawls
+// reliably overlap when — and only when — the dispatcher really runs them
+// concurrently.
+func (w *world) queueTwoCrawlsParallel(a, b string, parallel int) error {
+	srv := w.ensureServer()
+	for _, p := range []string{a, b} {
+		w.route(p).sleep = 400 * time.Millisecond
+	}
+	w.queueObs = &queueObserver{total: 2, done: make(chan struct{})}
+	w.queueDisp = queue.New(queue.NewSQLiteStore(w.storeDirPath()),
+		runner.New(w.storeDirPath(), w.queueObs, runner.WithLimiter(limiter.New(0, 1, 0))),
+		queue.WithConcurrency(parallel))
+	w.queueSeeds = nil
+	for _, p := range []string{a, b} {
+		seed := srv.URL + p
+		w.queueSeeds = append(w.queueSeeds, seed)
+		if _, err := w.queueDisp.Enqueue(queue.JobSpec{URL: seed, Config: map[string]any{"speed.max_threads": 1}}, "manual", "", seed); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (w *world) crawlsRanConcurrently() error {
+	w.queueObs.mu.Lock()
+	defer w.queueObs.mu.Unlock()
+	if w.queueObs.maxActive != 2 {
+		return fmt.Errorf("peak concurrent crawls = %d, want 2 (the parallel queue must overlap them)", w.queueObs.maxActive)
 	}
 	return nil
 }

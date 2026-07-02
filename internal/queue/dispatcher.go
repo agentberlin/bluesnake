@@ -2,6 +2,8 @@ package queue
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -131,8 +133,8 @@ func (d *Dispatcher) Enqueue(spec JobSpec, source, projectID, label string) (Job
 func (d *Dispatcher) List() ([]Job, error) { return d.store.List() }
 
 // Current returns one in-flight job (with its crawl id once known), or nil when
-// idle. With several crawls running it returns an arbitrary one — enough for the
-// single-crawl surfaces to answer "is a crawl running".
+// idle. With several crawls running it returns an arbitrary one — enough to
+// answer "is a crawl running"; parallel-aware callers use CurrentAll.
 func (d *Dispatcher) Current() *Job {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -144,11 +146,80 @@ func (d *Dispatcher) Current() *Job {
 	return nil
 }
 
+// CurrentAll returns every in-flight job (with crawl ids once known), oldest
+// first. A job claimed but still in its startup window has an empty CrawlID.
+func (d *Dispatcher) CurrentAll() []Job {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]Job, 0, len(d.inflight))
+	for _, f := range d.inflight {
+		j := f.job
+		j.CrawlID = f.crawlID
+		out = append(out, j)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Position < out[j].Position })
+	return out
+}
+
 // Pause asks every in-flight crawl to pause (left resumable); no-op when idle.
 func (d *Dispatcher) Pause() { d.exec.Pause() }
 
 // Stop asks every in-flight crawl to stop and finalise as completed; no-op idle.
 func (d *Dispatcher) Stop() { d.exec.Stop() }
+
+// PauseCrawl pauses one specific in-flight crawl by id (left resumable),
+// leaving every other running crawl untouched. Surfaces address per-crawl
+// control through the dispatcher — never the executor directly — so the
+// layering stays one-way (surface → dispatcher → executor).
+func (d *Dispatcher) PauseCrawl(crawlID string) { d.exec.PauseCrawl(crawlID) }
+
+// StopCrawl stops one specific in-flight crawl by id, finalising it as
+// completed; every other running crawl is untouched.
+func (d *Dispatcher) StopCrawl(crawlID string) { d.exec.StopCrawl(crawlID) }
+
+// AwaitCrawl blocks until jobID's crawl exists (returning its crawl id) or the
+// job reaches a terminal state without one (returning its failure). It is the
+// blocking-start handshake the MCP surfaces put behind start_crawl: keyed by
+// job id, so with several starts in flight each caller gets its own crawl id —
+// a shared "the current crawl started" signal cannot associate them (#78).
+func (d *Dispatcher) AwaitCrawl(ctx context.Context, jobID string) (string, error) {
+	deadline := time.Now().Add(30 * time.Second) // failsafe: a claimed job starts within ticks
+	for time.Now().Before(deadline) {
+		jobs, err := d.store.List()
+		if err != nil {
+			return "", err
+		}
+		for _, j := range jobs {
+			if j.ID != jobID {
+				continue
+			}
+			if j.CrawlID != "" {
+				if j.Status == store.JobFailed && j.Error != "" {
+					return j.CrawlID, fmt.Errorf("%s", j.Error)
+				}
+				return j.CrawlID, nil
+			}
+			switch j.Status {
+			case store.JobFailed:
+				msg := j.Error
+				if msg == "" {
+					msg = "crawl failed to start"
+				}
+				return "", fmt.Errorf("%s", msg)
+			case store.JobCanceled:
+				return "", fmt.Errorf("crawl was canceled")
+			case store.JobInterrupted:
+				return "", fmt.Errorf("crawl was interrupted before it started")
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	return "", fmt.Errorf("crawl did not start in time")
+}
 
 // Cancel cancels a job. A still-queued job is dropped; an in-flight job is
 // stopped by crawl id (finalised as completed), targeting just that one crawl

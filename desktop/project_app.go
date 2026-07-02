@@ -25,10 +25,11 @@ func NewProjectApp(app *App) *ProjectApp {
 }
 
 // CrawlAll enqueues a default spider crawl for every member domain of the
-// project, returning how many jobs it queued. The crawls run one at a time
-// through the app's single dispatcher (no parallel crawls), interleaved with any
-// hand-started crawls. A standalone crawl of a member domain already auto-joins
-// the project, so this is just "(re)crawl everything in this project now".
+// project, returning how many jobs it queued. The crawls drain through the
+// app's single dispatcher (up to speed.max_concurrent_crawls at a time),
+// interleaved with any hand-started crawls. A standalone crawl of a member
+// domain already auto-joins the project, so this is just "(re)crawl everything
+// in this project now".
 func (a *ProjectApp) CrawlAll(projectID string) (int, error) {
 	s, err := a.open()
 	if err != nil {

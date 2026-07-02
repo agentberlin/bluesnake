@@ -7,16 +7,18 @@ import (
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// uiObserver turns a queue-driven crawl's lifecycle into the desktop's realtime
-// Wails events. The engine already streams every page through the runner's sink;
-// this observer aggregates the UI-specific bits the core counters don't carry —
-// a feed of notable URLs — and runs the throttled "crawl:progress" emitter
-// (~4/s) reading the executor's live snapshot. "crawl:started" fires when a job
-// begins (so the UI jumps to the live view, whether the crawl was hand-started
-// or started by an MCP agent), and "crawl:done" fires once when it ends.
+// uiObserver turns queue-driven crawls' lifecycles into the desktop's realtime
+// Wails events. The engine already streams every page through the runner's
+// sink; this observer aggregates the UI-specific bits the core counters don't
+// carry — a feed of notable URLs — and runs a throttled "crawl:progress"
+// emitter (~4/s) per live crawl reading the executor's per-crawl snapshot.
+// With several crawls running in parallel, every event carries its crawl id
+// and the per-crawl state is keyed by it, so two crawls' progress streams and
+// feeds never cross. "crawl:started" fires when a job begins (so the UI opens
+// the live view, whether the crawl was hand-started or started by an MCP
+// agent), and "crawl:done" fires once per crawl when it ends.
 
 // FeedItem is one notable (non-2xx) URL for the live feed.
 type FeedItem struct {
@@ -58,44 +60,53 @@ type DoneEvent struct {
 	Error       string `json:"error,omitempty"`
 }
 
-// uiObserver implements runner.Observer for the desktop app.
-type uiObserver struct {
-	app *App
-
-	mu       sync.Mutex
+// uiRun is one live crawl's UI-side state: its notable-URL feed and the stop
+// signal for its progress ticker.
+type uiRun struct {
 	seq      int
 	feed     []FeedItem
 	stopTick chan struct{}
 }
 
+// uiObserver implements runner.Observer for the desktop app. emit abstracts
+// runtime.EventsEmit so tests can capture the event stream headlessly.
+type uiObserver struct {
+	app  *App
+	emit func(event string, data ...interface{})
+
+	mu   sync.Mutex
+	runs map[string]*uiRun // crawl id -> live UI state
+}
+
 func (o *uiObserver) OnStart(crawlID, seed string) {
+	run := &uiRun{stopTick: make(chan struct{})}
 	o.mu.Lock()
-	o.seq = 0
-	o.feed = nil
-	o.stopTick = make(chan struct{})
-	stop := o.stopTick
+	if o.runs == nil {
+		o.runs = map[string]*uiRun{}
+	}
+	o.runs[crawlID] = run
 	o.mu.Unlock()
 
-	runtime.EventsEmit(o.app.ctx, "crawl:started", crawlID)
+	o.emit("crawl:started", crawlID)
 
-	// throttled progress emitter
+	// throttled per-crawl progress emitter
 	go func() {
 		tick := time.NewTicker(250 * time.Millisecond)
 		defer tick.Stop()
 		for {
 			select {
 			case <-tick.C:
-				if snap, ok := o.app.exec.Snapshot(); ok {
-					runtime.EventsEmit(o.app.ctx, "crawl:progress", o.build(snap, "running"))
+				if snap, ok := o.app.exec.SnapshotCrawl(crawlID); ok {
+					o.emit("crawl:progress", o.build(snap, "running"))
 				}
-			case <-stop:
+			case <-run.stopTick:
 				return
 			}
 		}
 	}()
 }
 
-func (o *uiObserver) OnPage(rec *crawler.PageRecord) {
+func (o *uiObserver) OnPage(crawlID string, rec *crawler.PageRecord) {
 	notable := false
 	status := rec.StatusCode
 	switch rec.State {
@@ -113,28 +124,33 @@ func (o *uiObserver) OnPage(rec *crawler.PageRecord) {
 		return
 	}
 	o.mu.Lock()
-	o.seq++
-	o.feed = append([]FeedItem{{URL: rec.URL, Status: status, State: rec.State, Seq: o.seq}}, o.feed...)
-	if len(o.feed) > 60 {
-		o.feed = o.feed[:60]
+	if run := o.runs[crawlID]; run != nil {
+		run.seq++
+		run.feed = append([]FeedItem{{URL: rec.URL, Status: status, State: rec.State, Seq: run.seq}}, run.feed...)
+		if len(run.feed) > 60 {
+			run.feed = run.feed[:60]
+		}
 	}
 	o.mu.Unlock()
 }
 
 func (o *uiObserver) OnDone(out runner.Outcome) {
 	o.mu.Lock()
-	if o.stopTick != nil {
-		close(o.stopTick)
-		o.stopTick = nil
+	run := o.runs[out.CrawlID]
+	if run != nil {
+		close(run.stopTick)
 	}
 	o.mu.Unlock()
 
 	o.app.invalidate(out.CrawlID)
 
 	// final snapshot so the UI lands on exact numbers (the executor's in-flight
-	// state is still live at OnDone, before it clears).
-	if snap, ok := o.app.exec.Snapshot(); ok {
-		runtime.EventsEmit(o.app.ctx, "crawl:progress", o.build(snap, "done"))
+	// state is still live at OnDone, before it clears). A crawl that failed to
+	// start has no run/snapshot — only the done event fires for it.
+	if run != nil {
+		if snap, ok := o.app.exec.SnapshotCrawl(out.CrawlID); ok {
+			o.emit("crawl:progress", o.build(snap, "done"))
+		}
 	}
 	done := DoneEvent{
 		CrawlID: out.CrawlID, Status: doneStatus(out),
@@ -144,7 +160,11 @@ func (o *uiObserver) OnDone(out runner.Outcome) {
 	if out.Err != nil {
 		done.Error = out.Err.Error()
 	}
-	runtime.EventsEmit(o.app.ctx, "crawl:done", done)
+	o.emit("crawl:done", done)
+
+	o.mu.Lock()
+	delete(o.runs, out.CrawlID)
+	o.mu.Unlock()
 }
 
 // doneStatus maps an Outcome to the UI's terminal status. A crawl that FAILED
@@ -162,11 +182,14 @@ func doneStatus(out runner.Outcome) string {
 }
 
 // build composes a ProgressSnapshot from the executor's live counters plus the
-// observer's notable-URL feed.
+// snapshot's own crawl's notable-URL feed.
 func (o *uiObserver) build(snap runner.Snapshot, state string) ProgressSnapshot {
 	o.mu.Lock()
-	feed := make([]FeedItem, len(o.feed))
-	copy(feed, o.feed)
+	var feed []FeedItem
+	if run := o.runs[snap.CrawlID]; run != nil {
+		feed = make([]FeedItem, len(run.feed))
+		copy(feed, run.feed)
+	}
 	o.mu.Unlock()
 	return ProgressSnapshot{
 		CrawlID: snap.CrawlID, Seed: snap.Seed, State: state,

@@ -359,7 +359,7 @@ func (o *groupObserver) OnStart(crawlID, seed string) {
 	fmt.Fprintf(o.out, "crawling %s …\n", seed)
 }
 
-func (o *groupObserver) OnPage(*crawler.PageRecord) {}
+func (o *groupObserver) OnPage(string, *crawler.PageRecord) {}
 
 func (o *groupObserver) OnDone(out runner.Outcome) {
 	o.mu.Lock()

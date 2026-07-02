@@ -41,7 +41,7 @@ func (o *groupObs) OnStart(crawlID, seed string) {
 	o.starts = append(o.starts, crawlID)
 	o.mu.Unlock()
 }
-func (o *groupObs) OnPage(*crawler.PageRecord) {}
+func (o *groupObs) OnPage(string, *crawler.PageRecord) {}
 
 func (o *groupObs) OnDone(out Outcome) {
 	o.mu.Lock()
