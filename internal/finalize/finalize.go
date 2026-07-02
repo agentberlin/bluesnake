@@ -181,15 +181,19 @@ func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
 		return Outcome{}, err
 	}
 	analyzePages := lite
-	if cfg.Analysis.NearDuplicates && cfg.Content.NearDuplicates.Enabled && !hasMinhashSignatures(lite) {
+	if cfg.Analysis.NearDuplicates && cfg.Content.NearDuplicates.Enabled && !minhashCoverageComplete(lite) {
 		// Near-duplicates need each page's minhash signature. When near-dup was
 		// enabled at crawl time the signatures are persisted (the pages.minhash
 		// column) and the ContentText-free lite map already carries them — analyze
 		// reads them directly, so the page bodies are never re-materialised. The
-		// fallback below fires only when the column is NULL for every page — i.e.
-		// the crawl ran with near-dup OFF and the operator turned it on for this
-		// re-analysis (a pre-minhash crawl migrates the column in as NULL, the same
-		// case). It re-loads the full map (the sole pass that re-reads ContentText).
+		// fallback below fires whenever ANY content page lacks a signature: the
+		// crawl ran with near-dup OFF and the operator turned it on for this
+		// re-analysis (a pre-minhash crawl migrates the column in as NULL), or the
+		// state is MIXED — some pages predate the switch-on (#74 N1). An
+		// any-page-HAS-a-signature check ran the lite map through near-dup in the
+		// mixed state, where every signature-less page hashed its empty lite
+		// ContentText to the all-max signature and "matched" every other one at
+		// 100%. It re-loads the full map (the sole pass that re-reads ContentText).
 		full, ferr := st.LoadPages()
 		if ferr != nil {
 			return Outcome{}, ferr
@@ -227,16 +231,25 @@ func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
 	}, nil
 }
 
-// hasMinhashSignatures reports whether any page in the (lite) map carries a
-// precomputed near-dup signature — i.e. the crawl persisted the minhash column.
-// When true, near-dup runs over the lite map and never reloads ContentText.
-func hasMinhashSignatures(pages map[string]*crawler.PageRecord) bool {
+// minhashCoverageComplete reports whether EVERY page near-dup could consider
+// carries a precomputed signature — only then may near-dup run over the
+// ContentText-free lite map. The check is a deliberate superset of analyze's
+// candidate gate (crawled, internal, parsed, WordCount>0 — ignoring the
+// indexable/paginated config filters): an over-broad miss merely loads the
+// full map (correct, slower); an under-broad one would hand analyze a
+// signature-less page whose empty lite ContentText hashes to the all-max
+// signature and cross-matches every other one at 100% (#74 N1).
+func minhashCoverageComplete(pages map[string]*crawler.PageRecord) bool {
 	for _, rec := range pages {
-		if len(rec.Minhash) > 0 {
-			return true
+		if rec.State != crawler.StateCrawled || rec.Scope != "internal" ||
+			rec.Facts == nil || rec.Facts.WordCount == 0 {
+			continue
+		}
+		if len(rec.Minhash) == 0 {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // evaluateIssues runs the full issue catalogue with bounded page-body memory: the

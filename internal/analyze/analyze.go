@@ -413,9 +413,17 @@ func (a *analyzer) nearDuplicates() {
 		// Prefer the signature precomputed at crawl time (the pages.minhash
 		// column, populated when near-dup was enabled) so we never re-materialise
 		// ContentText. Older crawls / near-dup-off crawls carry no column; fall
-		// back to hashing the body, which finalize loads in that case.
+		// back to hashing the body, which finalize loads in that case. A page
+		// with NEITHER a signature nor body text (a lite-map page predating the
+		// near-dup switch-on) is excluded outright: hashing the empty text yields
+		// the all-max signature, which matches every other empty signature at
+		// 100% (#74 N1) — finalize reloads the full map for that state, so
+		// reaching here without text is a caller bug this line defends against.
 		sig := minhash.Decode(rec.Minhash)
 		if len(rec.Minhash) != minhash.EncodedLen {
+			if rec.Facts.ContentText == "" {
+				continue
+			}
 			sig = minhash.Of(rec.Facts.ContentText)
 		}
 		cands = append(cands, cand{url, sig})
