@@ -403,7 +403,10 @@ type QueueItem struct {
 	Enqueued string `json:"enqueued"`
 }
 
-// ListQueue returns every job in the queue (newest position last).
+// ListQueue returns the active queue: jobs still queued or running, in position
+// order. Terminal jobs (done/failed/interrupted/canceled) stay in the registry
+// for resumability and crawl linkage but are not surfaced here — the queue view
+// shows outstanding work, not history.
 func (a *App) ListQueue() ([]QueueItem, error) {
 	a.ensureQueue()
 	jobs, err := a.disp.List()
@@ -412,6 +415,9 @@ func (a *App) ListQueue() ([]QueueItem, error) {
 	}
 	out := make([]QueueItem, 0, len(jobs))
 	for _, j := range jobs {
+		if !store.JobActive(j.Status) {
+			continue
+		}
 		qi := QueueItem{
 			ID: j.ID, Status: j.Status, Source: j.Source,
 			Label: j.Label, CrawlID: j.CrawlID, Error: j.Error,
