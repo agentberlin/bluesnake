@@ -63,7 +63,7 @@ func servedStore(t *testing.T) (dir, id string) {
 			t.Fatal(err)
 		}
 	}
-	if err := st.SaveIssues([]issues.Occurrence{
+	if err := st.SaveIssues(nil, []issues.Occurrence{
 		{URL: "https://ex.com/a", IssueID: "internal_client_error"},
 		{URL: "https://ex.com/", IssueID: "security_missing_hsts"},
 	}); err != nil {

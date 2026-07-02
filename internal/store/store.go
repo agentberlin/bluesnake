@@ -1323,15 +1323,43 @@ func (c *Crawl) StreamContentText(fn func(url, text string) error) error {
 	return rows.Err()
 }
 
-// SaveIssues replaces all stored issue occurrences.
-func (c *Crawl) SaveIssues(occs []issues.Occurrence) error {
+// SaveIssues replaces stored issue occurrences under the ownership contract
+// (#75): each writer replaces exactly the rows of the checks it re-evaluated.
+// owned lists those issue IDs; rows of other checks are left untouched — the
+// `issues` command re-runs only the catalogue checks (issues.EvaluatedIDs), so
+// the analysis-phase findings must survive it. A nil owned set means the
+// caller re-evaluated everything: every row is replaced, including rows of IDs
+// no longer in the catalogue (full re-analysis is authoritative). An
+// occurrence outside a non-nil owned set is rejected loudly — it would be an
+// orphaned append no later write could clean up.
+func (c *Crawl) SaveIssues(owned []string, occs []issues.Occurrence) error {
 	tx, err := c.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM issues`); err != nil {
-		return err
+	if owned == nil {
+		if _, err := tx.Exec(`DELETE FROM issues`); err != nil {
+			return err
+		}
+	} else {
+		ownedSet := make(map[string]bool, len(owned))
+		del, err := tx.Prepare(`DELETE FROM issues WHERE issue = ?`)
+		if err != nil {
+			return err
+		}
+		defer del.Close()
+		for _, id := range owned {
+			ownedSet[id] = true
+			if _, err := del.Exec(id); err != nil {
+				return err
+			}
+		}
+		for _, o := range occs {
+			if !ownedSet[o.IssueID] {
+				return fmt.Errorf("SaveIssues: occurrence %q on %s is outside the owned issue set", o.IssueID, o.URL)
+			}
+		}
 	}
 	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO issues(url, issue, detail) VALUES(?,?,?)`)
 	if err != nil {
@@ -1502,35 +1530,23 @@ func (c *Crawl) SitemapIndex() (analyze.SitemapIndex, error) {
 	return index, rows.Err()
 }
 
-// AddIssues appends occurrences without clearing existing ones (the analysis
-// phase adds to the per-page evaluation).
-func (c *Crawl) AddIssues(occs []issues.Occurrence) error {
-	tx, err := c.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO issues(url, issue, detail) VALUES(?,?,?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	for _, o := range occs {
-		if _, err := stmt.Exec(o.URL, o.IssueID, o.Detail); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
 // SaveAnalysis writes the analysis pass back: per-page metrics, chains, and
-// the analysis-phase issue occurrences.
+// the analysis-phase issue occurrences. It is a full replace of the previous
+// analysis run (#75): the analysis-owned page columns are reset to their
+// schema defaults before the new maps apply, so a page that dropped out of the
+// new result set (near-dup disabled, threshold raised, link score off) cannot
+// keep the previous run's values; the issue occurrences likewise replace the
+// analysis-owned rows via the SaveIssues ownership contract.
 func (c *Crawl) SaveAnalysis(r *analyze.Results) error {
 	tx, err := c.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE pages SET link_score = 0, unique_inlinks = 0,
+		unique_outlinks = 0, closest_similarity = 0, near_dup_count = 0`); err != nil {
+		return err
+	}
 	for url, score := range r.LinkScores {
 		if _, err := tx.Exec(`UPDATE pages SET link_score = ? WHERE url = ?`, score, url); err != nil {
 			return err
@@ -1562,7 +1578,7 @@ func (c *Crawl) SaveAnalysis(r *analyze.Results) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	return c.AddIssues(r.Occurrences)
+	return c.SaveIssues(issues.AnalysisIDs(), r.Occurrences)
 }
 
 // Chains returns the stored redirect/canonical chains.

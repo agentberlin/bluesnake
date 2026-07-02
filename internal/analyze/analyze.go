@@ -238,11 +238,24 @@ func (a *analyzer) linkGraph() {
 	// Canonical accumulation order (FIN-CSRID). Go map iteration is randomized and
 	// float addition is non-associative, so iterating `edges`/`dsts` in map order
 	// made the stored link_score jitter run-to-run at ~1e-12. Sort the node set and
-	// precompute each source's self-loop-excluded out-degree + sorted destination
-	// list ONCE, then accumulate in that fixed order every iteration — making the
-	// score bit-stable while reproducing the previous values exactly (a non-node or
-	// dangling source contributes 0, as before).
+	// precompute each source's out-degree + sorted destination list ONCE, then
+	// accumulate in that fixed order every iteration — making the score bit-stable
+	// (a non-node or dangling source contributes 0, as before).
+	//
+	// A PageRank edge exists only between node-set members (#75 bug 3): a
+	// destination outside the set — a self-loop, or an internal URL that was
+	// never crawled (robots-blocked, errored, over-limit, still queued) — is
+	// dropped from the graph entirely, so it neither receives a share nor
+	// dilutes its source's out-degree. This is the classic dangling-link
+	// removal from the PageRank literature and mirrors how external dsts never
+	// enter `edges` above; a source left with no node dsts becomes dangling and
+	// takes the existing out==0 rule (its mass is not redistributed). Only
+	// `edges` — the link-metrics view — keeps non-crawled internal dsts.
 	sort.Strings(nodes)
+	nodeSet := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		nodeSet[n] = true
+	}
 	srcs := make([]string, 0, len(edges))
 	for src := range edges {
 		srcs = append(srcs, src)
@@ -252,21 +265,17 @@ func (a *analyzer) linkGraph() {
 	dstsBySrc := make(map[string][]string, len(srcs))
 	for _, src := range srcs {
 		set := edges[src]
-		n := len(set)
-		if set[src] {
-			n-- // self-loops count for link metrics, not for PageRank
-		}
-		out[src] = n
-		if n == 0 {
-			continue
-		}
-		dsts := make([]string, 0, n)
+		dsts := make([]string, 0, len(set))
 		for dst := range set {
-			if dst != src {
+			if dst != src && nodeSet[dst] {
 				dsts = append(dsts, dst)
 			}
 		}
+		if len(dsts) == 0 {
+			continue // dangling: out[src] stays 0
+		}
 		sort.Strings(dsts)
+		out[src] = len(dsts)
 		dstsBySrc[src] = dsts
 	}
 

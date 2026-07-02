@@ -367,7 +367,7 @@ func TestLoadPagesAndIssues(t *testing.T) {
 		{URL: "https://ex.com/", IssueID: "h1_missing", Detail: "d"},
 		{URL: "https://ex.com/plain", IssueID: "title_missing"},
 	}
-	if err := c.SaveIssues(occs); err != nil {
+	if err := c.SaveIssues(nil, occs); err != nil {
 		t.Fatal(err)
 	}
 	counts, err := c.IssueCounts()
@@ -384,8 +384,8 @@ func TestLoadPagesAndIssues(t *testing.T) {
 	if len(urls) != 2 {
 		t.Errorf("urls = %v", urls)
 	}
-	// saving again replaces
-	if err := c.SaveIssues(occs[:1]); err != nil {
+	// saving again with a nil owned set replaces everything
+	if err := c.SaveIssues(nil, occs[:1]); err != nil {
 		t.Fatal(err)
 	}
 	counts, _ = c.IssueCounts()
@@ -427,7 +427,7 @@ func TestIssueMultiDetailPreserved(t *testing.T) {
 		{URL: "https://ex.com/r", IssueID: "structured_validation_error", Detail: "Recipe: missing required property name"},
 		{URL: "https://ex.com/a", IssueID: "structured_validation_error", Detail: "Article: missing author"},
 	}
-	if err := c.SaveIssues(occs); err != nil {
+	if err := c.SaveIssues(nil, occs); err != nil {
 		t.Fatal(err)
 	}
 
@@ -516,7 +516,8 @@ func TestIssuesDetailPKMigration(t *testing.T) {
 	}
 
 	// the rebuilt PK now accepts a SECOND distinct detail for the same (url, issue)
-	if err := c2.AddIssues([]issues.Occurrence{
+	if err := c2.SaveIssues([]string{"structured_validation_error"}, []issues.Occurrence{
+		{URL: "https://ex.com/", IssueID: "structured_validation_error", Detail: "Recipe: missing required property name"},
 		{URL: "https://ex.com/", IssueID: "structured_validation_error", Detail: "Recipe: missing required property image"},
 	}); err != nil {
 		t.Fatal(err)
@@ -754,16 +755,30 @@ func TestAnalysisPersistence(t *testing.T) {
 	if counts["content_near_duplicate"] != 1 {
 		t.Errorf("analysis issues not added: %v", counts)
 	}
-	// re-running SaveIssues (per-page evaluation) then AddIssues keeps both layers
-	if err := c.SaveIssues([]issues.Occurrence{{URL: "https://ex.com/", IssueID: "title_missing"}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.AddIssues(results.Occurrences); err != nil {
+	// The ownership contract (#75): a catalogue-only refresh replaces exactly
+	// the rows of the checks it re-evaluated, so the analysis-phase rows
+	// SaveAnalysis wrote survive it.
+	if err := c.SaveIssues(issues.EvaluatedIDs(), []issues.Occurrence{{URL: "https://ex.com/", IssueID: "title_missing"}}); err != nil {
 		t.Fatal(err)
 	}
 	counts, _ = c.IssueCounts()
 	if counts["title_missing"] != 1 || counts["content_near_duplicate"] != 1 {
 		t.Errorf("layered issues = %v", counts)
+	}
+	// An occurrence outside the owned set is rejected loudly — it would be an
+	// orphaned append no later write could clean up.
+	if err := c.SaveIssues([]string{"title_missing"}, []issues.Occurrence{
+		{URL: "https://ex.com/", IssueID: "content_near_duplicate"},
+	}); err == nil {
+		t.Error("SaveIssues accepted an occurrence outside its owned set")
+	}
+	// A re-run of the analysis layer replaces its own rows and no others.
+	if err := c.SaveIssues(issues.AnalysisIDs(), nil); err != nil {
+		t.Fatal(err)
+	}
+	counts, _ = c.IssueCounts()
+	if counts["content_near_duplicate"] != 0 || counts["title_missing"] != 1 {
+		t.Errorf("analysis-layer replace = %v", counts)
 	}
 }
 

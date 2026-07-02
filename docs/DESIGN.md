@@ -975,6 +975,32 @@ pages by exactly these), SF's property-VALUE *type* checks ("address must be of
 type PostalAddress" — a different validation dimension), and standalone-`Offer`
 merchant depth.
 
+**2026-07-02 — finalize/analyze staleness trio (#75).** Three pre-existing
+replace-semantics bugs, fixed together test-first. (1) **Issue-row ownership is
+now a contract**: the catalogue marks the 31 analysis-phase checks
+(`issues.analysisOwned` → `AnalysisIDs()`/`EvaluatedIDs()`), and
+`store.SaveIssues(owned, occs)` replaces exactly the rows of the checks the
+caller re-evaluated (nil owned = authoritative full replace, used by full
+re-analysis). The `issues` command therefore refreshes the catalogue checks
+without wiping the stored redirect-chain/near-dup/hreflang/pagination/sitemap/
+llms.txt findings; `AddIssues` (append-only) is gone — `SaveAnalysis` scope-
+replaces the analysis-owned rows. Enforced by the ownership-partition meta-test
+(`internal/analyze/coverage_test.go`) and `TestIssuesCmdPreservesAnalysisIssues`.
+(2) **`SaveAnalysis` resets the five analysis-owned page columns** (`link_score`,
+`unique_inlinks`, `unique_outlinks`, `closest_similarity`, `near_dup_count`) to
+their schema defaults in the same transaction before applying the new result
+maps, so re-analysis with different knobs (near-dup off / threshold raised /
+link score off) can no longer leave a crawl mixing two runs' metrics
+(`TestReanalyzeClearsStaleScoreColumns`). (3) **PageRank edges exist only
+between node-set members** (internal ∧ crawled): a destination outside the set
+(robots-blocked, errored, over-limit, still queued) is dropped from the graph
+entirely — no rank share, no out-degree dilution — matching the self-loop rule,
+the external-dst gate, and the classic dangling-link removal; a source left
+with no node destinations takes the existing dangling out==0 rule. Non-crawled
+URLs can no longer hold rank, skew the v/max·100 scaling, or appear in
+`LinkScores` (`TestPageRank_NonCrawledInternalDstHoldsNoRank`); CSR and
+Facts.Links paths stay bit-identical (`TestPageRankCSRParity`).
+
 **Implemented but scoped down (extension points exist):**
 - Issues catalogue: **164 = the full issues library computable on the current
   data model** (the no-new-infrastructure boundary, not an arbitrary stop).

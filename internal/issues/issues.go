@@ -7,6 +7,7 @@ package issues
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/agentberlin/bluesnake/internal/config"
@@ -259,13 +260,71 @@ var catalogue = []Def{
 	{"llms_txt_link_unverified", "llms_txt", "Unverified Curated Link", Warning, Low},
 }
 
+// analysisOwned marks the catalogue checks computed by the analyze package's
+// post-crawl graph analyses (DESIGN §5.6) rather than by Evaluate. Ownership
+// decides which stored rows an issue writer replaces (store.SaveIssues): each
+// writer replaces exactly the rows of the checks it re-evaluated, so the cheap
+// catalogue-only `issues` refresh can never wipe the analysis-phase findings
+// (#75). The split is enforced twice: an ID listed here but missing from the
+// catalogue panics at init, and the catalogue-coverage meta-test
+// (internal/analyze) asserts Evaluate and analyze.Run each emit only IDs on
+// their own side of the partition.
+var analysisOwned = map[string]bool{
+	"redirect_chain": true, "redirect_loop": true, "canonical_chain": true,
+	"content_near_duplicate": true,
+	"hreflang_non_200":       true, "hreflang_missing_return": true,
+	"hreflang_invalid_code": true, "hreflang_missing_self_reference": true,
+	"hreflang_missing_x_default": true, "hreflang_inconsistent_return": true,
+	"hreflang_non_canonical_return": true, "hreflang_noindex_return": true,
+	"hreflang_unlinked":  true,
+	"pagination_non_200": true, "pagination_sequence_error": true,
+	"pagination_loop": true, "pagination_unlinked": true,
+	"sitemap_orphan": true, "sitemap_non_indexable": true,
+	"sitemap_in_multiple": true, "sitemap_not_in_sitemap": true,
+	"sitemap_nested_as_url": true, "sitemap_over_50k": true,
+	"llms_txt_missing": true, "llms_txt_invalid_format": true,
+	"llms_txt_missing_summary": true, "llms_txt_malformed_link_list": true,
+	"llms_full_txt_missing": true, "llms_txt_broken_link": true,
+	"llms_txt_link_non_indexable": true, "llms_txt_link_unverified": true,
+}
+
 var defByID = func() map[string]Def {
 	m := make(map[string]Def, len(catalogue))
 	for _, d := range catalogue {
 		m[d.ID] = d
 	}
+	for id := range analysisOwned {
+		if _, ok := m[id]; !ok {
+			panic("issues: analysisOwned lists unknown issue id " + id)
+		}
+	}
 	return m
 }()
+
+// AnalysisIDs returns the issue IDs owned by the analyze package's graph
+// analyses, sorted.
+func AnalysisIDs() []string {
+	ids := make([]string, 0, len(analysisOwned))
+	for id := range analysisOwned {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// EvaluatedIDs returns the issue IDs owned by the catalogue evaluation
+// (Evaluate plus the SQL duplicate checks and the streamed content-text
+// checks), sorted — the complement of AnalysisIDs.
+func EvaluatedIDs() []string {
+	ids := make([]string, 0, len(catalogue)-len(analysisOwned))
+	for _, d := range catalogue {
+		if !analysisOwned[d.ID] {
+			ids = append(ids, d.ID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
 
 // Catalogue returns all issue definitions.
 func Catalogue() []Def { return catalogue }

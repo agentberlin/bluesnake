@@ -121,6 +121,61 @@ func TestPageRank_NodeSetFromPagesPredicate(t *testing.T) {
 	}
 }
 
+// TestPageRank_NonCrawledInternalDstHoldsNoRank (#75 bug 3) pins the other half
+// of the node-set predicate: an INTERNAL link target that was never crawled
+// (robots-blocked here) is not a PageRank node — it holds no rank, never joins
+// the v/max·100 scaling, and is absent from LinkScores. The graph is built so
+// the leak is observable: /b../e vote only for the blocked page, so before the
+// fix it accumulated the maximum rank and scaled every real node down.
+func TestPageRank_NonCrawledInternalDstHoldsNoRank(t *testing.T) {
+	cfg := config.Default()
+	cfg.Analysis.LinkScore = true
+
+	const ghost = "/ghost" // internal, robots-blocked: in the page set, never crawled
+	node := func(u string, dsts ...string) *crawler.PageRecord {
+		facts := &parse.Facts{}
+		for _, d := range dsts {
+			facts.Links = append(facts.Links, parse.Link{Type: parse.Hyperlink, URL: d})
+		}
+		return &crawler.PageRecord{URL: u, Scope: "internal", State: crawler.StateCrawled, Facts: facts}
+	}
+	mkPages := func() map[string]*crawler.PageRecord {
+		return map[string]*crawler.PageRecord{
+			"/a":  node("/a", "/b", ghost),
+			"/b":  node("/b", ghost),
+			"/c":  node("/c", ghost),
+			"/d":  node("/d", ghost),
+			"/e":  node("/e", ghost),
+			ghost: {URL: ghost, Scope: "internal", State: crawler.StateBlockedRobots},
+		}
+	}
+	var links []crawler.LinkRow
+	for src, rec := range mkPages() {
+		if rec.Facts == nil {
+			continue
+		}
+		for _, l := range rec.Facts.Links {
+			links = append(links, crawler.LinkRow{Src: src, Dst: l.URL, Type: string(parse.Hyperlink)})
+		}
+	}
+
+	for name, scores := range map[string]map[string]float64{
+		"facts": Run(mkPages(), nil, nil, cfg).LinkScores,
+		"csr":   Run(mkPages(), nil, nil, cfg, WithLinks(links)).LinkScores,
+	} {
+		if _, ok := scores[ghost]; ok {
+			t.Errorf("%s: non-crawled internal target %s holds rank (score %v) — it is not a node", name, ghost, scores[ghost])
+		}
+		// /b is the only node with an in-edge, so it must be the maximum — at
+		// exactly 100. Before the fix the blocked page held the max, scaling /b
+		// far below 100.
+		if scores["/b"] != 100 {
+			t.Errorf("%s: link_score(/b) = %v, want 100 — a non-node dst must not join max-scaling", name, scores["/b"])
+		}
+		assertScaled(t, scores)
+	}
+}
+
 // assertScaled checks the v/max*100 contract: every score is in [0,100] and the
 // maximum is exactly 100.
 func assertScaled(t *testing.T, scores map[string]float64) {

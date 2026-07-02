@@ -169,7 +169,10 @@ func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
-	if err := st.SaveIssues(occs); err != nil {
+	// Full re-analysis is authoritative over the whole issues table: a nil
+	// owned set replaces every row (stale analysis-phase rows included); the
+	// analysis-phase occurrences are re-written by SaveAnalysis below.
+	if err := st.SaveIssues(nil, occs); err != nil {
 		return Outcome{}, err
 	}
 	sitemaps, err := st.SitemapIndex()
@@ -279,6 +282,10 @@ func evaluateIssues(st *store.Crawl, lite map[string]*crawler.PageRecord, cfg *c
 // Issues re-evaluates only the issue catalogue over the full stored graph
 // (without the graph analyses), persisting the occurrences. Used by the `issues`
 // command, which lists issues and wants a cheap refresh, not a full re-analysis.
+// It replaces only the rows of the checks it re-evaluated (#75): the
+// analysis-phase occurrences a completed crawl already computed — chains,
+// near-duplicates, hreflang, pagination, sitemaps, llms.txt — survive intact
+// until the next Analyze recomputes them.
 func Issues(st *store.Crawl, cfg *config.Config) error {
 	lite, err := st.LoadPagesLite()
 	if err != nil {
@@ -288,5 +295,5 @@ func Issues(st *store.Crawl, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	return st.SaveIssues(occs)
+	return st.SaveIssues(issues.EvaluatedIDs(), occs)
 }

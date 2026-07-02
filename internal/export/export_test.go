@@ -44,7 +44,7 @@ func seededStore(t *testing.T) *store.Crawl {
 			t.Fatal(err)
 		}
 	}
-	if err := st.SaveIssues([]issues.Occurrence{
+	if err := st.SaveIssues(nil, []issues.Occurrence{
 		{URL: "https://ex.com/a", IssueID: "internal_client_error"},
 		{URL: "https://ex.com/", IssueID: "security_missing_hsts"},
 	}); err != nil {
@@ -153,7 +153,7 @@ func TestIssuesExportListsEveryDetail(t *testing.T) {
 			},
 		},
 	}
-	if err := st.SaveIssues(issues.Evaluate(pages, config.Default())); err != nil {
+	if err := st.SaveIssues(nil, issues.Evaluate(pages, config.Default())); err != nil {
 		t.Fatal(err)
 	}
 
@@ -260,7 +260,7 @@ func TestWriters(t *testing.T) {
 
 func TestRemainingTabsAndReports(t *testing.T) {
 	st := seededStore(t)
-	if err := st.SaveIssues([]issues.Occurrence{
+	if err := st.SaveIssues(nil, []issues.Occurrence{
 		{URL: "https://ex.com/a", IssueID: "internal_client_error"},
 		{URL: "https://ex.com/", IssueID: "sitemap_orphan", Detail: "https://ex.com/s.xml"},
 	}); err != nil {
