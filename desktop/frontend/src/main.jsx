@@ -15,7 +15,6 @@ import { NewCrawl } from "./views/newcrawl";
 import { ResultsWorkspace } from "./views/results-shell";
 import { UrlDetail } from "./views/detail";
 import { SettingsView } from "./views/settings";
-import { CompareView } from "./views/compare";
 import { ProjectsView } from "./views/projects";
 import { RobotsTester } from "./views/robots";
 import { QueueView } from "./views/queue";
@@ -209,7 +208,6 @@ function App() {
     { id: "home", label: "Crawls", icon: "layout-grid", count: crawls.length },
     { id: "queue", label: "Queue", icon: "list-checks", count: pendingJobs || null },
     { id: "projects", label: "Projects", icon: "folder" },
-    { id: "compare", label: "Compare", icon: "git-compare" },
     { id: "robots", label: "robots.txt Tester", icon: "bot" },
     { id: "settings", label: "Settings & Profiles", icon: "sliders-horizontal" },
   ];
@@ -337,7 +335,7 @@ function App() {
           crawls.length === 0
             ? <Welcome onStart={startFromWelcome} onConfigure={() => setView("new")}
                 onMcp={() => { setSettingsFocus({ section: "mcp" }); setSettingsBack({ view: "home", label: "Back" }); setView("settings"); }} />
-            : <CrawlManager crawls={crawls} onOpen={openCrawl} onResume={resumeCrawl} onCompare={() => setView("compare")} onNew={() => setView("new")} onDelete={deleteCrawl} storage={storage} crawlBusyMsg={crawlBusyMsg} />
+            : <CrawlManager crawls={crawls} onOpen={openCrawl} onResume={resumeCrawl} onNew={() => setView("new")} onDelete={deleteCrawl} storage={storage} crawlBusyMsg={crawlBusyMsg} />
         )}
         {view === "new" && <NewCrawl onStart={startCrawl} onOpenSettings={(p) => { setSettingsProfile(p); setSettingsBack({ view: "new", label: "New Crawl" }); setView("settings"); }} crawlBusyMsg={crawlBusyMsg} onViewActiveCrawl={viewActiveCrawl} />}
         {view === "queue" && <QueueView jobs={queueJobs} liveCrawlId={liveCrawlId} onRefresh={refreshQueue}
@@ -348,6 +346,7 @@ function App() {
         {view === "results" && activeCrawl && (
           <ResultsWorkspace
             crawl={activeCrawl}
+            crawls={crawls}
             live={liveCrawlId === activeCrawl.id}
             tab={resultsTab}
             setTab={(id) => { setResultsTab(id); setIssueFilter(null); }}
@@ -361,7 +360,6 @@ function App() {
         )}
         {view === "settings" && <SettingsView profileName={settingsProfile} focus={settingsFocus}
           onBack={settingsBack ? () => setView(settingsBack.view) : null} backLabel={settingsBack ? settingsBack.label : null} />}
-        {view === "compare" && <CompareView crawls={crawls} />}
         {view === "projects" && <ProjectsView crawlBusyMsg={crawlBusyMsg} onCrawlSite={(domain) => startCrawl({
           mode: "spider", url: "https://" + domain, listUrls: [], sitemapUrl: "",
           profile: "Default audit", threads: 5, rate: 2, maxDepth: -1, rendering: "text",
