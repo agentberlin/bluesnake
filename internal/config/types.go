@@ -173,6 +173,13 @@ type LimitsConfig struct {
 	ByPath          []PathLimit `yaml:"by_path"`
 }
 
+// AnyBucketCap reports whether a per-bucket admission cap (per-depth,
+// per-subdomain, or per-path) is configured — i.e. whether a resume must load
+// the stored admitted set to rehydrate the frontier's bucket counters (FR-08).
+func (l *LimitsConfig) AnyBucketCap() bool {
+	return l.MaxURLsPerDepth >= 0 || l.MaxPerSubdomain >= 0 || len(l.ByPath) > 0
+}
+
 type RenderingConfig struct {
 	Mode             string `yaml:"mode"`          // text | javascript
 	WaitStrategy     string `yaml:"wait_strategy"` // adaptive | fixed (DESIGN.md §8: fixed = load event + full AJAX sleep, compare-stable snapshots)
@@ -185,6 +192,15 @@ type RenderingConfig struct {
 	FlattenShadowDOM bool   `yaml:"flatten_shadow_dom"`
 	FlattenIFrames   bool   `yaml:"flatten_iframes"`
 	ChromePath       string `yaml:"chrome_path"`
+	// MaxGlobalRenders caps concurrent Chrome renders (tabs actively loading a
+	// page + its subresources) across ALL running crawls in this process. A
+	// render is a distinct resource axis from a fetch — each tab costs
+	// ~100-300MB of RAM plus its own network fan-out — so it gets its own slot
+	// pool in the global limiter, separate from speed.max_global_threads
+	// (REN-01/#76). 0 = auto: a cores-scaled cap (2/4/8) equal to the per-crawl
+	// tab ceiling, which a single crawl can never exceed anyway — single-crawl
+	// behaviour is unchanged while M parallel rendered crawls stay bounded.
+	MaxGlobalRenders int `yaml:"max_global_renders"`
 }
 
 type AdvancedConfig struct {
@@ -282,6 +298,14 @@ type URLRewritingConfig struct {
 type SpeedConfig struct {
 	MaxThreads    int     `yaml:"max_threads"`
 	MaxURLsPerSec float64 `yaml:"max_urls_per_sec"` // 0 = unlimited
+	// MaxGlobalThreads caps total concurrent fetches across ALL running crawls
+	// in this process (parallel multi-crawl). 0 = unlimited — a single crawl then
+	// behaves exactly as before, bounded only by MaxThreads (MEMORY-SCALING.md §5.6).
+	MaxGlobalThreads int `yaml:"max_global_threads"`
+	// MaxConcurrentCrawls caps how many crawls the dispatcher runs in parallel
+	// (each with its own worker pool/DB/buffers — a distinct overhead axis from
+	// the fetch cap, GL-18). 0/1 = one crawl at a time, the default.
+	MaxConcurrentCrawls int `yaml:"max_concurrent_crawls"`
 }
 
 type BasicAuth struct {

@@ -64,6 +64,19 @@ Feature: Storage, pause and resume (partial crawling)
     Then the exit code is 2
     And the output contains "--force"
 
+  Scenario: Resuming a crawl that predates the link-graph format is refused
+    # A pre-edges crawl (v4 forward-migration marker) has an empty edges table,
+    # the sole source finalize derives inlinks/discovered_from from. Resuming it
+    # to completion would silently zero both on every page. The resume must
+    # refuse loudly with a re-crawl message and leave the stored aggregates
+    # byte-untouched (#74 R1).
+    Given a stored crawl of a 40-page fixture site interrupted after 10 pages
+    And the stored crawl predates the link-graph format
+    When I run "bluesnake resume <crawlid> --store-dir <storedir>"
+    Then the exit code is 2
+    And the output contains "re-crawl"
+    And the stored crawl aggregates are unchanged
+
   Scenario: Deleting a crawl removes it from the registry
     Given a site page "/" linking to ""
     When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"

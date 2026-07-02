@@ -147,6 +147,12 @@ func (c *Config) Validate() error {
 	if c.Speed.MaxURLsPerSec < 0 {
 		bad("speed.max_urls_per_sec: must be >= 0, got %v", c.Speed.MaxURLsPerSec)
 	}
+	if c.Speed.MaxGlobalThreads < 0 {
+		bad("speed.max_global_threads: must be >= 0 (0 = unlimited), got %d", c.Speed.MaxGlobalThreads)
+	}
+	if c.Speed.MaxConcurrentCrawls < 0 {
+		bad("speed.max_concurrent_crawls: must be >= 0 (0/1 = one crawl at a time), got %d", c.Speed.MaxConcurrentCrawls)
+	}
 	if c.Limits.MaxURLs < 1 {
 		bad("limits.max_urls: must be >= 1, got %d", c.Limits.MaxURLs)
 	}
@@ -155,6 +161,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Rendering.AjaxTimeoutSec < 1 {
 		bad("rendering.ajax_timeout_sec: must be >= 1, got %d", c.Rendering.AjaxTimeoutSec)
+	}
+	if c.Rendering.MaxGlobalRenders < 0 {
+		bad("rendering.max_global_renders: must be >= 0 (0 = auto, cores-scaled), got %d", c.Rendering.MaxGlobalRenders)
 	}
 	if c.Advanced.Retry5xx < 0 {
 		bad("advanced.retry_5xx: must be >= 0, got %d", c.Advanced.Retry5xx)

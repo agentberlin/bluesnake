@@ -8,12 +8,15 @@ import (
 	"path/filepath"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/agentberlin/bluesnake/internal/config"
-	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/finalize"
+	"github.com/agentberlin/bluesnake/internal/queue"
+	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 func defaultStoreDir() string {
@@ -91,94 +94,105 @@ func newResumeCmd() *cobra.Command {
 				fmt.Fprintln(cmd.ErrOrStderr(), err)
 				return exitErr{2, err}
 			}
-			st, err := store.OpenCrawl(storeDir, args[0])
-			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
-				return exitErr{2, err}
-			}
-			defer st.Close()
-
-			cfgYAML, err := st.Meta("config")
-			if err != nil {
-				return err
-			}
-			cfg, err := config.Load([]byte(cfgYAML))
-			if err != nil {
-				return err
-			}
+			// --force replaces the crawl's FROZEN config before the resume runs:
+			// validate the override, persist it, and every later resume sees the
+			// same (single, durable) config — instead of a one-session override
+			// that silently reverts.
 			if force {
-				if cfgFile != "" {
-					if cfg, err = config.LoadFile(cfgFile); err != nil {
-						return exitErr{2, err}
-					}
-				}
-				for _, s := range sets {
-					if err := cfg.Set(s); err != nil {
-						return exitErr{2, err}
-					}
-				}
-				if err := cfg.Validate(); err != nil {
+				if err := persistForcedConfig(storeDir, args[0], cfgFile, sets); err != nil {
+					fmt.Fprintln(cmd.ErrOrStderr(), err)
 					return exitErr{2, err}
 				}
 			}
 
-			seeds, err := st.Seeds()
-			if err != nil {
-				return err
-			}
-			if len(seeds) == 0 {
-				return fmt.Errorf("crawl %s has no stored seed", args[0])
-			}
-			processed, err := st.ProcessedURLs()
-			if err != nil {
-				return err
-			}
-			pending, err := st.PendingFrontier()
-			if err != nil {
-				return err
-			}
-
-			c, err := crawler.New(cfg,
-				crawler.WithSink(st), crawler.WithResume(processed, pending))
-			if err != nil {
-				return exitErr{2, err}
-			}
-			defer c.Close()
+			// The resume runs through the same queue wiring as every other crawl
+			// (one crawl path): the dispatcher's executor owns the resume-open
+			// guards — pre-edges refusal, completed-status refusal, resume-state
+			// load — so the CLI cannot drift from the MCP/desktop semantics again
+			// (#74 R1). The CLI only renders the outcome.
+			obs := &cliObserver{done: make(chan struct{})}
+			disp := queue.New(queue.NewMemStore(), runner.New(storeDir, obs))
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-			res, err := c.Run(ctx, seeds...)
-			if err != nil {
+			if err := disp.Start(ctx); err != nil {
 				return exitErr{1, err}
 			}
-			// A resumed crawl that drains to completion is finalised exactly like
-			// a fresh one: aggregates, status, full-graph depth recompute (so the
-			// original run's pages don't keep stale admit-time depths), and
-			// analysis — all via the shared finalize path.
-			out, ferr := finalize.Crawl(c, st, res, finalize.Params{
-				StoreDir: storeDir, Cfg: cfg, Seeds: seeds, Resumed: true, Completed: !res.Interrupted,
-			})
-			if res.Interrupted {
-				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", st.ID, storeDir)
+			if _, err := disp.Enqueue(queue.JobSpec{ResumeID: args[0]}, "manual", "", "resume "+args[0]); err != nil {
+				return exitErr{1, err}
+			}
+			<-obs.done
+			disp.Shutdown()
+
+			out := obs.outcome()
+			if out.Err != nil && out.CrawlID == "" {
+				// the resume was refused before a crawl session began (unknown id,
+				// pre-edges, already completed, resume-state load failure)
+				fmt.Fprintln(cmd.ErrOrStderr(), out.Err)
+				return exitErr{2, out.Err}
+			}
+			if out.Status == store.StatusInterrupted {
+				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", args[0], storeDir)
 				return exitErr{3, errors.New("interrupted")}
 			}
-			// Break down the full two-session graph, not just this session's pages
-			// (res.Pages), so the summary is cumulative like the registry counts.
-			pages := res.Pages
-			if all, lerr := st.LoadPages(); lerr == nil {
-				pages = all
+			if out.Err != nil {
+				fmt.Fprintln(cmd.ErrOrStderr(), out.Err)
+				return exitErr{1, out.Err}
 			}
-			printSummary(cmd, pages, out.Crawled, out.Total, res.Duration)
-			if ferr != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), "finalize:", ferr)
-			} else {
-				printAnalysis(cmd, st.ID, out)
+			// Break down the full two-session graph (the registry counts are
+			// cumulative); records were streamed to the store, so read them back
+			// rather than tallying only this session's page stream.
+			if st, err := store.OpenCrawl(storeDir, args[0]); err == nil {
+				pages, _ := st.LoadPages()
+				st.Close()
+				printSummary(cmd, pages, out.Crawled, out.Total, time.Duration(out.DurationSec)*time.Second)
 			}
+			printAnalysis(cmd, out.CrawlID, finalize.Outcome{
+				Analyzed: out.Analyzed, Chains: out.Chains, NearDups: out.NearDups,
+				IssueTotal: out.IssueTotal, IssueChecks: out.IssueChecks,
+			})
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&storeDir, "store-dir", defaultStoreDir(), "crawl storage directory")
-	cmd.Flags().StringVar(&cfgFile, "config", "", "config file (requires --force)")
-	cmd.Flags().StringArrayVar(&sets, "set", nil, "config override (requires --force)")
-	cmd.Flags().BoolVar(&force, "force", false, "allow resuming with a different config")
+	cmd.Flags().StringVar(&cfgFile, "config", "", "config file (requires --force; replaces the crawl's stored config)")
+	cmd.Flags().StringArrayVar(&sets, "set", nil, "config override (requires --force; persisted into the crawl)")
+	cmd.Flags().BoolVar(&force, "force", false, "resume with a different config, replacing the one stored with the crawl")
 	return cmd
+}
+
+// persistForcedConfig applies a --force override on top of the crawl's frozen
+// config, validates it, and writes it back as the crawl's config — the single
+// durable config every subsequent session (this resume and any later one) runs.
+func persistForcedConfig(storeDir, id, cfgFile string, sets []string) error {
+	st, err := store.OpenCrawl(storeDir, id)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	cfgYAML, err := st.Meta("config")
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load([]byte(cfgYAML))
+	if err != nil {
+		return err
+	}
+	if cfgFile != "" {
+		if cfg, err = config.LoadFile(cfgFile); err != nil {
+			return err
+		}
+	}
+	for _, s := range sets {
+		if err := cfg.Set(s); err != nil {
+			return err
+		}
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	newYAML, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return st.SetMeta("config", string(newYAML))
 }

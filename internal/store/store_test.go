@@ -71,11 +71,11 @@ func TestCrawlLifecycle(t *testing.T) {
 		t.Errorf("links = %d, want 2", linkCount)
 	}
 
-	// frontier round trip
-	if err := c.FrontierAdd(frontier.Item{URL: "https://ex.com/a", Depth: 1, Source: "https://ex.com/"}); err != nil {
+	// frontier round trip (Admit is the admission authority — the durable write)
+	if _, err := c.Admit(frontier.Item{URL: "https://ex.com/a", Depth: 1, Source: "https://ex.com/"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.FrontierAdd(frontier.Item{URL: "https://ex.com/b", Depth: 1}); err != nil {
+	if _, err := c.Admit(frontier.Item{URL: "https://ex.com/b", Depth: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.FrontierDone("https://ex.com/a"); err != nil {
@@ -271,9 +271,12 @@ func TestInterruptAndResume(t *testing.T) {
 	}
 	defer st2.Close()
 	processed, _ = st2.ProcessedURLs()
+	fetched, _ := st2.FetchedCount()
 	pending, _ = st2.PendingFrontier()
+	maxSeq, _ := st2.MaxEdgeSeq()
 	seeds, _ := st2.Seeds()
-	c2, err := crawler.New(cfg, crawler.WithSink(st2), crawler.WithResume(processed, pending))
+	c2, err := crawler.New(cfg, crawler.WithSink(st2),
+		crawler.WithResume(crawler.Resume{Processed: processed, Fetched: fetched, Pending: pending, MaxEdgeSeq: maxSeq}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +367,7 @@ func TestLoadPagesAndIssues(t *testing.T) {
 		{URL: "https://ex.com/", IssueID: "h1_missing", Detail: "d"},
 		{URL: "https://ex.com/plain", IssueID: "title_missing"},
 	}
-	if err := c.SaveIssues(occs); err != nil {
+	if err := c.SaveIssues(nil, occs); err != nil {
 		t.Fatal(err)
 	}
 	counts, err := c.IssueCounts()
@@ -381,8 +384,8 @@ func TestLoadPagesAndIssues(t *testing.T) {
 	if len(urls) != 2 {
 		t.Errorf("urls = %v", urls)
 	}
-	// saving again replaces
-	if err := c.SaveIssues(occs[:1]); err != nil {
+	// saving again with a nil owned set replaces everything
+	if err := c.SaveIssues(nil, occs[:1]); err != nil {
 		t.Fatal(err)
 	}
 	counts, _ = c.IssueCounts()
@@ -390,16 +393,8 @@ func TestLoadPagesAndIssues(t *testing.T) {
 		t.Errorf("counts after replace = %v", counts)
 	}
 
-	// inlink aggregates
-	rec.Inlinks = 7
-	rec.DiscoveredFrom = "https://ex.com/from"
-	if err := c.UpdateInlinks(map[string]*crawler.PageRecord{rec.URL: rec}); err != nil {
-		t.Fatal(err)
-	}
-	pages, _ = c.LoadPages()
-	if pages["https://ex.com/"].Inlinks != 7 {
-		t.Errorf("inlinks = %d", pages["https://ex.com/"].Inlinks)
-	}
+	// (inlink/discovered_from persistence is the gated-edges path, covered by
+	// edges_sql_test.go's TestEdgesAndDepthSQLMethods over SaveInlinksFromEdges.)
 
 	// meta set/get
 	if err := c.SetMeta("k", "v"); err != nil {
@@ -432,7 +427,7 @@ func TestIssueMultiDetailPreserved(t *testing.T) {
 		{URL: "https://ex.com/r", IssueID: "structured_validation_error", Detail: "Recipe: missing required property name"},
 		{URL: "https://ex.com/a", IssueID: "structured_validation_error", Detail: "Article: missing author"},
 	}
-	if err := c.SaveIssues(occs); err != nil {
+	if err := c.SaveIssues(nil, occs); err != nil {
 		t.Fatal(err)
 	}
 
@@ -521,7 +516,8 @@ func TestIssuesDetailPKMigration(t *testing.T) {
 	}
 
 	// the rebuilt PK now accepts a SECOND distinct detail for the same (url, issue)
-	if err := c2.AddIssues([]issues.Occurrence{
+	if err := c2.SaveIssues([]string{"structured_validation_error"}, []issues.Occurrence{
+		{URL: "https://ex.com/", IssueID: "structured_validation_error", Detail: "Recipe: missing required property name"},
 		{URL: "https://ex.com/", IssueID: "structured_validation_error", Detail: "Recipe: missing required property image"},
 	}); err != nil {
 		t.Fatal(err)
@@ -536,6 +532,61 @@ func TestIssuesDetailPKMigration(t *testing.T) {
 	}
 	// the migrated DB is now stamped to the current revision, so a later open
 	// skips the ladder entirely.
+	var ver int
+	c2.db.QueryRow(`PRAGMA user_version`).Scan(&ver)
+	if want := ladderTop(crawlMigrations); ver != want {
+		t.Errorf("user_version after migration = %d, want %d", ver, want)
+	}
+}
+
+// TestMinhashColumnForwardMigration is the L4 guard (#70 L4 / #71 Group 6): a
+// pre-minhash crawl DB (v3, no pages.minhash column) forward-migrates to v4 on
+// open — the additive nullable column is added by the migration ladder, the
+// existing rows survive (the column reads NULL), and the DB stamps to the ladder
+// top. This pins the reconciled §0.3 decision: an additive nullable column rides
+// the ladder (no backfill, openable) rather than refusing the old DB.
+func TestMinhashColumnForwardMigration(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := c.ID
+	if err := c.Page(&crawler.PageRecord{URL: "https://ex.com/", Scope: "internal", State: crawler.StateCrawled, StatusCode: 200}); err != nil {
+		t.Fatal(err)
+	}
+	// Reconstruct a pre-minhash crawl DB: drop the minhash column and stamp the
+	// stored revision back to v3 (the version before the column was introduced).
+	if _, err := c.db.Exec(`ALTER TABLE pages DROP COLUMN minhash;
+		PRAGMA user_version = 3;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopening runs the v4 additive-column migration.
+	c2, err := OpenCrawl(dir, id)
+	if err != nil {
+		t.Fatalf("opening a v3 DB should forward-migrate, not fail: %v", err)
+	}
+	defer c2.Close()
+
+	has, err := columnExists(c2.db, "pages", "minhash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has {
+		t.Fatal("pages.minhash column missing after forward-migration from v3")
+	}
+	// The pre-existing row survives; the new column reads NULL (no backfill).
+	var minhash []byte
+	if err := c2.db.QueryRow(`SELECT minhash FROM pages WHERE url = 'https://ex.com/'`).Scan(&minhash); err != nil {
+		t.Fatalf("row lost or column unqueryable after migration: %v", err)
+	}
+	if minhash != nil {
+		t.Errorf("migrated column backfilled a value (%v); an additive column must stay NULL", minhash)
+	}
 	var ver int
 	c2.db.QueryRow(`PRAGMA user_version`).Scan(&ver)
 	if want := ladderTop(crawlMigrations); ver != want {
@@ -704,16 +755,30 @@ func TestAnalysisPersistence(t *testing.T) {
 	if counts["content_near_duplicate"] != 1 {
 		t.Errorf("analysis issues not added: %v", counts)
 	}
-	// re-running SaveIssues (per-page evaluation) then AddIssues keeps both layers
-	if err := c.SaveIssues([]issues.Occurrence{{URL: "https://ex.com/", IssueID: "title_missing"}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.AddIssues(results.Occurrences); err != nil {
+	// The ownership contract (#75): a catalogue-only refresh replaces exactly
+	// the rows of the checks it re-evaluated, so the analysis-phase rows
+	// SaveAnalysis wrote survive it.
+	if err := c.SaveIssues(issues.EvaluatedIDs(), []issues.Occurrence{{URL: "https://ex.com/", IssueID: "title_missing"}}); err != nil {
 		t.Fatal(err)
 	}
 	counts, _ = c.IssueCounts()
 	if counts["title_missing"] != 1 || counts["content_near_duplicate"] != 1 {
 		t.Errorf("layered issues = %v", counts)
+	}
+	// An occurrence outside the owned set is rejected loudly — it would be an
+	// orphaned append no later write could clean up.
+	if err := c.SaveIssues([]string{"title_missing"}, []issues.Occurrence{
+		{URL: "https://ex.com/", IssueID: "content_near_duplicate"},
+	}); err == nil {
+		t.Error("SaveIssues accepted an occurrence outside its owned set")
+	}
+	// A re-run of the analysis layer replaces its own rows and no others.
+	if err := c.SaveIssues(issues.AnalysisIDs(), nil); err != nil {
+		t.Fatal(err)
+	}
+	counts, _ = c.IssueCounts()
+	if counts["content_near_duplicate"] != 0 || counts["title_missing"] != 1 {
+		t.Errorf("analysis-layer replace = %v", counts)
 	}
 }
 
@@ -865,7 +930,7 @@ func TestListModeResumeRestoresAllSeeds(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := st.FrontierAdd(frontier.Item{URL: seedB, Depth: 0}); err != nil {
+		if _, err := st.Admit(frontier.Item{URL: seedB, Depth: 0}); err != nil {
 			t.Fatal(err)
 		}
 		if err := SetStatus(dir, st.ID, StatusInterrupted, 1, 1); err != nil {
@@ -894,8 +959,11 @@ func TestListModeResumeRestoresAllSeeds(t *testing.T) {
 			}
 		}
 		processed, _ := st.ProcessedURLs()
+		fetched, _ := st.FetchedCount()
 		pending, _ := st.PendingFrontier()
-		c, err := crawler.New(cfg, crawler.WithSink(st), crawler.WithResume(processed, pending))
+		maxSeq, _ := st.MaxEdgeSeq()
+		c, err := crawler.New(cfg, crawler.WithSink(st),
+			crawler.WithResume(crawler.Resume{Processed: processed, Fetched: fetched, Pending: pending, MaxEdgeSeq: maxSeq}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -903,12 +971,21 @@ func TestListModeResumeRestoresAllSeeds(t *testing.T) {
 		if _, err := c.Run(context.Background(), seeds...); err != nil {
 			t.Fatal(err)
 		}
-		all, err := st.LoadPages()
+		// Reproduce finalize's completed-crawl depth step over the stored graph (the
+		// production path; the store package can't import finalize — it imports us).
+		links, err := st.LinkRows()
 		if err != nil {
 			t.Fatal(err)
 		}
-		c.RecomputeDepths(all, seeds...)
-		if err := st.SaveDepths(all); err != nil {
+		redirects, err := st.Redirects()
+		if err != nil {
+			t.Fatal(err)
+		}
+		urls, err := st.ProcessedURLs()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SaveDepthsMap(c.RecomputeDepthsFromLinks(links, redirects, urls, seeds)); err != nil {
 			t.Fatal(err)
 		}
 		pages, err := st.LoadPages()
@@ -961,34 +1038,30 @@ func TestSaveDepths(t *testing.T) {
 	}
 	defer c.Close()
 
-	// seed three pages with stale depths and a non-zero inlink count
-	seeded := map[string]*crawler.PageRecord{}
+	// seed three pages with stale depths
 	for _, p := range []struct {
 		url   string
 		depth int
 	}{{"https://ex.com/", 0}, {"https://ex.com/a", 5}, {"https://ex.com/b", 5}} {
 		rec := &crawler.PageRecord{
 			URL: p.url, Scope: "internal", State: crawler.StateCrawled,
-			StatusCode: 200, Depth: p.depth, Inlinks: 7,
+			StatusCode: 200, Depth: p.depth,
 		}
 		if err := c.Page(rec); err != nil {
 			t.Fatal(err)
 		}
-		seeded[p.url] = rec
 	}
-	// inlinks are persisted by UpdateInlinks, not Page; set the baseline so the
-	// "SaveDepths must not disturb inlinks" assertion below is meaningful.
-	if err := c.UpdateInlinks(seeded); err != nil {
+	// inlinks baseline (a depth-only write must not disturb it); set it directly,
+	// since Page() does not write the inlinks column (the edges path does).
+	if _, err := c.db.Exec(`UPDATE pages SET inlinks = 7`); err != nil {
 		t.Fatal(err)
 	}
 
-	// recomputed depths: /a corrected to 1, /b has no path (NoDepth -> NULL)
-	corrected := map[string]*crawler.PageRecord{
-		"https://ex.com/":  {URL: "https://ex.com/", Depth: 0},
-		"https://ex.com/a": {URL: "https://ex.com/a", Depth: 1},
-		"https://ex.com/b": {URL: "https://ex.com/b", Depth: crawler.NoDepth},
-	}
-	if err := c.SaveDepths(corrected); err != nil {
+	// recomputed depths via the production writer: /a -> 1, /b has no path
+	// (NoDepth -> SQL NULL).
+	if err := c.SaveDepthsMap(map[string]int{
+		"https://ex.com/": 0, "https://ex.com/a": 1, "https://ex.com/b": crawler.NoDepth,
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1014,6 +1087,67 @@ func TestSaveDepths(t *testing.T) {
 		t.Errorf("NULL depths = %d, want 1", nullCount)
 	}
 }
+
+// TestLoadPagesLiteAndStreamContentText pins the Phase-2 finalize plumbing:
+// LoadPagesLite returns every record with Facts intact but ContentText freed,
+// while StreamContentText hands the bodies back one row at a time and LoadPages
+// still round-trips them in full.
+func TestLoadPagesLiteAndStreamContentText(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	const body = "the quick brown fox jumps over the lazy dog every single day"
+	rec := &crawler.PageRecord{
+		URL: "https://ex.com/", Scope: "internal", State: crawler.StateCrawled, StatusCode: 200,
+		Facts: &parse.Facts{
+			ContentText: body, WordCount: 12,
+			Links: []parse.Link{{Type: parse.Hyperlink, URL: "https://ex.com/a"}},
+		},
+	}
+	if err := c.Page(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	lite, err := c.LoadPagesLite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lr := lite["https://ex.com/"]
+	if lr == nil || lr.Facts == nil {
+		t.Fatal("lite record missing facts")
+	}
+	if lr.Facts.ContentText != "" {
+		t.Errorf("LoadPagesLite retained ContentText (%d bytes), want freed", len(lr.Facts.ContentText))
+	}
+	if len(lr.Facts.Links) != 1 || lr.Facts.WordCount != 12 {
+		t.Errorf("lite record lost non-ContentText Facts: links=%d wc=%d", len(lr.Facts.Links), lr.Facts.WordCount)
+	}
+
+	full, err := c.LoadPages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full["https://ex.com/"].Facts.ContentText != body {
+		t.Errorf("LoadPages ContentText = %q, want full body", full["https://ex.com/"].Facts.ContentText)
+	}
+
+	got := map[string]string{}
+	if err := c.StreamContentText(func(url, text string) error { got[url] = text; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got["https://ex.com/"] != body {
+		t.Errorf("StreamContentText body = %q, want %q", got["https://ex.com/"], body)
+	}
+}
+
+// Inlink counts + first-wins/seed-locked discovered_from persistence is the
+// gated-edges path (store.SaveInlinksFromEdges), covered by edges_sql_test.go's
+// TestEdgesAndDepthSQLMethods and TestRedirectPageEdgePersisted — the in-RAM
+// aggregate writer (SaveInlinkSources) it replaced is gone.
 
 // TestDropProjectMigration proves the registry ladder removes the retired
 // legacy "project" column from a pre-existing registry while preserving rows.

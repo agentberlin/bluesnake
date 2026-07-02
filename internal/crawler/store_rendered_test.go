@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/agentberlin/bluesnake/internal/config"
-	"github.com/agentberlin/bluesnake/internal/frontier"
 	"github.com/agentberlin/bluesnake/internal/render"
 )
 
@@ -24,9 +23,8 @@ var (
 	_ BlobSink = (*blobRecorder)(nil)
 )
 
-func (b *blobRecorder) Page(*PageRecord) error          { return nil }
-func (b *blobRecorder) FrontierAdd(frontier.Item) error { return nil }
-func (b *blobRecorder) FrontierDone(string) error       { return nil }
+func (b *blobRecorder) Page(*PageRecord) error    { return nil }
+func (b *blobRecorder) FrontierDone(string) error { return nil }
 
 func (b *blobRecorder) Blob(url, kind string, data []byte) error {
 	b.mu.Lock()

@@ -19,6 +19,8 @@ import (
 	"github.com/agentberlin/bluesnake/internal/fetch"
 	"github.com/agentberlin/bluesnake/internal/frontier"
 	"github.com/agentberlin/bluesnake/internal/indexability"
+	"github.com/agentberlin/bluesnake/internal/limiter"
+	"github.com/agentberlin/bluesnake/internal/minhash"
 	"github.com/agentberlin/bluesnake/internal/parse"
 	"github.com/agentberlin/bluesnake/internal/render"
 	"github.com/agentberlin/bluesnake/internal/structured"
@@ -59,13 +61,32 @@ type PageRecord struct {
 	Inlinks            int
 	DiscoveredFrom     string // first discovering page
 	OutsideStartFolder bool
-	DuplicateOf        string // canonical URL when this page's raw body was byte-identical to an already-crawled one (not rendered/expanded)
+	// GatedEdges are this page's followed discovery edges (rewritten/admitted
+	// targets), persisted to the edges table so finalize can derive inlinks/
+	// depth/discovered_from in SQL. Populated at crawl time, dropped after persist.
+	GatedEdges  []GatedEdge
+	DuplicateOf string // canonical URL when this page's raw body was byte-identical to an already-crawled one (not rendered/expanded)
+	// Minhash is the content-similarity signature (minhash.Encode), computed at
+	// crawl time and persisted to the pages.minhash column WHEN near-duplicate
+	// analysis is enabled, so near-dup reads it instead of re-materialising
+	// ContentText (MEMORY-SCALING.md §5.5). Empty when near-dup is off.
+	Minhash []byte
 
 	// analysis outputs (populated when loaded from a store after analyze)
 	LinkScore         float64
 	UniqueInlinks     int
 	UniqueOutlinks    int
 	ClosestSimilarity float64
+}
+
+// GatedEdge is one followed discovery edge from a page: a REWRITTEN/admitted
+// target (the link as the crawler resolved it, not the raw href) plus whether it
+// is a hyperlink — the subset that counts towards inlinks. Seq is the monotonic
+// crawl-order rank used for run-to-run-stable first-wins discovered_from.
+type GatedEdge struct {
+	Dst       string
+	Hyperlink bool
+	Seq       int64
 }
 
 // JSDiff captures raw-vs-rendered differences in JavaScript rendering mode
@@ -90,11 +111,11 @@ type JSDiff struct {
 }
 
 // Sink receives crawl output as it is produced (the store implements this).
-// FrontierAdd/FrontierDone mirror the in-memory frontier so an interrupted
-// crawl can resume exactly where it stopped.
+// Pending frontier rows are persisted by the dedup authority's Admit (the store
+// when present, see frontier.Dedup), not a separate sink call; FrontierDone marks
+// a row processed so an interrupted crawl resumes exactly where it stopped.
 type Sink interface {
 	Page(*PageRecord) error
-	FrontierAdd(frontier.Item) error
 	FrontierDone(url string) error
 }
 
@@ -112,29 +133,94 @@ type ArchiveSink interface {
 	Archive(url string, res *fetch.Result) error
 }
 
+// ContentSink is the optional sink extension for the on-disk identical-content
+// authority (the content_hash table). When a sink implements it, the crawler
+// delegates the raw-body byte-identical short-circuit (skip_identical_content_links)
+// to it instead of an in-RAM map — so the visited-content set stays bounded
+// (#70 M4) AND survives a resume (the canonical owner persists). A sink that omits
+// it (library/tests) keeps the in-memory set.
+type ContentSink interface {
+	// FirstWithContent reports the canonical URL for a raw-body hash and whether
+	// url is the first page seen with it. claim=false records nothing — a page that
+	// will not expand must not become canonical and shadow a later in-folder twin.
+	FirstWithContent(hash, url string, claim bool) (canonical string, first bool, err error)
+}
+
+// pageRenderer is the engine's view of the JS renderer; *render.Renderer is the
+// production implementation (constructed per crawl in New). The seam exists so
+// the render-slot bounding (REN-01/#76) is testable without Chrome — tests
+// inject a fake via withRenderer that observes render concurrency.
+type pageRenderer interface {
+	Render(ctx context.Context, url string) (*render.Result, error)
+	Close()
+}
+
 // Option configures a Crawler.
 type Option func(*Crawler)
 
 // WithSink streams pages and frontier mutations into a persistent store.
 func WithSink(s Sink) Option { return func(c *Crawler) { c.sink = s } }
 
+// withRenderer injects a renderer, bypassing the Chrome-backed render.New in
+// New. Test seam only: production keeps one *render.Renderer per crawl.
+func withRenderer(r pageRenderer) Option { return func(c *Crawler) { c.renderer = r } }
+
 // WithFetchOptions passes options to the underlying HTTP client.
 func WithFetchOptions(opts ...fetch.Option) Option {
 	return func(c *Crawler) { c.fetchOpts = opts }
 }
 
-// WithResume preseeds the crawler from a stored crawl: processed URLs are
-// never re-fetched; pending items re-enter the frontier.
-func WithResume(processed []string, pending []frontier.Item) Option {
-	return func(c *Crawler) {
-		c.resumeProcessed = processed
-		c.resumePending = pending
-	}
+// WithLimiter injects the process-wide concurrency limiter (shared across every
+// running crawl) so total in-flight fetches stay under speed.max_global_threads.
+// Omit it (or pass nil) for an unbounded single crawl — the default.
+func WithLimiter(l *limiter.Limiter) Option {
+	return func(c *Crawler) { c.limiter = l }
 }
 
-// Result is the outcome of a crawl.
+// Resume is the complete preseeded state of a stored crawl, loaded by the
+// caller (the runner's single resume-open path) and handed to the engine as
+// plain data. The engine performs NO capability sniffing on its sink to
+// reconstruct resume state — the #74 R1/R2/R3 class, where each production
+// surface silently carried a different subset of the resume fix, lived in
+// exactly those anonymous type-assertions.
+type Resume struct {
+	// Processed lists every URL already recorded (never re-fetched) — for the
+	// IN-MEMORY dedup path only. A durable dedup authority already knows its
+	// pages rows (its MarkSeen is a no-op), so loaders backed by one leave this
+	// nil rather than materialise a crawl-sized slice (issue #77).
+	Processed []string
+	// Fetched is how many MaxURLs fetch slots the prior session(s) consumed —
+	// recorded pages MINUS robots-blocked ones, which record without a fetch
+	// (store.FetchedCount). It seeds the cumulative MaxURLs budget; seeding
+	// from the processed count would over-charge blocked pages (#74 N11).
+	Fetched int
+	// Pending is the admitted-but-unprocessed frontier tail to re-queue — for
+	// the IN-MEMORY queue path only. A durable work-queue authority still
+	// holds those rows (Recover resets their claims); loaders backed by one
+	// leave this nil rather than materialise the frontier tail (issue #77).
+	Pending []frontier.Item
+	// MaxEdgeSeq continues the gated-edge sequence past the prior session, so
+	// MIN(seq) first-wins discovered_from stays stable across the resume.
+	MaxEdgeSeq int64
+	// Admitted replays the full admitted set through the frontier's per-bucket
+	// counters (FR-08). Loaded only when a bucket cap is configured
+	// (config.LimitsConfig.AnyBucketCap); empty otherwise.
+	Admitted []frontier.Item
+}
+
+// WithResume preseeds the crawler from a stored crawl: processed URLs are
+// never re-fetched; pending items re-enter the frontier; the edge sequence and
+// per-bucket admission counters continue where the prior session stopped.
+func WithResume(r Resume) Option {
+	return func(c *Crawler) { c.resume = r }
+}
+
+// Result is the outcome of a crawl. Page records are streamed to the Sink as the
+// crawl runs and are NOT retained here (stream-and-drop, MEMORY-SCALING.md §5.4);
+// finalize reads them — and every per-page aggregate (inlinks, first-wins
+// discovered_from, depth) — back from the store's gated `edges`/`links` tables, so
+// the Result carries only process-wide counters, not a frontier-sized map.
 type Result struct {
-	Pages       map[string]*PageRecord
 	Crawled     int // URLs fetched (state == crawled); excludes robots-blocked/errored
 	Total       int // all URLs recorded (crawled + robots-blocked + errored): SF's "URLs Encountered"
 	Interrupted bool
@@ -152,35 +238,34 @@ type Crawler struct {
 	filter      *urlutil.Filter
 	robots      *robotsMgr
 	frontier    *frontier.Frontier
+	queue       frontier.Queue // work-queue authority behind the bounded ready-buffer (§5.2)
 	startFolder string
 
-	sem     chan struct{}
 	tokens  chan struct{}
 	fetched atomic.Int64
 
-	sink            Sink
-	renderer        *render.Renderer
-	extractEngine   *extract.Engine
-	fetchOpts       []fetch.Option
-	resumeProcessed []string
-	resumePending   []frontier.Item
-	sinkErrOnce     sync.Once
-	sinkErr         error
+	sink          Sink
+	renderer      pageRenderer
+	extractEngine *extract.Engine
+	fetchOpts     []fetch.Option
+	limiter       *limiter.Limiter // process-wide fetch cap; nil ⇒ unlimited
+	resume        Resume
+	sinkErrOnce   sync.Once
+	sinkErr       error
 
-	mu      sync.Mutex
-	pages   map[string]*PageRecord
-	inlinks map[string]inlinkInfo
+	// Page records are streamed straight to the sink and never retained
+	// (stream-and-drop); these atomic tallies replace counting over a held map.
+	crawledCount atomic.Int64
+	totalCount   atomic.Int64
+	// edgeSeq assigns a monotonic crawl-order rank to each gated edge, so a
+	// SQL MIN(seq) first-wins discovered_from is run-to-run stable.
+	edgeSeq atomic.Int64
 
 	hashMu      sync.Mutex
 	seenContent map[string]string // raw-body content hash -> first (canonical) URL
 
 	sitemapMu    sync.Mutex
 	sitemapHosts map[string]bool // authority -> sitemap auto-discovery already run (R17)
-}
-
-type inlinkInfo struct {
-	count int
-	first string
 }
 
 func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
@@ -203,10 +288,12 @@ func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cfg.Rendering.Mode == "javascript" {
-		if c.renderer, err = render.New(cfg); err != nil {
+	if cfg.Rendering.Mode == "javascript" && c.renderer == nil {
+		r, err := render.New(cfg)
+		if err != nil {
 			return nil, err
 		}
+		c.renderer = r
 	}
 	uopts := urlutil.Options{
 		KeepFragments: cfg.Advanced.CrawlFragments,
@@ -223,10 +310,37 @@ func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
 	c.rewriter = urlutil.NewRewriter(cfg.URLRewriting.RemoveParams, replaces, cfg.URLRewriting.Lowercase, uopts)
 	c.filter = urlutil.NewFilter(cfg.Scope.IncludeRE(), cfg.Scope.ExcludeRE())
 	c.robots = robots
-	c.frontier = frontier.New(cfg)
-	c.sem = make(chan struct{}, cfg.Speed.MaxThreads)
-	c.pages = make(map[string]*PageRecord)
-	c.inlinks = make(map[string]inlinkInfo)
+	// When the sink also implements frontier.Dedup (the SQLite store does), it is
+	// the on-disk dedup authority (frontier ∪ pages), so the unbounded in-memory
+	// visited set is dropped — the bounded-RAM contract. CONTRACT: every PERSISTENT
+	// production sink MUST implement frontier.Dedup; the silent in-RAM memDedup
+	// fallback below is intended ONLY for library/no-persistence sinks (small crawls,
+	// no resume). The production sinks enforce this at compile time, not by luck:
+	// runner.sink pins `_ frontier.Dedup = (*sink)(nil)` (the C1 fix), so a sink that
+	// drops Dedup fails to build rather than silently degrading to the unbounded set.
+	var dedup frontier.Dedup
+	if d, ok := c.sink.(frontier.Dedup); ok {
+		dedup = d
+		// The work-queue authority rides the same sink (issue #77, §5.2): the
+		// durable dedup's Admit writes the born-claimed frontier rows that the
+		// queue publishes (Enqueue) and hands back out (ClaimBatch), so the two
+		// capabilities only mean anything together — a sink that deduplicates
+		// on disk but queues in RAM keeps half the frontier state resident, and
+		// a durable queue over an in-RAM dedup would claim rows nothing ever
+		// inserted. The store implements both; runner.sink compile-pins both.
+		if q, ok := c.sink.(frontier.Queue); ok {
+			c.queue = q
+		}
+	}
+	if c.queue == nil {
+		// No durable authority: the in-RAM FIFO preserves the engine's
+		// behaviour for bare library/test sinks (frontier-linear by design).
+		c.queue = &memQueue{}
+	}
+	// Dedup-authority errors flow into the crawl's sink-error latch: a store
+	// failure declines the URL (conservative) AND fails the run — silent drops
+	// would report an incomplete crawl as success (#74 R6/D4).
+	c.frontier = frontier.New(cfg, frontier.WithDedup(dedup), frontier.WithErrorSink(c.noteSinkErr))
 	c.seenContent = make(map[string]string)
 	c.sitemapHosts = make(map[string]bool)
 	return c, nil
@@ -267,40 +381,96 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 		c.tokens = make(chan struct{}, 1)
 		ticker := time.NewTicker(time.Duration(float64(time.Second) / rate))
 		defer ticker.Stop()
+		// The feeder exits when Run returns (ticker.Stop does not close the
+		// channel, so `for range ticker.C` would leak one goroutine per Run —
+		// #74 N12; processes are long-lived multi-crawl now).
+		feederDone := make(chan struct{})
+		defer close(feederDone)
 		go func() {
-			for range ticker.C {
+			for {
 				select {
-				case c.tokens <- struct{}{}:
-				default:
+				case <-ticker.C:
+					select {
+					case c.tokens <- struct{}{}:
+					default:
+					}
+				case <-feederDone:
+					return
 				}
 			}
 		}()
 	}
 
-	c.frontier.MarkSeen(c.resumeProcessed)
+	// Resume state arrives as plain data (WithResume), loaded by the caller from
+	// the store — the engine never sniffs its sink for resume capabilities (the
+	// #74 R1/R2/R3 class of surface-asymmetric bugs lived in those assertions).
+	c.frontier.MarkSeen(c.resume.Processed)
 	// Resume the crawl-total budget cumulatively: the MaxURLs limit (checked via
 	// c.fetched below) is a fetch counter that starts at zero each session, so
 	// without this seed every resumed session would grant a fresh MaxURLs budget
 	// and a paused-then-resumed crawl could fetch far more than a straight one.
-	// Seeding from the already-recorded pages makes the cap span both sessions.
-	c.fetched.Store(int64(len(c.resumeProcessed)))
+	// Seeded from the slots the prior sessions actually consumed (not the page
+	// count — robots-blocked pages record without a fetch, #74 N11).
+	c.fetched.Store(int64(c.resume.Fetched))
+	// Continue the gated-edge seq past the prior session so resume's new edges
+	// sort after session-1's: MIN(seq) first-wins discovered_from stays stable.
+	c.edgeSeq.Store(c.resume.MaxEdgeSeq)
+	// Rehydrate the per-bucket admission counters from the stored admitted set so
+	// this resumed session enforces per-depth / per-subdomain / per-path caps
+	// against the totals the earlier session(s) accrued, instead of restarting
+	// each bucket at zero and over-admitting (FR-08 / MEMORY-SCALING.md §5.1).
+	// The loader supplies Admitted only when such a cap is configured.
+	if len(c.resume.Admitted) > 0 {
+		c.frontier.RehydrateCounters(c.resume.Admitted)
+	}
 
-	var wg sync.WaitGroup
-	spawn := func(item frontier.Item) {
-		if c.frontier.Admit(item) {
-			c.sinkFrontierAdd(item)
-			wg.Add(1)
-			go c.process(ctx, &wg, item)
+	// Bounded worker pool (MEMORY-SCALING.md §5.2/§5.3, issue #77): N persistent
+	// workers drain a bounded in-RAM ready-buffer that a single feeder goroutine
+	// refills from the work-queue authority in deterministic (depth, seq)
+	// batches. The buffer is a fixed WINDOW over the frontier, not the frontier:
+	// an admitted item lives durably in the authority (the store) until the
+	// feeder claims it, so per-crawl RAM no longer scales with the discovered
+	// frontier. The §11 #1 termination trap is honoured one level down from the
+	// old push-before-done: a worker PUBLISHES its admitted discoveries durably
+	// (queue.Enqueue) BEFORE done() decrements its own item, so in-flight can
+	// only reach zero once every reachable item is visible to the feeder.
+	n := c.cfg.Speed.MaxThreads
+	if n < 1 {
+		n = 1
+	}
+	pool := newWorkPool(c.queue, n, c.noteSinkErr)
+	// Recover the queue FIRST — before anything is admitted and before the
+	// feeder's first claim: orphaned in-flight claims from a crash or pause
+	// become claimable exactly once (EC-01), structurally, on every surface.
+	// The in-memory authority re-enqueues the loader-supplied pending items
+	// instead (its queue died with the process).
+	if err := c.queue.Recover(c.resume.Pending); err != nil {
+		return nil, fmt.Errorf("crawler: recover pending frontier: %w", err)
+	}
+	enqueue := func(item frontier.Item) {
+		// Admit is the dedup + limit gate. With a store-backed dedup it also
+		// writes the durable frontier row (the admission authority), born
+		// claimed — invisible to the feeder until the caps have passed.
+		if !c.frontier.Admit(item) {
+			return
 		}
+		// Publish the fully-admitted item as claimable work. On error the URL
+		// is lost to this session — surfaced, never silent (#74 R6/D4); the
+		// still-claimed row resurfaces as pending via the next Recover.
+		if err := c.queue.Enqueue(item); err != nil {
+			c.noteSinkErr(err)
+			return
+		}
+		pool.notify()
 	}
 	for _, seed := range seeds {
-		spawn(frontier.Item{URL: seed, Depth: 0})
+		enqueue(frontier.Item{URL: seed, Depth: 0})
 	}
 	// list mode audits exactly the supplied URLs — sitemaps are an input
 	// source there (--sitemap), never an extra discovery channel
 	if c.cfg.Sitemaps.CrawlLinked && c.cfg.Mode != "list" {
 		for _, item := range c.crawlSitemaps(ctx, seeds[0]) {
-			spawn(item)
+			enqueue(item)
 		}
 	}
 	// /llms.txt is a site-level file (like robots.txt) fetched once for the seed
@@ -308,67 +478,69 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 	// mode audits exactly the supplied URLs, so it is skipped there.
 	if c.cfg.LlmsTxt.Check && c.cfg.Mode != "list" {
 		for _, item := range c.crawlLlmsTxt(ctx, seeds[0]) {
-			spawn(item)
+			enqueue(item)
 		}
 	}
-	// On resume, preserve each pending URL's original (session-1) discoverer,
-	// captured in the frontier when it was first admitted, so a page first
-	// linked before the interrupt keeps its true DiscoveredFrom instead of
-	// whichever this-session page happens to re-link it first. Seed before any
-	// pending spawn so the first-wins rule in noteInlink respects it.
-	if len(c.resumePending) > 0 {
-		c.mu.Lock()
-		for _, item := range c.resumePending {
-			if item.Source == "" {
-				continue
-			}
-			if info := c.inlinks[item.URL]; info.first == "" {
-				info.first = item.Source
-				c.inlinks[item.URL] = info
-			}
-		}
-		c.mu.Unlock()
+	// A page first linked before an interrupt keeps its true (session-1)
+	// discovered_from across resume because that discovery edge persists in the
+	// store's gated `edges` table; finalize's first-wins (seq-MIN) read recovers it
+	// — no in-RAM seeding needed (the dropped c.inlinks map is gone).
+	//
+	// Resume's pending rows are ALREADY admitted (they survive in the frontier
+	// table / the in-memory set), so Admit would dedup-reject them. Readmit
+	// re-records them in the dedup set without consuming limit budget; their
+	// re-QUEUEING was Recover's job above (durable rows reset to claimable, or
+	// the in-memory queue re-seeded).
+	for _, item := range c.resume.Pending {
+		c.frontier.Readmit(item)
 	}
-	for _, item := range c.resumePending {
-		spawn(item)
+
+	// Start the single producer only now, AFTER every pre-run enqueue (seeds,
+	// sitemaps, llms.txt, Recover): an earlier start could observe an empty
+	// authority with zero in-flight and close the buffer before the seeds land.
+	// With nothing admitted at all (every seed deduped/over-limit) its first
+	// claim comes back empty and it closes the buffer, letting workers exit.
+	go pool.feed(ctx)
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			for {
+				item, ok := pool.pull()
+				if !ok {
+					return
+				}
+				// A cancelled crawl drains the buffer without fetching: each
+				// remaining item is left pending (not FrontierDone) so a resume
+				// re-fetches it rather than recording a stale error.
+				if ctx.Err() == nil {
+					disc, done := c.crawlOne(ctx, item)
+					for _, d := range disc {
+						enqueue(d) // publish admitted children durably FIRST
+					}
+					if done {
+						c.sinkFrontierDone(item.URL)
+					}
+				}
+				pool.done() // ...then decrement this item; the feeder closes at 0+drained
+			}
+		}()
 	}
 	wg.Wait()
 
-	// resumed runs see only this session's pages — the BFS would have no
-	// crawled seed to start from, so keep admit-time depths there
-	if len(c.resumeProcessed) == 0 {
-		c.recomputeDepths(seeds)
-	}
-
+	// Page records were streamed to the store and dropped; every per-page aggregate
+	// — shortest-path depth, full-graph inlinks, first-wins (seed-locked)
+	// discovered_from — is derived by finalize over the stored gated `edges`/`links`
+	// tables (the same store-backed path resume uses), so Run returns only the
+	// process-wide counters. (MEMORY-SCALING.md §5.4/§5.5.)
 	res := &Result{
-		Pages:       c.pages,
+		Crawled:     int(c.crawledCount.Load()),
+		Total:       int(c.totalCount.Load()),
 		Interrupted: ctx.Err() != nil,
 		Duration:    time.Since(start),
 	}
-	seedSet := make(map[string]bool, len(seeds))
-	for _, s := range seeds {
-		seedSet[s] = true
-	}
-	for url, info := range c.inlinks {
-		if rec, ok := c.pages[url]; ok {
-			rec.Inlinks = info.count
-			// A seed is a discovery root: a backlink to it must not become its
-			// "discovered from" — that both misrepresents provenance and loops the
-			// discovery path. Empty also makes resume match a fresh crawl, where
-			// the seed is processed before any page that could link back to it.
-			if seedSet[url] {
-				rec.DiscoveredFrom = ""
-			} else {
-				rec.DiscoveredFrom = info.first
-			}
-		}
-	}
-	for _, rec := range c.pages {
-		if rec.State == StateCrawled {
-			res.Crawled++
-		}
-	}
-	res.Total = len(c.pages)
 	return res, c.sinkErr
 }
 
@@ -376,119 +548,85 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 // via sitemaps only, or linked solely from such pages).
 const NoDepth = -1
 
-// recomputeDepths replaces admit-time depths with the shortest followed-link
-// path from a seed (Screaming Frog parity). Sitemap discovery contributes no
-// depth: URLs reachable only that way keep NoDepth, as do their descendants.
-// Redirects (HTTP, meta refresh, JS) count as a hop, like a link.
-func (c *Crawler) recomputeDepths(seeds []string) {
-	c.recomputeDepthsOver(c.pages, seeds)
+// NormalizeSeeds normalizes raw seed URLs to the form used as page-map / edges
+// keys, so finalize can seed-lock their discovered_from. Unparseable seeds drop.
+func (c *Crawler) NormalizeSeeds(raw ...string) []string {
+	out := make([]string, 0, len(raw))
+	for _, r := range raw {
+		if s, err := urlutil.Normalize(r, c.opts); err == nil {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
-// RecomputeDepths reruns the depth BFS over an externally supplied page set —
-// used on resume, where the full two-session graph (this session's pages plus
-// the previously-processed pages reloaded from the store) is needed for the
-// shortest-path search to root from the already-crawled seed. Seeds are raw
-// (un-normalised) URLs, matching Run's inputs; it mutates each record's Depth.
-// A fresh crawl recomputes internally over c.pages, so a resumed crawl that
-// recomputes over the merged graph yields identical depths (SF parity).
-func (c *Crawler) RecomputeDepths(pages map[string]*PageRecord, seedsRaw ...string) {
-	seeds := make([]string, 0, len(seedsRaw))
-	for _, raw := range seedsRaw {
-		if s, err := urlutil.Normalize(raw, c.opts); err == nil {
-			seeds = append(seeds, s)
-		}
-	}
-	c.recomputeDepthsOver(pages, seeds)
+// LinkRow is a stored raw link (links table) fed to the depth CSR. Type round-
+// trips through parse.LinkType so the follow gate can be re-applied.
+type LinkRow struct {
+	Src, Dst string
+	Type     string
+	Nofollow bool
 }
 
-// recomputeDepthsOver assigns the shortest-followed-link-path depth from a seed
-// to every page in pages. Seeds must already be normalised (page-map keys are).
-func (c *Crawler) recomputeDepthsOver(pages map[string]*PageRecord, seeds []string) {
-	adj := make(map[string][]string, len(pages))
-	for url, rec := range pages {
-		var out []string
-		if rec.RedirectURL != "" && rec.RedirectURL != url {
-			out = append(out, rec.RedirectURL)
-		}
-		if rec.Facts != nil {
-			for _, l := range rec.Facts.Links {
-				if l.URL == "" || l.URL == url {
-					continue
-				}
-				// A link contributes to depth iff the crawler would actually
-				// follow it — reuse the same crawl gate discoverLinks applied
-				// (typeFlags by link type + scope, plus the per-scope nofollow
-				// rule) rather than hardcoding a subset. This keeps depth
-				// correct for canonical/pagination/hreflang/amp/mobile-alternate
-				// edges when their crawling is enabled, instead of leaving those
-				// pages blank.
-				if !c.followsForDepth(l) {
-					continue
-				}
-				out = append(out, l.URL)
-			}
-		}
-		adj[url] = out
+// RecomputeDepthsFromLinks computes shortest-followed-path depth purely from the
+// stored link rows + redirect edges — the SQL/CSR equivalent of RecomputeDepths
+// over the in-RAM Facts.Links (MEMORY-SCALING.md §5.5, FIN-DEPTH). It re-applies
+// the exact followsForDepth gate over the raw `links` superset (which has no
+// follow-gate at write), so it reproduces the in-RAM BFS byte-for-byte. Returns
+// url -> depth (NoDepth for pages with no followed path from a seed).
+func (c *Crawler) RecomputeDepthsFromLinks(links []LinkRow, redirects map[string]string, pageURLs, seedsRaw []string) map[string]int {
+	pageSet := make(map[string]bool, len(pageURLs))
+	for _, u := range pageURLs {
+		pageSet[u] = true
 	}
-	for _, rec := range pages {
-		rec.Depth = NoDepth
+	adj := make(map[string][]string, len(pageSet))
+	for src, dst := range redirects { // redirect counts as a hop (like a followed link)
+		if dst != "" && dst != src {
+			adj[src] = append(adj[src], dst)
+		}
 	}
-	queue := make([]string, 0, len(seeds))
-	for _, s := range seeds {
-		if rec, ok := pages[s]; ok && rec.Depth == NoDepth {
-			rec.Depth = 0
+	for _, l := range links {
+		if l.Dst == "" || l.Dst == l.Src {
+			continue
+		}
+		if !c.followsForDepthRow(l.Type, l.Dst, l.Nofollow) {
+			continue
+		}
+		adj[l.Src] = append(adj[l.Src], l.Dst)
+	}
+	depth := make(map[string]int, len(pageSet))
+	for u := range pageSet {
+		depth[u] = NoDepth
+	}
+	var queue []string
+	for _, s := range c.NormalizeSeeds(seedsRaw...) {
+		if pageSet[s] && depth[s] == NoDepth {
+			depth[s] = 0
 			queue = append(queue, s)
 		}
 	}
 	for len(queue) > 0 {
 		u := queue[0]
 		queue = queue[1:]
-		d := pages[u].Depth
+		d := depth[u]
 		for _, v := range adj[u] {
-			if rec, ok := pages[v]; ok && rec.Depth == NoDepth {
-				rec.Depth = d + 1
+			if pageSet[v] && depth[v] == NoDepth {
+				depth[v] = d + 1
 				queue = append(queue, v)
 			}
 		}
 	}
+	return depth
 }
 
-// RecomputeInlinks recounts the raw hyperlink inlinks for every page over an
-// externally supplied page set, by replaying the exact crawl-time discovery
-// gate (discoverLinks → noteInlink) every crawled page's links pass through.
-// Resume uses it so a resumed crawl's Inlinks equal a fresh crawl's: the
-// per-session count (UpdateInlinks) sees only this session's edges and
-// under-counts pages linked across the interrupt boundary. The count is
-// order-independent, so a replay over the merged two-session graph reproduces
-// the fresh-crawl value. Only the raw inlink count is rewritten on the records;
-// discovered_from (the discovery-tree parent) is preserved per-session and
-// seed-locked in Run, so it is intentionally left untouched here.
-func (c *Crawler) RecomputeInlinks(pages map[string]*PageRecord) {
-	c.mu.Lock()
-	c.inlinks = make(map[string]inlinkInfo)
-	c.mu.Unlock()
-	for url, rec := range pages {
-		if rec.Facts == nil {
-			continue // only crawled pages have parsed outlinks, as during the crawl
-		}
-		c.discoverLinks(frontier.Item{URL: url, Depth: rec.Depth}, rec.Facts)
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for url, rec := range pages {
-		rec.Inlinks = c.inlinks[url].count
-	}
-}
-
-// followsForDepth reports whether a parsed link is a followed edge for the
-// depth BFS — the same predicate discoverLinks uses to enqueue it (the link
-// type's crawl flag for its scope, gated by the per-scope nofollow rule).
-func (c *Crawler) followsForDepth(l parse.Link) bool {
-	targetScope := c.classify(l.URL)
-	if _, crawl := c.typeFlags(l.Type, targetScope); !crawl {
+// followsForDepthRow is followsForDepth over a stored link row (type as a string,
+// raw dst, nofollow flag) — kept in lockstep with followsForDepth.
+func (c *Crawler) followsForDepthRow(typeStr, dst string, nofollow bool) bool {
+	targetScope := c.classify(dst)
+	if _, crawl := c.typeFlags(parse.LinkType(typeStr), targetScope); !crawl {
 		return false
 	}
-	if l.Nofollow {
+	if nofollow {
 		follow := c.cfg.Scope.FollowInternalNofollow
 		if targetScope == urlutil.External {
 			follow = c.cfg.Scope.FollowExternalNofollow
@@ -500,38 +638,9 @@ func (c *Crawler) followsForDepth(l parse.Link) bool {
 	return true
 }
 
-func (c *Crawler) process(ctx context.Context, wg *sync.WaitGroup, it frontier.Item) {
-	defer wg.Done()
-	c.sem <- struct{}{}
-	defer func() { <-c.sem }()
-	if ctx.Err() != nil {
-		return
-	}
-	disc, done := c.crawlOne(ctx, it)
-	for _, d := range disc {
-		if c.frontier.Admit(d) {
-			c.sinkFrontierAdd(d)
-			wg.Add(1)
-			go c.process(ctx, wg, d)
-		}
-	}
-	// done is false only when a pause/stop aborted this URL's fetch mid-flight:
-	// leave the frontier item pending (don't mark it done) so resume re-fetches
-	// it, instead of stranding it as a permanent error.
-	if done {
-		c.sinkFrontierDone(it.URL)
-	}
-}
-
 func (c *Crawler) noteSinkErr(err error) {
 	if err != nil {
 		c.sinkErrOnce.Do(func() { c.sinkErr = err })
-	}
-}
-
-func (c *Crawler) sinkFrontierAdd(it frontier.Item) {
-	if c.sink != nil {
-		c.noteSinkErr(c.sink.FrontierAdd(it))
 	}
 }
 
@@ -582,7 +691,18 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) ([]frontier.It
 	}
 	c.rateWait(ctx)
 
-	res := c.client.Fetch(ctx, it.URL)
+	// Take a global fetch slot AFTER the per-crawl rate wait (so a rate-blocked
+	// worker never sits on a shared slot, WP-11) and only around the network call
+	// itself. A cancel while waiting for a slot leaves the item pending, like a
+	// pause mid-fetch. The slot is released the moment Fetch returns — even on a
+	// panic — so the rest of the pipeline (parse/evaluate) never holds it.
+	if !c.limiter.AcquireFetch(ctx) {
+		return nil, false
+	}
+	res := func() *fetch.Result {
+		defer c.limiter.ReleaseFetch()
+		return c.client.Fetch(ctx, it.URL)
+	}()
 	// A fetch that failed because the crawl was paused/stopped (parent context
 	// cancelled) is not a real error: abandon the URL without recording it and
 	// leave it pending for resume. A genuine per-request timeout leaves the
@@ -627,7 +747,13 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) ([]frontier.It
 		rec.State = StateSkippedTooLarge
 	default:
 		rec.State = StateCrawled
-		discoveries = c.handleContent(it, scopeClass, res, rec)
+		var ok bool
+		if discoveries, ok = c.handleContent(ctx, it, scopeClass, res, rec); !ok {
+			// pause/stop interrupted the page's render: abandon without
+			// recording (a raw-only record would be permanent — resume never
+			// re-renders a processed page) and leave the item pending
+			return nil, false
+		}
 	}
 
 	// The first time the crawl reaches an in-scope host, discover that host's
@@ -644,7 +770,10 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) ([]frontier.It
 }
 
 // handleContent parses HTML, evaluates indexability, and produces discoveries.
-func (c *Crawler) handleContent(it frontier.Item, scopeClass urlutil.ScopeClass, res *fetch.Result, rec *PageRecord) []frontier.Item {
+// ctx is the crawl context — the render path fetches under it (#74 N2a). ok is
+// false only when a pause/stop cancelled the crawl mid-render: the caller then
+// abandons the item (nothing recorded) so a resume re-fetches and re-renders it.
+func (c *Crawler) handleContent(ctx context.Context, it frontier.Item, scopeClass urlutil.ScopeClass, res *fetch.Result, rec *PageRecord) ([]frontier.Item, bool) {
 	var discoveries []frontier.Item
 
 	// redirect target re-enters discovery, bounded by the chain limit; with
@@ -660,7 +789,7 @@ func (c *Crawler) handleContent(it frontier.Item, scopeClass urlutil.ScopeClass,
 					if c.cfg.Advanced.AlwaysFollowRedirects {
 						d.Depth = it.Depth
 					}
-					c.noteInlink(d.URL, it.URL, false)
+					rec.GatedEdges = append(rec.GatedEdges, GatedEdge{Dst: d.URL, Hyperlink: false, Seq: c.edgeSeq.Add(1)})
 					discoveries = append(discoveries, d)
 				}
 			}
@@ -723,7 +852,10 @@ func (c *Crawler) handleContent(it frontier.Item, scopeClass urlutil.ScopeClass,
 		}
 		renderedOK := false
 		if c.renderer != nil && !dup {
-			renderedOK = c.renderAndDiff(it.URL, rec, facts, res)
+			var interrupted bool
+			if renderedOK, interrupted = c.renderAndDiff(ctx, it.URL, rec, facts, res); interrupted {
+				return nil, false
+			}
 		}
 		if c.extractEngine != nil {
 			// append, not assign: renderAndDiff may already have stored
@@ -750,14 +882,14 @@ func (c *Crawler) handleContent(it frontier.Item, scopeClass urlutil.ScopeClass,
 		}
 
 		if willExpand && !dup {
-			discoveries = append(discoveries, c.discoverLinks(it, facts)...)
+			discoveries = append(discoveries, c.discoverLinks(it, facts, &rec.GatedEdges)...)
 		}
 	}
 
 	idx := indexability.Evaluate(idxInput)
 	rec.Indexable = idx.Indexable
 	rec.IndexabilityStatus = idx.Status
-	return discoveries
+	return discoveries, true
 }
 
 // Close releases the renderer (JS rendering mode).
@@ -770,12 +902,35 @@ func (c *Crawler) Close() {
 // renderAndDiff renders the page in Chrome, parses the rendered DOM, extracts
 // structured data from it, merges rendered-only links into the link set
 // (origin=rendered) and records the raw-vs-rendered element differences. It
-// returns true when rendering succeeded — the caller then trusts the
+// returns renderedOK=true when rendering succeeded — the caller then trusts the
 // rendered-DOM structured data instead of re-extracting from the raw body.
-func (c *Crawler) renderAndDiff(url string, rec *PageRecord, facts *parse.Facts, res *fetch.Result) bool {
-	rendered, err := c.renderer.Render(context.Background(), url)
+// interrupted=true means a pause/stop cancelled the crawl while waiting for a
+// render slot or mid-render: the caller must abandon the item (leave it
+// pending, record nothing) so a resume re-fetches and re-renders it — a
+// degraded raw-only record would be permanent. A render failure with the crawl
+// still live (interrupted=false, renderedOK=false) degrades to raw-HTML
+// behaviour as before.
+//
+// The render runs under the CRAWL context and holds a global RENDER slot
+// (REN-01/#76): it re-fetches the page plus its subresources in a Chrome tab —
+// a different weight on a different resource axis (~100-300MB RAM per tab) than
+// an HTTP fetch, so it has its own pool in the process-wide limiter. It must
+// NOT hold a fetch slot at the same time (nested acquires across M crawls
+// starve the fetch pool and can deadlock it). The slot is released the moment
+// Render returns — even on a panic — so parsing/diffing never holds it.
+func (c *Crawler) renderAndDiff(ctx context.Context, url string, rec *PageRecord, facts *parse.Facts, res *fetch.Result) (renderedOK, interrupted bool) {
+	if !c.limiter.AcquireRender(ctx) {
+		return false, true // cancelled while waiting for a render slot
+	}
+	rendered, err := func() (*render.Result, error) {
+		defer c.limiter.ReleaseRender()
+		return c.renderer.Render(ctx, url)
+	}()
 	if err != nil {
-		return false // rendering failure degrades to raw-HTML behaviour
+		if ctx.Err() != nil {
+			return false, true // pause/stop tore the render down, not the page
+		}
+		return false, false // rendering failure degrades to raw-HTML behaviour
 	}
 
 	// persist the rendered DOM / screenshot to the assets dir when asked
@@ -879,7 +1034,7 @@ func (c *Crawler) renderAndDiff(url string, rec *PageRecord, facts *parse.Facts,
 	}
 
 	rec.JSDiff = diff
-	return true
+	return true, false
 }
 
 // customJSApplies checks a snippet's content_types filter against the page.
@@ -910,8 +1065,11 @@ func hasNoindexValue(values []string) bool {
 	return false
 }
 
-// discoverLinks runs every parsed link through the discovery filter chain.
-func (c *Crawler) discoverLinks(it frontier.Item, facts *parse.Facts) []frontier.Item {
+// discoverLinks runs every parsed link through the discovery filter chain. When
+// edges is non-nil (crawl time, not the finalize replay) it also records each
+// admitted edge — rewritten target + hyperlink flag + a monotonic seq — for the
+// edges table.
+func (c *Crawler) discoverLinks(it frontier.Item, facts *parse.Facts, edges *[]GatedEdge) []frontier.Item {
 	var out []frontier.Item
 	links := facts.Links
 	if max := c.cfg.Limits.MaxLinksPerPage; max >= 0 && len(links) > max {
@@ -940,7 +1098,10 @@ func (c *Crawler) discoverLinks(it frontier.Item, facts *parse.Facts) []frontier
 			if l.Type == parse.Canonical && c.cfg.Advanced.AlwaysFollowCanonicals {
 				d.Depth = it.Depth
 			}
-			c.noteInlink(d.URL, it.URL, l.Type == parse.Hyperlink)
+			hyperlink := l.Type == parse.Hyperlink
+			if edges != nil {
+				*edges = append(*edges, GatedEdge{Dst: d.URL, Hyperlink: hyperlink, Seq: c.edgeSeq.Add(1)})
+			}
 			out = append(out, d)
 		}
 	}
@@ -1077,6 +1238,19 @@ func (c *Crawler) rateWait(ctx context.Context) {
 // not expand the page (outside-folder, not crawled) pass claim=false so they
 // never become canonical for content whose links they did not contribute.
 func (c *Crawler) firstWithContent(hash, url string, claim bool) (canonical string, first bool) {
+	// With a store-backed sink the content_hash table is the authority, so the
+	// in-RAM seenContent map is never grown (it stays O(0) in production) — the
+	// #70 M4 bound. A non-store sink (library/tests) keeps the in-memory set.
+	if fc, ok := c.sink.(ContentSink); ok {
+		canonical, first, err := fc.FirstWithContent(hash, url, claim)
+		if err != nil {
+			// On a store error, conservatively treat the page as first/novel (never
+			// silently mark a page a duplicate) and surface the error via the sink.
+			c.noteSinkErr(err)
+			return url, true
+		}
+		return canonical, first
+	}
 	c.hashMu.Lock()
 	defer c.hashMu.Unlock()
 	if existing, ok := c.seenContent[hash]; ok {
@@ -1089,29 +1263,34 @@ func (c *Crawler) firstWithContent(hash, url string, claim bool) (canonical stri
 }
 
 func (c *Crawler) record(rec *PageRecord) {
-	c.mu.Lock()
-	c.pages[rec.URL] = rec
-	c.mu.Unlock()
+	c.totalCount.Add(1)
+	if rec.State == StateCrawled {
+		c.crawledCount.Add(1)
+	}
 	if c.sink != nil {
+		// Precompute the near-dup signature from the live body (before it is freed
+		// below) so finalize never reloads ContentText for near-dup. Gated on the
+		// feature being enabled — a default crawl pays nothing (MEMORY-SCALING.md
+		// §5.5). The analyze-time gate (indexable/paginated/wordcount) is applied
+		// later over this stored signature, so toggling those flags at analyze
+		// time still changes the result set identically.
+		if c.cfg.Content.NearDuplicates.Enabled && rec.Facts != nil && rec.Facts.ContentText != "" {
+			rec.Minhash = minhash.Of(rec.Facts.ContentText).Encode()
+		}
 		c.noteSinkErr(c.sink.Page(rec))
+		// The full page text is now durably in the store (serialized into the
+		// facts JSON by Page() above). Free the in-RAM copy: ContentText is the
+		// bulk of a PageRecord (~one page-body each), and at thousands of pages
+		// its retention is the dominant per-page RAM sink (MEMORY-SCALING.md §4
+		// regime 2 / Phase 0). Every consumer — near-duplicates, lorem/soft-404
+		// issue checks, compare's content-change detection — reads it back via
+		// LoadPages, never off the live result; the sole live reader
+		// (extractEngine in handleContent) already ran before record().
+		if rec.Facts != nil {
+			rec.Facts.ContentText = ""
+		}
+		rec.GatedEdges = nil // persisted to the edges table; free the RAM
 	}
-}
-
-// noteInlink records a discovery edge. countIt distinguishes hyperlink
-// edges — the only kind Screaming Frog's "Inlinks" column counts — from
-// redirect/iframe/meta-refresh discoveries, which still set the
-// discovered-from source but don't inflate the inlink count.
-func (c *Crawler) noteInlink(target, source string, countIt bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	info := c.inlinks[target]
-	if countIt {
-		info.count++
-	}
-	if info.first == "" {
-		info.first = source
-	}
-	c.inlinks[target] = info
 }
 
 func isHTML(contentType string) bool {

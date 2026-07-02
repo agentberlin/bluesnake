@@ -46,10 +46,11 @@ func (w *world) crawlIntoStore() error {
 	if err != nil {
 		return err
 	}
-	if w.crawlResult, err = c.Run(context.Background(), srv.URL+"/"); err != nil {
+	seed := srv.URL + "/"
+	if w.crawlResult, err = c.Run(context.Background(), seed); err != nil {
 		return err
 	}
-	return st.UpdateInlinks(w.crawlResult.Pages)
+	return w.finalizeCrawlPages(c, st, w.crawlResult, seed)
 }
 
 func (w *world) runAnalysisStep() error {
@@ -81,7 +82,7 @@ func (w *world) runAnalysisStep() error {
 	}
 	results := analyze.Run(pages, sitemaps, llmstxt, cfg)
 	w.issueOccs = append(occs, results.Occurrences...)
-	if err := st.SaveIssues(occs); err != nil {
+	if err := st.SaveIssues(nil, occs); err != nil {
 		return err
 	}
 	return st.SaveAnalysis(results)
@@ -106,7 +107,7 @@ func (w *world) evaluateIssues() error {
 		return err
 	}
 	occs := issues.Evaluate(pages, cfg)
-	if err := st.SaveIssues(occs); err != nil {
+	if err := st.SaveIssues(nil, occs); err != nil {
 		return err
 	}
 	w.issueOccs = occs
@@ -114,7 +115,7 @@ func (w *world) evaluateIssues() error {
 }
 
 func (w *world) crawlPageCustomResult(path, name, want string) error {
-	rec := w.crawlResult.Pages[w.server.URL+path]
+	rec := w.crawlPages[w.server.URL+path]
 	if rec == nil {
 		return fmt.Errorf("no record for %s", path)
 	}

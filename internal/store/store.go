@@ -14,11 +14,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/agentberlin/bluesnake/internal/analyze"
+	"github.com/agentberlin/bluesnake/internal/bloom"
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/fetch"
@@ -64,6 +67,7 @@ CREATE TABLE IF NOT EXISTS pages(
   link_score REAL DEFAULT 0, unique_inlinks INT DEFAULT 0, unique_outlinks INT DEFAULT 0,
   closest_similarity REAL DEFAULT 0, near_dup_count INT DEFAULT 0,
   duplicate_of TEXT,
+  minhash BLOB,
   headers JSON, structured JSON, jsdiff JSON, facts JSON
 );
 CREATE TABLE IF NOT EXISTS links(
@@ -73,7 +77,31 @@ CREATE TABLE IF NOT EXISTS links(
 );
 CREATE INDEX IF NOT EXISTS links_src ON links(src);
 CREATE INDEX IF NOT EXISTS links_dst ON links(dst);
-CREATE TABLE IF NOT EXISTS frontier(url TEXT PRIMARY KEY, depth INT, redirect_hops INT, source TEXT);
+-- edges is the GATED, REWRITTEN discovery graph (one row per followed edge the
+-- crawler actually admitted: src page -> rewritten dst), unlike the raw ungated
+-- links table. hyperlink marks the inlink-counting subset; seq is the monotonic
+-- discovery order that makes first-wins discovered_from run-to-run stable
+-- (MEMORY-SCALING.md §5.5). It lets finalize derive inlinks/discovered_from/depth
+-- without re-applying the Go rewrite+filter chain in SQL.
+CREATE TABLE IF NOT EXISTS edges(src TEXT, dst TEXT, hyperlink INT, seq INTEGER);
+CREATE INDEX IF NOT EXISTS edges_dst ON edges(dst);
+CREATE INDEX IF NOT EXISTS edges_src ON edges(src);
+-- frontier is the durable work QUEUE, not just the resume mirror (issue #77,
+-- MEMORY-SCALING.md §5.2): rows are born claimed=1 by Admit (invisible to the
+-- feeder until the frontier's cap checks pass), published claimable (claimed=0)
+-- by Enqueue, claimed back in (depth, seq) batches by the crawl's feeder, and
+-- deleted by FrontierDone. seq is the monotonic admission order that makes the
+-- feeder's pull deterministic (never rowid — deletes would reorder it).
+-- (frontier_claim, the feeder's (claimed, depth, seq) index, is created in
+-- openCrawlDB AFTER the migration ladder: on a pre-v5 DB this schema runs
+-- before the ladder adds the columns the index needs.)
+CREATE TABLE IF NOT EXISTS frontier(url TEXT PRIMARY KEY, depth INT, redirect_hops INT, source TEXT,
+  claimed INT NOT NULL DEFAULT 0, seq INTEGER);
+-- content_hash is the on-disk authority for the raw-body identical-content
+-- short-circuit (R8): hash -> the first (canonical) URL that claimed it. It bounds
+-- the formerly-unbounded in-RAM seenContent map (MEMORY-SCALING.md §5.4 / #70 M4),
+-- preserving first-writer-wins via the hash PRIMARY KEY.
+CREATE TABLE IF NOT EXISTS content_hash(hash TEXT PRIMARY KEY, url TEXT);
 CREATE TABLE IF NOT EXISTS issues(url TEXT, issue TEXT, detail TEXT, PRIMARY KEY(url, issue, detail));
 CREATE TABLE IF NOT EXISTS custom_results(url TEXT, kind TEXT, name TEXT, value TEXT, PRIMARY KEY(url, kind, name));
 CREATE TABLE IF NOT EXISTS sitemap_entries(sitemap TEXT, url TEXT, PRIMARY KEY(sitemap, url));
@@ -86,11 +114,75 @@ CREATE TABLE IF NOT EXISTS analysis(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS blobs(url TEXT, kind TEXT, path TEXT, PRIMARY KEY(url, kind));
 `
 
+// The dedup Bloom filter is sized from a crawl's admitted-URL ceiling
+// (cfg.Limits.MaxURLs) so its false-positive rate stays near the target 1% across
+// the whole crawl. A fixed 1M-capacity filter saturated on the multi-million-URL
+// crawls this engine targets (≈16% FP at 2M, >99% near the 5M default cap), at
+// which point almost every Admit became a Bloom hit → a confirm READ plus the
+// authority INSERT — i.e. MORE work than no Bloom, exactly in the regime the
+// filter exists to speed up. Correctness never depends on the sizing (the DB PK +
+// WHERE NOT EXISTS(pages) stay authoritative); sizing only trades RAM for confirm
+// reads (MEMORY-SCALING.md §0.4/§7).
+//
+// The capacity is clamped to a band: a floor so tiny crawls still get a usable
+// filter, and a ceiling so a pathological MaxURLs can't allocate unbounded RAM —
+// beyond the ceiling the filter degrades gracefully to DB-only.
+const (
+	bloomCapacityMin     = 1 << 16 // 64K URLs  (~96 KB) — floor for small/uncapped-low crawls
+	bloomCapacityDefault = 1 << 23 // 8M URLs   (~9.6 MB) — used when MaxURLs is unlimited (0)
+	bloomCapacityMax     = 1 << 23 // 8M URLs   (~9.6 MB) — ceiling; beyond it, DB-only
+)
+
+// bloomCapacityFor maps a crawl's MaxURLs limit to its dedup-filter capacity.
+// MaxURLs <= 0 means unlimited → the default band; otherwise the cap itself,
+// clamped into [min, max].
+func bloomCapacityFor(maxURLs int) int {
+	if maxURLs <= 0 {
+		return bloomCapacityDefault
+	}
+	if maxURLs < bloomCapacityMin {
+		return bloomCapacityMin
+	}
+	if maxURLs > bloomCapacityMax {
+		return bloomCapacityMax
+	}
+	return maxURLs
+}
+
+// storedMaxURLs reads the frozen crawl config's MaxURLs limit from meta
+// (best-effort: 0 on any miss, treated as unlimited by bloomCapacityFor). It lets
+// a reopened/resumed crawl size its Bloom from the same ceiling the fresh crawl
+// used, without the caller threading the config back in.
+func storedMaxURLs(db *sql.DB) int {
+	var y string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'config'`).Scan(&y); err != nil {
+		return 0
+	}
+	cfg, err := config.Load([]byte(y))
+	if err != nil {
+		return 0
+	}
+	return cfg.Limits.MaxURLs
+}
+
 // Crawl is an open per-crawl database.
 type Crawl struct {
 	ID  string
 	dir string
 	db  *sql.DB
+
+	// bloom is the fast-negative dedup filter in front of the SQLite authority.
+	// Per-crawl and in-memory; a fresh (cold) filter on resume is fine — the
+	// authoritative INSERT … WHERE NOT EXISTS(pages) backstops every miss.
+	bloom *bloom.Filter
+
+	// frontierSeq assigns each admitted frontier row its monotonic admission
+	// rank (the feeder's deterministic pull order, MEMORY-SCALING.md §5.2).
+	// Seeded at open from MAX(seq) over the LIVE rows, so a resumed session's
+	// admissions always sort after every surviving pending row (EC-07); done
+	// rows are deleted, so their ranks may be reused — nothing live orders
+	// against them.
+	frontierSeq atomic.Int64
 
 	// WARC archive (extraction.store_warc), created lazily on first Archive.
 	// archiveMu guards the lazy init and the writes — the crawler calls
@@ -110,6 +202,17 @@ func registryDB(dir string) (*sql.DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	// The registry is shared by every crawl in the process. With parallel
+	// member crawls (queue.WithConcurrency > 1) two connections write it
+	// concurrently — CreateCrawl racing SetStatus/EnqueueJob — and SQLite's
+	// default busy timeout of 0 turns that simple lock contention into an
+	// immediate SQLITE_BUSY failure (#74 R9's composition test surfaced it: one
+	// of two parallel crawl-all members failed with "database is locked"). A
+	// busy timeout makes the loser wait out the other's millisecond write.
+	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	fresh, err := isFreshDB(db)
 	if err != nil {
 		db.Close()
@@ -164,7 +267,9 @@ func CreateCrawl(dir string, seeds []string, mode string, cfg *config.Config) (*
 	if err != nil {
 		return nil, err
 	}
-	c, err := openCrawlDB(dir, id)
+	// Size the dedup Bloom from this crawl's MaxURLs ceiling (the config isn't in
+	// meta yet — written below — so pass it explicitly).
+	c, err := openCrawlDB(dir, id, bloomCapacityFor(cfg.Limits.MaxURLs))
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +302,9 @@ func OpenCrawl(dir, id string) (*Crawl, error) {
 	if _, err := os.Stat(crawlPath(dir, id)); err != nil {
 		return nil, fmt.Errorf("crawl %q not found", id)
 	}
-	return openCrawlDB(dir, id)
+	// Derive the Bloom capacity from the frozen config (bloomCap <= 0), so a
+	// resumed large crawl gets the same sizing the fresh crawl had.
+	return openCrawlDB(dir, id, 0)
 }
 
 // validCrawlID rejects ids that aren't a plain filename (path separators,
@@ -231,7 +338,18 @@ func CrawlDBPath(dir, id string) (string, error) {
 	return path, nil
 }
 
-func openCrawlDB(dir, id string) (*Crawl, error) {
+// openCrawlDB opens (creating if absent) the per-crawl database. bloomCap sizes
+// the dedup Bloom filter; pass <= 0 to derive it from the stored crawl config
+// (the reopen/resume path, which has no config in hand). A fresh crawl passes its
+// config-derived capacity explicitly, since its config meta is written only after
+// this returns.
+//
+// Known (accepted) crash window: a crash between the schema DDL below and the
+// upgrade() version stamp leaves a latest-shape DB stamped v0, so the next open
+// runs the forward-migration ladder over it and marks it `pre_edges`. That is
+// practically harmless — such a crawl has no seeds meta yet either, so any
+// resume attempt dies on errNoSeed before the pre-edges refusal even matters.
+func openCrawlDB(dir, id string, bloomCap int) (*Crawl, error) {
 	path := crawlPath(dir, id)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -254,7 +372,27 @@ func openCrawlDB(dir, id string) (*Crawl, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Crawl{ID: id, dir: dir, db: db}, nil
+	// The feeder's claim index references columns the v5 migration adds, so it
+	// cannot ride crawlSchema (which runs before the ladder on a pre-v5 DB).
+	// Creating it here — after the ladder — covers fresh, migrated and current
+	// DBs with one idempotent statement.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS frontier_claim ON frontier(claimed, depth, seq)`); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if bloomCap <= 0 {
+		bloomCap = bloomCapacityFor(storedMaxURLs(db))
+	}
+	c := &Crawl{ID: id, dir: dir, db: db, bloom: bloom.New(bloomCap, 0.01)}
+	// Continue the frontier admission rank above every surviving row, so a
+	// resumed session's discoveries sort after the pending tail (EC-07).
+	var maxSeq int64
+	if err := db.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM frontier`).Scan(&maxSeq); err != nil {
+		db.Close()
+		return nil, err
+	}
+	c.frontierSeq.Store(maxSeq)
+	return c, nil
 }
 
 // --- schema versioning & migrations ---------------------------------------
@@ -280,6 +418,52 @@ var crawlMigrations = []migration{
 	{1, "pages.http_version", func(tx *sql.Tx) error { return addColumn(tx, "pages", "http_version TEXT") }},
 	{2, "pages.duplicate_of", func(tx *sql.Tx) error { return addColumn(tx, "pages", "duplicate_of TEXT") }},
 	{3, "issues.detail_in_pk", migrateIssuesDetailPK},
+	{4, "pages.minhash+pre_edges", migrateMinhashMarkPreEdges},
+	{5, "frontier.claimed+seq", migrateFrontierClaimedSeq},
+}
+
+// migrateFrontierClaimedSeq adds the bounded-frontier queue columns (issue #77,
+// MEMORY-SCALING.md §5.2): claimed marks rows handed to the in-RAM ready-buffer
+// and seq pins the deterministic (depth, seq) pull order. These are QUEUE
+// metadata, not analytical data, so — unlike the additive-nullable §0.3 columns
+// that stay NULL until re-crawl — surviving pending rows are backfilled:
+// seq=rowid (their true insertion order; the table only ever grew, so live
+// rowids are admission-ordered) and claimed=0 (immediately claimable). An
+// interrupted pre-v5 crawl therefore resumes with a deterministic pull order
+// instead of NULL-first arbitrariness.
+func migrateFrontierClaimedSeq(tx *sql.Tx) error {
+	if err := addColumn(tx, "frontier", "claimed INT NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := addColumn(tx, "frontier", "seq INTEGER"); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`UPDATE frontier SET seq = rowid`)
+	return err
+	// (The (claimed, depth, seq) index is created by openCrawlDB after the
+	// ladder — one site covers fresh, migrated and current DBs alike.)
+}
+
+// migrateMinhashMarkPreEdges adds the nullable near-dup minhash column and marks
+// the database as predating the gated `edges` table. The edges table arrived in
+// the same change as this v4 column, so any DB that REACHES this migration step —
+// i.e. any DB stamped below v4 — was crawled before edges existed: its discovery
+// graph lives only in the legacy `links` table and its `edges` table is empty. A
+// v4+ (edges-era) DB never runs this step, and a fresh DB is stamped straight to
+// the top without running any step, so the marker lands on exactly the pre-edges
+// DBs. The SQL finalize derives inlinks / first-wins discovered_from SOLELY from
+// edges, so RESUMING a pre-edges crawl to completion would overwrite both with
+// empty/partial values (the edges authority is empty). The durable `pre_edges`
+// meta marker — which survives the user_version bump, unlike the version itself —
+// lets the resume path refuse such a crawl loudly (re-crawl) instead of silently
+// corrupting it. Reading/querying a completed pre-edges crawl stays fully
+// supported: the additive column still rides the ladder (reconciled §0.3).
+func migrateMinhashMarkPreEdges(tx *sql.Tx) error {
+	if err := addColumn(tx, "pages", "minhash BLOB"); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`INSERT OR REPLACE INTO meta(key, value) VALUES('pre_edges', '1')`)
+	return err
 }
 
 // registryMigrations is the ladder for the single shared registry DB. APPEND ONLY.
@@ -598,13 +782,13 @@ func (c *Crawl) Page(rec *crawler.PageRecord) error {
 		(url, scope, state, depth, status_code, status, content_type, http_version,
 		 response_time_ms, size, fetch_error, redirect_url, redirect_type,
 		 matched_robots_line, indexable, indexability_status,
-		 discovered_from, outside_start_folder, duplicate_of, headers, structured, jsdiff, facts)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 discovered_from, outside_start_folder, duplicate_of, minhash, headers, structured, jsdiff, facts)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rec.URL, rec.Scope, rec.State, rec.Depth, rec.StatusCode, rec.Status,
 		rec.ContentType, rec.HTTPVersion, rec.ResponseTimeMs, rec.Size, rec.FetchError,
 		rec.RedirectURL, rec.RedirectType, rec.MatchedRobotsLine,
 		boolInt(rec.Indexable), rec.IndexabilityStatus,
-		rec.DiscoveredFrom, boolInt(rec.OutsideStartFolder), rec.DuplicateOf, headersJSON, structuredJSON, jsdiffJSON, factsJSON)
+		rec.DiscoveredFrom, boolInt(rec.OutsideStartFolder), rec.DuplicateOf, minhashBlob(rec.Minhash), headersJSON, structuredJSON, jsdiffJSON, factsJSON)
 	if err != nil {
 		return err
 	}
@@ -614,7 +798,12 @@ func (c *Crawl) Page(rec *crawler.PageRecord) error {
 			return err
 		}
 	}
-	if rec.Facts == nil {
+	// links come from Facts.Links (HTML only); the gated discovery edges ride
+	// rec.GatedEdges. A redirect page has a GatedEdge (its redirect target) but no
+	// Facts, so the edges write must NOT be gated on Facts — otherwise the redirect
+	// target's first-wins discovered_from is lost from the edges table, which is
+	// the sole source for SaveInlinksFromEdges in the SQL finalize (#70 H5).
+	if rec.Facts == nil && len(rec.GatedEdges) == 0 {
 		return nil
 	}
 	tx, err := c.db.Begin()
@@ -622,29 +811,41 @@ func (c *Crawl) Page(rec *crawler.PageRecord) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM links WHERE src = ?`, rec.URL); err != nil {
-		return err
-	}
-	stmt, err := tx.Prepare(`INSERT INTO links
-		(src, dst, type, anchor, alt, nofollow, rel, target, path_type, elem_path, position)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	for _, l := range rec.Facts.Links {
-		if _, err := stmt.Exec(rec.URL, l.URL, string(l.Type), l.Anchor, l.Alt,
-			boolInt(l.Nofollow), l.Rel, l.Target, l.PathType, l.ElemPath, l.Position); err != nil {
+	if rec.Facts != nil {
+		if _, err := tx.Exec(`DELETE FROM links WHERE src = ?`, rec.URL); err != nil {
 			return err
+		}
+		stmt, err := tx.Prepare(`INSERT INTO links
+			(src, dst, type, anchor, alt, nofollow, rel, target, path_type, elem_path, position)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for _, l := range rec.Facts.Links {
+			if _, err := stmt.Exec(rec.URL, l.URL, string(l.Type), l.Anchor, l.Alt,
+				boolInt(l.Nofollow), l.Rel, l.Target, l.PathType, l.ElemPath, l.Position); err != nil {
+				return err
+			}
+		}
+	}
+	// The gated/rewritten discovery edges (re-crawl replaces them, like links).
+	if _, err := tx.Exec(`DELETE FROM edges WHERE src = ?`, rec.URL); err != nil {
+		return err
+	}
+	if len(rec.GatedEdges) > 0 {
+		estmt, err := tx.Prepare(`INSERT INTO edges(src, dst, hyperlink, seq) VALUES(?,?,?,?)`)
+		if err != nil {
+			return err
+		}
+		defer estmt.Close()
+		for _, e := range rec.GatedEdges {
+			if _, err := estmt.Exec(rec.URL, e.Dst, boolInt(e.Hyperlink), e.Seq); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()
-}
-
-func (c *Crawl) FrontierAdd(it frontier.Item) error {
-	_, err := c.db.Exec(`INSERT OR IGNORE INTO frontier(url, depth, redirect_hops, source) VALUES(?,?,?,?)`,
-		it.URL, it.Depth, it.RedirectHops, it.Source)
-	return err
 }
 
 func (c *Crawl) FrontierDone(url string) error {
@@ -652,11 +853,221 @@ func (c *Crawl) FrontierDone(url string) error {
 	return err
 }
 
+// --- frontier.Dedup: the on-disk visited-set authority -----------------------
+// These let the crawler drop its in-memory dedup set: a URL is "seen" iff it is
+// an un-done frontier row OR a crawled pages row, derivable from the tables the
+// store already writes (MEMORY-SCALING.md §5.1). Admit is the atomic, exactly-
+// once gate; it runs OUTSIDE the frontier's cap mutex, so its (microsecond,
+// WAL-cached) DB work never serialises the in-memory cap accounting.
+
+// Admit records the URL as a frontier row iff it is novel — neither an existing
+// frontier row (the url PRIMARY KEY) nor a crawled pages row — returning
+// firstSeen=true only on the first admission. The WHERE-NOT-EXISTS(pages) clause
+// is what stops a re-discovered, already-crawled URL from being re-admitted after
+// FrontierDone deleted its frontier row (EC-14).
+func (c *Crawl) Admit(it frontier.Item) (bool, error) {
+	// Bloom fast-negative (MEMORY-SCALING.md §5.1/§7): a miss is a guarantee the
+	// URL was never admitted, so go straight to the authoritative insert. A hit is
+	// only "maybe seen" — the high-frequency re-discovery case — so confirm cheaply
+	// against the tables and reject a true duplicate with a READ instead of a
+	// serialized INSERT write-attempt (the win under WAL + single-writer conn + M
+	// parallel crawls). A rare false positive falls through to the same exact
+	// insert, so the Bloom can never drop a novel URL or re-admit a seen one — the
+	// DB PK + WHERE NOT EXISTS(pages) stay the authority.
+	if c.bloom != nil && c.bloom.Has(it.URL) {
+		seen, err := c.Seen(it.URL)
+		if err != nil {
+			return false, err
+		}
+		if seen {
+			return false, nil
+		}
+	}
+	// The row is born claimed=1 — INVISIBLE to the feeder's WHERE claimed=0 —
+	// and only published claimable by Enqueue after the frontier's cap checks
+	// pass. Without this, the feeder could claim (and a worker crawl) a URL in
+	// the window between this INSERT and a cap-overflow rollback's Remove.
+	res, err := c.db.Exec(
+		`INSERT OR IGNORE INTO frontier(url, depth, redirect_hops, source, claimed, seq)
+		 SELECT ?, ?, ?, ?, 1, ? WHERE NOT EXISTS (SELECT 1 FROM pages WHERE url = ?)`,
+		it.URL, it.Depth, it.RedirectHops, it.Source, c.frontierSeq.Add(1), it.URL)
+	if err != nil {
+		return false, err
+	}
+	if c.bloom != nil {
+		c.bloom.Add(it.URL)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// Remove undoes a just-admitted frontier row (the frontier's cap-overflow
+// rollback). It is the same delete as FrontierDone but named for the dedup role.
+func (c *Crawl) Remove(url string) error {
+	_, err := c.db.Exec(`DELETE FROM frontier WHERE url = ?`, url)
+	return err
+}
+
+// Seen reports whether the URL is already known (a frontier or pages row).
+func (c *Crawl) Seen(url string) (bool, error) {
+	var seen bool
+	err := c.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM frontier WHERE url=?) OR EXISTS(SELECT 1 FROM pages WHERE url=?)`,
+		url, url).Scan(&seen)
+	return seen, err
+}
+
+// MarkSeen is a no-op for the on-disk authority: a resume's already-processed
+// URLs ARE the pages rows, so the authority already knows them — there is no
+// in-memory set to preseed.
+func (c *Crawl) MarkSeen([]string) error { return nil }
+
+// Count returns the number of distinct admitted URLs (frontier ∪ pages).
+func (c *Crawl) Count() (int, error) {
+	var n int
+	err := c.db.QueryRow(
+		`SELECT COUNT(*) FROM (SELECT url FROM frontier UNION SELECT url FROM pages)`).Scan(&n)
+	return n, err
+}
+
+// --- frontier.Queue: the durable work-queue authority -------------------------
+// The frontier table IS the crawl's work queue (issue #77, MEMORY-SCALING.md
+// §5.2/§5.3): the in-RAM ready-buffer is a bounded window over it, refilled by
+// the crawl's single feeder goroutine, so per-crawl RAM no longer scales with
+// the discovered frontier. Lifecycle of a row: Admit (born claimed=1, invisible)
+// → Enqueue (published claimable, claimed=0) → ClaimBatch (claimed=1, handed to
+// the buffer) → FrontierDone (deleted). Recover resets orphaned claims at every
+// Run start (EC-01), so a crash or pause never strands work.
+
+// Enqueue publishes an admitted row as claimable work. It is the second half of
+// the two-step admission (Admit wrote the row born-claimed); the frontier calls
+// it only after every cap check passed, so a cap-overflow rollback (Remove) can
+// never race the feeder into crawling an over-cap URL.
+func (c *Crawl) Enqueue(it frontier.Item) error {
+	_, err := c.db.Exec(`UPDATE frontier SET claimed = 0 WHERE url = ?`, it.URL)
+	return err
+}
+
+// ClaimBatch atomically claims up to n published rows in (depth, seq) order —
+// the deterministic BFS pull order (never rowid: deletes reorder it) — and
+// returns them for the ready-buffer. The NOT-EXISTS(pages) guard mirrors
+// PendingFrontier's: a row stranded by a crash between Page() and
+// FrontierDone() (EC-02) must never be re-fetched. RETURNING emits rows in
+// unspecified order, so the batch is re-sorted before it is returned.
+func (c *Crawl) ClaimBatch(n int) ([]frontier.Item, error) {
+	rows, err := c.db.Query(
+		`UPDATE frontier SET claimed = 1 WHERE url IN (
+			SELECT url FROM frontier
+			WHERE claimed = 0
+			  AND NOT EXISTS (SELECT 1 FROM pages WHERE pages.url = frontier.url)
+			ORDER BY depth, seq LIMIT ?)
+		 RETURNING url, depth, redirect_hops, source, seq`, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type ranked struct {
+		it  frontier.Item
+		seq int64
+	}
+	var batch []ranked
+	for rows.Next() {
+		var r ranked
+		var seq sql.NullInt64 // pre-v5 rows are backfilled, but stay NULL-safe
+		if err := rows.Scan(&r.it.URL, &r.it.Depth, &r.it.RedirectHops, &r.it.Source, &seq); err != nil {
+			return nil, err
+		}
+		r.seq = seq.Int64
+		batch = append(batch, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(batch, func(i, j int) bool {
+		if batch[i].it.Depth != batch[j].it.Depth {
+			return batch[i].it.Depth < batch[j].it.Depth
+		}
+		return batch[i].seq < batch[j].seq
+	})
+	items := make([]frontier.Item, len(batch))
+	for i, r := range batch {
+		items[i] = r.it
+	}
+	return items, nil
+}
+
+// Recover resets every claimed row back to claimable at Run start (EC-01): a
+// crash's orphaned claimed=1 rows and a pause's in-buffer rows become pending
+// work exactly once each. The durable rows themselves are the queue, so the
+// pending argument (the in-memory queue's restore payload) is ignored. Deleted
+// (FrontierDone) rows stay gone — Recover resurrects claims, never deletions.
+func (c *Crawl) Recover([]frontier.Item) error {
+	_, err := c.db.Exec(`UPDATE frontier SET claimed = 0 WHERE claimed <> 0`)
+	return err
+}
+
+// FirstWithContent is the on-disk authority for the raw-body identical-content
+// short-circuit (R8), bounding the formerly-unbounded in-RAM seenContent map
+// (#70 M4). It reports the canonical URL for a content hash and whether url is the
+// first page seen with it. claim=false (a page that will NOT expand) never records
+// itself as canonical — so it can't shadow a later in-folder twin's outlinks —
+// exactly mirroring the in-RAM firstWithContent. First-writer-wins under races is
+// preserved by the hash PRIMARY KEY: concurrent claimers all INSERT OR IGNORE then
+// read back the single winner.
+func (c *Crawl) FirstWithContent(hash, url string, claim bool) (canonical string, first bool, err error) {
+	var existing string
+	switch err = c.db.QueryRow(`SELECT url FROM content_hash WHERE hash = ?`, hash).Scan(&existing); err {
+	case nil:
+		return existing, false, nil // already claimed
+	case sql.ErrNoRows:
+		// novel hash so far
+	default:
+		return "", false, err
+	}
+	if !claim {
+		return url, true, nil // first, but does not record itself (won't expand)
+	}
+	if _, err = c.db.Exec(`INSERT OR IGNORE INTO content_hash(hash, url) VALUES(?, ?)`, hash, url); err != nil {
+		return "", false, err
+	}
+	var winner string
+	if err = c.db.QueryRow(`SELECT url FROM content_hash WHERE hash = ?`, hash).Scan(&winner); err != nil {
+		return "", false, err
+	}
+	return winner, winner == url, nil
+}
+
 // --- resume support ---
 
-// PendingFrontier returns the admitted-but-unprocessed items.
+// PreEdges reports whether this crawl predates the gated `edges` table (set by
+// the v4 forward-migration, migrateMinhashMarkPreEdges). Such a crawl's discovery
+// graph lives only in the legacy `links` table; the SQL finalize derives
+// inlinks/discovered_from solely from the empty `edges` table, so resuming it to
+// completion would corrupt both. The resume path consults this to refuse loudly.
+// Reading/querying a completed pre-edges crawl is unaffected. The marker is
+// durable (a meta row), so it survives the version bump the forward-migration
+// performs — a later resume attempt still sees it.
+func (c *Crawl) PreEdges() (bool, error) {
+	var v string
+	switch err := c.db.QueryRow(`SELECT value FROM meta WHERE key = 'pre_edges'`).Scan(&v); err {
+	case nil:
+		return v == "1", nil
+	case sql.ErrNoRows:
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
+// PendingFrontier returns the admitted-but-unprocessed items. It excludes any
+// frontier row whose URL already has a pages row: a crash between Page() and
+// FrontierDone() (two non-atomic writes) can leave that stale pair, and returning
+// it would make a resume re-fetch an already-crawled page — a wasted round-trip
+// and a double-charge against MaxURLs (EC-02). The WHERE-NOT-EXISTS guard mirrors
+// Admit's, so the resume frontier carries exactly the genuinely-unprocessed tail.
 func (c *Crawl) PendingFrontier() ([]frontier.Item, error) {
-	rows, err := c.db.Query(`SELECT url, depth, redirect_hops, source FROM frontier`)
+	rows, err := c.db.Query(`SELECT url, depth, redirect_hops, source FROM frontier
+		WHERE NOT EXISTS (SELECT 1 FROM pages WHERE pages.url = frontier.url)`)
 	if err != nil {
 		return nil, err
 	}
@@ -670,6 +1081,70 @@ func (c *Crawl) PendingFrontier() ([]frontier.Item, error) {
 		items = append(items, it)
 	}
 	return items, rows.Err()
+}
+
+// PurgeStrandedFrontier deletes frontier rows whose URL already has a pages row
+// — the pair a crash between Page() and FrontierDone() strands (the EC-02
+// window). PendingFrontier merely skips such rows, so without this purge they
+// accrete across resumes and double-count in AdmittedItems' counter rehydration
+// (#74 N14/R7). Called by the resume-open path; returns how many rows it purged.
+func (c *Crawl) PurgeStrandedFrontier() (int, error) {
+	res, err := c.db.Exec(`DELETE FROM frontier
+		WHERE EXISTS (SELECT 1 FROM pages WHERE pages.url = frontier.url)`)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
+// AdmittedItems returns every URL the crawl has admitted, with its admit-time
+// depth — the union of crawled pages and pending frontier rows. The two sets
+// are NORMALLY disjoint (Admit refuses a URL that already has a pages row, and
+// FrontierDone drops a frontier row the moment its page is recorded) — but a
+// crash between Page() and FrontierDone() strands a pages∩frontier pair (the
+// EC-02 window), so the frontier arm carries the same NOT-EXISTS(pages) guard
+// as PendingFrontier: a stranded URL counts once, not twice (#74 R7). The
+// resume-open path also purges such rows (PurgeStrandedFrontier); the guard
+// here is defense in depth for DBs stranded by older binaries. Resume replays
+// these through the frontier's per-bucket counters (RehydrateCounters) so a
+// resumed crawl enforces MaxURLsPerDepth / per-subdomain / per-path caps
+// against the same running totals a straight crawl had, instead of granting a
+// fresh bucket budget per session (FR-08 / MEMORY-SCALING.md §5.1). A resume
+// only ever follows an interrupted crawl, whose depths are still admit-time
+// (the completed-crawl depth recompute never ran), so pages.depth is the
+// bucket each page was admitted into.
+func (c *Crawl) AdmittedItems() ([]frontier.Item, error) {
+	rows, err := c.db.Query(`SELECT url, COALESCE(depth, 0), 0, '' FROM pages
+		UNION ALL
+		SELECT url, depth, redirect_hops, source FROM frontier
+		WHERE NOT EXISTS (SELECT 1 FROM pages WHERE pages.url = frontier.url)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []frontier.Item
+	for rows.Next() {
+		var it frontier.Item
+		if err := rows.Scan(&it.URL, &it.Depth, &it.RedirectHops, &it.Source); err != nil {
+			return nil, err
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
+// FetchedCount returns how many MaxURLs fetch slots the stored pages consumed:
+// every recorded page EXCEPT robots-blocked ones, which are recorded without a
+// fetch (the budget reserve happens after the robots gate). Resume seeds its
+// cumulative MaxURLs budget from this — seeding from len(ProcessedURLs()) would
+// over-charge each blocked page and make a resumed crawl fetch fewer pages
+// than a straight one (#74 N11).
+func (c *Crawl) FetchedCount() (int, error) {
+	var n int
+	err := c.db.QueryRow(`SELECT COUNT(*) FROM pages WHERE state != ?`,
+		crawler.StateBlockedRobots).Scan(&n)
+	return n, err
 }
 
 // ProcessedURLs returns every URL already recorded (must not be re-fetched).
@@ -690,30 +1165,9 @@ func (c *Crawl) ProcessedURLs() ([]string, error) {
 	return urls, rows.Err()
 }
 
-// UpdateInlinks writes the post-crawl page aggregates: inlink counts and the
-// recomputed crawl depth (NULL when no followed-link path reaches the URL).
-func (c *Crawl) UpdateInlinks(pages map[string]*crawler.PageRecord) error {
-	tx, err := c.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for url, rec := range pages {
-		depth := sql.NullInt64{Int64: int64(rec.Depth), Valid: rec.Depth != crawler.NoDepth}
-		if _, err := tx.Exec(`UPDATE pages SET inlinks = ?, discovered_from = ?, depth = ? WHERE url = ?`,
-			rec.Inlinks, rec.DiscoveredFrom, depth, url); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-// SaveDepths rewrites only the crawl-depth column for every supplied page
-// (NULL when no followed-link path reaches the URL). Resume uses it to persist
-// depths recomputed over the full two-session graph — UpdateInlinks alone
-// touches only the resumed session's pages, leaving the original run's depths
-// stale. Inlinks/discovered_from are intentionally left untouched here.
-func (c *Crawl) SaveDepths(pages map[string]*crawler.PageRecord) error {
+// SaveDepthsMap writes a url->depth map computed by the depth CSR (NoDepth -> SQL
+// NULL), so finalize's depth step never materialises the page records.
+func (c *Crawl) SaveDepthsMap(depths map[string]int) error {
 	tx, err := c.db.Begin()
 	if err != nil {
 		return err
@@ -724,8 +1178,8 @@ func (c *Crawl) SaveDepths(pages map[string]*crawler.PageRecord) error {
 		return err
 	}
 	defer stmt.Close()
-	for url, rec := range pages {
-		depth := sql.NullInt64{Int64: int64(rec.Depth), Valid: rec.Depth != crawler.NoDepth}
+	for url, d := range depths {
+		depth := sql.NullInt64{Int64: int64(d), Valid: d != crawler.NoDepth}
 		if _, err := stmt.Exec(depth, url); err != nil {
 			return err
 		}
@@ -733,25 +1187,151 @@ func (c *Crawl) SaveDepths(pages map[string]*crawler.PageRecord) error {
 	return tx.Commit()
 }
 
-// SaveInlinks rewrites only the inlinks column for every supplied page. Resume
-// uses it to persist inlink counts recomputed over the full two-session graph
-// (crawler.RecomputeInlinks); UpdateInlinks alone counts a resumed session's
-// own edges, under-reporting pages linked across the interrupt boundary. depth
-// and discovered_from are owned by SaveDepths and the preserved per-session
-// discoverer, so they are left untouched here.
-func (c *Crawl) SaveInlinks(pages map[string]*crawler.PageRecord) error {
+// LinkRows returns every stored raw link (the ungated superset) for the depth
+// CSR; the crawler re-applies the follow gate over them. The ORDER BY makes the
+// returned slice canonical for a given DB (independent of insertion/rowid order),
+// so any order-sensitive consumer is reproducible run-to-run.
+func (c *Crawl) LinkRows() ([]crawler.LinkRow, error) {
+	rows, err := c.db.Query(`SELECT src, dst, type, nofollow FROM links ORDER BY src, dst, type`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []crawler.LinkRow
+	for rows.Next() {
+		var l crawler.LinkRow
+		var nofollow int
+		if err := rows.Scan(&l.Src, &l.Dst, &l.Type, &nofollow); err != nil {
+			return nil, err
+		}
+		l.Nofollow = nofollow == 1
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// Redirects returns the redirect edges (page url -> redirect target) for the
+// depth CSR — a redirect counts as a hop.
+func (c *Crawl) Redirects() (map[string]string, error) {
+	rows, err := c.db.Query(`SELECT url, redirect_url FROM pages WHERE redirect_url IS NOT NULL AND redirect_url != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var url, dst string
+		if err := rows.Scan(&url, &dst); err != nil {
+			return nil, err
+		}
+		out[url] = dst
+	}
+	return out, rows.Err()
+}
+
+// MaxEdgeSeq returns the highest gated-edge seq recorded so far (0 when empty).
+// A resumed crawl seeds its edge counter past this so its new edges sort AFTER
+// the prior session's — keeping MIN(seq) first-wins discovered_from stable across
+// the resume boundary (the rowid-instability trap, MEMORY-SCALING.md §5.5).
+func (c *Crawl) MaxEdgeSeq() (int64, error) {
+	var n int64
+	err := c.db.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM edges`).Scan(&n)
+	return n, err
+}
+
+// DuplicateIssues computes the cross-page duplicate occurrences (content hash /
+// title / description / h1 / h2) in pure SQL — the Phase-2 dup-rule-SQL path,
+// byte-equal to issues.duplicates() over the page map. It reproduces every
+// nuance: the multi-clause eligibility gate (crawled ∧ internal ∧ HTML ∧ — when
+// configured — indexable ∧ not-paginated, the last via json_array_length of the
+// rel=prev arrays, so no precomputed column is needed), the H1/H2 "either of the
+// first two" matching (json_each with index < 2, which also makes a page whose two
+// h1s are identical its own duplicate), and the per-(url,key) detail rows.
+func (c *Crawl) DuplicateIssues(ignoreNonIndexable, ignorePaginated bool) ([]issues.Occurrence, error) {
+	elig := `state = 'crawled' AND scope = 'internal' AND facts IS NOT NULL
+		AND (content_type LIKE '%text/html%' OR content_type LIKE '%application/xhtml%')`
+	if ignoreNonIndexable {
+		elig += ` AND indexable = 1`
+	}
+	if ignorePaginated {
+		elig += ` AND COALESCE(json_array_length(facts, '$.PrevHTML'), 0) = 0
+			AND COALESCE(json_array_length(facts, '$.PrevHTTP'), 0) = 0`
+	}
+
+	var occs []issues.Occurrence
+	scan := func(q, issueID string) error {
+		rows, err := c.db.Query(q)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var url, key string
+			if err := rows.Scan(&url, &key); err != nil {
+				return err
+			}
+			occs = append(occs, issues.Occurrence{URL: url, IssueID: issueID, Detail: key})
+		}
+		return rows.Err()
+	}
+
+	// single-key duplicates: hash, title[0], description[0]
+	single := func(keyExpr, issueID string) error {
+		q := fmt.Sprintf(`WITH e AS (SELECT url, %s AS k FROM pages WHERE %s)
+			SELECT url, k FROM e WHERE k IS NOT NULL AND k != ''
+			  AND k IN (SELECT k FROM e WHERE k IS NOT NULL AND k != '' GROUP BY k HAVING COUNT(*) >= 2)`,
+			keyExpr, elig)
+		return scan(q, issueID)
+	}
+	if err := single(`json_extract(facts, '$.Hash')`, "content_exact_duplicate"); err != nil {
+		return nil, err
+	}
+	if err := single(`json_extract(facts, '$.Titles[0]')`, "title_duplicate"); err != nil {
+		return nil, err
+	}
+	if err := single(`json_extract(facts, '$.Descriptions[0]')`, "description_duplicate"); err != nil {
+		return nil, err
+	}
+
+	// either-of-first-2 duplicates: h1, h2 (each of the first two values is a key)
+	either := func(arrayPath, issueID string) error {
+		q := fmt.Sprintf(`WITH e AS (SELECT url, facts FROM pages WHERE %s),
+			keys AS (SELECT e.url AS url, je.value AS k FROM e, json_each(e.facts, '%s') je
+			         WHERE je.key < 2 AND je.value IS NOT NULL AND je.value != '')
+			SELECT url, k FROM keys WHERE k IN (SELECT k FROM keys GROUP BY k HAVING COUNT(*) >= 2)`,
+			elig, arrayPath)
+		return scan(q, issueID)
+	}
+	if err := either(`$.H1s`, "h1_duplicate"); err != nil {
+		return nil, err
+	}
+	if err := either(`$.H2s`, "h2_duplicate"); err != nil {
+		return nil, err
+	}
+	return occs, nil
+}
+
+// SaveInlinksFromEdges is the Phase-2 SQL cutover: it persists the raw hyperlink
+// inlink count and first-wins (seq-MIN) discovered_from for every page, computed
+// purely in SQL over the gated edges table — no in-RAM RecomputeInlinks, no page
+// map. Seeds are seed-locked to "". Over the full edges table (both sessions on
+// resume) this yields full-graph inlinks, so it subsumes the old resume recompute.
+func (c *Crawl) SaveInlinksFromEdges(seeds []string) error {
 	tx, err := c.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	stmt, err := tx.Prepare(`UPDATE pages SET inlinks = ? WHERE url = ?`)
-	if err != nil {
+	if _, err := tx.Exec(`UPDATE pages SET inlinks = (
+		SELECT COUNT(*) FROM edges WHERE dst = pages.url AND hyperlink = 1)`); err != nil {
 		return err
 	}
-	defer stmt.Close()
-	for url, rec := range pages {
-		if _, err := stmt.Exec(rec.Inlinks, url); err != nil {
+	if _, err := tx.Exec(`UPDATE pages SET discovered_from = COALESCE(
+		(SELECT src FROM edges e WHERE e.dst = pages.url ORDER BY seq LIMIT 1), '')`); err != nil {
+		return err
+	}
+	for _, s := range seeds { // seed-lock: a backlink must not become a seed's discoverer
+		if _, err := tx.Exec(`UPDATE pages SET discovered_from = '' WHERE url = ?`, s); err != nil {
 			return err
 		}
 	}
@@ -782,13 +1362,33 @@ func (c *Crawl) PageCount() (int, error) {
 	return n, err
 }
 
+// LoadPages reconstructs every stored page record, including the full Facts
+// (with ContentText). Used by re-analysis, compare, and any path that needs the
+// page body text.
 func (c *Crawl) LoadPages() (map[string]*crawler.PageRecord, error) {
+	return c.loadPages(false)
+}
+
+// LoadPagesLite reconstructs every page record but frees Facts.ContentText
+// per-row as it loads, so the returned map never holds the page bodies — the
+// dominant per-record cost. The finalize aggregates (depth, inlinks, link graph,
+// PageRank, duplicate keys, every issue check except the two content-text scans)
+// read only Links + scalars, so they run identically over this lighter map; the
+// two ContentText checks (lorem/soft-404) and near-duplicates are fed the body
+// text separately (StreamContentText / a full LoadPages when near-dup is on).
+// This is what keeps the finalize peak off the page-body axis (MEMORY-SCALING.md
+// §4 regime 3 / Phase 2).
+func (c *Crawl) LoadPagesLite() (map[string]*crawler.PageRecord, error) {
+	return c.loadPages(true)
+}
+
+func (c *Crawl) loadPages(stripContent bool) (map[string]*crawler.PageRecord, error) {
 	rows, err := c.db.Query(`SELECT url, scope, state, COALESCE(depth, -1), status_code, status,
 		content_type, COALESCE(http_version,''), response_time_ms, size, fetch_error, redirect_url,
 		redirect_type, matched_robots_line, indexable, indexability_status,
 		inlinks, COALESCE(discovered_from,''), outside_start_folder,
 		link_score, unique_inlinks, unique_outlinks, closest_similarity,
-		COALESCE(duplicate_of,''), headers, structured, jsdiff, facts FROM pages`)
+		COALESCE(duplicate_of,''), minhash, headers, structured, jsdiff, facts FROM pages`)
 	if err != nil {
 		return nil, err
 	}
@@ -804,7 +1404,7 @@ func (c *Crawl) LoadPages() (map[string]*crawler.PageRecord, error) {
 			&rec.MatchedRobotsLine, &indexable, &rec.IndexabilityStatus,
 			&rec.Inlinks, &rec.DiscoveredFrom, &outside,
 			&rec.LinkScore, &rec.UniqueInlinks, &rec.UniqueOutlinks, &rec.ClosestSimilarity,
-			&rec.DuplicateOf, &headersJSON, &structuredJSON, &jsdiffJSON, &factsJSON); err != nil {
+			&rec.DuplicateOf, &rec.Minhash, &headersJSON, &structuredJSON, &jsdiffJSON, &factsJSON); err != nil {
 			return nil, err
 		}
 		rec.Indexable = indexable == 1
@@ -831,21 +1431,75 @@ func (c *Crawl) LoadPages() (map[string]*crawler.PageRecord, error) {
 			if err := json.Unmarshal(factsJSON, rec.Facts); err != nil {
 				return nil, err
 			}
+			if stripContent {
+				rec.Facts.ContentText = "" // freed per-row: never retained in the map
+			}
 		}
 		pages[rec.URL] = rec
 	}
 	return pages, rows.Err()
 }
 
-// SaveIssues replaces all stored issue occurrences.
-func (c *Crawl) SaveIssues(occs []issues.Occurrence) error {
+// StreamContentText yields each page's URL and body text one row at a time,
+// holding only a single ContentText in memory. finalize uses it to run the two
+// ContentText-dependent issue checks (lorem/soft-404) over a LoadPagesLite map
+// without ever materialising all page bodies at once.
+func (c *Crawl) StreamContentText(fn func(url, text string) error) error {
+	rows, err := c.db.Query(
+		`SELECT url, COALESCE(json_extract(facts, '$.ContentText'), '') FROM pages`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var url, text string
+		if err := rows.Scan(&url, &text); err != nil {
+			return err
+		}
+		if err := fn(url, text); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+// SaveIssues replaces stored issue occurrences under the ownership contract
+// (#75): each writer replaces exactly the rows of the checks it re-evaluated.
+// owned lists those issue IDs; rows of other checks are left untouched — the
+// `issues` command re-runs only the catalogue checks (issues.EvaluatedIDs), so
+// the analysis-phase findings must survive it. A nil owned set means the
+// caller re-evaluated everything: every row is replaced, including rows of IDs
+// no longer in the catalogue (full re-analysis is authoritative). An
+// occurrence outside a non-nil owned set is rejected loudly — it would be an
+// orphaned append no later write could clean up.
+func (c *Crawl) SaveIssues(owned []string, occs []issues.Occurrence) error {
 	tx, err := c.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM issues`); err != nil {
-		return err
+	if owned == nil {
+		if _, err := tx.Exec(`DELETE FROM issues`); err != nil {
+			return err
+		}
+	} else {
+		ownedSet := make(map[string]bool, len(owned))
+		del, err := tx.Prepare(`DELETE FROM issues WHERE issue = ?`)
+		if err != nil {
+			return err
+		}
+		defer del.Close()
+		for _, id := range owned {
+			ownedSet[id] = true
+			if _, err := del.Exec(id); err != nil {
+				return err
+			}
+		}
+		for _, o := range occs {
+			if !ownedSet[o.IssueID] {
+				return fmt.Errorf("SaveIssues: occurrence %q on %s is outside the owned issue set", o.IssueID, o.URL)
+			}
+		}
 	}
 	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO issues(url, issue, detail) VALUES(?,?,?)`)
 	if err != nil {
@@ -1016,35 +1670,23 @@ func (c *Crawl) SitemapIndex() (analyze.SitemapIndex, error) {
 	return index, rows.Err()
 }
 
-// AddIssues appends occurrences without clearing existing ones (the analysis
-// phase adds to the per-page evaluation).
-func (c *Crawl) AddIssues(occs []issues.Occurrence) error {
-	tx, err := c.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO issues(url, issue, detail) VALUES(?,?,?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	for _, o := range occs {
-		if _, err := stmt.Exec(o.URL, o.IssueID, o.Detail); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
 // SaveAnalysis writes the analysis pass back: per-page metrics, chains, and
-// the analysis-phase issue occurrences.
+// the analysis-phase issue occurrences. It is a full replace of the previous
+// analysis run (#75): the analysis-owned page columns are reset to their
+// schema defaults before the new maps apply, so a page that dropped out of the
+// new result set (near-dup disabled, threshold raised, link score off) cannot
+// keep the previous run's values; the issue occurrences likewise replace the
+// analysis-owned rows via the SaveIssues ownership contract.
 func (c *Crawl) SaveAnalysis(r *analyze.Results) error {
 	tx, err := c.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE pages SET link_score = 0, unique_inlinks = 0,
+		unique_outlinks = 0, closest_similarity = 0, near_dup_count = 0`); err != nil {
+		return err
+	}
 	for url, score := range r.LinkScores {
 		if _, err := tx.Exec(`UPDATE pages SET link_score = ? WHERE url = ?`, score, url); err != nil {
 			return err
@@ -1076,7 +1718,7 @@ func (c *Crawl) SaveAnalysis(r *analyze.Results) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	return c.AddIssues(r.Occurrences)
+	return c.SaveIssues(issues.AnalysisIDs(), r.Occurrences)
 }
 
 // Chains returns the stored redirect/canonical chains.
@@ -1122,6 +1764,26 @@ func ListCrawls(dir string) ([]Info, error) {
 		infos = append(infos, in)
 	}
 	return infos, rows.Err()
+}
+
+// CrawlStatus reads one crawl's registry status. Unknown ids return an error
+// (the registry row is created with the crawl, so a missing row means a missing
+// or foreign crawl).
+func CrawlStatus(dir, id string) (string, error) {
+	reg, err := registryDB(dir)
+	if err != nil {
+		return "", err
+	}
+	defer reg.Close()
+	var status string
+	switch err := reg.QueryRow(`SELECT status FROM crawls WHERE id = ?`, id).Scan(&status); err {
+	case nil:
+		return status, nil
+	case sql.ErrNoRows:
+		return "", fmt.Errorf("crawl %q not found", id)
+	default:
+		return "", err
+	}
 }
 
 // SetStatus updates a crawl's registry row. crawled is URLs fetched; total is
@@ -1171,4 +1833,14 @@ func boolInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// minhashBlob stores an empty signature as SQL NULL (not a zero-length blob) so
+// "has a precomputed signature" is a clean IS NOT NULL test and a near-dup-off
+// crawl leaves the column unset.
+func minhashBlob(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
 }

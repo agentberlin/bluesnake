@@ -136,6 +136,7 @@ var descriptions = map[string]string{
 	"rendering.flatten_shadow_dom": "Include shadow-DOM content in the rendered HTML.",
 	"rendering.flatten_iframes":    "Inline iframe content into the rendered HTML.",
 	"rendering.chrome_path":        "Manual Chrome binary path when auto-detection fails.",
+	"rendering.max_global_renders": "Cap on concurrent Chrome renders across ALL running crawls in this process (a render slot is separate from a fetch slot). 0 = auto: a cores-scaled cap equal to the per-crawl tab ceiling, so single-crawl behaviour is unchanged.",
 
 	"advanced.cookie_storage":                        "Cookie jar behaviour during the crawl.",
 	"advanced.ignore_non_indexable_for_issues":       "Skip non-indexable pages when evaluating content issues.",
@@ -190,8 +191,10 @@ var descriptions = map[string]string{
 	"url_rewriting.regex_replace": "Regex rewrites applied to discovered URLs. Items: {pattern, replace}.",
 	"url_rewriting.lowercase":     "Lowercase every discovered URL.",
 
-	"speed.max_threads":      "Parallel download workers.",
-	"speed.max_urls_per_sec": "Politeness throttle across all workers. 0 = unlimited.",
+	"speed.max_threads":           "Parallel download workers (per crawl).",
+	"speed.max_urls_per_sec":      "Politeness throttle across all workers. 0 = unlimited.",
+	"speed.max_global_threads":    "Cap on total concurrent fetches across ALL running crawls in this process. 0 = unlimited (single-crawl behaviour).",
+	"speed.max_concurrent_crawls": "Parallel member crawls for the CLI 'projects crawl-all'. This server runs one crawl at a time regardless.",
 
 	"http.user_agent":        "HTTP User-Agent header sent with every request.",
 	"http.robots_user_agent": "Token used when matching robots.txt rules.",
