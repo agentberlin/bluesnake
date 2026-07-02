@@ -11,6 +11,8 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/extract"
+	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/agentberlin/bluesnake/internal/urlutil"
 	"github.com/cucumber/godog"
 )
@@ -278,23 +280,86 @@ func (w *world) crawlSiteAt(path string) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	c, err := crawler.New(cfg)
+	st, err := store.CreateCrawl(w.storeDirPath(), []string{srv.URL + path}, cfg.Mode, cfg)
 	if err != nil {
 		return err
 	}
-	w.crawlResult, err = c.Run(context.Background(), srv.URL+path)
-	return err
+	defer st.Close()
+	w.storedCrawlID = st.ID
+	c, err := crawler.New(cfg, crawler.WithSink(st))
+	if err != nil {
+		return err
+	}
+	seed := srv.URL + path
+	w.crawlResult, err = c.Run(context.Background(), seed)
+	if err != nil {
+		return err
+	}
+	return w.finalizeCrawlPages(c, st, w.crawlResult, seed)
+}
+
+// finalizeCrawlPages runs the SAME store-backed aggregate pass production uses
+// (the depth/inlink half of finalize.Crawl): inlinks + seed-locked first-wins
+// discovered_from from the gated `edges` table in SQL, and shortest-followed-path
+// depth via the CSR over the stored `links` superset (re-applying the follow
+// gate). This is the production path — it replaces the old hand-rolled in-RAM
+// RecomputeDepths/RecomputeInlinks + SaveDepths/SaveInlinks twins, which
+// production no longer calls (#70 H5), so the acceptance suite now validates the
+// SQL/CSR finalize the CLI/desktop/MCP actually run. res is unused (the edges
+// table, not res.Inlinks, is the source). It reloads the finalized records into
+// w.crawlPages for assertions.
+func (w *world) finalizeCrawlPages(c *crawler.Crawler, st *store.Crawl, _ *crawler.Result, seeds ...string) error {
+	if err := st.SaveInlinksFromEdges(c.NormalizeSeeds(seeds...)); err != nil {
+		return err
+	}
+	links, err := st.LinkRows()
+	if err != nil {
+		return err
+	}
+	redirects, err := st.Redirects()
+	if err != nil {
+		return err
+	}
+	urls, err := st.ProcessedURLs()
+	if err != nil {
+		return err
+	}
+	if err := st.SaveDepthsMap(c.RecomputeDepthsFromLinks(links, redirects, urls, seeds)); err != nil {
+		return err
+	}
+	if w.crawlPages, err = st.LoadPages(); err != nil {
+		return err
+	}
+	// Custom search/extraction hits live in their own table — LoadPages only
+	// rebuilds the pages row, so attach them the way production consumers
+	// (export, desktop) read them: straight from custom_results.
+	rows, err := st.DB().Query(`SELECT url, kind, name, value FROM custom_results`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var url string
+		var cr extract.Result
+		if err := rows.Scan(&url, &cr.Kind, &cr.Name, &cr.Value); err != nil {
+			return err
+		}
+		if rec, ok := w.crawlPages[url]; ok {
+			rec.CustomResults = append(rec.CustomResults, cr)
+		}
+	}
+	return rows.Err()
 }
 
 // --- assertions ---
 
 func (w *world) crawlPage(path string) *crawler.PageRecord {
-	return w.crawlResult.Pages[w.server.URL+path]
+	return w.crawlPages[w.server.URL+path]
 }
 
 func (w *world) countState(state string) int {
 	n := 0
-	for _, p := range w.crawlResult.Pages {
+	for _, p := range w.crawlPages {
 		if p.State == state {
 			n++
 		}
@@ -460,7 +525,7 @@ func (w *world) pageRequestedTimes(path string, times int) error {
 }
 
 func (w *world) externalPageStatus(path string, status int) error {
-	rec := w.crawlResult.Pages[w.extServer.URL+path]
+	rec := w.crawlPages[w.extServer.URL+path]
 	if rec == nil {
 		return fmt.Errorf("no record for external %s", path)
 	}
@@ -474,7 +539,7 @@ func (w *world) externalPageStatus(path string, status int) error {
 }
 
 func (w *world) externalPageNotParsed(path string) error {
-	rec := w.crawlResult.Pages[w.extServer.URL+path]
+	rec := w.crawlPages[w.extServer.URL+path]
 	if rec == nil {
 		return fmt.Errorf("no record for external %s", path)
 	}
@@ -548,7 +613,7 @@ func (w *world) chainURLsRequested(count int, prefix string) error {
 
 func (w *world) countCrawledUnder(prefix string) int {
 	n := 0
-	for url, p := range w.crawlResult.Pages {
+	for url, p := range w.crawlPages {
 		if p.State == crawler.StateCrawled && strings.HasPrefix(url, w.server.URL+prefix) {
 			n++
 		}

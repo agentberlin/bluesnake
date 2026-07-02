@@ -158,7 +158,7 @@ func (o *cliObserver) OnStart(crawlID, seed string) {
 	o.mu.Unlock()
 }
 
-func (o *cliObserver) OnPage(rec *crawler.PageRecord) {
+func (o *cliObserver) OnPage(_ string, rec *crawler.PageRecord) {
 	o.mu.Lock()
 	o.t.add(rec)
 	o.mu.Unlock()

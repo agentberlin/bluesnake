@@ -43,7 +43,7 @@ function App() {
   const [crawls, setCrawls] = useState([]);
   const [crawlsLoaded, setCrawlsLoaded] = useState(false); // gates the first-run welcome until we know
   const [activeCrawl, setActiveCrawl] = useState(null);
-  const [liveCrawlId, setLiveCrawlId] = useState(null);
+  const [liveCrawlIds, setLiveCrawlIds] = useState([]); // every currently-running crawl (parallel-aware)
   const [queueJobs, setQueueJobs] = useState([]);
   const [resultsTab, setResultsTab] = useState("internal");
   const [settingsProfile, setSettingsProfile] = useState("Default audit");
@@ -124,36 +124,43 @@ function App() {
   useEffect(() => {
     refresh();
     refreshQueue();
-    // A crawl may already be running (e.g. after a frontend reload). Open it the
-    // same way any crawl opens — on its Overview, which renders live progress
-    // while the crawl is running (see results-shell.jsx).
-    api.activeProgress().then((p) => {
-      if (p && p.state === "running") openLive(p.crawlId, p.seed);
+    // Crawls may already be running (e.g. after a frontend reload) — possibly
+    // several in parallel. Track them all and open the oldest one on its
+    // Overview, which renders live progress while it runs (see results-shell.jsx);
+    // the sidebar/queue give access to the others.
+    api.runningProgress().then((list) => {
+      const running = (list || []).filter((p) => p.state === "running");
+      if (running.length === 0) return;
+      setLiveCrawlIds(running.map((p) => p.crawlId));
+      openLive(running[0].crawlId, running[0].seed);
     }).catch(() => {});
     const offDone = on("crawl:done", (d) => {
       refresh();
       refreshQueue();
-      // The session has ended: stop treating it as live (its Overview falls back
+      // That crawl has ended: stop treating it as live (its Overview falls back
       // to the static dashboard) and fold the final status into what we're showing.
-      setLiveCrawlId((cur) => (d && d.crawlId === cur ? null : cur));
+      setLiveCrawlIds((cur) => (d ? cur.filter((id) => id !== d.crawlId) : cur));
       setActiveCrawl((cur) => (cur && d && cur.id === d.crawlId
         ? { ...cur, status: d.status, crawled: d.crawled, total: d.total } : cur));
     });
     // a crawl beginning (hand-started, queued, MCP, or project crawl-all) takes
-    // over the screen like any other
+    // over the screen like any other; with crawls already live the newest wins
+    // the screen and the rest stay reachable from the sidebar/queue
     const offStarted = on("crawl:started", (id) => {
       refresh();
       refreshQueue();
-      api.activeProgress().then((p) => openLive(id, p && p.seed)).catch(() => openLive(id, ""));
+      setLiveCrawlIds((cur) => (cur.includes(id) ? cur : [...cur, id]));
+      api.activeProgress(id).then((p) => openLive(id, p && p.seed)).catch(() => openLive(id, ""));
     });
     return () => { offDone(); offStarted(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refresh, refreshQueue]);
 
   // Open a live crawl on its Overview tab; the Overview renders the live progress
-  // view while liveCrawlId matches, so it's reachable like any other crawl page.
+  // view while the crawl is in liveCrawlIds, so it's reachable like any other
+  // crawl page.
   function openLive(id, seed) {
-    setLiveCrawlId(id);
+    setLiveCrawlIds((cur) => (cur.includes(id) ? cur : [...cur, id]));
     setActiveCrawl((cur) => (cur && cur.id === id ? { ...cur, status: "running" }
       : { id, seed: seed || "", status: "running", crawled: 0, total: 0 }));
     setResultsTab("overview");
@@ -215,28 +222,31 @@ function App() {
   ];
 
   // Titlebar host follows what's on screen: the crawl whose results (or live
-  // progress) you're viewing, falling back to the running crawl's domain.
-  const liveCrawl = crawls.find((c) => c.id === liveCrawlId);
+  // progress) you're viewing, falling back to the oldest running crawl's domain.
+  const liveCrawl = crawls.find((c) => liveCrawlIds.includes(c.id));
   const titleHost = activeCrawl
     ? (hostOf(activeCrawl.seed) || (liveCrawl ? hostOf(liveCrawl.seed) : "crawling…"))
     : (liveCrawl ? hostOf(liveCrawl.seed) : "no crawl");
 
-  // Only one crawl runs at a time, process-wide (see runner.go / app.go), so the
-  // backend rejects a second start while one is live. Mirror that in the UI:
-  // while a crawl is live, disable every "start/resume a crawl" affordance and
-  // explain why. liveCrawlId tracks an actually-live session and clears on
-  // crawl:done (incl. pause/stop), so the gate lifts exactly when the lock does.
-  const crawlActive = liveCrawlId != null;
+  // Crawls drain through the queue, up to speed.max_concurrent_crawls at once
+  // (see app.go). While anything is live we keep the "start" affordances enabled
+  // but explain that a new crawl either runs alongside or queues behind the
+  // running ones. liveCrawlIds tracks the actually-live sessions and each id
+  // clears on its crawl:done (incl. pause/stop).
+  const crawlActive = liveCrawlIds.length > 0;
   const liveSeed = liveCrawl ? liveCrawl.seed
-    : (activeCrawl && activeCrawl.id === liveCrawlId ? activeCrawl.seed : "");
+    : (activeCrawl && liveCrawlIds.includes(activeCrawl.id) ? activeCrawl.seed : "");
   const crawlBusyMsg = crawlActive
-    ? `A crawl is already running${liveSeed ? " (" + hostOf(liveSeed) + ")" : ""} — new crawls queue behind it.`
+    ? (liveCrawlIds.length > 1
+      ? `${liveCrawlIds.length} crawls are running — a new crawl starts alongside them if a slot is free, else it queues.`
+      : `A crawl is already running${liveSeed ? " (" + hostOf(liveSeed) + ")" : ""} — a new crawl starts alongside it if a slot is free, else it queues.`)
     : null;
-  // Jump back to the running crawl (used by the "View running crawl" link on the
+  // Jump back to a running crawl (used by the "View running crawl" link on the
   // New Crawl form when a crawl starts while it's open).
   function viewActiveCrawl() {
-    if (!liveCrawlId) return;
-    openLive(liveCrawlId, liveSeed);
+    if (liveCrawlIds.length === 0) return;
+    const id = (activeCrawl && liveCrawlIds.includes(activeCrawl.id)) ? activeCrawl.id : liveCrawlIds[0];
+    openLive(id, liveSeed);
   }
 
   return (
@@ -297,7 +307,7 @@ function App() {
           <div className="sb-recents">
             {crawls.map((c) => {
               const active = view === "results" && activeCrawl && activeCrawl.id === c.id;
-              const live = c.id === liveCrawlId || c.status === "running";
+              const live = liveCrawlIds.includes(c.id) || c.status === "running";
               const dotc = live ? "var(--accent)" : c.status === "interrupted" ? "var(--sev-warn)" : "var(--sev-ok)";
               const host = hostOf(c.seed);
               if (collapsed) return (
@@ -340,7 +350,7 @@ function App() {
             : <CrawlManager crawls={crawls} onOpen={openCrawl} onResume={resumeCrawl} onCompare={() => setView("compare")} onNew={() => setView("new")} onDelete={deleteCrawl} storage={storage} crawlBusyMsg={crawlBusyMsg} />
         )}
         {view === "new" && <NewCrawl onStart={startCrawl} onOpenSettings={(p) => { setSettingsProfile(p); setSettingsBack({ view: "new", label: "New Crawl" }); setView("settings"); }} crawlBusyMsg={crawlBusyMsg} onViewActiveCrawl={viewActiveCrawl} />}
-        {view === "queue" && <QueueView jobs={queueJobs} liveCrawlId={liveCrawlId} onRefresh={refreshQueue}
+        {view === "queue" && <QueueView jobs={queueJobs} liveCrawlIds={liveCrawlIds} onRefresh={refreshQueue}
           onCancel={(id) => api.cancelJob(id).then(refreshQueue).catch(() => {})}
           onClear={(id) => api.clearJob(id).then(refreshQueue).catch(() => {})}
           onOpenCrawl={(crawlId) => { const c = crawls.find((x) => x.id === crawlId); if (c) openCrawl(c); }}
@@ -348,7 +358,7 @@ function App() {
         {view === "results" && activeCrawl && (
           <ResultsWorkspace
             crawl={activeCrawl}
-            live={liveCrawlId === activeCrawl.id}
+            live={liveCrawlIds.includes(activeCrawl.id)}
             tab={resultsTab}
             setTab={(id) => { setResultsTab(id); setIssueFilter(null); }}
             issueFilter={issueFilter}
@@ -395,7 +405,7 @@ function UpdatePrompt({ status, onClose }) {
   const [crawlRunning, setCrawlRunning] = useState(false);
 
   useEffect(() => {
-    api.activeProgress().then((p) => setCrawlRunning(!!(p && p.state === "running"))).catch(() => {});
+    api.runningProgress().then((list) => setCrawlRunning((list || []).some((p) => p.state === "running"))).catch(() => {});
     const off = on("update:progress", (e) => { if (e) setProg(e); });
     return () => off();
   }, []);
