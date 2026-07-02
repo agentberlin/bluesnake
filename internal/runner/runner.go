@@ -146,8 +146,8 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 		threads: cfg.Speed.MaxThreads,
 	}
 	if resume != nil {
-		r.total = len(resume.Processed)
-		r.discovered = len(resume.Processed) + len(resume.Pending)
+		r.total = resume.processed
+		r.discovered = resume.discovered
 	}
 	// One global limiter shared across every crawl this executor runs, so M
 	// parallel crawls honour a single process-wide fetch ceiling. Fall back to a
@@ -166,7 +166,7 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 		crawler.WithLimiter(lim),
 	}
 	if resume != nil {
-		opts = append(opts, crawler.WithResume(*resume))
+		opts = append(opts, crawler.WithResume(resume.Resume))
 	}
 	c, err := crawler.New(cfg, opts...)
 	if err != nil {
@@ -280,7 +280,7 @@ func markTerminal(storeDir string, st *store.Crawl, status string) error {
 // == nil), or an existing one restored for resume (which uses the crawl's
 // frozen config and seeds, not the spec).
 func (e *Executor) open(ctx context.Context, spec queue.JobSpec) (
-	st *store.Crawl, cfg *config.Config, seeds []string, resume *crawler.Resume, err error,
+	st *store.Crawl, cfg *config.Config, seeds []string, resume *resumeState, err error,
 ) {
 	if spec.ResumeID != "" {
 		return openForResume(e.storeDir, spec.ResumeID)
@@ -310,7 +310,7 @@ func (e *Executor) open(ctx context.Context, spec queue.JobSpec) (
 // structurally rather than per-surface. The spec's profile/config are ignored:
 // a resume must run the crawl's own frozen config.
 func openForResume(storeDir, id string) (
-	st *store.Crawl, cfg *config.Config, seeds []string, resume *crawler.Resume, err error,
+	st *store.Crawl, cfg *config.Config, seeds []string, resume *resumeState, err error,
 ) {
 	// A completed crawl has nothing to resume; accepting it would briefly
 	// de-complete the registry row (finalize records the interim interrupted
@@ -378,36 +378,51 @@ func openForResume(storeDir, id string) (
 
 // resumeSource is the store surface loadResume reads (satisfied by *store.Crawl).
 type resumeSource interface {
-	ProcessedURLs() ([]string, error)
+	PageCount() (int, error)
+	Count() (int, error)
 	FetchedCount() (int, error)
-	PendingFrontier() ([]frontier.Item, error)
 	MaxEdgeSeq() (int64, error)
 	AdmittedItems() ([]frontier.Item, error)
 }
 
-// loadResume assembles the crawler.Resume state from the store. Any load error
-// refuses the resume — silently degrading (e.g. restarting the edge seq at 0 on
-// a MaxEdgeSeq read error) would corrupt first-wins discovered_from exactly the
-// way the missing-capability bug did (#74 N15). The admitted set is loaded only
-// when a per-bucket cap is configured; it is dead weight otherwise.
-func loadResume(src resumeSource, needAdmitted bool) (crawler.Resume, error) {
-	var r crawler.Resume
+// resumeState is the loader's result: the engine's plain-data Resume plus the
+// live-counter seeds the runner's progress starts from.
+type resumeState struct {
+	crawler.Resume
+	processed  int // recorded pages — seeds the live "total" counter
+	discovered int // admitted URLs (frontier ∪ pages) — seeds "discovered"
+}
+
+// loadResume assembles the resume state from the store. Any load error refuses
+// the resume — silently degrading (e.g. restarting the edge seq at 0 on a
+// MaxEdgeSeq read error) would corrupt first-wins discovered_from exactly the
+// way the missing-capability bug did (#74 N15). The processed and pending URL
+// SETS are deliberately not materialised (issue #77): the store is both the
+// dedup authority (its pages rows are the visited set; MarkSeen is a no-op)
+// and the work-queue authority (the engine's Recover resets the pending rows'
+// orphaned claims and the feeder pulls them straight from the table), so
+// loading either slice would put a crawl- or frontier-sized copy back in RAM —
+// exactly the term this design removes. Only their counts are read, to seed
+// the live progress counters. The admitted set is loaded only when a
+// per-bucket cap is configured; it is dead weight otherwise.
+func loadResume(src resumeSource, needAdmitted bool) (resumeState, error) {
+	var r resumeState
 	var err error
-	if r.Processed, err = src.ProcessedURLs(); err != nil {
-		return crawler.Resume{}, fmt.Errorf("resume: load processed set: %w", err)
+	if r.processed, err = src.PageCount(); err != nil {
+		return resumeState{}, fmt.Errorf("resume: load processed count: %w", err)
+	}
+	if r.discovered, err = src.Count(); err != nil {
+		return resumeState{}, fmt.Errorf("resume: load discovered count: %w", err)
 	}
 	if r.Fetched, err = src.FetchedCount(); err != nil {
-		return crawler.Resume{}, fmt.Errorf("resume: load fetched count: %w", err)
-	}
-	if r.Pending, err = src.PendingFrontier(); err != nil {
-		return crawler.Resume{}, fmt.Errorf("resume: load pending frontier: %w", err)
+		return resumeState{}, fmt.Errorf("resume: load fetched count: %w", err)
 	}
 	if r.MaxEdgeSeq, err = src.MaxEdgeSeq(); err != nil {
-		return crawler.Resume{}, fmt.Errorf("resume: load edge sequence: %w", err)
+		return resumeState{}, fmt.Errorf("resume: load edge sequence: %w", err)
 	}
 	if needAdmitted {
 		if r.Admitted, err = src.AdmittedItems(); err != nil {
-			return crawler.Resume{}, fmt.Errorf("resume: load admitted set: %w", err)
+			return resumeState{}, fmt.Errorf("resume: load admitted set: %w", err)
 		}
 	}
 	return r, nil
@@ -581,6 +596,9 @@ var (
 	_ crawler.LlmsTxtSink = (*sink)(nil)
 	_ crawler.ContentSink = (*sink)(nil) // the identical-content authority must reach the store, not the in-RAM fallback
 	_ frontier.Dedup      = (*sink)(nil)
+	// The work-queue authority (issue #77): without it the engine falls back to
+	// the frontier-linear in-RAM queue — the bounded-RAM contract silently gone.
+	_ frontier.Queue = (*sink)(nil)
 )
 
 func (t *sink) Page(rec *crawler.PageRecord) error {
