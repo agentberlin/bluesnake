@@ -1,15 +1,19 @@
 // Package queue is the core crawl queue: a persistent (or in-memory) list of
-// crawl jobs plus a single Dispatcher that drains them one at a time through an
-// Executor. It is the one path by which crawls run — every surface (desktop,
-// MCP, CLI) submits jobs here rather than starting crawls itself, so the
-// interface never dictates how a crawl executes. The desktop backs the queue
-// with the persistent registry DB (jobs survive restarts); the CLI and the
-// standalone MCP server back it with an in-memory store and drain it in-process.
+// crawl jobs plus a single Dispatcher that drains them through an Executor. It
+// is the one path by which crawls run — every surface (desktop, MCP, CLI)
+// submits jobs here rather than starting crawls itself, so the interface never
+// dictates how a crawl executes. The desktop backs the queue with the
+// persistent registry DB (jobs survive restarts); the CLI and the standalone
+// MCP server back it with an in-memory store and drain it in-process.
 //
-// Concurrency is deliberately one job at a time (DESIGN.md §8: single-process
-// concurrency is the design point). The claim step is atomic and the dispatcher
-// loop is structured so a future parallel mode is N loops + N executors, not a
-// rewrite.
+// The dispatcher runs up to speed.max_concurrent_crawls jobs at once
+// (WithConcurrency; default 1) with identical semantics on every surface. The
+// claim step is atomic on both stores so W drain loops never double-claim, and
+// per-crawl control — PauseCrawl/StopCrawl/CurrentAll — is addressed by crawl
+// id, so one of several parallel crawls can be paused, stopped or inspected
+// without disturbing the rest. Any surface driving W>1 must inject ONE shared
+// process-wide limiter into its executor (runner.WithLimiter), so the global
+// fetch/finalize/render caps hold across the parallel crawls (H1/P17).
 package queue
 
 import (
@@ -76,19 +80,24 @@ type Store interface {
 	Reconcile() (int, error)
 }
 
-// Executor runs a single crawl to completion. It is stateful about its one
-// in-flight crawl: Run blocks until that crawl ends; Pause/Stop signal the
-// in-flight crawl (pause leaves it resumable, stop finalises it as completed);
-// both are no-ops when nothing is running. onStart is invoked once with the
-// crawl id as soon as the crawl exists (so the dispatcher can link the job to
-// the crawl and surfaces can navigate to the live view). The returned status is
-// the crawl's terminal store status (store.StatusCompleted | store.StatusInterrupted).
+// Executor runs a single crawl to completion per Run call, and can hold several
+// in flight at once (one per drain loop). Run blocks until its crawl ends;
+// onStart is invoked once with the crawl id as soon as the crawl exists (so the
+// dispatcher can link the job to the crawl and surfaces can navigate to the
+// live view). The returned status is the crawl's terminal store status
+// (store.StatusCompleted | store.StatusInterrupted). All control signals are
+// no-ops when the addressed crawl (or, for the fan-outs, any crawl) is not
+// running.
 type Executor interface {
 	Run(ctx context.Context, spec JobSpec, onStart func(crawlID string)) (status string, err error)
 	Pause() // pause every in-flight crawl (left resumable)
 	Stop()  // stop every in-flight crawl (finalised as completed)
-	// StopCrawl stops one specific crawl by id, so Cancel can target a single job
-	// when several run in parallel; a no-op when that crawl is not in flight.
+	// PauseCrawl pauses one specific crawl by id (left resumable), leaving any
+	// other in-flight crawl untouched.
+	PauseCrawl(crawlID string)
+	// StopCrawl stops one specific crawl by id (finalised as completed), so
+	// Cancel and the per-crawl surface controls can target a single job when
+	// several run in parallel.
 	StopCrawl(crawlID string)
 }
 

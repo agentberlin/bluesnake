@@ -56,10 +56,14 @@ func TestExecutorPauseFansOutToAll(t *testing.T) {
 	}
 }
 
-// TestExecutorSnapshotIdle pins Snapshot returns ok=false when no crawl is in flight.
+// TestExecutorSnapshotIdle pins the snapshot API when no crawl is in flight:
+// Snapshots is empty and SnapshotCrawl reports ok=false.
 func TestExecutorSnapshotIdle(t *testing.T) {
 	e := New(t.TempDir(), nil)
-	if _, ok := e.Snapshot(); ok {
-		t.Error("Snapshot with no crawls returned ok=true")
+	if snaps := e.Snapshots(); len(snaps) != 0 {
+		t.Errorf("Snapshots with no crawls = %d entries, want none", len(snaps))
+	}
+	if _, ok := e.SnapshotCrawl("missing"); ok {
+		t.Error("SnapshotCrawl for an unknown crawl returned ok=true")
 	}
 }

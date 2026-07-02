@@ -9,7 +9,8 @@ import (
 
 // The crawl queue. Jobs are persisted in the registry DB so the queue survives
 // restarts and crashes (DESIGN.md §5.3). A job describes a crawl to run; the
-// queue dispatcher claims jobs one at a time and runs each via an executor. The
+// queue dispatcher's drain loops claim jobs (atomically, so parallel loops
+// never double-claim) and run each via an executor. The
 // store treats Request as opaque JSON — internal/queue owns its meaning — so the
 // persistence layer never depends on the crawl-request shape.
 

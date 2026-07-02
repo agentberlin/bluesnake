@@ -58,7 +58,12 @@ func (c *Crawler) crawlLlmsTxt(ctx context.Context, seed string) []frontier.Item
 	var items []frontier.Item
 	for _, k := range kinds {
 		target := base + k.path
-		res := c.client.Fetch(ctx, target)
+		// Under the global fetch cap like every crawl fetch (H1): with M crawls
+		// starting in parallel, uncapped llms.txt fetches would exceed the cap.
+		res := c.fetchCapped(ctx, target)
+		if res == nil {
+			return items // crawl cancelled while waiting for a slot
+		}
 		found := res.FetchError == "" && res.StatusCode == 200
 		rec := LlmsTxtRecord{URL: target, Kind: k.kind, Status: res.StatusCode, Found: found, Content: res.Body}
 		var file *llmstxt.File

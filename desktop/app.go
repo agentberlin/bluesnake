@@ -33,13 +33,15 @@ type App struct {
 	upd      *updateManager // self-update checker / installer
 
 	// The crawl queue: every start (hand-driven or MCP-driven) enqueues a job;
-	// the single dispatcher drains it one crawl at a time through the executor,
-	// owning the one-crawl-at-a-time slot. The queue is persisted in the registry
-	// DB, so it survives restarts.
-	mu   sync.Mutex
-	exec *runner.Executor
-	disp *queue.Dispatcher
-	obs  *uiObserver
+	// the single dispatcher drains it through the executor, running up to
+	// queueW crawls at once (speed.max_concurrent_crawls from the default
+	// profile, read at construction — restart to apply; default 1). The queue
+	// is persisted in the registry DB, so it survives restarts.
+	mu     sync.Mutex
+	exec   *runner.Executor
+	disp   *queue.Dispatcher
+	obs    *uiObserver
+	queueW int
 
 	cacheMu    sync.Mutex
 	pagesCache map[string]map[string]*crawler.PageRecord // crawlID -> pages
@@ -73,7 +75,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ensureQueue()
 	// Drain the persistent queue: this reconciles any job left running by a
 	// previous crash (-> interrupted, the partial crawl stays resumable) and
-	// then runs queued jobs one at a time. A Start failure (registry error
+	// then runs queued jobs, up to queueW at a time. A Start failure (registry error
 	// during reconcile) leaves the dispatcher retryable; swallowing it meant
 	// jobs were accepted forever and never drained, silently (#74 N4) — so
 	// surface it and retry with backoff until the registry recovers.
@@ -124,15 +126,28 @@ func (a *App) ensureQueue() {
 	if a.disp != nil {
 		return
 	}
-	a.obs = &uiObserver{app: a}
-	a.exec = runner.New(a.storeDir, a.obs)
-	// One crawl at a time by design: the desktop's realtime progress UI is built
-	// around a single active crawl (no WithConcurrency). Because of that the
-	// executor's per-crawl fallback limiter IS the process-wide fetch cap — there
-	// is only ever one in-flight crawl. Parallel project crawl-all is the CLI's
-	// `projects crawl-all --parallel`; driving concurrency>1 here would also need
-	// one shared limiter injected via runner.WithLimiter (P7/P17).
-	a.disp = queue.New(queue.NewSQLiteStore(a.storeDir), a.exec)
+	// speed.max_concurrent_crawls (default profile, read once here — restart to
+	// apply, as the Settings copy says) drives how many crawls the dispatcher
+	// runs at once. When parallel, ONE shared limiter bounds total fetches /
+	// finalize passes / Chrome renders across all of them (H1/P17); with the
+	// default of 1 the limiter is nil and the executor's per-crawl fallback
+	// keeps today's single-crawl behaviour byte-identical. An unreadable
+	// default profile fails safe to single-crawl — the same profile backs every
+	// start job, so the real error surfaces on the first crawl start.
+	w, lim, err := runner.ProcessWiring(a.storeDir)
+	if err != nil && a.ctx != nil {
+		runtime.LogWarningf(a.ctx, "queue: default profile unreadable, running single-crawl: %v", err)
+	}
+	a.queueW = w
+	a.obs = &uiObserver{app: a, emit: func(event string, data ...interface{}) {
+		runtime.EventsEmit(a.ctx, event, data...)
+	}}
+	var opts []runner.Option
+	if lim != nil {
+		opts = append(opts, runner.WithLimiter(lim))
+	}
+	a.exec = runner.New(a.storeDir, a.obs, opts...)
+	a.disp = queue.New(queue.NewSQLiteStore(a.storeDir), a.exec, queue.WithConcurrency(w))
 }
 
 func (a *App) invalidate(id string) {
@@ -297,34 +312,81 @@ func (a *App) ResumeCrawl(id string) (string, error) {
 	return j.ID, nil
 }
 
-// PauseCrawl interrupts the live crawl, leaving it resumable.
-func (a *App) PauseCrawl() {
+// PauseCrawl interrupts one live crawl by id, leaving it resumable; other
+// running crawls are untouched. An empty id addresses the single running crawl
+// (the pre-parallel call shape) and is a no-op when that is ambiguous.
+func (a *App) PauseCrawl(crawlID string) {
 	a.ensureQueue()
-	a.disp.Pause()
+	if crawlID = a.resolveLive(crawlID); crawlID == "" {
+		return
+	}
+	a.disp.PauseCrawl(crawlID)
 }
 
-// StopCrawl ends the live crawl and finalises it as completed (analysis runs
-// on what was crawled so far).
-func (a *App) StopCrawl() {
+// StopCrawl ends one live crawl by id and finalises it as completed (analysis
+// runs on what was crawled so far); other running crawls are untouched.
+func (a *App) StopCrawl(crawlID string) {
 	a.ensureQueue()
-	a.disp.Stop()
+	if crawlID = a.resolveLive(crawlID); crawlID == "" {
+		return
+	}
+	a.disp.StopCrawl(crawlID)
 }
 
-// ActiveProgress lets the progress view rehydrate after a reload; nil when no
-// crawl is live.
-func (a *App) ActiveProgress() *ProgressSnapshot {
+// resolveLive maps an empty crawl id to the one running crawl; "" when idle or
+// ambiguous (several running — the caller must address one).
+func (a *App) resolveLive(crawlID string) string {
+	if crawlID != "" {
+		return crawlID
+	}
+	snaps := a.exec.Snapshots()
+	if len(snaps) == 1 {
+		return snaps[0].CrawlID
+	}
+	return ""
+}
+
+// ActiveProgress lets a progress view rehydrate after a reload: the snapshot
+// for one crawl id, or — with an empty id — the oldest running crawl. Nil when
+// nothing (or not that crawl) is live.
+func (a *App) ActiveProgress(crawlID string) *ProgressSnapshot {
 	a.mu.Lock()
 	exec, obs := a.exec, a.obs
 	a.mu.Unlock()
 	if exec == nil {
 		return nil
 	}
-	snap, ok := exec.Snapshot()
-	if !ok {
+	if crawlID != "" {
+		snap, ok := exec.SnapshotCrawl(crawlID)
+		if !ok {
+			return nil
+		}
+		ps := obs.build(snap, "running")
+		return &ps
+	}
+	snaps := exec.Snapshots()
+	if len(snaps) == 0 {
 		return nil
 	}
-	ps := obs.build(snap, "running")
+	ps := obs.build(snaps[0], "running")
 	return &ps
+}
+
+// RunningProgress returns a snapshot for every live crawl (oldest first), so
+// the frontend can render one progress presentation per running crawl.
+func (a *App) RunningProgress() []ProgressSnapshot {
+	a.mu.Lock()
+	exec, obs := a.exec, a.obs
+	a.mu.Unlock()
+	if exec == nil {
+		return nil
+	}
+	snaps := exec.Snapshots()
+	out := make([]ProgressSnapshot, len(snaps))
+	for i, s := range snaps {
+		out[i] = obs.build(s, "running")
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -385,47 +447,6 @@ func (a *App) CancelJob(id string) error {
 func (a *App) ClearJob(id string) error {
 	a.ensureQueue()
 	return store.DeleteJob(a.storeDir, id)
-}
-
-// awaitCrawlID blocks until the dispatcher has started the given job's crawl
-// (returning its crawl id) or the job failed/was canceled. Used by the MCP
-// backend to turn the async enqueue back into the tool's "return a crawl id"
-// contract; the queue is idle when it is called (a start is rejected otherwise),
-// so the wait is a few ticks at most.
-func (a *App) awaitCrawlID(ctx context.Context, jobID string) (string, error) {
-	for i := 0; i < 600; i++ { // ~30s ceiling at 50ms
-		jobs, err := a.disp.List()
-		if err != nil {
-			return "", err
-		}
-		for _, j := range jobs {
-			if j.ID != jobID {
-				continue
-			}
-			if j.CrawlID != "" {
-				if j.Status == store.JobFailed && j.Error != "" {
-					return j.CrawlID, fmt.Errorf("%s", j.Error)
-				}
-				return j.CrawlID, nil
-			}
-			switch j.Status {
-			case store.JobFailed:
-				msg := j.Error
-				if msg == "" {
-					msg = "crawl failed to start"
-				}
-				return "", fmt.Errorf("%s", msg)
-			case store.JobCanceled:
-				return "", fmt.Errorf("crawl was canceled")
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-	return "", fmt.Errorf("crawl did not start in time")
 }
 
 // ---------------------------------------------------------------------------

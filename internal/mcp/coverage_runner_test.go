@@ -86,7 +86,17 @@ func waitFor(t *testing.T, cond func() bool, msg string) {
 // clean teardown for the next test.
 func settle(t *testing.T, r *Runner) {
 	t.Helper()
-	waitFor(t, func() bool { return r.Progress() == nil }, "dispatcher to go idle")
+	waitFor(t, func() bool { return len(r.Running()) == 0 }, "dispatcher to go idle")
+}
+
+// liveProgress returns one live snapshot (the oldest), or nil when idle — the
+// single-crawl read most of these tests need.
+func liveProgress(r *Runner) *Progress {
+	running := r.Running()
+	if len(running) == 0 {
+		return nil
+	}
+	return &running[0]
 }
 
 // crawlStatus returns a crawl's stored status, or "" if not yet in the registry.
@@ -153,9 +163,10 @@ func TestRunnerStartCrawlEndToEnd(t *testing.T) {
 }
 
 // TestRunnerLiveControl exercises the live-crawl control surface in one crawl:
-// Progress reports a running snapshot, a second StartCrawl is rejected, and
-// StopCrawl winds the crawl down. This keeps the count of real crawls low while
-// covering Progress, the one-crawl-at-a-time guard, and signal -> Stop.
+// Running reports a live snapshot, a second StartCrawl is rejected while every
+// crawl slot is taken (maxCrawls=1 by default), and StopCrawl winds the crawl
+// down. This keeps the count of real crawls low while covering Running, the
+// capacity guard, and the addressed stop.
 func TestRunnerLiveControl(t *testing.T) {
 	srv := slowSite(t)
 	dir := t.TempDir()
@@ -173,7 +184,7 @@ func TestRunnerLiveControl(t *testing.T) {
 	// Progress reports a live snapshot while the slow children keep the crawl running.
 	var p *Progress
 	waitFor(t, func() bool {
-		p = r.Progress()
+		p = liveProgress(r)
 		return p != nil
 	}, "a live progress snapshot")
 	if p.CrawlID != id {
@@ -194,12 +205,12 @@ func TestRunnerLiveControl(t *testing.T) {
 	}
 
 	// Stop turns the live crawl around; the dispatcher returns to idle.
-	if err := r.StopCrawl(); err != nil {
+	if err := r.StopCrawl(id); err != nil {
 		t.Fatalf("StopCrawl: %v", err)
 	}
 	settle(t, r)
-	if r.Progress() != nil {
-		t.Error("Progress should be nil after the crawl is stopped")
+	if len(r.Running()) != 0 {
+		t.Error("Running should be empty after the crawl is stopped")
 	}
 }
 
@@ -222,8 +233,8 @@ func TestRunnerPauseResume(t *testing.T) {
 	}
 	// The home page is fetched immediately (real progress) while the slow children
 	// keep the crawl running, so a pause reliably interrupts a crawl with data.
-	waitFor(t, func() bool { return r.Progress() != nil }, "crawl to go live")
-	if err := r.PauseCrawl(); err != nil {
+	waitFor(t, func() bool { return liveProgress(r) != nil }, "crawl to go live")
+	if err := r.PauseCrawl(id); err != nil {
 		t.Fatalf("PauseCrawl: %v", err)
 	}
 	settle(t, r) // wait for the pause to turn the crawl around (dispatcher idle)
@@ -279,8 +290,8 @@ func TestRunnerStartCrawlContextCancelled(t *testing.T) {
 
 	// A job may have been dispatched before the await observed the cancel; turn it
 	// around and wait for the dispatcher to go idle so nothing leaks forward.
-	if r.Progress() != nil {
-		_ = r.StopCrawl()
+	if p := liveProgress(r); p != nil {
+		_ = r.StopCrawl(p.CrawlID)
 	}
 	settle(t, r)
 }
@@ -298,17 +309,24 @@ func TestRunnerResumeMissingCrawl(t *testing.T) {
 	settle(t, r)
 }
 
-// TestRunnerPauseStopNoCrawl pins the signal() guard: pausing/stopping with no
-// live crawl returns "no crawl is running".
+// TestRunnerPauseStopNoCrawl pins the idle guards: the tool layer resolves an
+// omitted crawl_id to "no crawl is running" when idle, and the backend rejects
+// an id that is not in flight.
 func TestRunnerPauseStopNoCrawl(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRunner(dir)
 	t.Cleanup(r.Shutdown)
+	s := NewServer(r, "test")
 
-	if err := r.PauseCrawl(); err == nil || !strings.Contains(err.Error(), "no crawl") {
-		t.Errorf("PauseCrawl with no crawl = %v, want 'no crawl'", err)
+	for _, tool := range []string{"pause_crawl", "stop_crawl"} {
+		if text, isErr := callTool(t, s, tool, map[string]any{}); !isErr || !strings.Contains(text, "no crawl") {
+			t.Errorf("%s with no crawl: isErr=%v text=%s, want 'no crawl is running'", tool, isErr, text)
+		}
 	}
-	if err := r.StopCrawl(); err == nil || !strings.Contains(err.Error(), "no crawl") {
-		t.Errorf("StopCrawl with no crawl = %v, want 'no crawl'", err)
+	if err := r.PauseCrawl("nope"); err == nil || !strings.Contains(err.Error(), "not running") {
+		t.Errorf("PauseCrawl(unknown) = %v, want 'not running'", err)
+	}
+	if err := r.StopCrawl("nope"); err == nil || !strings.Contains(err.Error(), "not running") {
+		t.Errorf("StopCrawl(unknown) = %v, want 'not running'", err)
 	}
 }

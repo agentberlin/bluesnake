@@ -122,3 +122,99 @@ func TestNoLimiterUnboundedSingleCrawl(t *testing.T) {
 		t.Errorf("unbounded single crawl peaked at %d concurrent fetches, want it to use multiple threads", got)
 	}
 }
+
+// TestOutOfBandFetchesRespectGlobalCap (GL-08 completeness): the out-of-band
+// crawl-start fetches — /llms.txt, /llms-full.txt, and the sitemap enumeration
+// walk — must take a global fetch slot like every worker fetch. Crawl A
+// saturates a G=1 cap with a backlog of slow pages; crawl B then starts and
+// does its out-of-band fetches. If those bypass the limiter, the gauge reads 2
+// while A's worker holds the only slot (exactly the H1 breach the MCP-surface
+// GL-08 test surfaced with parallel crawls).
+func TestOutOfBandFetchesRespectGlobalCap(t *testing.T) {
+	const G = 1
+	var cur, max int64
+	gaugeHandler := func(pages func(w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/robots.txt" {
+				w.WriteHeader(404) // robots keeps its documented limiter bypass; exclude it
+				return
+			}
+			c := atomic.AddInt64(&cur, 1)
+			for {
+				m := atomic.LoadInt64(&max)
+				if c <= m || atomic.CompareAndSwapInt64(&max, m, c) {
+					break
+				}
+			}
+			time.Sleep(15 * time.Millisecond)
+			atomic.AddInt64(&cur, -1)
+			pages(w, r)
+		}
+	}
+	srvA := httptest.NewServer(gaugeHandler(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		if r.URL.Path == "/" {
+			for i := 0; i < 20; i++ {
+				fmt.Fprint(w, link(fmt.Sprintf("/p%d", i)))
+			}
+			return
+		}
+		fmt.Fprint(w, "<p>leaf</p>")
+	}))
+	defer srvA.Close()
+	var srvBURL string
+	srvB := httptest.NewServer(gaugeHandler(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/llms.txt":
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprint(w, "# Site B\n\n> Summary.\n")
+		case "/llms-full.txt":
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprint(w, "# Site B full\n")
+		case "/sitemap.xml":
+			w.Header().Set("Content-Type", "application/xml")
+			fmt.Fprintf(w, `<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>%s/s1</loc></url></urlset>`, srvBURL)
+		default:
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprint(w, "<p>b</p>")
+		}
+	}))
+	defer srvB.Close()
+	srvBURL = srvB.URL
+
+	lim := limiter.New(G, 1, 0)
+	run := func(cfg *config.Config, seed string) {
+		sink := newCapSink()
+		c, err := New(cfg, WithSink(sink), WithLimiter(lim))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if _, err := c.Run(context.Background(), seed); err != nil {
+			t.Error(err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { // crawl A: saturates the single global slot with a 20-page backlog
+		defer wg.Done()
+		cfg := config.Default()
+		cfg.Speed.MaxThreads = 4
+		cfg.LlmsTxt.Check = false // A is pure worker traffic
+		run(cfg, srvA.URL+"/")
+	}()
+	go func() { // crawl B: starts mid-A and does the out-of-band fetches
+		defer wg.Done()
+		time.Sleep(60 * time.Millisecond) // A's workers are saturated by now
+		cfg := config.Default()
+		cfg.Speed.MaxThreads = 1
+		cfg.Sitemaps.URLs = []string{srvB.URL + "/sitemap.xml"}
+		run(cfg, srvB.URL+"/")
+	}()
+	wg.Wait()
+
+	if got := atomic.LoadInt64(&max); got > G {
+		t.Errorf("peak concurrent fetches = %d, want <= %d — an out-of-band fetch (llms.txt/sitemap) bypassed the global cap", got, G)
+	}
+}

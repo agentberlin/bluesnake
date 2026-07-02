@@ -304,7 +304,12 @@ type SpeedConfig struct {
 	MaxGlobalThreads int `yaml:"max_global_threads"`
 	// MaxConcurrentCrawls caps how many crawls the dispatcher runs in parallel
 	// (each with its own worker pool/DB/buffers — a distinct overhead axis from
-	// the fetch cap, GL-18). 0/1 = one crawl at a time, the default.
+	// the fetch cap, GL-18). 0/1 = one crawl at a time, the default. Identical
+	// semantics on every surface: the CLI's `projects crawl-all` resolves
+	// flag > config > 1 at command start; the desktop app and the MCP server
+	// read the default profile at start (restart to apply). Sizing guidance:
+	// each parallel crawl carries its own fixed overhead and frontier RAM, so
+	// budget roughly MaxConcurrentCrawls × a single crawl's footprint.
 	MaxConcurrentCrawls int `yaml:"max_concurrent_crawls"`
 }
 
