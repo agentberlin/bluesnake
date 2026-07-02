@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/agentberlin/bluesnake/internal/mcp"
+	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/version"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -230,73 +231,67 @@ func (a *App) persistMCP(st MCPStatus) {
 
 // ---------------------------------------------------------------------------
 // desktopBackend adapts the App's crawl queue to mcp.Backend, so an LLM-started
-// crawl streams into the UI exactly like a hand-started one. Like the standalone
-// MCP Runner it keeps one-crawl-at-a-time semantics: a start is rejected while a
-// crawl is running (rather than silently queued behind hand-started work), and
-// it returns the crawl id once the dispatcher has begun the crawl.
+// crawl streams into the UI exactly like a hand-started one. It shares the
+// standalone MCP Runner's start contract (mcp.StartViaQueue): up to the app's
+// queue concurrency crawls run at once, a start beyond that capacity is
+// rejected (never silently queued behind hand-started work), and the crawl id
+// is returned once the dispatcher has begun the crawl. Control is addressed by
+// crawl id, so an agent can pause one of several parallel crawls.
 
-type desktopBackend struct{ app *App }
+type desktopBackend struct {
+	app     *App
+	startMu sync.Mutex // serializes the capacity check against racing starts
+}
 
 func (b *desktopBackend) StoreDir() string { return b.app.storeDir }
 
 func (b *desktopBackend) StartCrawl(ctx context.Context, req mcp.StartRequest) (string, error) {
 	a := b.app
 	a.ensureQueue()
-	if cur := a.disp.Current(); cur != nil {
-		return "", fmt.Errorf("a crawl is already running (crawl %s) — pause_crawl or stop_crawl first", cur.CrawlID)
-	}
 	spec := req.Spec()
 	if err := runner.ValidateSpec(a.storeDir, spec); err != nil {
 		return "", err
 	}
-	j, err := a.disp.Enqueue(spec, "manual", "", req.Label())
-	if err != nil {
-		return "", err
-	}
 	// the observer emits crawl:started when the dispatcher begins the crawl, so
 	// the UI jumps to the live view just like a hand-started crawl
-	return a.awaitCrawlID(ctx, j.ID)
+	return mcp.StartViaQueue(ctx, a.disp, a.queueW, &b.startMu, spec, req.Label())
 }
 
 func (b *desktopBackend) ResumeCrawl(id string) (string, error) {
 	a := b.app
 	a.ensureQueue()
-	if cur := a.disp.Current(); cur != nil {
-		return "", fmt.Errorf("a crawl is already running (crawl %s) — pause_crawl or stop_crawl first", cur.CrawlID)
-	}
-	jobID, err := a.ResumeCrawl(id)
-	if err != nil {
-		return "", err
-	}
-	return a.awaitCrawlID(context.Background(), jobID)
+	a.invalidate(id)
+	return mcp.StartViaQueue(context.Background(), a.disp, a.queueW, &b.startMu,
+		queue.JobSpec{ResumeID: id}, "resume "+id)
 }
 
-func (b *desktopBackend) PauseCrawl() error {
-	if b.app.ActiveProgress() == nil {
-		return fmt.Errorf("no crawl is running")
+func (b *desktopBackend) PauseCrawl(crawlID string) error {
+	a := b.app
+	a.ensureQueue()
+	if _, ok := a.exec.SnapshotCrawl(crawlID); !ok {
+		return fmt.Errorf("crawl %s is not running", crawlID)
 	}
-	b.app.PauseCrawl()
+	a.disp.PauseCrawl(crawlID)
 	return nil
 }
 
-func (b *desktopBackend) StopCrawl() error {
-	if b.app.ActiveProgress() == nil {
-		return fmt.Errorf("no crawl is running")
+func (b *desktopBackend) StopCrawl(crawlID string) error {
+	a := b.app
+	a.ensureQueue()
+	if _, ok := a.exec.SnapshotCrawl(crawlID); !ok {
+		return fmt.Errorf("crawl %s is not running", crawlID)
 	}
-	b.app.StopCrawl()
+	a.disp.StopCrawl(crawlID)
 	return nil
 }
 
-func (b *desktopBackend) Progress() *mcp.Progress {
-	p := b.app.ActiveProgress()
-	if p == nil {
-		return nil
+func (b *desktopBackend) Running() []mcp.Progress {
+	a := b.app
+	a.ensureQueue()
+	snaps := a.exec.Snapshots()
+	out := make([]mcp.Progress, len(snaps))
+	for i, s := range snaps {
+		out[i] = mcp.ProgressFromSnapshot(s)
 	}
-	return &mcp.Progress{
-		CrawlID: p.CrawlID, Seed: p.Seed, State: p.State,
-		Total: p.Total, Discovered: p.Discovered, Queue: p.Queue,
-		S2xx: p.S2xx, S3xx: p.S3xx, S4xx: p.S4xx, S5xx: p.S5xx,
-		Blocked: p.Blocked, NoResponse: p.NoResp, Indexable: p.Indexable,
-		RatePerSec: p.Rate, ElapsedSec: p.ElapsedSec,
-	}
+	return out
 }

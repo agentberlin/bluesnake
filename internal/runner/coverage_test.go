@@ -211,8 +211,8 @@ func TestSignalIdleNoop(t *testing.T) {
 	e := New(t.TempDir(), nil)
 	e.Pause() // must not panic when idle
 	e.Stop()
-	if _, ok := e.Snapshot(); ok {
-		t.Error("Snapshot ok=true on an idle executor")
+	if snaps := e.Snapshots(); len(snaps) != 0 {
+		t.Errorf("Snapshots on an idle executor = %d entries, want none", len(snaps))
 	}
 }
 

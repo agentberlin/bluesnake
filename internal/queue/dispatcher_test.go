@@ -21,6 +21,7 @@ type fakeExec struct {
 	mu                      sync.Mutex
 	active, maxActive       int
 	pauses, stops, runCalls int
+	pausedIDs, stoppedIDs   []string // crawl ids the addressed signals named
 }
 
 type result struct {
@@ -51,9 +52,20 @@ func (f *fakeExec) Run(ctx context.Context, spec JobSpec, onStart func(string)) 
 	return msg.status, msg.err
 }
 
-func (f *fakeExec) Pause()           { f.mu.Lock(); f.pauses++; f.mu.Unlock() }
-func (f *fakeExec) Stop()            { f.mu.Lock(); f.stops++; f.mu.Unlock() }
-func (f *fakeExec) StopCrawl(string) { f.mu.Lock(); f.stops++; f.mu.Unlock() }
+func (f *fakeExec) Pause() { f.mu.Lock(); f.pauses++; f.mu.Unlock() }
+func (f *fakeExec) Stop()  { f.mu.Lock(); f.stops++; f.mu.Unlock() }
+func (f *fakeExec) PauseCrawl(id string) {
+	f.mu.Lock()
+	f.pauses++
+	f.pausedIDs = append(f.pausedIDs, id)
+	f.mu.Unlock()
+}
+func (f *fakeExec) StopCrawl(id string) {
+	f.mu.Lock()
+	f.stops++
+	f.stoppedIDs = append(f.stoppedIDs, id)
+	f.mu.Unlock()
+}
 
 func (f *fakeExec) complete() { f.release <- result{status: store.StatusCompleted} }
 

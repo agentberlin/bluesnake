@@ -109,8 +109,8 @@ type liveSnapObs struct {
 }
 
 func (o *liveSnapObs) OnStart(string, string) {}
-func (o *liveSnapObs) OnPage(*crawler.PageRecord) {
-	if s, ok := o.exec.Snapshot(); ok {
+func (o *liveSnapObs) OnPage(crawlID string, _ *crawler.PageRecord) {
+	if s, ok := o.exec.SnapshotCrawl(crawlID); ok {
 		o.mu.Lock()
 		o.snap, o.ok = s, true
 		o.mu.Unlock()
@@ -179,7 +179,7 @@ type stopObs struct {
 }
 
 func (o *stopObs) OnStart(string, string) {}
-func (o *stopObs) OnPage(*crawler.PageRecord) {
+func (o *stopObs) OnPage(string, *crawler.PageRecord) {
 	o.mu.Lock()
 	o.n++
 	first := o.n == 1

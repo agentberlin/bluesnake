@@ -144,7 +144,8 @@ func (s *Server) buildTools() []Tool {
 			Description: "Start a crawl in the background and return its crawl_id immediately. Spider mode (default) needs `url`; " +
 				"list mode audits a fixed set via `urls` or `sitemap_url`. Base config comes from `profile` (or defaults); " +
 				"any knob from list_config_options can be overridden per-crawl via `config`. " +
-				"Poll crawl_status to watch progress. One crawl runs at a time.",
+				"Poll crawl_status to watch progress. Crawls run in parallel up to speed.max_concurrent_crawls " +
+				"(from the default profile, default 1); a start beyond that capacity is rejected — pause or stop a running crawl first.",
 			InputSchema: schema(map[string]any{
 				"url":         strProp("Seed URL for spider mode, including http:// or https://."),
 				"mode":        map[string]any{"type": "string", "enum": []string{"spider", "list"}, "description": "spider (default) follows links from url; list audits a fixed URL set."},
@@ -171,10 +172,11 @@ func (s *Server) buildTools() []Tool {
 		},
 		{
 			Name: "crawl_status",
-			Description: "Progress of the live crawl (counters, queue, URLs/sec) or the stored status of a finished one. " +
-				"Omit crawl_id for the live crawl (falling back to the most recent).",
+			Description: "Progress of a live crawl (counters, queue, URLs/sec) or the stored status of a finished one. " +
+				"Omit crawl_id for the single live crawl (falling back to the most recent stored one when idle); " +
+				"with several crawls running, crawl_id is required.",
 			InputSchema: schema(map[string]any{
-				"crawl_id": strProp("Crawl to inspect. Omit for the live/most recent crawl."),
+				"crawl_id": strProp("Crawl to inspect. Omit for the single live (or most recent) crawl; required when several crawls are running."),
 			}),
 			handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
 				var a struct {
@@ -183,8 +185,17 @@ func (s *Server) buildTools() []Tool {
 				if err := decodeArgs(raw, &a); err != nil {
 					return "", err
 				}
-				if p := s.backend.Progress(); p != nil && (a.CrawlID == "" || a.CrawlID == p.CrawlID) {
-					return jsonText(p)
+				running := s.backend.Running()
+				if a.CrawlID == "" && len(running) > 1 {
+					return "", ambiguousCrawlError("crawl_status", running)
+				}
+				if a.CrawlID == "" && len(running) == 1 {
+					return jsonText(running[0])
+				}
+				for i := range running {
+					if running[i].CrawlID == a.CrawlID {
+						return jsonText(running[i])
+					}
 				}
 				info, err := s.crawlInfo(a.CrawlID)
 				if err != nil {
@@ -194,16 +205,30 @@ func (s *Server) buildTools() []Tool {
 			},
 		},
 		{
-			Name:        "pause_crawl",
-			Description: "Pause the live crawl. Everything crawled so far is saved and the crawl stays resumable via resume_crawl.",
-			InputSchema: schema(map[string]any{}),
+			Name: "pause_crawl",
+			Description: "Pause a live crawl. Everything crawled so far is saved and the crawl stays resumable via resume_crawl. " +
+				"Omit crawl_id when only one crawl is running.",
+			InputSchema: schema(map[string]any{
+				"crawl_id": strProp("Crawl to pause. Omit when only one crawl is running; required when several are."),
+			}),
 			handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				if err := s.backend.PauseCrawl(); err != nil {
+				var a struct {
+					CrawlID string `json:"crawl_id"`
+				}
+				if err := decodeArgs(raw, &a); err != nil {
+					return "", err
+				}
+				id, err := s.resolveLiveCrawl("pause_crawl", a.CrawlID)
+				if err != nil {
+					return "", err
+				}
+				if err := s.backend.PauseCrawl(id); err != nil {
 					return "", err
 				}
 				return jsonText(map[string]any{
-					"state": "pausing",
-					"note":  "Workers wind down within a few seconds; the crawl is then resumable with resume_crawl. crawl_status reports \"interrupted\" once paused.",
+					"crawl_id": id,
+					"state":    "pausing",
+					"note":     "Workers wind down within a few seconds; the crawl is then resumable with resume_crawl. crawl_status reports \"interrupted\" once paused.",
 				})
 			},
 		},
@@ -228,16 +253,30 @@ func (s *Server) buildTools() []Tool {
 			},
 		},
 		{
-			Name:        "stop_crawl",
-			Description: "Stop the live crawl and finalise it as completed: inlink aggregation and (if configured) issue analysis run on what was crawled so far. Use pause_crawl instead if you may want to continue later.",
-			InputSchema: schema(map[string]any{}),
+			Name: "stop_crawl",
+			Description: "Stop a live crawl and finalise it as completed: inlink aggregation and (if configured) issue analysis run on what was crawled so far. " +
+				"Use pause_crawl instead if you may want to continue later. Omit crawl_id when only one crawl is running.",
+			InputSchema: schema(map[string]any{
+				"crawl_id": strProp("Crawl to stop. Omit when only one crawl is running; required when several are."),
+			}),
 			handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				if err := s.backend.StopCrawl(); err != nil {
+				var a struct {
+					CrawlID string `json:"crawl_id"`
+				}
+				if err := decodeArgs(raw, &a); err != nil {
+					return "", err
+				}
+				id, err := s.resolveLiveCrawl("stop_crawl", a.CrawlID)
+				if err != nil {
+					return "", err
+				}
+				if err := s.backend.StopCrawl(id); err != nil {
 					return "", err
 				}
 				return jsonText(map[string]any{
-					"state": "stopping",
-					"note":  "Finalisation (inlinks + analysis) runs now; crawl_status reports \"completed\" when done.",
+					"crawl_id": id,
+					"state":    "stopping",
+					"note":     "Finalisation (inlinks + analysis) runs now; crawl_status reports \"completed\" when done.",
 				})
 			},
 		},
@@ -365,6 +404,42 @@ func (s *Server) buildTools() []Tool {
 
 // ---------------------------------------------------------------------------
 // shared tool plumbing
+
+// resolveLiveCrawl picks the crawl a control tool addresses: an explicit id
+// must name a RUNNING crawl; an omitted id is unambiguous only while exactly
+// one crawl runs. Anything else errors with the live ids listed, so the model
+// can address one instead of guessing.
+func (s *Server) resolveLiveCrawl(tool, id string) (string, error) {
+	running := s.backend.Running()
+	if len(running) == 0 {
+		return "", fmt.Errorf("no crawl is running")
+	}
+	if id == "" {
+		if len(running) == 1 {
+			return running[0].CrawlID, nil
+		}
+		return "", ambiguousCrawlError(tool, running)
+	}
+	for i := range running {
+		if running[i].CrawlID == id {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("crawl %s is not running (running: %s)", id, runningIDs(running))
+}
+
+func ambiguousCrawlError(tool string, running []Progress) error {
+	return fmt.Errorf("%d crawls are running — pass crawl_id to %s (running: %s)",
+		len(running), tool, runningIDs(running))
+}
+
+func runningIDs(running []Progress) string {
+	ids := make([]string, len(running))
+	for i := range running {
+		ids[i] = running[i].CrawlID
+	}
+	return strings.Join(ids, ", ")
+}
 
 // resolveCrawlID maps "" to the most recent stored crawl.
 func (s *Server) resolveCrawlID(id string) (string, error) {

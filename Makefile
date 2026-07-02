@@ -25,7 +25,7 @@ APP_INSTALL_DIR ?= $(HOME)/Applications
 # the packages with real goroutine interplay — worker pool, dispatcher, the store
 # dedup/content authority, runner sink — so the gate stays fast while covering the
 # shared-state paths the bounded-RAM / parallel rework introduced.
-RACE_PKGS := ./internal/crawler/... ./internal/runner/... ./internal/frontier/... ./internal/store/... ./internal/queue/...
+RACE_PKGS := ./internal/crawler/... ./internal/runner/... ./internal/frontier/... ./internal/store/... ./internal/queue/... ./internal/mcp/... ./desktop/...
 
 build:
 	$(GO) build -o bin/bluesnake ./cmd/bluesnake

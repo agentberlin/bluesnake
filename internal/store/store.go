@@ -193,26 +193,44 @@ type Crawl struct {
 	archivePath string
 }
 
+// registryOpenMu serializes registry open+schema setup in-process. The one
+// contention busy_timeout does NOT absorb is the rollback→WAL journal-mode
+// switch racing concurrent first-opens of a FRESH registry (the pragma's lock
+// acquisition fails SQLITE_BUSY without invoking the busy handler); with W
+// drain loops all touching the registry the very first ops on a new store dir
+// hit exactly that. Serializing the open path removes the race; the returned
+// handles still operate concurrently.
+var registryOpenMu sync.Mutex
+
 func registryDB(dir string) (*sql.DB, error) {
+	registryOpenMu.Lock()
+	defer registryOpenMu.Unlock()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", filepath.Join(dir, "registry.db"))
+	// The registry is shared by every crawl in the process. With parallel
+	// crawls (queue.WithConcurrency > 1) several connections write it
+	// concurrently — CreateCrawl racing SetStatus/EnqueueJob/ClaimNextJob — and
+	// that contention must WAIT, never fail (GL-09; #74 R9's composition test
+	// surfaced one parallel member dying with "database is locked"). Three
+	// settings together guarantee that:
+	//   - busy_timeout: a locked write waits out the holder's millisecond write
+	//     instead of failing immediately (SQLite's default timeout is 0);
+	//   - _txlock=immediate: the read-modify-write transactions (EnqueueJob's
+	//     MAX(position)+INSERT, ClaimNextJob's SELECT+UPDATE) take the write
+	//     lock at BEGIN, where the busy handler applies — a deferred tx
+	//     upgrading SELECT→UPDATE mid-transaction gets an *immediate*
+	//     SQLITE_BUSY that BYPASSES busy_timeout (SQLite's deadlock-avoidance
+	//     rule), which is exactly the failure W concurrent drain loops hit;
+	//   - WAL: readers (ListJobs, the desktop queue view) never block the
+	//     writer, matching the crawl DBs' journaling mode (§5.3).
+	dsn := "file:" + filepath.Join(dir, "registry.db") +
+		"?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	// The registry is shared by every crawl in the process. With parallel
-	// member crawls (queue.WithConcurrency > 1) two connections write it
-	// concurrently — CreateCrawl racing SetStatus/EnqueueJob — and SQLite's
-	// default busy timeout of 0 turns that simple lock contention into an
-	// immediate SQLITE_BUSY failure (#74 R9's composition test surfaced it: one
-	// of two parallel crawl-all members failed with "database is locked"). A
-	// busy timeout makes the loser wait out the other's millisecond write.
-	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
-		db.Close()
-		return nil, err
-	}
 	fresh, err := isFreshDB(db)
 	if err != nil {
 		db.Close()

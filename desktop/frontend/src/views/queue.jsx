@@ -1,6 +1,7 @@
 /* ===========================================================================
    Queue — the persistent crawl queue. Every start enqueues a job; the single
-   dispatcher runs them one at a time (no parallel crawls). Rows live-refresh on
+   dispatcher runs them up to the parallel limit at a time
+   (speed.max_concurrent_crawls, default 1). Rows live-refresh on
    crawl:started / crawl:done (see main.jsx).
    =========================================================================== */
 import React from "react";
@@ -16,7 +17,7 @@ const STATUS = {
   canceled: { label: "Canceled", color: "var(--ink-faint)" },
 };
 
-export function QueueView({ jobs, liveCrawlId, onRefresh, onCancel, onClear, onOpenCrawl, onNew }) {
+export function QueueView({ jobs, liveCrawlIds, onRefresh, onCancel, onClear, onOpenCrawl, onNew }) {
   const list = jobs || [];
   const pending = list.filter((j) => j.status === "queued" || j.status === "running").length;
 
@@ -34,13 +35,13 @@ export function QueueView({ jobs, liveCrawlId, onRefresh, onCancel, onClear, onO
       <div className="scroll" style={{ padding: 24 }}>
         {list.length === 0 ? (
           <Empty icon="list-checks" title="The queue is empty">
-            Crawls you start are added here and run one at a time. Use “Crawl all” on a project to queue every site at once.
+            Crawls you start are added here and run through the queue — up to your parallel limit at once. Use “Crawl all” on a project to queue every site at once.
           </Empty>
         ) : (
           <div style={{ maxWidth: 820, margin: "0 auto", display: "flex", flexDirection: "column", gap: 8 }}>
             {list.map((j) => {
               const st = STATUS[j.status] || { label: j.status, color: "var(--ink-faint)" };
-              const live = j.crawlId && j.crawlId === liveCrawlId;
+              const live = j.crawlId && (liveCrawlIds || []).includes(j.crawlId);
               const terminal = ["done", "failed", "interrupted", "canceled"].includes(j.status);
               return (
                 <div key={j.id} className="card" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px" }}>
