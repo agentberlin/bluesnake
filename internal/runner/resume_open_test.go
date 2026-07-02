@@ -93,17 +93,23 @@ func TestOpenForResumePurgesStrandedFrontierRows(t *testing.T) {
 	if stranded != 0 {
 		t.Errorf("%d stranded frontier row(s) survived resume-open, want 0 (purged)", stranded)
 	}
-	// Rehydration must see each URL exactly once (pages ∪ frontier disjoint again).
-	seen := map[string]int{}
-	for _, u := range resume.Processed {
-		seen[u]++
+	if resume == nil {
+		t.Fatal("openForResume returned no resume state")
 	}
-	for _, it := range resume.Pending {
+	// Rehydration must see each URL exactly once (pages ∪ frontier disjoint
+	// again): AdmittedItems is the counter-rehydration input the stranded pair
+	// would double-count in (#74 R7).
+	admitted, err := st.AdmittedItems()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for _, it := range admitted {
 		seen[it.URL]++
 	}
 	for u, n := range seen {
 		if n > 1 {
-			t.Errorf("%s appears %d times in the resume state, want once", u, n)
+			t.Errorf("%s appears %d times in the admitted set, want once", u, n)
 		}
 	}
 }
@@ -112,16 +118,16 @@ func TestOpenForResumePurgesStrandedFrontierRows(t *testing.T) {
 // refusal arms (#74 N15): a resume-state read error must refuse the resume,
 // not silently degrade (e.g. an edge-seq of 0 reproduces the R2 corruption).
 type erroringResumeSource struct {
-	failProcessed, failFetched, failPending, failSeq, failAdmitted bool
+	failPageCount, failFetched, failCount, failSeq, failAdmitted bool
 }
 
 var errLoad = errors.New("store read failed")
 
-func (s *erroringResumeSource) ProcessedURLs() ([]string, error) {
-	if s.failProcessed {
-		return nil, errLoad
+func (s *erroringResumeSource) PageCount() (int, error) {
+	if s.failPageCount {
+		return 0, errLoad
 	}
-	return []string{"https://e.com/"}, nil
+	return 1, nil
 }
 func (s *erroringResumeSource) FetchedCount() (int, error) {
 	if s.failFetched {
@@ -129,11 +135,11 @@ func (s *erroringResumeSource) FetchedCount() (int, error) {
 	}
 	return 1, nil
 }
-func (s *erroringResumeSource) PendingFrontier() ([]frontier.Item, error) {
-	if s.failPending {
-		return nil, errLoad
+func (s *erroringResumeSource) Count() (int, error) {
+	if s.failCount {
+		return 0, errLoad
 	}
-	return []frontier.Item{{URL: "https://e.com/a", Depth: 1}}, nil
+	return 2, nil
 }
 func (s *erroringResumeSource) MaxEdgeSeq() (int64, error) {
 	if s.failSeq {
@@ -155,9 +161,9 @@ func TestResumeRefusedOnResumeStateLoadError(t *testing.T) {
 		// admitted loads only when a bucket cap is configured
 		needAdmitted bool
 	}{
-		{"processed", &erroringResumeSource{failProcessed: true}, false},
+		{"processed-count", &erroringResumeSource{failPageCount: true}, false},
 		{"fetched-count", &erroringResumeSource{failFetched: true}, false},
-		{"pending", &erroringResumeSource{failPending: true}, false},
+		{"discovered-count", &erroringResumeSource{failCount: true}, false},
 		{"edge-seq", &erroringResumeSource{failSeq: true}, false},
 		{"admitted", &erroringResumeSource{failAdmitted: true}, true},
 	}

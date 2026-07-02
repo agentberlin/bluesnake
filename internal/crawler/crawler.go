@@ -184,14 +184,20 @@ func WithLimiter(l *limiter.Limiter) Option {
 // surface silently carried a different subset of the resume fix, lived in
 // exactly those anonymous type-assertions.
 type Resume struct {
-	// Processed lists every URL already recorded (never re-fetched).
+	// Processed lists every URL already recorded (never re-fetched) — for the
+	// IN-MEMORY dedup path only. A durable dedup authority already knows its
+	// pages rows (its MarkSeen is a no-op), so loaders backed by one leave this
+	// nil rather than materialise a crawl-sized slice (issue #77).
 	Processed []string
 	// Fetched is how many MaxURLs fetch slots the prior session(s) consumed —
 	// recorded pages MINUS robots-blocked ones, which record without a fetch
 	// (store.FetchedCount). It seeds the cumulative MaxURLs budget; seeding
-	// from len(Processed) would over-charge blocked pages (#74 N11).
+	// from the processed count would over-charge blocked pages (#74 N11).
 	Fetched int
-	// Pending is the admitted-but-unprocessed frontier tail to re-queue.
+	// Pending is the admitted-but-unprocessed frontier tail to re-queue — for
+	// the IN-MEMORY queue path only. A durable work-queue authority still
+	// holds those rows (Recover resets their claims); loaders backed by one
+	// leave this nil rather than materialise the frontier tail (issue #77).
 	Pending []frontier.Item
 	// MaxEdgeSeq continues the gated-edge sequence past the prior session, so
 	// MIN(seq) first-wins discovered_from stays stable across the resume.
@@ -232,6 +238,7 @@ type Crawler struct {
 	filter      *urlutil.Filter
 	robots      *robotsMgr
 	frontier    *frontier.Frontier
+	queue       frontier.Queue // work-queue authority behind the bounded ready-buffer (§5.2)
 	startFolder string
 
 	tokens  chan struct{}
@@ -314,6 +321,21 @@ func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
 	var dedup frontier.Dedup
 	if d, ok := c.sink.(frontier.Dedup); ok {
 		dedup = d
+		// The work-queue authority rides the same sink (issue #77, §5.2): the
+		// durable dedup's Admit writes the born-claimed frontier rows that the
+		// queue publishes (Enqueue) and hands back out (ClaimBatch), so the two
+		// capabilities only mean anything together — a sink that deduplicates
+		// on disk but queues in RAM keeps half the frontier state resident, and
+		// a durable queue over an in-RAM dedup would claim rows nothing ever
+		// inserted. The store implements both; runner.sink compile-pins both.
+		if q, ok := c.sink.(frontier.Queue); ok {
+			c.queue = q
+		}
+	}
+	if c.queue == nil {
+		// No durable authority: the in-RAM FIFO preserves the engine's
+		// behaviour for bare library/test sinks (frontier-linear by design).
+		c.queue = &memQueue{}
 	}
 	// Dedup-authority errors flow into the crawl's sink-error latch: a store
 	// failure declines the URL (conservative) AND fails the run — silent drops
@@ -402,23 +424,44 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 		c.frontier.RehydrateCounters(c.resume.Admitted)
 	}
 
-	// Bounded worker pool (MEMORY-SCALING.md §5.2): N persistent workers drain a
-	// deadlock-free unbounded in-RAM queue, with an atomic in-flight counter
-	// replacing the old goroutine-per-URL model and its wg.Wait(). in-flight =
-	// (queued items) + (items being processed). The #1 swap trap (§11): a worker
-	// increments its admitted discoveries' count BEFORE decrementing its own item,
-	// so the counter never reaches 0 while reachable work remains. A worker never
-	// blocks pushing its discoveries (the queue grows), so the sole producer can't
-	// deadlock on a full buffer.
-	pool := newWorkPool()
+	// Bounded worker pool (MEMORY-SCALING.md §5.2/§5.3, issue #77): N persistent
+	// workers drain a bounded in-RAM ready-buffer that a single feeder goroutine
+	// refills from the work-queue authority in deterministic (depth, seq)
+	// batches. The buffer is a fixed WINDOW over the frontier, not the frontier:
+	// an admitted item lives durably in the authority (the store) until the
+	// feeder claims it, so per-crawl RAM no longer scales with the discovered
+	// frontier. The §11 #1 termination trap is honoured one level down from the
+	// old push-before-done: a worker PUBLISHES its admitted discoveries durably
+	// (queue.Enqueue) BEFORE done() decrements its own item, so in-flight can
+	// only reach zero once every reachable item is visible to the feeder.
+	n := c.cfg.Speed.MaxThreads
+	if n < 1 {
+		n = 1
+	}
+	pool := newWorkPool(c.queue, n, c.noteSinkErr)
+	// Recover the queue FIRST — before anything is admitted and before the
+	// feeder's first claim: orphaned in-flight claims from a crash or pause
+	// become claimable exactly once (EC-01), structurally, on every surface.
+	// The in-memory authority re-enqueues the loader-supplied pending items
+	// instead (its queue died with the process).
+	if err := c.queue.Recover(c.resume.Pending); err != nil {
+		return nil, fmt.Errorf("crawler: recover pending frontier: %w", err)
+	}
 	enqueue := func(item frontier.Item) {
 		// Admit is the dedup + limit gate. With a store-backed dedup it also
-		// writes the durable frontier row (the admission authority), so there is
-		// no separate sink FrontierAdd to make.
+		// writes the durable frontier row (the admission authority), born
+		// claimed — invisible to the feeder until the caps have passed.
 		if !c.frontier.Admit(item) {
 			return
 		}
-		pool.push(item) // increments in-flight for admitted items only
+		// Publish the fully-admitted item as claimable work. On error the URL
+		// is lost to this session — surfaced, never silent (#74 R6/D4); the
+		// still-claimed row resurfaces as pending via the next Recover.
+		if err := c.queue.Enqueue(item); err != nil {
+			c.noteSinkErr(err)
+			return
+		}
+		pool.notify()
 	}
 	for _, seed := range seeds {
 		enqueue(frontier.Item{URL: seed, Depth: 0})
@@ -444,19 +487,21 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 	// — no in-RAM seeding needed (the dropped c.inlinks map is gone).
 	//
 	// Resume's pending rows are ALREADY admitted (they survive in the frontier
-	// table / the in-memory set), so Admit would dedup-reject them. Readmit re-
-	// records them without consuming limit budget and re-queues them for crawling.
+	// table / the in-memory set), so Admit would dedup-reject them. Readmit
+	// re-records them in the dedup set without consuming limit budget; their
+	// re-QUEUEING was Recover's job above (durable rows reset to claimable, or
+	// the in-memory queue re-seeded).
 	for _, item := range c.resume.Pending {
 		c.frontier.Readmit(item)
-		pool.push(item)
 	}
-	// Nothing admitted (every seed deduped/over-limit) → no work; let workers exit.
-	pool.closeIfDrained()
 
-	n := c.cfg.Speed.MaxThreads
-	if n < 1 {
-		n = 1
-	}
+	// Start the single producer only now, AFTER every pre-run enqueue (seeds,
+	// sitemaps, llms.txt, Recover): an earlier start could observe an empty
+	// authority with zero in-flight and close the buffer before the seeds land.
+	// With nothing admitted at all (every seed deduped/over-limit) its first
+	// claim comes back empty and it closes the buffer, letting workers exit.
+	go pool.feed(ctx)
+
 	var wg sync.WaitGroup
 	wg.Add(n)
 	for i := 0; i < n; i++ {
@@ -467,19 +512,19 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 				if !ok {
 					return
 				}
-				// A cancelled crawl drains the queue without fetching: each
+				// A cancelled crawl drains the buffer without fetching: each
 				// remaining item is left pending (not FrontierDone) so a resume
 				// re-fetches it rather than recording a stale error.
 				if ctx.Err() == nil {
 					disc, done := c.crawlOne(ctx, item)
 					for _, d := range disc {
-						enqueue(d) // in-flight++ for admitted children FIRST
+						enqueue(d) // publish admitted children durably FIRST
 					}
 					if done {
 						c.sinkFrontierDone(item.URL)
 					}
 				}
-				pool.done() // ...then decrement this item; closes the queue at 0
+				pool.done() // ...then decrement this item; the feeder closes at 0+drained
 			}
 		}()
 	}
