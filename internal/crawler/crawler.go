@@ -146,11 +146,24 @@ type ContentSink interface {
 	FirstWithContent(hash, url string, claim bool) (canonical string, first bool, err error)
 }
 
+// pageRenderer is the engine's view of the JS renderer; *render.Renderer is the
+// production implementation (constructed per crawl in New). The seam exists so
+// the render-slot bounding (REN-01/#76) is testable without Chrome — tests
+// inject a fake via withRenderer that observes render concurrency.
+type pageRenderer interface {
+	Render(ctx context.Context, url string) (*render.Result, error)
+	Close()
+}
+
 // Option configures a Crawler.
 type Option func(*Crawler)
 
 // WithSink streams pages and frontier mutations into a persistent store.
 func WithSink(s Sink) Option { return func(c *Crawler) { c.sink = s } }
+
+// withRenderer injects a renderer, bypassing the Chrome-backed render.New in
+// New. Test seam only: production keeps one *render.Renderer per crawl.
+func withRenderer(r pageRenderer) Option { return func(c *Crawler) { c.renderer = r } }
 
 // WithFetchOptions passes options to the underlying HTTP client.
 func WithFetchOptions(opts ...fetch.Option) Option {
@@ -225,7 +238,7 @@ type Crawler struct {
 	fetched atomic.Int64
 
 	sink          Sink
-	renderer      *render.Renderer
+	renderer      pageRenderer
 	extractEngine *extract.Engine
 	fetchOpts     []fetch.Option
 	limiter       *limiter.Limiter // process-wide fetch cap; nil ⇒ unlimited
@@ -268,10 +281,12 @@ func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cfg.Rendering.Mode == "javascript" {
-		if c.renderer, err = render.New(cfg); err != nil {
+	if cfg.Rendering.Mode == "javascript" && c.renderer == nil {
+		r, err := render.New(cfg)
+		if err != nil {
 			return nil, err
 		}
+		c.renderer = r
 	}
 	uopts := urlutil.Options{
 		KeepFragments: cfg.Advanced.CrawlFragments,
@@ -687,7 +702,13 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) ([]frontier.It
 		rec.State = StateSkippedTooLarge
 	default:
 		rec.State = StateCrawled
-		discoveries = c.handleContent(ctx, it, scopeClass, res, rec)
+		var ok bool
+		if discoveries, ok = c.handleContent(ctx, it, scopeClass, res, rec); !ok {
+			// pause/stop interrupted the page's render: abandon without
+			// recording (a raw-only record would be permanent — resume never
+			// re-renders a processed page) and leave the item pending
+			return nil, false
+		}
 	}
 
 	// The first time the crawl reaches an in-scope host, discover that host's
@@ -704,8 +725,10 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) ([]frontier.It
 }
 
 // handleContent parses HTML, evaluates indexability, and produces discoveries.
-// ctx is the crawl context — the render path fetches under it (#74 N2a).
-func (c *Crawler) handleContent(ctx context.Context, it frontier.Item, scopeClass urlutil.ScopeClass, res *fetch.Result, rec *PageRecord) []frontier.Item {
+// ctx is the crawl context — the render path fetches under it (#74 N2a). ok is
+// false only when a pause/stop cancelled the crawl mid-render: the caller then
+// abandons the item (nothing recorded) so a resume re-fetches and re-renders it.
+func (c *Crawler) handleContent(ctx context.Context, it frontier.Item, scopeClass urlutil.ScopeClass, res *fetch.Result, rec *PageRecord) ([]frontier.Item, bool) {
 	var discoveries []frontier.Item
 
 	// redirect target re-enters discovery, bounded by the chain limit; with
@@ -784,7 +807,10 @@ func (c *Crawler) handleContent(ctx context.Context, it frontier.Item, scopeClas
 		}
 		renderedOK := false
 		if c.renderer != nil && !dup {
-			renderedOK = c.renderAndDiff(ctx, it.URL, rec, facts, res)
+			var interrupted bool
+			if renderedOK, interrupted = c.renderAndDiff(ctx, it.URL, rec, facts, res); interrupted {
+				return nil, false
+			}
 		}
 		if c.extractEngine != nil {
 			// append, not assign: renderAndDiff may already have stored
@@ -818,7 +844,7 @@ func (c *Crawler) handleContent(ctx context.Context, it frontier.Item, scopeClas
 	idx := indexability.Evaluate(idxInput)
 	rec.Indexable = idx.Indexable
 	rec.IndexabilityStatus = idx.Status
-	return discoveries
+	return discoveries, true
 }
 
 // Close releases the renderer (JS rendering mode).
@@ -831,24 +857,35 @@ func (c *Crawler) Close() {
 // renderAndDiff renders the page in Chrome, parses the rendered DOM, extracts
 // structured data from it, merges rendered-only links into the link set
 // (origin=rendered) and records the raw-vs-rendered element differences. It
-// returns true when rendering succeeded — the caller then trusts the
+// returns renderedOK=true when rendering succeeded — the caller then trusts the
 // rendered-DOM structured data instead of re-extracting from the raw body.
+// interrupted=true means a pause/stop cancelled the crawl while waiting for a
+// render slot or mid-render: the caller must abandon the item (leave it
+// pending, record nothing) so a resume re-fetches and re-renders it — a
+// degraded raw-only record would be permanent. A render failure with the crawl
+// still live (interrupted=false, renderedOK=false) degrades to raw-HTML
+// behaviour as before.
 //
-// The render runs under the CRAWL context and holds a global fetch slot: it
-// re-fetches the page plus its subresources in Chrome, so letting it run
-// slot-free ignored the process-wide fetch cap, and a detached context made it
-// deaf to pause/stop (#74 N2a — the cheap slice; full Chrome-instance bounding
-// across parallel crawls is #76).
-func (c *Crawler) renderAndDiff(ctx context.Context, url string, rec *PageRecord, facts *parse.Facts, res *fetch.Result) bool {
-	if !c.limiter.AcquireFetch(ctx) {
-		return false // cancelled while waiting for a slot: degrade to raw-HTML behaviour
+// The render runs under the CRAWL context and holds a global RENDER slot
+// (REN-01/#76): it re-fetches the page plus its subresources in a Chrome tab —
+// a different weight on a different resource axis (~100-300MB RAM per tab) than
+// an HTTP fetch, so it has its own pool in the process-wide limiter. It must
+// NOT hold a fetch slot at the same time (nested acquires across M crawls
+// starve the fetch pool and can deadlock it). The slot is released the moment
+// Render returns — even on a panic — so parsing/diffing never holds it.
+func (c *Crawler) renderAndDiff(ctx context.Context, url string, rec *PageRecord, facts *parse.Facts, res *fetch.Result) (renderedOK, interrupted bool) {
+	if !c.limiter.AcquireRender(ctx) {
+		return false, true // cancelled while waiting for a render slot
 	}
 	rendered, err := func() (*render.Result, error) {
-		defer c.limiter.ReleaseFetch()
+		defer c.limiter.ReleaseRender()
 		return c.renderer.Render(ctx, url)
 	}()
 	if err != nil {
-		return false // rendering failure degrades to raw-HTML behaviour
+		if ctx.Err() != nil {
+			return false, true // pause/stop tore the render down, not the page
+		}
+		return false, false // rendering failure degrades to raw-HTML behaviour
 	}
 
 	// persist the rendered DOM / screenshot to the assets dir when asked
@@ -952,7 +989,7 @@ func (c *Crawler) renderAndDiff(ctx context.Context, url string, rec *PageRecord
 	}
 
 	rec.JSDiff = diff
-	return true
+	return true, false
 }
 
 // customJSApplies checks a snippet's content_types filter against the page.

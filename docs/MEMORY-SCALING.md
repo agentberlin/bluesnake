@@ -345,6 +345,14 @@ One small object constructed once per surface (desktop/MCP/CLI) and injected int
    goroutines, FDs, connections. Effective per-crawl concurrency = `min(per-crawl threads, global slots free)`.
 2. **Finalize-concurrency cap (`F`, default 1):** analyse/CSR passes are CPU+RAM-bursty; bound how many run at once
    so M crawls finishing together don't each materialise a CSR simultaneously.
+3. **Global render-slot pool (`rendering.max_global_renders`, default 0 = auto/cores-scaled — REN-01/#76, landed):**
+   a Chrome render re-fetches the page + subresources in a tab (~100-300MB each) — a different weight on a
+   different resource axis than a fetch, so it gets its **own** slot pool: `SUM(in-flight renders) ≤ R` across
+   crawls. A worker holds a render slot only for the Chrome round-trip and **never a fetch slot at the same time**
+   (nested acquires would starve/deadlock the pools against each other). Pause/stop interrupts an in-flight render
+   and leaves the item pending (resume re-fetches + re-renders; a degraded raw-only record would be permanent).
+   Renderer *instances* stay one-per-crawl (per-crawl config: UA, window, snippets); Chrome *process* count is
+   bounded by `speed.max_concurrent_crawls`, tabs by the render pool (DESIGN.md §5.8).
 
 **Explicitly NOT included** (decision §0.2): shared per-host token buckets, shared robots cache. Per-host politeness
 stays per-crawl, unchanged. (If the rare same-host-across-crawls case ever matters, it can be added later behind this
@@ -506,8 +514,8 @@ Parallel crawling requires Phases 1–8: 1–6 prevent per-crawl OOM (the prereq
 - **`links` rowid instability** under re-crawl delete+reinsert breaks `MIN`-based first-wins. → explicit `seq` column.
 - **Global limiter mis-scoping** can serialize independent crawls. → per-crawl-spill (durable frontier) + a soft global
   cap, never a hard shared mutex on the admit path; FIFO global slots so a small crawl isn't starved.
-- **Forgetting `seenContent` / renderer.** → Phase 5 bounds `seenContent`; bound concurrent Chrome instances behind the
-  same limiter when JS-mode parallel crawling lands ([render.go](../internal/render/render.go)).
+- **Forgetting `seenContent` / renderer.** → Phase 5 bounds `seenContent`; renders are bounded behind the same
+  limiter via a dedicated render-slot pool (`rendering.max_global_renders`, §5.6 item 3 — REN-01/#76, landed).
 
 ### Open items (lower-stakes, decide during implementation)
 - Exact `links.seq` mechanism (dedicated column vs an insert-order table) and the `url→id` mapping (table vs in-memory
@@ -820,7 +828,7 @@ sweep missed. **Four of these are critical and must-pass-before-merge** (added t
 
 | id | failure mode | test (type, red/guard) | sev |
 |---|---|---|---|
-| REN-01 | M parallel JS-mode crawls each spawn a Chrome pool — renderers are a distinct OOM/FD axis the fetch semaphore does **not** bound (a render ≠ a fetch slot). Explicit §11 invariant with zero rows. | `TestGlobalLimiter_RenderSlotsBounded` (integration, red-new): SUM(Chrome instances) ≤ render cap across crawls; no renderer-slot leak on cancel-mid-render; a held render slot doesn't also pin a fetch slot | **critical** |
+| REN-01 | M parallel JS-mode crawls each spawn a Chrome pool — renderers are a distinct OOM/FD axis the fetch semaphore does **not** bound (a render ≠ a fetch slot). Explicit §11 invariant with zero rows. **LANDED (#76):** render-slot pool in `internal/limiter` (§5.6 item 3); all four tests green (`TestGlobalLimiter_RenderSlotsBounded`, `TestRenderSlotReleasedOnCancelMidRender`, `TestRenderSlotDoesNotPinFetchSlot`, `TestPauseInterruptsInFlightRender`). | `TestGlobalLimiter_RenderSlotsBounded` (integration, red-new): SUM(concurrent renders) ≤ render cap across crawls; no renderer-slot leak on cancel-mid-render; a held render slot doesn't also pin a fetch slot | **critical** |
 | IO-01 | Disk-full / ENOSPC / read-only FS mid-crawl. Stream-and-drop makes SQLite the sole authority → a failed `FrontierAdd`/`Page`/WAL write is now **data loss**, not recoverable RAM. | `TestCrawl_DiskFullMidWrite_FailsLoudlyResumable` (integration, red-new): Run returns the error (no silent success); no page reported crawled that wasn't durably written; DB reopens clean for resume | **critical** |
 | IO-02 | `SQLITE_BUSY` on the **per-crawl** DB. Feeder `SELECT…claimed` + worker `INSERT…RETURNING` + finalize CSR reads now contend on one `crawls/<id>.db` under `SetMaxOpenConns(1)`. Only `registry.db` busy-timeout is covered today. | `TestCrawlDB_NoBusyErrorUnderFeederWorkerFinalizeContention` (race, red-new): zero `SQLITE_BUSY` surfaces; no silent park | high |
 | DL-01 | `context.DeadlineExceeded` (per-fetch HTTP timeout) vs pause-cancel are conflated → a timed-out fetch (should be a recorded error page) gets left PENDING, or a paused item gets recorded as an error. | `TestWorkerPool_FetchDeadlineVsPauseCancel_Distinct` (integration, red-new): timeout → error page + counter decrement; pause → item PENDING; not interchangeable | high |

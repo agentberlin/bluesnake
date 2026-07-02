@@ -237,6 +237,9 @@ rendering:
   flatten_shadow_dom: true
   flatten_iframes: true
   chrome_path: ""        # auto-detect
+  max_global_renders: 0  # concurrent Chrome renders across ALL running crawls;
+                         # 0 = auto (cores-scaled 2/4/8 — the per-crawl tab ceiling,
+                         # so a single crawl never notices it); see §5.8
 
 advanced:
   cookie_storage: session        # session | persistent | none
@@ -599,6 +602,8 @@ Each analyzer reads SQLite, writes back columns/tables; all are idempotent and r
 **Wait strategy knob** (`rendering.wait_strategy: adaptive | fixed`): adaptive is the settle detection above; `fixed` waits for the browser load event and then sleeps the *full* AJAX timeout before snapshotting — slower, but the snapshot moment is deterministic, which keeps `compare` runs stable on pages with flaky widgets.
 
 **Custom JavaScript snippets** (`custom_js`): snippet files load at renderer construction (a missing file is a config error naming the snippet). After the page settles, `action` snippets run first (results discarded — they exist to mutate the page), then `extraction` snippets; values are stored in `custom_results` with kind `js` (JS strings verbatim, anything else compact JSON, `error: …` when a snippet throws). Each snippet is bounded by its `timeout_sec` (default 5); a `content_types` list restricts which pages a snippet's results are stored for.
+
+**Global render slots** (`rendering.max_global_renders` — REN-01/#76): a render re-fetches the page plus every subresource inside a Chrome tab (~100-300MB each), so renders are a first-class bounded resource under the process-wide limiter (`internal/limiter`), in a slot pool **separate** from the fetch cap — a render is not a fetch: different weight, different resource axis. A worker holds a render slot only for the Chrome round-trip (released the moment `Render` returns, panic-safe, mirroring the fetch-slot pattern) and never holds a fetch slot at the same time — nested acquires across M crawls would starve or deadlock the pools against each other. `0` (the default) resolves via `render.GlobalRenderCap` to the same cores-scaled tab ceiling that bounds a single crawl's pool (2/4/8 by CPU count), so single-crawl behaviour is unchanged while M parallel rendered crawls stay bounded out of the box. Renderer **instances** deliberately stay one-per-crawl — a renderer bakes per-crawl config into its Chrome allocator (UA, window size, custom JS snippets), so a shared instance cannot represent two configs; the Chrome *process* count is bounded by `speed.max_concurrent_crawls` (GL-18), while the expensive axis — concurrently rendering tabs — is bounded process-wide by the render pool. Pause/stop interrupts an in-flight render (renders run under the crawl context): the interrupted item is left pending — recording it raw-only would be permanent, since resume never re-renders a processed page — and a resume re-fetches and re-renders it (pinned by `TestPauseInterruptsInFlightRender`).
 
 ### 5.9 Project layer (competitor study) — an opt-in, removable overlay
 

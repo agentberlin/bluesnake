@@ -132,6 +132,20 @@ func maxTabs() int {
 	}
 }
 
+// GlobalRenderCap resolves rendering.max_global_renders into the process-wide
+// render-slot cap (REN-01/#76): explicit positive values pass through; 0 (the
+// default) means "auto" — the same cores-scaled tab ceiling that already bounds
+// a single crawl's renderer (min(threads, 2/4/8) tabs), so one crawl never
+// notices the global cap while M parallel rendered crawls stay bounded out of
+// the box. Chrome-tab sizing is this package's knowledge; the limiter stays a
+// generic slot pool and receives the resolved value.
+func GlobalRenderCap(cfg *config.Config) int {
+	if n := cfg.Rendering.MaxGlobalRenders; n > 0 {
+		return n
+	}
+	return maxTabs()
+}
+
 func (r *Renderer) Close() { r.allocCancel() }
 
 // settleTracker watches page lifecycle + network events on a tab so Render

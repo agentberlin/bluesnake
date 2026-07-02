@@ -136,6 +136,7 @@ var descriptions = map[string]string{
 	"rendering.flatten_shadow_dom": "Include shadow-DOM content in the rendered HTML.",
 	"rendering.flatten_iframes":    "Inline iframe content into the rendered HTML.",
 	"rendering.chrome_path":        "Manual Chrome binary path when auto-detection fails.",
+	"rendering.max_global_renders": "Cap on concurrent Chrome renders across ALL running crawls in this process (a render slot is separate from a fetch slot). 0 = auto: a cores-scaled cap equal to the per-crawl tab ceiling, so single-crawl behaviour is unchanged.",
 
 	"advanced.cookie_storage":                        "Cookie jar behaviour during the crawl.",
 	"advanced.ignore_non_indexable_for_issues":       "Skip non-indexable pages when evaluating content issues.",

@@ -82,7 +82,7 @@ func TestParallelCrawlAllComposition(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	dir := t.TempDir()
-	lim := limiter.New(G, 1)
+	lim := limiter.New(G, 1, 0)
 	obs := &groupObs{total: 2, done: make(chan struct{})}
 	disp := queue.New(queue.NewMemStore(),
 		New(dir, obs, WithLimiter(lim)),

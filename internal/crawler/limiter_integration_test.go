@@ -47,7 +47,7 @@ func TestGlobalLimiterBoundsFetchesAcrossCrawls(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	lim := limiter.New(G, 1)
+	lim := limiter.New(G, 1, 0)
 	run := func() {
 		cfg := config.Default()
 		cfg.Speed.MaxThreads = 5 // 2 crawls × 5 = up to 10 would-be concurrent
