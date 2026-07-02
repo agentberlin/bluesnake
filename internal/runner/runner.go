@@ -9,15 +9,17 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
-	"github.com/agentberlin/bluesnake/internal/fetch"
 	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/frontier"
+	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/queue"
+	"github.com/agentberlin/bluesnake/internal/render"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
@@ -68,19 +70,37 @@ type Observer interface {
 	OnDone(o Outcome)
 }
 
-// Executor runs crawls one at a time for a single surface. It holds the one
-// in-flight crawl; Pause/Stop signal it, Snapshot reads its live counters.
+// Executor runs crawls for a single surface. It can hold several in flight at
+// once (parallel multi-crawl); each is keyed by its crawl id so Pause/Stop/
+// Snapshot can address one specific crawl. The no-argument Pause/Stop fan out to
+// every in-flight crawl (used by Shutdown), preserving single-crawl behaviour.
 type Executor struct {
 	storeDir string
 	obs      Observer
+	lim      *limiter.Limiter // shared process-wide fetch cap across all crawls
 
 	mu  sync.Mutex
-	cur *run // in-flight crawl, nil when idle
+	cur map[string]*run // crawl id -> in-flight crawl
 }
 
-// New builds an executor rooted at storeDir. obs may be nil.
-func New(storeDir string, obs Observer) *Executor {
-	return &Executor{storeDir: storeDir, obs: obs}
+// New builds an executor rooted at storeDir. obs may be nil. The optional limiter
+// caps total concurrent fetches across every crawl this executor runs (nil =
+// unlimited); it is shared, so M parallel crawls honour one global ceiling.
+func New(storeDir string, obs Observer, opts ...Option) *Executor {
+	e := &Executor{storeDir: storeDir, obs: obs, cur: map[string]*run{}}
+	for _, o := range opts {
+		o(e)
+	}
+	return e
+}
+
+// Option configures an Executor.
+type Option func(*Executor)
+
+// WithLimiter shares one process-wide concurrency limiter across every crawl the
+// executor runs (the parallel-mode global fetch ceiling).
+func WithLimiter(l *limiter.Limiter) Option {
+	return func(e *Executor) { e.lim = l }
 }
 
 // StoreDir reports the store directory the executor runs against.
@@ -111,7 +131,7 @@ type run struct {
 // Run executes the crawl described by spec and blocks until it ends. It
 // satisfies queue.Executor.
 func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(crawlID string)) (string, error) {
-	st, cfg, seeds, processed, pending, resumed, err := e.open(ctx, spec)
+	st, cfg, seeds, resume, err := e.open(ctx, spec)
 	if err != nil {
 		// surface the failure to the observer so callers awaiting a start (the MCP
 		// backend, the CLI) always see a terminal event even when no crawl began.
@@ -122,14 +142,31 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 	}
 
 	r := &run{
-		st: st, seeds: seeds, resumed: resumed, started: time.Now(),
-		threads:    cfg.Speed.MaxThreads,
-		total:      len(processed),
-		discovered: len(processed) + len(pending),
+		st: st, seeds: seeds, resumed: resume != nil, started: time.Now(),
+		threads: cfg.Speed.MaxThreads,
 	}
-	opts := []crawler.Option{crawler.WithSink(&sink{inner: st, r: r, obs: e.obs})}
-	if resumed {
-		opts = append(opts, crawler.WithResume(processed, pending))
+	if resume != nil {
+		r.total = resume.processed
+		r.discovered = resume.discovered
+	}
+	// One global limiter shared across every crawl this executor runs, so M
+	// parallel crawls honour a single process-wide fetch ceiling. Fall back to a
+	// per-crawl limiter from this crawl's config when none was injected. INVARIANT
+	// (P17): the fallback is sound only because the surfaces that omit WithLimiter
+	// (MCP, desktop) run one crawl at a time — that single crawl's limiter then IS
+	// the process-wide cap. Any surface that runs crawls in parallel (the CLI's
+	// `projects crawl-all --parallel`) MUST inject one shared limiter, else
+	// SUM(in-flight fetches) across crawls would be unbounded.
+	lim := e.lim
+	if lim == nil {
+		lim = limiter.New(cfg.Speed.MaxGlobalThreads, 1, render.GlobalRenderCap(cfg))
+	}
+	opts := []crawler.Option{
+		crawler.WithSink(&sink{Crawl: st, r: r, obs: e.obs}),
+		crawler.WithLimiter(lim),
+	}
+	if resume != nil {
+		opts = append(opts, crawler.WithResume(resume.Resume))
 	}
 	c, err := crawler.New(cfg, opts...)
 	if err != nil {
@@ -148,11 +185,25 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 	runCtx, r.cancel = context.WithCancel(ctx)
 
 	e.mu.Lock()
-	e.cur = r
+	if _, dup := e.cur[st.ID]; dup {
+		// The same crawl is already in flight (two resume jobs racing for one
+		// crawl id). Registering would overwrite the map entry and make the
+		// FIRST run unaddressable — Pause/Stop/Cancel would signal the wrong
+		// one and its cleanup would delete ours (#74 N7). Refuse the duplicate.
+		e.mu.Unlock()
+		c.Close()
+		st.Close()
+		err = fmt.Errorf("crawl %s is already running — not starting a duplicate session", st.ID)
+		if e.obs != nil {
+			e.obs.OnDone(Outcome{CrawlID: st.ID, Err: err})
+		}
+		return "", err
+	}
+	e.cur[st.ID] = r
 	e.mu.Unlock()
 	defer func() {
 		e.mu.Lock()
-		e.cur = nil
+		delete(e.cur, st.ID)
 		e.mu.Unlock()
 	}()
 
@@ -174,6 +225,15 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 	out := Outcome{CrawlID: st.ID, Status: store.StatusInterrupted, Err: runErr}
 	if res != nil {
 		out.DurationSec = int(res.Duration.Seconds())
+		// Bound how many crawls materialise a finalize/analysis working set at once
+		// (§5.6 item 2 / H2): the CSR + analysis passes are CPU+RAM-bursty, so M
+		// parallel crawls finishing together must not each build one simultaneously.
+		// Acquire on a fresh context — NOT runCtx — because a paused/stopped crawl
+		// (runCtx already cancelled) must still persist its aggregates and terminal
+		// status here; finalize always releases its slot, so this never blocks for
+		// long. A nil limiter makes Acquire/Release no-ops (single-crawl default).
+		finCtx := context.Background()
+		lim.AcquireFinalize(finCtx)
 		// Pause keeps the crawl resumable; Stop finalises early as completed. The
 		// shared finalize path persists aggregates + status and, when completed,
 		// recomputes depth + inlinks over the full graph (resume) and runs analysis.
@@ -181,9 +241,10 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 			StoreDir:  e.storeDir,
 			Cfg:       cfg,
 			Seeds:     seeds,
-			Resumed:   resumed,
+			Resumed:   resume != nil,
 			Completed: !res.Interrupted || mode == "stop",
 		})
+		lim.ReleaseFinalize()
 		out.Status, out.Crawled, out.Total, out.Analyzed = fo.Status, fo.Crawled, fo.Total, fo.Analyzed
 		out.Chains, out.NearDups, out.IssueTotal, out.IssueChecks = fo.Chains, fo.NearDups, fo.IssueTotal, fo.IssueChecks
 		if ferr != nil && out.Err == nil {
@@ -215,11 +276,11 @@ func markTerminal(storeDir string, st *store.Crawl, status string) error {
 	return store.SetStatus(storeDir, st.ID, status, crawled, total)
 }
 
-// open resolves a spec into an open crawl ready to run: a fresh crawl, or an
-// existing one restored for resume (which uses the crawl's frozen config and
-// seeds, not the spec).
+// open resolves a spec into an open crawl ready to run: a fresh crawl (resume
+// == nil), or an existing one restored for resume (which uses the crawl's
+// frozen config and seeds, not the spec).
 func (e *Executor) open(ctx context.Context, spec queue.JobSpec) (
-	st *store.Crawl, cfg *config.Config, seeds, processed []string, pending []frontier.Item, resumed bool, err error,
+	st *store.Crawl, cfg *config.Config, seeds []string, resume *resumeState, err error,
 ) {
 	if spec.ResumeID != "" {
 		return openForResume(e.storeDir, spec.ResumeID)
@@ -242,17 +303,44 @@ func (e *Executor) open(ctx context.Context, spec queue.JobSpec) (
 }
 
 // openForResume restores an existing crawl for a resume job: its frozen config,
-// every seed (so host classification and the depth BFS re-root from all of them),
-// and the processed/pending frontier sets. The spec's profile/config are ignored
-// — a resume must run the crawl's own frozen config.
+// every seed (so host classification and the depth BFS re-root from all of
+// them), and the complete crawler.Resume state. It is the ONLY resume-open
+// path — every surface reaches it through the queue dispatcher — so its guards
+// (pre-edges, completed-status, stranded-row purge, load-error refusal) hold
+// structurally rather than per-surface. The spec's profile/config are ignored:
+// a resume must run the crawl's own frozen config.
 func openForResume(storeDir, id string) (
-	st *store.Crawl, cfg *config.Config, seeds, processed []string, pending []frontier.Item, resumed bool, err error,
+	st *store.Crawl, cfg *config.Config, seeds []string, resume *resumeState, err error,
 ) {
+	// A completed crawl has nothing to resume; accepting it would briefly
+	// de-complete the registry row (finalize records the interim interrupted
+	// status first) and, on a later failure, leave it that way (#74 N9).
+	status, err := store.CrawlStatus(storeDir, id)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if status == store.StatusCompleted {
+		return nil, nil, nil, nil, errCompleted(id)
+	}
 	st, err = store.OpenCrawl(storeDir, id)
 	if err != nil {
-		return
+		return nil, nil, nil, nil, err
 	}
 	closeOnErr := func() { st.Close(); st = nil }
+	// A crawl created before the gated `edges` table existed cannot be safely
+	// resumed: the SQL finalize derives inlinks/discovered_from solely from edges,
+	// which is empty for such a crawl, so completing it would overwrite both with
+	// empty/partial values. Refuse loudly (re-crawl) rather than silently corrupt;
+	// reading/querying the completed crawl is unaffected (P3).
+	if pre, perr := st.PreEdges(); perr != nil {
+		err = perr
+		closeOnErr()
+		return
+	} else if pre {
+		err = errPreEdges(id)
+		closeOnErr()
+		return
+	}
 	cfgYAML, err := st.Meta("config")
 	if err != nil {
 		closeOnErr()
@@ -273,33 +361,130 @@ func openForResume(storeDir, id string) (
 		err = errNoSeed(id)
 		return
 	}
-	processed, err = st.ProcessedURLs()
+	// A crash between Page() and FrontierDone() strands a pages∩frontier pair
+	// (EC-02). PendingFrontier skips it, but left in place it double-counts in
+	// the admitted-set rehydration below and accretes across resumes (#74 N14).
+	if _, err = st.PurgeStrandedFrontier(); err != nil {
+		closeOnErr()
+		return
+	}
+	r, err := loadResume(st, cfg.Limits.AnyBucketCap())
 	if err != nil {
 		closeOnErr()
 		return
 	}
-	pending, err = st.PendingFrontier()
-	if err != nil {
-		closeOnErr()
-		return
+	return st, cfg, seeds, &r, nil
+}
+
+// resumeSource is the store surface loadResume reads (satisfied by *store.Crawl).
+type resumeSource interface {
+	PageCount() (int, error)
+	Count() (int, error)
+	FetchedCount() (int, error)
+	MaxEdgeSeq() (int64, error)
+	AdmittedItems() ([]frontier.Item, error)
+}
+
+// resumeState is the loader's result: the engine's plain-data Resume plus the
+// live-counter seeds the runner's progress starts from.
+type resumeState struct {
+	crawler.Resume
+	processed  int // recorded pages — seeds the live "total" counter
+	discovered int // admitted URLs (frontier ∪ pages) — seeds "discovered"
+}
+
+// loadResume assembles the resume state from the store. Any load error refuses
+// the resume — silently degrading (e.g. restarting the edge seq at 0 on a
+// MaxEdgeSeq read error) would corrupt first-wins discovered_from exactly the
+// way the missing-capability bug did (#74 N15). The processed and pending URL
+// SETS are deliberately not materialised (issue #77): the store is both the
+// dedup authority (its pages rows are the visited set; MarkSeen is a no-op)
+// and the work-queue authority (the engine's Recover resets the pending rows'
+// orphaned claims and the feeder pulls them straight from the table), so
+// loading either slice would put a crawl- or frontier-sized copy back in RAM —
+// exactly the term this design removes. Only their counts are read, to seed
+// the live progress counters. The admitted set is loaded only when a
+// per-bucket cap is configured; it is dead weight otherwise.
+func loadResume(src resumeSource, needAdmitted bool) (resumeState, error) {
+	var r resumeState
+	var err error
+	if r.processed, err = src.PageCount(); err != nil {
+		return resumeState{}, fmt.Errorf("resume: load processed count: %w", err)
 	}
-	return st, cfg, seeds, processed, pending, true, nil
+	if r.discovered, err = src.Count(); err != nil {
+		return resumeState{}, fmt.Errorf("resume: load discovered count: %w", err)
+	}
+	if r.Fetched, err = src.FetchedCount(); err != nil {
+		return resumeState{}, fmt.Errorf("resume: load fetched count: %w", err)
+	}
+	if r.MaxEdgeSeq, err = src.MaxEdgeSeq(); err != nil {
+		return resumeState{}, fmt.Errorf("resume: load edge sequence: %w", err)
+	}
+	if needAdmitted {
+		if r.Admitted, err = src.AdmittedItems(); err != nil {
+			return resumeState{}, fmt.Errorf("resume: load admitted set: %w", err)
+		}
+	}
+	return r, nil
 }
 
 type errNoSeed string
 
 func (e errNoSeed) Error() string { return "crawl " + string(e) + " has no stored seed" }
 
-// Pause asks the in-flight crawl to pause (left resumable); no-op when idle.
-func (e *Executor) Pause() { e.signal("pause") }
+// errCompleted is returned when a resume targets a crawl that already ran to
+// completion — there is no pending tail, and re-opening it would de-complete
+// the registry row.
+type errCompleted string
 
-// Stop asks the in-flight crawl to stop and finalise as completed; no-op when idle.
-func (e *Executor) Stop() { e.signal("stop") }
+func (e errCompleted) Error() string {
+	return "crawl " + string(e) + " is already completed — nothing to resume (re-crawl for a fresh audit)"
+}
 
-func (e *Executor) signal(mode string) {
+// errPreEdges is returned when a resume targets a crawl that predates the gated
+// edges table — it cannot be finalized without corrupting inlinks/discovered_from,
+// so the user must re-crawl.
+type errPreEdges string
+
+func (e errPreEdges) Error() string {
+	return "crawl " + string(e) + " predates this version's link-graph format and cannot be resumed — please re-crawl"
+}
+
+// Pause asks every in-flight crawl to pause (left resumable); no-op when idle.
+// Used by the dispatcher's Shutdown to turn all running crawls around.
+func (e *Executor) Pause() { e.signalAll("pause") }
+
+// Stop asks every in-flight crawl to stop and finalise as completed.
+func (e *Executor) Stop() { e.signalAll("stop") }
+
+// PauseCrawl pauses one specific crawl (left resumable); no-op if not running.
+func (e *Executor) PauseCrawl(crawlID string) { e.signalCrawl(crawlID, "pause") }
+
+// StopCrawl stops one specific crawl, finalising it as completed.
+func (e *Executor) StopCrawl(crawlID string) { e.signalCrawl(crawlID, "stop") }
+
+// signalCrawl latches the first stop mode for one crawl and cancels its context.
+// First-wins: a pause already requested is not upgraded to a stop (or vice versa).
+func (e *Executor) signalCrawl(crawlID, mode string) {
 	e.mu.Lock()
-	r := e.cur
+	r := e.cur[crawlID]
 	e.mu.Unlock()
+	signalRun(r, mode)
+}
+
+func (e *Executor) signalAll(mode string) {
+	e.mu.Lock()
+	runs := make([]*run, 0, len(e.cur))
+	for _, r := range e.cur {
+		runs = append(runs, r)
+	}
+	e.mu.Unlock()
+	for _, r := range runs {
+		signalRun(r, mode)
+	}
+}
+
+func signalRun(r *run, mode string) {
 	if r == nil {
 		return
 	}
@@ -311,10 +496,15 @@ func (e *Executor) signal(mode string) {
 	r.cancel()
 }
 
-// Snapshot returns the in-flight crawl's live progress, ok=false when idle.
+// Snapshot returns one in-flight crawl's live progress (any, for single-crawl
+// surfaces), ok=false when idle.
 func (e *Executor) Snapshot() (Snapshot, bool) {
 	e.mu.Lock()
-	r := e.cur
+	var r *run
+	for _, v := range e.cur {
+		r = v
+		break
+	}
 	e.mu.Unlock()
 	if r == nil {
 		return Snapshot{}, false
@@ -379,23 +569,40 @@ func (r *run) onPage(rec *crawler.PageRecord) {
 }
 
 // sink tees the crawl stream: persistence first (the real store sink), then the
-// executor's live counters and the surface observer's per-page hook. It forwards
-// every optional sink extension the store implements (blobs, WARC, sitemaps).
+// executor's live counters and the surface observer's per-page hook. It EMBEDS
+// *store.Crawl, so every optional store capability the engine sniffs — Blob,
+// Archive, SitemapEntry, LlmsTxt, FirstWithContent, the frontier.Dedup methods,
+// and anything added later — forwards by promotion; only the methods the
+// executor intercepts for live counters (Page, Admit, Remove) are overridden.
+// The wrapper used to hand-forward each capability instead, and every method it
+// missed became a silent per-surface data-loss bug: frontier.Dedup (the #70 C1
+// resume loss), and LlmsTxtSink (llms.txt audit rows recorded on the CLI path
+// only) — the class #74 closed. Promotion flips the failure mode of a missed
+// method from silent corruption to, at worst, a missed live-counter intercept.
 type sink struct {
-	inner *store.Crawl
-	r     *run
-	obs   Observer
+	*store.Crawl
+	r   *run
+	obs Observer
 }
 
+// Compile-time pins: documentation of the capability surface the production
+// sink must carry. With embedding they can no longer fail for a capability the
+// store implements; they still catch a store-side capability removal.
 var (
 	_ crawler.Sink        = (*sink)(nil)
 	_ crawler.BlobSink    = (*sink)(nil)
 	_ crawler.ArchiveSink = (*sink)(nil)
 	_ crawler.SitemapSink = (*sink)(nil)
+	_ crawler.LlmsTxtSink = (*sink)(nil)
+	_ crawler.ContentSink = (*sink)(nil) // the identical-content authority must reach the store, not the in-RAM fallback
+	_ frontier.Dedup      = (*sink)(nil)
+	// The work-queue authority (issue #77): without it the engine falls back to
+	// the frontier-linear in-RAM queue — the bounded-RAM contract silently gone.
+	_ frontier.Queue = (*sink)(nil)
 )
 
 func (t *sink) Page(rec *crawler.PageRecord) error {
-	if err := t.inner.Page(rec); err != nil {
+	if err := t.Crawl.Page(rec); err != nil {
 		return err
 	}
 	t.r.onPage(rec)
@@ -405,20 +612,35 @@ func (t *sink) Page(rec *crawler.PageRecord) error {
 	return nil
 }
 
-func (t *sink) FrontierAdd(it frontier.Item) error {
-	if err := t.inner.FrontierAdd(it); err != nil {
+// --- frontier.Dedup live-counter intercepts ----------------------------------
+// The store is the visited-set authority on every surface; admission happens in
+// its Admit (the durable frontier write), so this is also where the live
+// Discovered counter advances (M1). The other Dedup methods (Seen, MarkSeen,
+// Count) forward by promotion.
+
+// Admit records a novel URL as a durable frontier row (the resume authority) and,
+// on a first admission, advances Discovered. A re-discovered URL (already a
+// frontier or pages row) returns first=false and is not counted again.
+func (t *sink) Admit(it frontier.Item) (first bool, err error) {
+	first, err = t.Crawl.Admit(it)
+	if err == nil && first {
+		t.r.mu.Lock()
+		t.r.discovered++
+		t.r.mu.Unlock()
+	}
+	return first, err
+}
+
+// Remove undoes a just-admitted row (the frontier's cap-overflow rollback), so it
+// also rolls back the Discovered bump Admit made for it.
+func (t *sink) Remove(url string) error {
+	if err := t.Crawl.Remove(url); err != nil {
 		return err
 	}
 	t.r.mu.Lock()
-	t.r.discovered++
+	if t.r.discovered > 0 {
+		t.r.discovered--
+	}
 	t.r.mu.Unlock()
 	return nil
 }
-
-func (t *sink) FrontierDone(url string) error { return t.inner.FrontierDone(url) }
-
-func (t *sink) Blob(url, kind string, data []byte) error { return t.inner.Blob(url, kind, data) }
-
-func (t *sink) SitemapEntry(sitemap, url string) error { return t.inner.SitemapEntry(sitemap, url) }
-
-func (t *sink) Archive(url string, res *fetch.Result) error { return t.inner.Archive(url, res) }

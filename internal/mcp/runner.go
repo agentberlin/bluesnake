@@ -35,6 +35,13 @@ type startResult struct {
 func NewRunner(storeDir string) *Runner {
 	r := &Runner{storeDir: storeDir}
 	r.exec = runner.New(storeDir, r)
+	// One crawl at a time by design (no WithConcurrency): the MCP tools — crawl_status,
+	// issue_summary — assume a single current crawl, and the server's contract is
+	// one crawl per server. The executor's per-crawl fallback limiter is therefore
+	// the process-wide fetch cap (only one in-flight crawl). speed.max_concurrent_crawls
+	// drives the CLI's parallel `projects crawl-all`, not this dispatcher; wiring
+	// concurrency>1 here would also need one shared limiter via runner.WithLimiter
+	// (P6/P7/P17).
 	r.disp = queue.New(queue.NewMemStore(), r.exec)
 	_ = r.disp.Start(context.Background())
 	return r

@@ -51,8 +51,9 @@ func (f *fakeExec) Run(ctx context.Context, spec JobSpec, onStart func(string)) 
 	return msg.status, msg.err
 }
 
-func (f *fakeExec) Pause() { f.mu.Lock(); f.pauses++; f.mu.Unlock() }
-func (f *fakeExec) Stop()  { f.mu.Lock(); f.stops++; f.mu.Unlock() }
+func (f *fakeExec) Pause()           { f.mu.Lock(); f.pauses++; f.mu.Unlock() }
+func (f *fakeExec) Stop()            { f.mu.Lock(); f.stops++; f.mu.Unlock() }
+func (f *fakeExec) StopCrawl(string) { f.mu.Lock(); f.stops++; f.mu.Unlock() }
 
 func (f *fakeExec) complete() { f.release <- result{status: store.StatusCompleted} }
 
@@ -103,6 +104,81 @@ func TestDispatcherSequentialOrder(t *testing.T) {
 		if j.Status != store.JobDone || j.CrawlID == "" {
 			t.Errorf("job %s finished as %q crawl=%q, want done with a crawl id", j.Label, j.Status, j.CrawlID)
 		}
+	}
+}
+
+// TestDispatcherParallelRunsConcurrently (GL-05/GL-17) pins parallel dispatch:
+// with concurrency 2 the two queued jobs run at the SAME time — each claimed
+// exactly once by the W loops (no double-claim), the burst spread across loops.
+func TestDispatcherParallelRunsConcurrently(t *testing.T) {
+	exec := newFakeExec()
+	d := New(NewMemStore(), exec, WithConcurrency(2))
+	for _, u := range []string{"a", "b"} {
+		if _, err := d.Enqueue(JobSpec{URL: u}, "manual", "", u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both must start before either completes — they run concurrently.
+	waitStarted(t, exec)
+	waitStarted(t, exec)
+	exec.mu.Lock()
+	active := exec.active
+	exec.mu.Unlock()
+	if active != 2 {
+		t.Fatalf("concurrent crawls = %d, want 2 (parallel dispatch)", active)
+	}
+	exec.complete()
+	exec.complete()
+	d.Shutdown()
+
+	if exec.maxActive != 2 {
+		t.Errorf("peak concurrent crawls = %d, want 2", exec.maxActive)
+	}
+	if exec.runCalls != 2 {
+		t.Errorf("Run called %d times, want 2 (each job claimed exactly once — no double-claim)", exec.runCalls)
+	}
+	jobs, _ := d.List()
+	for _, j := range jobs {
+		if j.Status != store.JobDone {
+			t.Errorf("job %s = %q, want done", j.Label, j.Status)
+		}
+	}
+}
+
+// TestDispatcherShutdownWaitsAllLoops (GL-13) pins that Shutdown turns ALL
+// in-flight crawls around (one exec.Pause fan-out) and waits for every drain
+// loop — not just one — so no crawl is abandoned and Shutdown never returns early.
+func TestDispatcherShutdownWaitsAllLoops(t *testing.T) {
+	exec := newFakeExec()
+	d := New(NewMemStore(), exec, WithConcurrency(3))
+	for _, u := range []string{"a", "b", "c"} {
+		d.Enqueue(JobSpec{URL: u}, "manual", "", u)
+	}
+	d.Start(context.Background())
+	for i := 0; i < 3; i++ {
+		waitStarted(t, exec)
+	}
+
+	done := make(chan struct{})
+	go func() { d.Shutdown(); close(done) }()
+	// Shutdown signalled Pause and is blocked on every loop; let the crawls drain.
+	exec.complete()
+	exec.complete()
+	exec.complete()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Shutdown did not return — a drain loop was left running (M-1 crawls abandoned)")
+	}
+	exec.mu.Lock()
+	pauses := exec.pauses
+	exec.mu.Unlock()
+	if pauses < 1 {
+		t.Errorf("Shutdown forwarded %d pauses, want >= 1 (turn in-flight crawls around)", pauses)
 	}
 }
 

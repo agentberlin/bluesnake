@@ -68,6 +68,9 @@ type Store interface {
 	Finish(jobID, status, errMsg string) error
 	// Cancel cancels a still-queued job, reporting whether it changed anything.
 	Cancel(jobID string) (bool, error)
+	// Unclaim returns a claimed-but-never-started job to queued (the dispatcher
+	// claimed it, then a shutdown landed before the crawl began).
+	Unclaim(jobID string) error
 	// Reconcile marks every job left running (host died mid-crawl) as interrupted
 	// and returns the count. Called once before the dispatcher starts draining.
 	Reconcile() (int, error)
@@ -82,8 +85,11 @@ type Store interface {
 // the crawl's terminal store status (store.StatusCompleted | store.StatusInterrupted).
 type Executor interface {
 	Run(ctx context.Context, spec JobSpec, onStart func(crawlID string)) (status string, err error)
-	Pause()
-	Stop()
+	Pause() // pause every in-flight crawl (left resumable)
+	Stop()  // stop every in-flight crawl (finalised as completed)
+	// StopCrawl stops one specific crawl by id, so Cancel can target a single job
+	// when several run in parallel; a no-op when that crawl is not in flight.
+	StopCrawl(crawlID string)
 }
 
 // jobStatusFor maps a finished crawl's outcome to the terminal job status.

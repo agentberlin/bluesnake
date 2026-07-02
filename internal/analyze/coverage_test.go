@@ -496,6 +496,37 @@ func TestCatalogueFixtureCoverage(t *testing.T) {
 	}
 }
 
+// TestCatalogueOwnershipPartition enforces the issue-ownership split (#75)
+// that store.SaveIssues' scoped replace relies on: Evaluate emits only
+// catalogue-evaluation checks and analyze.Run emits only checks marked
+// analysis-owned. Since the kitchen sink triggers every catalogue ID (the
+// coverage test above), a check emitted by the wrong phase — or a new analyze
+// check not registered in issues.analysisOwned — fails here rather than
+// silently becoming a row the wrong writer wipes or orphans.
+func TestCatalogueOwnershipPartition(t *testing.T) {
+	pages, sitemaps, llmstxt := kitchenSink()
+	cfg := config.Default()
+	cfg.Content.NearDuplicates.Enabled = true
+	cfg.Resources.Images.Store = true
+	cfg.Links.External.Store = true
+	cfg.Extraction.StructuredData.JSONLD = true
+
+	analysis := map[string]bool{}
+	for _, id := range issues.AnalysisIDs() {
+		analysis[id] = true
+	}
+	for _, o := range issues.Evaluate(pages, cfg) {
+		if analysis[o.IssueID] {
+			t.Errorf("Evaluate emitted %s, an analysis-owned check — the issues refresh would wipe rows it cannot recompute", o.IssueID)
+		}
+	}
+	for _, o := range Run(pages, sitemaps, llmstxt, cfg).Occurrences {
+		if !analysis[o.IssueID] {
+			t.Errorf("analyze.Run emitted %s, which is not analysis-owned — SaveAnalysis would reject or orphan it", o.IssueID)
+		}
+	}
+}
+
 func TestHealthySiteTriggersNothing(t *testing.T) {
 	pages := healthyPages()
 	cfg := config.Default()

@@ -53,6 +53,7 @@ const SECTIONS = [
     num("rendering.ajax_timeout_sec", "AJAX timeout", "Max wait for scripts/XHR to settle. Pages that go network-idle sooner snapshot immediately.", "s"),
     tg("rendering.screenshots", "Capture screenshots", "Saves a screenshot of each rendered page to disk.", true),
     tg("rendering.js_error_reporting", "Report JavaScript console errors", null, true),
+    num("rendering.max_global_renders", "Max global renders", "Concurrent Chrome renders across all running crawls. 0 = auto (scaled to CPU cores).", null, true),
     txt("rendering.chrome_path", "Chrome path", "Manual override when Chrome isn't found.", true),
   ]},
   { id: "thresholds", label: "Thresholds", icon: "sliders-horizontal", fields: [
@@ -84,8 +85,10 @@ const SECTIONS = [
     tg("url_rewriting.lowercase", "Lowercase all URLs", null, true),
   ]},
   { id: "speed", label: "Speed", icon: "zap", fields: [
-    num("speed.max_threads", "Max threads", "Parallel downloads."),
+    num("speed.max_threads", "Max threads", "Parallel downloads per crawl."),
     num("speed.max_urls_per_sec", "Max URLs per second", "Politeness throttle. 0 = unlimited.", "URL/s"),
+    num("speed.max_global_threads", "Max global threads", "Total concurrent fetches across all running crawls. 0 = unlimited."),
+    num("speed.max_concurrent_crawls", "Max concurrent crawls", "Parallel member crawls for 'projects crawl-all' on the CLI. Crawls started from this app run one at a time."),
   ]},
   { id: "http", label: "HTTP & Identity", icon: "fingerprint", fields: [
     txt("http.user_agent", "User-agent"),

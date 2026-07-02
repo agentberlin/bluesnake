@@ -21,6 +21,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/robots"
 	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App is the Wails-bound service layer over the internal crawl engine.
@@ -72,10 +73,35 @@ func (a *App) startup(ctx context.Context) {
 	a.ensureQueue()
 	// Drain the persistent queue: this reconciles any job left running by a
 	// previous crash (-> interrupted, the partial crawl stays resumable) and
-	// then runs queued jobs one at a time.
-	_ = a.disp.Start(ctx)
+	// then runs queued jobs one at a time. A Start failure (registry error
+	// during reconcile) leaves the dispatcher retryable; swallowing it meant
+	// jobs were accepted forever and never drained, silently (#74 N4) — so
+	// surface it and retry with backoff until the registry recovers.
+	if err := a.disp.Start(ctx); err != nil {
+		runtime.LogErrorf(ctx, "queue: start failed (will retry): %v", err)
+		runtime.EventsEmit(ctx, "queue:error", err.Error())
+		go a.retryQueueStart(ctx)
+	}
 	a.mcp.initFromSettings()    // restore the MCP toggle, auto-starting the server
 	a.tunnel.initFromSettings() // then the public-URL toggle (forwards to the MCP server)
+}
+
+// retryQueueStart keeps trying to start the queue dispatcher until it succeeds
+// or the app shuts down. Start is idempotent and, after #74 N4, retryable.
+func (a *App) retryQueueStart(ctx context.Context) {
+	tick := time.NewTicker(5 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			if err := a.disp.Start(ctx); err == nil {
+				runtime.EventsEmit(ctx, "queue:error", "")
+				return
+			}
+		}
+	}
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -100,6 +126,12 @@ func (a *App) ensureQueue() {
 	}
 	a.obs = &uiObserver{app: a}
 	a.exec = runner.New(a.storeDir, a.obs)
+	// One crawl at a time by design: the desktop's realtime progress UI is built
+	// around a single active crawl (no WithConcurrency). Because of that the
+	// executor's per-crawl fallback limiter IS the process-wide fetch cap — there
+	// is only ever one in-flight crawl. Parallel project crawl-all is the CLI's
+	// `projects crawl-all --parallel`; driving concurrency>1 here would also need
+	// one shared limiter injected via runner.WithLimiter (P7/P17).
 	a.disp = queue.New(queue.NewSQLiteStore(a.storeDir), a.exec)
 }
 
