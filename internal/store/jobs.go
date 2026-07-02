@@ -23,6 +23,15 @@ const (
 	JobCanceled    = "canceled"
 )
 
+// JobActive reports whether a job is still outstanding — queued or in flight —
+// rather than a terminal done/failed/interrupted/canceled row. The queue
+// surfaces (desktop panel, `queue ls`) show only active jobs: terminal rows are
+// kept in the registry for resumability and crawl linkage but are not history to
+// be surfaced here.
+func JobActive(status string) bool {
+	return status == JobQueued || status == JobRunning
+}
+
 // Job is one crawl-queue entry.
 type Job struct {
 	ID        string

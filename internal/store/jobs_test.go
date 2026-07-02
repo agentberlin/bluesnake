@@ -53,6 +53,23 @@ func TestJobQueueLifecycle(t *testing.T) {
 	}
 }
 
+func TestJobActive(t *testing.T) {
+	active := map[string]bool{
+		JobQueued:      true,
+		JobRunning:     true,
+		JobDone:        false,
+		JobFailed:      false,
+		JobInterrupted: false,
+		JobCanceled:    false,
+		"":             false,
+	}
+	for status, want := range active {
+		if got := JobActive(status); got != want {
+			t.Errorf("JobActive(%q) = %v, want %v", status, got, want)
+		}
+	}
+}
+
 func TestClaimNextJobOrdering(t *testing.T) {
 	dir := t.TempDir()
 	var ids []string

@@ -10,9 +10,9 @@ import (
 
 // `bluesnake queue` inspects and manages the persistent crawl queue (the
 // registry `jobs` table). Jobs are run by a long-lived host — the desktop app —
-// so from the CLI this lists what is queued/running/done and lets you cancel a
-// queued job; a one-shot `bluesnake crawl` runs in its own process and does not
-// touch this queue.
+// so from the CLI this lists what is queued/running and lets you cancel a queued
+// job; a one-shot `bluesnake crawl` runs in its own process and does not touch
+// this queue.
 func newQueueCmd() *cobra.Command {
 	var storeDir string
 	queueCmd := &cobra.Command{
@@ -22,20 +22,26 @@ func newQueueCmd() *cobra.Command {
 
 	lsCmd := &cobra.Command{
 		Use:   "ls",
-		Short: "List queued, running and recent crawl jobs",
+		Short: "List queued and running crawl jobs",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			jobs, err := store.ListJobs(storeDir)
 			if err != nil {
 				return err
 			}
-			if len(jobs) == 0 {
+			active := make([]store.Job, 0, len(jobs))
+			for _, j := range jobs {
+				if store.JobActive(j.Status) {
+					active = append(active, j)
+				}
+			}
+			if len(active) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "queue is empty")
 				return nil
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
 			fmt.Fprintln(w, "JOB\tSTATUS\tSOURCE\tCRAWL\tLABEL")
-			for _, j := range jobs {
+			for _, j := range active {
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", j.ID, j.Status, j.Source, j.CrawlID, j.Label)
 			}
 			return w.Flush()
@@ -45,7 +51,7 @@ func newQueueCmd() *cobra.Command {
 
 	rmCmd := &cobra.Command{
 		Use:   "rm <job-id>",
-		Short: "Cancel a queued job, or remove a finished one from the list",
+		Short: "Cancel a queued job, or delete a finished one by id",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			jobs, err := store.ListJobs(storeDir)
