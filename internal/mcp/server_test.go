@@ -214,7 +214,7 @@ func TestIssueSummaryCountsDistinctURLs(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := st.ID
-	if err := st.SaveIssues([]issues.Occurrence{
+	if err := st.SaveIssues(nil, []issues.Occurrence{
 		{URL: "https://example.com/r", IssueID: "structured_validation_error", Detail: "Recipe: missing required property name"},
 		{URL: "https://example.com/r", IssueID: "structured_validation_error", Detail: "Recipe: missing required property image"},
 		{URL: "https://example.com/a", IssueID: "structured_validation_error", Detail: "Article: missing author"},

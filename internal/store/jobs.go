@@ -9,7 +9,8 @@ import (
 
 // The crawl queue. Jobs are persisted in the registry DB so the queue survives
 // restarts and crashes (DESIGN.md §5.3). A job describes a crawl to run; the
-// queue dispatcher claims jobs one at a time and runs each via an executor. The
+// queue dispatcher's drain loops claim jobs (atomically, so parallel loops
+// never double-claim) and run each via an executor. The
 // store treats Request as opaque JSON — internal/queue owns its meaning — so the
 // persistence layer never depends on the crawl-request shape.
 
@@ -198,6 +199,16 @@ func CancelJob(dir, id string) (bool, error) {
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
+}
+
+// UnclaimJob returns a claimed-but-never-started job to the queue (running →
+// queued, clearing the start stamp). The dispatcher uses it when a shutdown
+// lands between claiming a job and starting its crawl: the job must neither
+// run after the stop signal nor be lost to "interrupted" (no crawl ever
+// existed to resume) — it simply waits for the next drain.
+func UnclaimJob(dir, id string) error {
+	return execReg(dir, `UPDATE jobs SET status = ?, started = NULL WHERE id = ? AND status = ?`,
+		JobQueued, id, JobRunning)
 }
 
 // ReconcileRunningJobs marks every job left running (the host died mid-crawl) as

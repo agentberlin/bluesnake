@@ -17,6 +17,43 @@ func htmlPage(url string, facts *parse.Facts) *crawler.PageRecord {
 	}
 }
 
+// TestContentTextChecks pins the streamed counterpart to content()'s lorem/
+// soft-404 checks: same matches, same status-200 gate, same eligibility gate as
+// the call site in Evaluate (finalize relies on them being byte-identical).
+func TestContentTextChecks(t *testing.T) {
+	cfg := config.Default()
+	ok := func(status int, indexable bool) *crawler.PageRecord {
+		return &crawler.PageRecord{
+			URL: "https://ex.com/p", State: crawler.StateCrawled, Scope: "internal",
+			StatusCode: status, Indexable: indexable, Facts: &parse.Facts{},
+		}
+	}
+
+	if occs := ContentTextChecks(ok(200, true), "padding LOREM IPSUM padding", cfg); !has(occs, "https://ex.com/p", "content_lorem_ipsum") {
+		t.Errorf("lorem ipsum not detected: %v", occs)
+	}
+	if occs := ContentTextChecks(ok(200, true), "sorry, page not found here", cfg); !has(occs, "https://ex.com/p", "content_soft_404") {
+		t.Errorf("soft_404 not detected on a 200: %v", occs)
+	}
+	// soft_404 only on status 200 — a real 404 body must not flag.
+	if occs := ContentTextChecks(ok(404, true), "page not found", cfg); has(occs, "https://ex.com/p", "content_soft_404") {
+		t.Errorf("soft_404 fired on a non-200 page: %v", occs)
+	}
+	// eligibility gate: non-crawled / non-internal / nil Facts → no occurrences.
+	if occs := ContentTextChecks(&crawler.PageRecord{State: crawler.StateError, Scope: "internal", Facts: &parse.Facts{}}, "lorem ipsum", cfg); occs != nil {
+		t.Errorf("checks ran on a non-crawled page: %v", occs)
+	}
+	if occs := ContentTextChecks(&crawler.PageRecord{State: crawler.StateCrawled, Scope: "external", Facts: &parse.Facts{}}, "lorem ipsum", cfg); occs != nil {
+		t.Errorf("checks ran on an external page: %v", occs)
+	}
+	// skipForIndexability: ignore-non-indexable config + a non-indexable page → skip.
+	skip := config.Default()
+	skip.Advanced.IgnoreNonIndexableForIssues = true
+	if occs := ContentTextChecks(ok(200, false), "lorem ipsum", skip); occs != nil {
+		t.Errorf("checks ran on a skipped-for-indexability page: %v", occs)
+	}
+}
+
 func has(occs []Occurrence, url, id string) bool {
 	for _, o := range occs {
 		if o.URL == url && o.IssueID == id {

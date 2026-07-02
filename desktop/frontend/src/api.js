@@ -20,9 +20,11 @@ export const api = {
   // per-crawl frozen configuration (the read-only "Setup" tab)
   crawlConfig: (id) => call("CrawlConfig", id),
   saveCrawlConfigAsProfile: (id, name) => call("SaveCrawlConfigAsProfile", id, name),
-  pauseCrawl: () => call("PauseCrawl"),
-  stopCrawl: () => call("StopCrawl"),
-  activeProgress: () => call("ActiveProgress"),
+
+  pauseCrawl: (crawlId) => call("PauseCrawl", crawlId || ""),
+  stopCrawl: (crawlId) => call("StopCrawl", crawlId || ""),
+  activeProgress: (crawlId) => call("ActiveProgress", crawlId || ""),
+  runningProgress: () => call("RunningProgress"),
 
   listQueue: () => call("ListQueue"),
   cancelJob: (id) => call("CancelJob", id),
