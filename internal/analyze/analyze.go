@@ -169,8 +169,9 @@ func (a *analyzer) hyperlinkedSet() map[string]bool {
 // linkGraph computes unique in/outlink counts and PageRank-style link scores
 // over followed internal hyperlink edges between crawled pages.
 func (a *analyzer) linkGraph() {
-	// self-links count towards unique in/outlinks (Screaming Frog parity);
-	// PageRank below skips them so a page cannot vote for itself
+	// self-links and links to never-crawled internal targets count towards
+	// unique in/outlinks (Screaming Frog parity); PageRank below prunes both —
+	// a page cannot vote for itself, and only node-set members hold rank
 	edges := map[string]map[string]bool{} // src -> set of dst
 	internal := func(url string) bool {
 		rec, ok := a.pages[url]
@@ -238,11 +239,14 @@ func (a *analyzer) linkGraph() {
 	// Canonical accumulation order (FIN-CSRID). Go map iteration is randomized and
 	// float addition is non-associative, so iterating `edges`/`dsts` in map order
 	// made the stored link_score jitter run-to-run at ~1e-12. Sort the node set and
-	// precompute each source's self-loop-excluded out-degree + sorted destination
-	// list ONCE, then accumulate in that fixed order every iteration — making the
-	// score bit-stable while reproducing the previous values exactly (a non-node or
-	// dangling source contributes 0, as before).
+	// precompute each source's out-degree + sorted destination list ONCE, then
+	// accumulate in that fixed order every iteration — making the score bit-stable
+	// (a non-node or dangling source contributes 0).
 	sort.Strings(nodes)
+	nodeSet := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		nodeSet[n] = true
+	}
 	srcs := make([]string, 0, len(edges))
 	for src := range edges {
 		srcs = append(srcs, src)
@@ -251,20 +255,22 @@ func (a *analyzer) linkGraph() {
 	out := make(map[string]int, len(srcs))
 	dstsBySrc := make(map[string][]string, len(srcs))
 	for _, src := range srcs {
+		// Self-loops and edges to non-node dsts (internal but never crawled:
+		// robots-blocked, errored, still-queued — #75) count for the unique link
+		// metrics above but do not exist for PageRank: the graph is induced on the
+		// node set (internal ∧ crawled), so such an edge neither receives a rank
+		// share — which would leak into max-scaling and LinkScores — nor dilutes
+		// its source's out-degree. A source left with no in-set dsts is dangling.
 		set := edges[src]
-		n := len(set)
-		if set[src] {
-			n-- // self-loops count for link metrics, not for PageRank
-		}
-		out[src] = n
-		if n == 0 {
-			continue
-		}
-		dsts := make([]string, 0, n)
+		dsts := make([]string, 0, len(set))
 		for dst := range set {
-			if dst != src {
+			if dst != src && nodeSet[dst] {
 				dsts = append(dsts, dst)
 			}
+		}
+		out[src] = len(dsts)
+		if len(dsts) == 0 {
+			continue
 		}
 		sort.Strings(dsts)
 		dstsBySrc[src] = dsts

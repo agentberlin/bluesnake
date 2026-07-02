@@ -121,6 +121,80 @@ func TestPageRank_NodeSetFromPagesPredicate(t *testing.T) {
 	}
 }
 
+// TestPageRank_NonCrawledDstsPruned (#75 bug 3): an internal link target that
+// was never crawled (robots-blocked, errored, still-queued) is not a node, so
+// an edge pointing at it does not exist for PageRank — it must neither receive
+// a rank share (which would leak into max-scaling and LinkScores) nor dilute
+// its source's out-degree. Same treatment as self-loops: such edges count for
+// the unique in/outlink metrics, not for PageRank (the graph is induced on the
+// internal ∧ crawled node set).
+func TestPageRank_NonCrawledDstsPruned(t *testing.T) {
+	cfg := config.Default()
+	cfg.Analysis.LinkScore = true
+	node := func(u string) *crawler.PageRecord {
+		return &crawler.PageRecord{URL: u, Scope: "internal", State: crawler.StateCrawled, Facts: &parse.Facts{}}
+	}
+
+	pages := map[string]*crawler.PageRecord{
+		"/a":       node("/a"),
+		"/b":       node("/b"),
+		"/blocked": {URL: "/blocked", Scope: "internal", State: crawler.StateBlockedRobots},
+	}
+	links := []crawler.LinkRow{
+		{Src: "/a", Dst: "/b", Type: string(parse.Hyperlink)},
+		{Src: "/a", Dst: "/blocked", Type: string(parse.Hyperlink)},
+	}
+	res := Run(pages, nil, nil, cfg, WithLinks(links))
+
+	if _, ok := res.LinkScores["/blocked"]; ok {
+		t.Error("a non-crawled internal link target must hold no rank / appear in no LinkScores")
+	}
+	assertScaled(t, res.LinkScores)
+
+	// The pruned edge must not dilute /a's out-degree either: scores equal the
+	// two-node graph /a -> /b bit-for-bit (accumulation is canonical-ordered).
+	ref := prGraph(t, map[string][]string{"/a": {"/b"}})
+	if res.LinkScores["/a"] != ref["/a"] || res.LinkScores["/b"] != ref["/b"] {
+		t.Errorf("scores with a pruned non-node dst: /a=%v /b=%v, want /a=%v /b=%v (induced subgraph)",
+			res.LinkScores["/a"], res.LinkScores["/b"], ref["/a"], ref["/b"])
+	}
+
+	// ...while the unique link metrics keep the edge (self-loop precedent).
+	if res.UniqueOut["/a"] != 2 {
+		t.Errorf("unique_outlinks(/a) = %d, want 2 — link metrics must keep the non-node edge", res.UniqueOut["/a"])
+	}
+
+	// The Facts.Links fallback path shares the same node gate.
+	pages["/a"].Facts = &parse.Facts{Links: []parse.Link{
+		{Type: parse.Hyperlink, URL: "/b"},
+		{Type: parse.Hyperlink, URL: "/blocked"},
+	}}
+	ram := Run(pages, nil, nil, cfg)
+	if _, ok := ram.LinkScores["/blocked"]; ok {
+		t.Error("Facts.Links path: non-crawled dst must hold no rank")
+	}
+	if ram.LinkScores["/a"] != ref["/a"] || ram.LinkScores["/b"] != ref["/b"] {
+		t.Errorf("Facts.Links path scores: /a=%v /b=%v, want /a=%v /b=%v",
+			ram.LinkScores["/a"], ram.LinkScores["/b"], ref["/a"], ref["/b"])
+	}
+
+	// A source whose EVERY outlink leaves the node set is dangling — its mass
+	// evaporates per the existing dangling-source rule and the remaining
+	// single-node graph scales itself to 100.
+	pages2 := map[string]*crawler.PageRecord{
+		"/solo": node("/solo"),
+		"/err":  {URL: "/err", Scope: "internal", State: crawler.StateError},
+	}
+	links2 := []crawler.LinkRow{{Src: "/solo", Dst: "/err", Type: string(parse.Hyperlink)}}
+	res2 := Run(pages2, nil, nil, cfg, WithLinks(links2))
+	if _, ok := res2.LinkScores["/err"]; ok {
+		t.Error("errored dst must hold no rank")
+	}
+	if res2.LinkScores["/solo"] != 100 {
+		t.Errorf("all-outlinks-pruned source score = %v, want 100 (dangling)", res2.LinkScores["/solo"])
+	}
+}
+
 // assertScaled checks the v/max*100 contract: every score is in [0,100] and the
 // maximum is exactly 100.
 func assertScaled(t *testing.T, scores map[string]float64) {
