@@ -15,6 +15,12 @@ export const api = {
   deleteCrawl: (id) => call("DeleteCrawl", id),
   startCrawl: (req) => call("StartCrawl", req),
   resumeCrawl: (id) => call("ResumeCrawl", id),
+  rerunCrawl: (id) => call("RerunCrawl", id),
+
+  // per-crawl frozen configuration (the read-only "Setup" tab)
+  crawlConfig: (id) => call("CrawlConfig", id),
+  saveCrawlConfigAsProfile: (id, name) => call("SaveCrawlConfigAsProfile", id, name),
+
   pauseCrawl: (crawlId) => call("PauseCrawl", crawlId || ""),
   stopCrawl: (crawlId) => call("StopCrawl", crawlId || ""),
   activeProgress: (crawlId) => call("ActiveProgress", crawlId || ""),
