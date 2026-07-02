@@ -182,6 +182,17 @@ func registryDB(dir string) (*sql.DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	// The registry is shared by every crawl in the process. With parallel
+	// member crawls (queue.WithConcurrency > 1) two connections write it
+	// concurrently — CreateCrawl racing SetStatus/EnqueueJob — and SQLite's
+	// default busy timeout of 0 turns that simple lock contention into an
+	// immediate SQLITE_BUSY failure (#74 R9's composition test surfaced it: one
+	// of two parallel crawl-all members failed with "database is locked"). A
+	// busy timeout makes the loser wait out the other's millisecond write.
+	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	fresh, err := isFreshDB(db)
 	if err != nil {
 		db.Close()
@@ -312,6 +323,12 @@ func CrawlDBPath(dir, id string) (string, error) {
 // (the reopen/resume path, which has no config in hand). A fresh crawl passes its
 // config-derived capacity explicitly, since its config meta is written only after
 // this returns.
+//
+// Known (accepted) crash window: a crash between the schema DDL below and the
+// upgrade() version stamp leaves a latest-shape DB stamped v0, so the next open
+// runs the forward-migration ladder over it and marks it `pre_edges`. That is
+// practically harmless — such a crawl has no seeds meta yet either, so any
+// resume attempt dies on errNoSeed before the pre-edges refusal even matters.
 func openCrawlDB(dir, id string, bloomCap int) (*Crawl, error) {
 	path := crawlPath(dir, id)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

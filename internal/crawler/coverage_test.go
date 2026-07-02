@@ -11,7 +11,6 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/fetch"
-	"github.com/agentberlin/bluesnake/internal/frontier"
 	"github.com/agentberlin/bluesnake/internal/parse"
 	"github.com/agentberlin/bluesnake/internal/urlutil"
 )
@@ -553,9 +552,8 @@ func TestRegexReplaceRewriteRule(t *testing.T) {
 // errSink fails every Page call, to drive noteSinkErr / sinkErr propagation.
 type errSink struct{ err error }
 
-func (s *errSink) Page(*PageRecord) error          { return s.err }
-func (s *errSink) FrontierAdd(frontier.Item) error { return nil }
-func (s *errSink) FrontierDone(string) error       { return nil }
+func (s *errSink) Page(*PageRecord) error    { return s.err }
+func (s *errSink) FrontierDone(string) error { return nil }
 
 // llmsRecordingSink captures llms.txt file and link rows in addition to the
 // base Sink methods.
@@ -589,8 +587,7 @@ func (s *llmsRecordingSink) snapshot() map[string]*PageRecord {
 	}
 	return out
 }
-func (s *llmsRecordingSink) FrontierAdd(frontier.Item) error { return nil }
-func (s *llmsRecordingSink) FrontierDone(string) error       { return nil }
+func (s *llmsRecordingSink) FrontierDone(string) error { return nil }
 func (s *llmsRecordingSink) LlmsTxtFile(rec LlmsTxtRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

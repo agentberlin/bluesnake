@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/agentberlin/bluesnake/internal/config"
-	"github.com/agentberlin/bluesnake/internal/frontier"
 )
 
 // capSink captures every streamed PageRecord (latest-wins by URL). It snapshots
@@ -37,8 +36,7 @@ func (s *capSink) Page(rec *PageRecord) error {
 	s.pages[rec.URL] = &cp
 	return nil
 }
-func (s *capSink) FrontierAdd(frontier.Item) error { return nil }
-func (s *capSink) FrontierDone(string) error       { return nil }
+func (s *capSink) FrontierDone(string) error { return nil }
 
 func (s *capSink) snapshot() map[string]*PageRecord {
 	s.mu.Lock()
@@ -158,14 +156,13 @@ func (s *finalizerSink) Page(rec *PageRecord) error {
 	runtime.SetFinalizer(rec, func(*PageRecord) { s.collected.Add(1) })
 	return nil
 }
-func (s *finalizerSink) FrontierAdd(frontier.Item) error { return nil }
-func (s *finalizerSink) FrontierDone(string) error       { return nil }
+func (s *finalizerSink) FrontierDone(string) error { return nil }
 
 // TestNoPageRecordRetainedAfterRun (SD-12) is the stream-and-drop done-signal:
 // a *PageRecord's footprint must not scale with crawled-page count. We attach a
 // GC finalizer to every streamed record and assert all are collectable once the
-// crawl drains — proving the crawler retains no page records in RAM. Fails today
-// (c.pages holds every record, and the live Result references that map).
+// crawl drains — proving the crawler retains no page records in RAM. (Written
+// RED against the pre-rework crawler, whose c.pages map held every record.)
 func TestNoPageRecordRetainedAfterRun(t *testing.T) {
 	bodies := map[string]string{"/": ""}
 	var root strings.Builder

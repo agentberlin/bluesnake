@@ -9,7 +9,6 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/fetch"
-	"github.com/agentberlin/bluesnake/internal/frontier"
 )
 
 // archiveRecorder is a Sink that also implements the optional ArchiveSink
@@ -44,8 +43,7 @@ func (a *archiveRecorder) snapshot() map[string]*PageRecord {
 	}
 	return out
 }
-func (a *archiveRecorder) FrontierAdd(frontier.Item) error { return nil }
-func (a *archiveRecorder) FrontierDone(string) error       { return nil }
+func (a *archiveRecorder) FrontierDone(string) error { return nil }
 
 func (a *archiveRecorder) Archive(url string, res *fetch.Result) error {
 	a.mu.Lock()

@@ -560,8 +560,7 @@ func (s *recordingSink) snapshot() map[string]*PageRecord {
 	}
 	return out
 }
-func (s *recordingSink) FrontierAdd(frontier.Item) error { return nil }
-func (s *recordingSink) FrontierDone(string) error       { return nil }
+func (s *recordingSink) FrontierDone(string) error { return nil }
 func (s *recordingSink) SitemapEntry(sitemap, url string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1037,7 +1036,6 @@ func (s *pauseSink) Page(rec *PageRecord) error {
 	s.pages[rec.URL] = rec.State
 	return nil
 }
-func (s *pauseSink) FrontierAdd(frontier.Item) error { return nil }
 func (s *pauseSink) FrontierDone(url string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

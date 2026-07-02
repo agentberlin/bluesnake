@@ -24,16 +24,24 @@ import (
 // true depth 3. Gutting followsForDepthRow to `return true` makes this fail.
 func TestDepthAndInlinkGateDivergenceOracle(t *testing.T) {
 	bodies := map[string]string{
-		// "/" links to /a (followed) and /b via rel=nofollow (stored, NOT followed).
-		"/": `<a href="/a">a</a> <a href="/b" rel="nofollow">b-shortcut</a>`,
+		// "/" links to /a (followed), /b via rel=nofollow (stored, NOT followed),
+		// and /r (an HTTP redirect to /d — the redirect-as-hop depth edge, #74 R8).
+		"/": `<a href="/a">a</a> <a href="/b" rel="nofollow">b-shortcut</a> <a href="/r">r</a>`,
 		// "/a" links to /c (followed) and references /b as an image (stored, NOT
 		// followed — images aren't crawled).
 		"/a": `<a href="/c">c</a> <img src="/b">`,
 		// "/c" links to /b with a real hyperlink (the only followed path to /b).
 		"/c": `<a href="/b">b</a>`,
 		"/b": `<p>leaf</p>`,
+		"/d": `<p>redirect target — reachable only through /r</p>`,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/r" {
+			// /d is reachable ONLY through this hop: if the depth CSR drops
+			// redirect edges, /d has no followed path at all (NoDepth).
+			http.Redirect(w, r, "/d", http.StatusFound)
+			return
+		}
 		body, ok := bodies[r.URL.Path]
 		if !ok {
 			w.WriteHeader(404)
@@ -90,6 +98,11 @@ func TestDepthAndInlinkGateDivergenceOracle(t *testing.T) {
 		t.Fatalf("fixture did not store the gate-excluded edges (nofollow=%v image=%v) — test is vacuous", sawNofollow, sawImage)
 	}
 	redirects, _ := st.Redirects()
+	// Vacuity guard for the redirect-hop assertion below (#74 R8): the fixture
+	// must really have stored the /r -> /d redirect edge.
+	if len(redirects) == 0 {
+		t.Fatal("fixture stored no redirect edges — the redirect-as-hop assertion is vacuous")
+	}
 	pages, err := st.LoadPages()
 	if err != nil {
 		t.Fatal(err)
@@ -99,10 +112,16 @@ func TestDepthAndInlinkGateDivergenceOracle(t *testing.T) {
 		urls = append(urls, u)
 	}
 	csr := c.RecomputeDepthsFromLinks(links, redirects, urls, []string{seed})
-	wantDepth := map[string]int{seed: 0, seed + "a": 1, seed + "c": 2, seed + "b": 3}
+	// /d's depth pins redirect-as-hop (#74 R8): its ONLY path from the seed is
+	// / -> /r -(HTTP redirect)-> /d, so depth(/d) = depth(/r) + 1. Dropping the
+	// redirect edges from the depth CSR leaves /d with no followed path at all.
+	wantDepth := map[string]int{
+		seed: 0, seed + "a": 1, seed + "c": 2, seed + "b": 3,
+		seed + "r": 1, seed + "d": 2,
+	}
 	for u, d := range wantDepth {
 		if csr[u] != d {
-			t.Errorf("depth(%s) = %d, want %d (the followed path; the nofollow/image shortcut to /b must be gated out)", u, csr[u], d)
+			t.Errorf("depth(%s) = %d, want %d (the followed path; the nofollow/image shortcut to /b must be gated out, the redirect hop to /d must count)", u, csr[u], d)
 		}
 	}
 	// The persisted depth (what finalize.Crawl wrote) must match the same oracle.
@@ -114,11 +133,16 @@ func TestDepthAndInlinkGateDivergenceOracle(t *testing.T) {
 
 	// Inlinks: hyperlink-only, gate-applied. /b is linked by /c (followed
 	// hyperlink) — its nofollow link from "/" and image edge from "/a" must NOT
-	// count. Hand-derived oracle, asserted on the finalized column.
-	wantInlinks := map[string]int{seed: 0, seed + "a": 1, seed + "c": 1, seed + "b": 1}
+	// count. The redirect edge into /d is not a hyperlink, so /d has 0 inlinks
+	// even though it has a discovery path. Hand-derived oracle, asserted on the
+	// finalized column.
+	wantInlinks := map[string]int{
+		seed: 0, seed + "a": 1, seed + "c": 1, seed + "b": 1,
+		seed + "r": 1, seed + "d": 0,
+	}
 	for u, n := range wantInlinks {
 		if pages[u].Inlinks != n {
-			t.Errorf("inlinks(%s) = %d, want %d (nofollow/image edges must not count)", u, pages[u].Inlinks, n)
+			t.Errorf("inlinks(%s) = %d, want %d (nofollow/image/redirect edges must not count)", u, pages[u].Inlinks, n)
 		}
 	}
 }

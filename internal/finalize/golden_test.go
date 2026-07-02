@@ -165,7 +165,7 @@ func goldenGraph(t *testing.T) (*store.Crawl, string) {
 // finalize path inside crawlGraph, so a wrong recompute could pass in lockstep
 // (mutation-verified: depth+100 left them green). The genuine oracles are
 // TestDepthAndInlinkGateDivergenceOracle (hand-derived, gate-divergent) here and
-// TestRecomputeDepthsFromLinksParity in the crawler package; TestEdgesSQLParity
+// TestRecomputeDepthsFromLinks in the crawler package; TestEdgesSQLParity
 // additionally exercised InlinksFromEdges/DiscoveredFromEdges, which production
 // never calls.
 
@@ -217,7 +217,8 @@ func TestFinalizeGolden_CapturedRAMContract(t *testing.T) {
 
 	// link_score (PageRank, scaled v/max·100): every crawled node holds a score
 	// in [0,100], the maximum is exactly 100, and a back-linked page outranks a
-	// leaf. These structural invariants pin the scaling + node-set contract.
+	// less-linked one. These structural invariants pin the scaling + node-set
+	// contract.
 	var maxScore float64
 	for _, rec := range pages {
 		if rec.LinkScore < 0 || rec.LinkScore > 100.0001 {
@@ -229,6 +230,12 @@ func TestFinalizeGolden_CapturedRAMContract(t *testing.T) {
 	}
 	if maxScore < 99.999 || maxScore > 100.001 {
 		t.Errorf("max link_score = %f, want 100 (v/max·100 scaling)", maxScore)
+	}
+	// The outrank claim, actually asserted (#74 Phase F): /b is hyperlinked by
+	// two pages (/ and /a) while /a is linked only by the seed — the better
+	// back-linked page must carry the higher link_score.
+	if bScore, aScore := pages[base+"/b"].LinkScore, pages[base+"/a"].LinkScore; bScore <= aScore {
+		t.Errorf("link_score(/b)=%f <= link_score(/a)=%f — the better back-linked page must outrank", bScore, aScore)
 	}
 
 	// Duplicate title occurrences: /b and /c share "Same" → title_duplicate on both.

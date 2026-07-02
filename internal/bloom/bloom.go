@@ -14,7 +14,7 @@ import (
 // with New. All methods are safe for concurrent use.
 type Filter struct {
 	words []atomic.Uint64 // bit array, packed 64 bits per word
-	m     uint64          // number of bits (always a power-of-two multiple of 64)
+	m     uint64          // number of bits (always a multiple of 64)
 	k     int             // number of hash probes
 }
 

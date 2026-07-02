@@ -7,8 +7,11 @@ import (
 	"github.com/agentberlin/bluesnake/internal/frontier"
 )
 
-// workPool is the crawl's bounded-memory work queue: a deadlock-free unbounded
-// in-RAM FIFO of frontier items plus an atomic in-flight counter. N persistent
+// workPool is the crawl's work queue: a deadlock-free, unbounded in-RAM FIFO
+// of frontier items plus an atomic in-flight counter. What it bounds is the
+// GOROUTINE count (N persistent workers), not the queue's memory — the queue
+// grows with the ready frontier (the documented frontier-linear residual,
+// MEMORY-SCALING.md; the bounded feeder is #77). N persistent
 // workers pull from it; pushing never blocks (so a worker enqueuing its own
 // discoveries can never deadlock on a full buffer), and the queue self-terminates
 // when in-flight reaches zero. It replaces the goroutine-per-URL model

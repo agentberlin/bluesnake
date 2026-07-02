@@ -344,11 +344,21 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 		c.tokens = make(chan struct{}, 1)
 		ticker := time.NewTicker(time.Duration(float64(time.Second) / rate))
 		defer ticker.Stop()
+		// The feeder exits when Run returns (ticker.Stop does not close the
+		// channel, so `for range ticker.C` would leak one goroutine per Run —
+		// #74 N12; processes are long-lived multi-crawl now).
+		feederDone := make(chan struct{})
+		defer close(feederDone)
 		go func() {
-			for range ticker.C {
+			for {
 				select {
-				case c.tokens <- struct{}{}:
-				default:
+				case <-ticker.C:
+					select {
+					case c.tokens <- struct{}{}:
+					default:
+					}
+				case <-feederDone:
+					return
 				}
 			}
 		}()
@@ -677,7 +687,7 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) ([]frontier.It
 		rec.State = StateSkippedTooLarge
 	default:
 		rec.State = StateCrawled
-		discoveries = c.handleContent(it, scopeClass, res, rec)
+		discoveries = c.handleContent(ctx, it, scopeClass, res, rec)
 	}
 
 	// The first time the crawl reaches an in-scope host, discover that host's
@@ -694,7 +704,8 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) ([]frontier.It
 }
 
 // handleContent parses HTML, evaluates indexability, and produces discoveries.
-func (c *Crawler) handleContent(it frontier.Item, scopeClass urlutil.ScopeClass, res *fetch.Result, rec *PageRecord) []frontier.Item {
+// ctx is the crawl context — the render path fetches under it (#74 N2a).
+func (c *Crawler) handleContent(ctx context.Context, it frontier.Item, scopeClass urlutil.ScopeClass, res *fetch.Result, rec *PageRecord) []frontier.Item {
 	var discoveries []frontier.Item
 
 	// redirect target re-enters discovery, bounded by the chain limit; with
@@ -773,7 +784,7 @@ func (c *Crawler) handleContent(it frontier.Item, scopeClass urlutil.ScopeClass,
 		}
 		renderedOK := false
 		if c.renderer != nil && !dup {
-			renderedOK = c.renderAndDiff(it.URL, rec, facts, res)
+			renderedOK = c.renderAndDiff(ctx, it.URL, rec, facts, res)
 		}
 		if c.extractEngine != nil {
 			// append, not assign: renderAndDiff may already have stored
@@ -822,8 +833,20 @@ func (c *Crawler) Close() {
 // (origin=rendered) and records the raw-vs-rendered element differences. It
 // returns true when rendering succeeded — the caller then trusts the
 // rendered-DOM structured data instead of re-extracting from the raw body.
-func (c *Crawler) renderAndDiff(url string, rec *PageRecord, facts *parse.Facts, res *fetch.Result) bool {
-	rendered, err := c.renderer.Render(context.Background(), url)
+//
+// The render runs under the CRAWL context and holds a global fetch slot: it
+// re-fetches the page plus its subresources in Chrome, so letting it run
+// slot-free ignored the process-wide fetch cap, and a detached context made it
+// deaf to pause/stop (#74 N2a — the cheap slice; full Chrome-instance bounding
+// across parallel crawls is #76).
+func (c *Crawler) renderAndDiff(ctx context.Context, url string, rec *PageRecord, facts *parse.Facts, res *fetch.Result) bool {
+	if !c.limiter.AcquireFetch(ctx) {
+		return false // cancelled while waiting for a slot: degrade to raw-HTML behaviour
+	}
+	rendered, err := func() (*render.Result, error) {
+		defer c.limiter.ReleaseFetch()
+		return c.renderer.Render(ctx, url)
+	}()
 	if err != nil {
 		return false // rendering failure degrades to raw-HTML behaviour
 	}
