@@ -53,6 +53,7 @@ const SECTIONS = [
     num("rendering.ajax_timeout_sec", "AJAX timeout", "Max wait for scripts/XHR to settle. Pages that go network-idle sooner snapshot immediately.", "s"),
     tg("rendering.screenshots", "Capture screenshots", "Saves a screenshot of each rendered page to disk.", true),
     tg("rendering.js_error_reporting", "Report JavaScript console errors", null, true),
+    num("rendering.max_global_renders", "Max global renders", "Concurrent Chrome renders across all running crawls. 0 = auto (scaled to CPU cores).", null, true),
     txt("rendering.chrome_path", "Chrome path", "Manual override when Chrome isn't found.", true),
   ]},
   { id: "thresholds", label: "Thresholds", icon: "sliders-horizontal", fields: [

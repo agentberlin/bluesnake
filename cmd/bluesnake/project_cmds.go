@@ -14,6 +14,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/project"
 	"github.com/agentberlin/bluesnake/internal/queue"
+	"github.com/agentberlin/bluesnake/internal/render"
 	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -301,7 +302,9 @@ func newProjectCmd() *cobra.Command {
 			// threads, which equals the sum of the per-crawl maxima and so could never
 			// bind (H1). A single finalize pass runs at a time so M crawls finishing
 			// together don't each materialise an analysis working set (§5.6 / H2).
-			lim := limiter.New(cfg.Speed.MaxGlobalThreads, 1)
+			// Chrome renders get their own process-wide slot pool (REN-01/#76):
+			// rendering.max_global_renders, 0 = the cores-scaled tab ceiling.
+			lim := limiter.New(cfg.Speed.MaxGlobalThreads, 1, render.GlobalRenderCap(cfg))
 			obs := &groupObserver{out: cmd.OutOrStdout(), total: len(members), done: make(chan struct{})}
 			disp := queue.New(queue.NewMemStore(),
 				runner.New(storeDir, obs, runner.WithLimiter(lim)),

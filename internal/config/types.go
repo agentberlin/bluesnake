@@ -192,6 +192,15 @@ type RenderingConfig struct {
 	FlattenShadowDOM bool   `yaml:"flatten_shadow_dom"`
 	FlattenIFrames   bool   `yaml:"flatten_iframes"`
 	ChromePath       string `yaml:"chrome_path"`
+	// MaxGlobalRenders caps concurrent Chrome renders (tabs actively loading a
+	// page + its subresources) across ALL running crawls in this process. A
+	// render is a distinct resource axis from a fetch — each tab costs
+	// ~100-300MB of RAM plus its own network fan-out — so it gets its own slot
+	// pool in the global limiter, separate from speed.max_global_threads
+	// (REN-01/#76). 0 = auto: a cores-scaled cap (2/4/8) equal to the per-crawl
+	// tab ceiling, which a single crawl can never exceed anyway — single-crawl
+	// behaviour is unchanged while M parallel rendered crawls stay bounded.
+	MaxGlobalRenders int `yaml:"max_global_renders"`
 }
 
 type AdvancedConfig struct {

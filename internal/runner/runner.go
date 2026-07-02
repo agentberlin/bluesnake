@@ -19,6 +19,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/frontier"
 	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/queue"
+	"github.com/agentberlin/bluesnake/internal/render"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
@@ -158,7 +159,7 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 	// SUM(in-flight fetches) across crawls would be unbounded.
 	lim := e.lim
 	if lim == nil {
-		lim = limiter.New(cfg.Speed.MaxGlobalThreads, 1)
+		lim = limiter.New(cfg.Speed.MaxGlobalThreads, 1, render.GlobalRenderCap(cfg))
 	}
 	opts := []crawler.Option{
 		crawler.WithSink(&sink{Crawl: st, r: r, obs: e.obs}),

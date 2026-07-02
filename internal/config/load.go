@@ -162,6 +162,9 @@ func (c *Config) Validate() error {
 	if c.Rendering.AjaxTimeoutSec < 1 {
 		bad("rendering.ajax_timeout_sec: must be >= 1, got %d", c.Rendering.AjaxTimeoutSec)
 	}
+	if c.Rendering.MaxGlobalRenders < 0 {
+		bad("rendering.max_global_renders: must be >= 0 (0 = auto, cores-scaled), got %d", c.Rendering.MaxGlobalRenders)
+	}
 	if c.Advanced.Retry5xx < 0 {
 		bad("advanced.retry_5xx: must be >= 0, got %d", c.Advanced.Retry5xx)
 	}

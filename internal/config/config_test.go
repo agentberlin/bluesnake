@@ -188,6 +188,7 @@ func TestValidateErrors(t *testing.T) {
 		{"negative rate", "speed:\n  max_urls_per_sec: -1\n", "max_urls_per_sec"},
 		{"negative global threads", "speed:\n  max_global_threads: -1\n", "max_global_threads"},
 		{"negative concurrent crawls", "speed:\n  max_concurrent_crawls: -3\n", "max_concurrent_crawls"},
+		{"negative global renders", "rendering:\n  max_global_renders: -1\n", "max_global_renders"},
 		{"threshold over 100", "content:\n  near_duplicates:\n    threshold: 150\n", "threshold"},
 		{"threshold negative", "content:\n  near_duplicates:\n    threshold: -1\n", "threshold"},
 		{"bad include regex", "scope:\n  include: [\"[bad\"]\n", "include"},
