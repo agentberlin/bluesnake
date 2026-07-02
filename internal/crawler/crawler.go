@@ -296,7 +296,10 @@ func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
 	if d, ok := c.sink.(frontier.Dedup); ok {
 		dedup = d
 	}
-	c.frontier = frontier.New(cfg, frontier.WithDedup(dedup))
+	// Dedup-authority errors flow into the crawl's sink-error latch: a store
+	// failure declines the URL (conservative) AND fails the run — silent drops
+	// would report an incomplete crawl as success (#74 R6/D4).
+	c.frontier = frontier.New(cfg, frontier.WithDedup(dedup), frontier.WithErrorSink(c.noteSinkErr))
 	c.seenContent = make(map[string]string)
 	c.sitemapHosts = make(map[string]bool)
 	return c, nil

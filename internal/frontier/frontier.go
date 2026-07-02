@@ -84,6 +84,7 @@ func (m *memDedup) Count() (int, error) {
 type Frontier struct {
 	cfg   *config.Config
 	dedup Dedup
+	onErr func(error) // receives every dedup-authority error; never nil
 
 	mu       sync.Mutex
 	perDepth map[int]int
@@ -104,10 +105,25 @@ func WithDedup(d Dedup) Option {
 	}
 }
 
+// WithErrorSink routes dedup-authority errors to the caller (the crawler wires
+// its sink-error latch here, so a store failure fails the run). Admission
+// decisions stay conservative regardless — an erroring URL is declined — but
+// the error is never swallowed: silently dropping a URL on a transient store
+// error would report an incomplete crawl as success (#74 R6/D4). A nil fn
+// keeps errors ignored (bare library/test use).
+func WithErrorSink(fn func(error)) Option {
+	return func(f *Frontier) {
+		if fn != nil {
+			f.onErr = fn
+		}
+	}
+}
+
 func New(cfg *config.Config, opts ...Option) *Frontier {
 	f := &Frontier{
 		cfg:      cfg,
 		dedup:    newMemDedup(),
+		onErr:    func(error) {},
 		perDepth: make(map[int]int),
 		perSub:   make(map[string]int),
 		perPath:  make([]int, len(cfg.Limits.ByPath)),
@@ -116,6 +132,13 @@ func New(cfg *config.Config, opts ...Option) *Frontier {
 		o(f)
 	}
 	return f
+}
+
+// noteErr reports a dedup-authority error (nil-safe convenience).
+func (f *Frontier) noteErr(err error) {
+	if err != nil {
+		f.onErr(err)
+	}
 }
 
 // Admit reports whether the item passes dedup and all configured limits, and
@@ -142,9 +165,14 @@ func (f *Frontier) Admit(it Item) bool {
 	// Dedup via the authority, OUTSIDE the cap mutex. A store-backed authority
 	// does its DB work here without blocking the in-memory cap accounting; a
 	// duplicate (the common high-fan-out case) returns immediately. On a dedup
-	// error we conservatively decline (never double-admit).
+	// error we conservatively decline (never double-admit) AND surface the
+	// error — the URL is lost to this crawl, which must not read as success.
 	first, err := f.dedup.Admit(it)
-	if err != nil || !first {
+	if err != nil {
+		f.noteErr(err)
+		return false
+	}
+	if !first {
 		return false
 	}
 
@@ -152,16 +180,18 @@ func (f *Frontier) Admit(it Item) bool {
 	// a cap at its boundary. A novel URL that overflows a cap is rolled back out
 	// of the dedup set (so it can be admitted later if room opens) — caps are
 	// monotonic, so in practice it stays rejected, but the set never leaks it.
+	// A FAILED rollback is surfaced too: it leaks a durable frontier row that a
+	// later resume would crawl cap-free (via Readmit).
 	f.mu.Lock()
 	if lim.MaxURLsPerDepth >= 0 && f.perDepth[it.Depth] >= lim.MaxURLsPerDepth {
 		f.mu.Unlock()
-		_ = f.dedup.Remove(it.URL)
+		f.noteErr(f.dedup.Remove(it.URL))
 		return false
 	}
 	host := urlutil.Host(it.URL)
 	if lim.MaxPerSubdomain >= 0 && f.perSub[host] >= lim.MaxPerSubdomain {
 		f.mu.Unlock()
-		_ = f.dedup.Remove(it.URL)
+		f.noteErr(f.dedup.Remove(it.URL))
 		return false
 	}
 	pathIdx := -1
@@ -169,7 +199,7 @@ func (f *Frontier) Admit(it Item) bool {
 		if strings.Contains(it.URL, pl.Pattern) {
 			if f.perPath[i] >= pl.Max {
 				f.mu.Unlock()
-				_ = f.dedup.Remove(it.URL)
+				f.noteErr(f.dedup.Remove(it.URL))
 				return false
 			}
 			pathIdx = i
@@ -189,7 +219,10 @@ func (f *Frontier) Admit(it Item) bool {
 // without consuming any limit budget — it was counted in the session that first
 // admitted it. It always reports true; the caller re-queues the item for crawling.
 func (f *Frontier) Readmit(it Item) bool {
-	_, _ = f.dedup.Admit(it) // ensure the authority knows it (no-op if already present)
+	// ensure the authority knows it (no-op if already present); an error means
+	// the durable frontier row may be gone — surface it
+	_, err := f.dedup.Admit(it)
+	f.noteErr(err)
 	return true
 }
 
@@ -218,11 +251,13 @@ func (f *Frontier) RehydrateCounters(items []Item) {
 
 // MarkSeen records URLs as already processed (resume preseeding) without
 // counting them against any limit.
-func (f *Frontier) MarkSeen(urls []string) { _ = f.dedup.MarkSeen(urls) }
+func (f *Frontier) MarkSeen(urls []string) { f.noteErr(f.dedup.MarkSeen(urls)) }
 
-// Seen reports whether a URL was already admitted.
+// Seen reports whether a URL was already admitted. An authority error reads as
+// "not seen" (conservative for the read paths that use this) but is surfaced.
 func (f *Frontier) Seen(url string) bool {
-	s, _ := f.dedup.Seen(url)
+	s, err := f.dedup.Seen(url)
+	f.noteErr(err)
 	return s
 }
 

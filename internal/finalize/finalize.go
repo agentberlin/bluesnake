@@ -51,9 +51,10 @@ type Params struct {
 // therefore leaves a resumable, re-finalizable crawl, never a `completed` crawl
 // carrying stale admit-time depths or an empty/partial issues+analysis table.
 // Each tail step is idempotent, so a resume re-runs them to a byte-identical end
-// state. The aggregate writes are best-effort (first error returned via note),
-// but a tail-step failure aborts completion: the crawl stays StatusInterrupted
-// rather than sealing a wrong result.
+// state. ANY recorded error — including the inlinks/discovered_from write, the
+// one aggregate this function computes itself (#74 R5) — blocks the seal: the
+// crawl stays StatusInterrupted rather than sealing a wrong result, and the
+// returned Outcome.Status reflects what the registry actually says.
 func Crawl(c *crawler.Crawler, st *store.Crawl, res *crawler.Result, p Params) (Outcome, error) {
 	var firstErr error
 	note := func(err error) {
@@ -108,8 +109,18 @@ func Crawl(c *crawler.Crawler, st *store.Crawl, res *crawler.Result, p Params) (
 		out.IssueTotal, out.IssueChecks = a.IssueTotal, a.IssueChecks
 	}
 
-	// Depth + analysis are durable: NOW seal the crawl as completed.
-	note(store.SetStatus(p.StoreDir, st.ID, store.StatusCompleted, crawled, total))
+	// Depth + analysis are durable — but seal only if NOTHING failed: a noted
+	// error anywhere above (e.g. the inlinks write) means the stored result is
+	// wrong, and completing would freeze it as final (#74 R5). Outcome.Status
+	// flips to completed only when the seal write itself succeeded, so the
+	// caller-visible status can never disagree with the registry.
+	if firstErr != nil {
+		return out, firstErr
+	}
+	if err := store.SetStatus(p.StoreDir, st.ID, store.StatusCompleted, crawled, total); err != nil {
+		note(err)
+		return out, firstErr
+	}
 	out.Status = store.StatusCompleted
 	return out, firstErr
 }
