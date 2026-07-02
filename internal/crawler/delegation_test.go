@@ -71,6 +71,7 @@ func TestResumeStateApplied(t *testing.T) {
 	sink := newCapSink()
 	c, err := New(cfg, WithSink(sink), WithResume(Resume{
 		Processed:  []string{abs("/a")},
+		Fetched:    1,
 		Pending:    []frontier.Item{{URL: abs("/"), Depth: 0}},
 		MaxEdgeSeq: 40,
 		// Two depth-1 URLs already admitted by the prior session: only ONE of

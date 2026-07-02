@@ -942,19 +942,26 @@ func (c *Crawl) PurgeStrandedFrontier() (int, error) {
 }
 
 // AdmittedItems returns every URL the crawl has admitted, with its admit-time
-// depth — the union of crawled pages and pending frontier rows. The two sets are
-// disjoint: Admit refuses a URL that already has a pages row, and FrontierDone
-// drops a frontier row the moment its page is recorded. Resume replays these
-// through the frontier's per-bucket counters (RehydrateCounters) so a resumed
-// crawl enforces MaxURLsPerDepth / per-subdomain / per-path caps against the same
-// running totals a straight crawl had, instead of granting a fresh bucket budget
-// per session (FR-08 / MEMORY-SCALING.md §5.1). A resume only ever follows an
-// interrupted crawl, whose depths are still admit-time (the completed-crawl depth
-// recompute never ran), so pages.depth is the bucket each page was admitted into.
+// depth — the union of crawled pages and pending frontier rows. The two sets
+// are NORMALLY disjoint (Admit refuses a URL that already has a pages row, and
+// FrontierDone drops a frontier row the moment its page is recorded) — but a
+// crash between Page() and FrontierDone() strands a pages∩frontier pair (the
+// EC-02 window), so the frontier arm carries the same NOT-EXISTS(pages) guard
+// as PendingFrontier: a stranded URL counts once, not twice (#74 R7). The
+// resume-open path also purges such rows (PurgeStrandedFrontier); the guard
+// here is defense in depth for DBs stranded by older binaries. Resume replays
+// these through the frontier's per-bucket counters (RehydrateCounters) so a
+// resumed crawl enforces MaxURLsPerDepth / per-subdomain / per-path caps
+// against the same running totals a straight crawl had, instead of granting a
+// fresh bucket budget per session (FR-08 / MEMORY-SCALING.md §5.1). A resume
+// only ever follows an interrupted crawl, whose depths are still admit-time
+// (the completed-crawl depth recompute never ran), so pages.depth is the
+// bucket each page was admitted into.
 func (c *Crawl) AdmittedItems() ([]frontier.Item, error) {
 	rows, err := c.db.Query(`SELECT url, COALESCE(depth, 0), 0, '' FROM pages
 		UNION ALL
-		SELECT url, depth, redirect_hops, source FROM frontier`)
+		SELECT url, depth, redirect_hops, source FROM frontier
+		WHERE NOT EXISTS (SELECT 1 FROM pages WHERE pages.url = frontier.url)`)
 	if err != nil {
 		return nil, err
 	}
@@ -968,6 +975,19 @@ func (c *Crawl) AdmittedItems() ([]frontier.Item, error) {
 		items = append(items, it)
 	}
 	return items, rows.Err()
+}
+
+// FetchedCount returns how many MaxURLs fetch slots the stored pages consumed:
+// every recorded page EXCEPT robots-blocked ones, which are recorded without a
+// fetch (the budget reserve happens after the robots gate). Resume seeds its
+// cumulative MaxURLs budget from this — seeding from len(ProcessedURLs()) would
+// over-charge each blocked page and make a resumed crawl fetch fewer pages
+// than a straight one (#74 N11).
+func (c *Crawl) FetchedCount() (int, error) {
+	var n int
+	err := c.db.QueryRow(`SELECT COUNT(*) FROM pages WHERE state != ?`,
+		crawler.StateBlockedRobots).Scan(&n)
+	return n, err
 }
 
 // ProcessedURLs returns every URL already recorded (must not be re-fetched).

@@ -215,8 +215,13 @@ func interruptResumeCrawl(t *testing.T, dir, seed string, after int) string {
 		st2.Close()
 		t.Fatalf("max edge seq: %v", err)
 	}
+	fetched, err := st2.FetchedCount()
+	if err != nil {
+		st2.Close()
+		t.Fatalf("fetched count: %v", err)
+	}
 	c2, err := crawler.New(cfg, crawler.WithSink(st2),
-		crawler.WithResume(crawler.Resume{Processed: processed, Pending: pending, MaxEdgeSeq: maxSeq}))
+		crawler.WithResume(crawler.Resume{Processed: processed, Fetched: fetched, Pending: pending, MaxEdgeSeq: maxSeq}))
 	if err != nil {
 		st2.Close()
 		t.Fatalf("crawler2: %v", err)

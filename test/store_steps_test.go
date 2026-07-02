@@ -344,8 +344,12 @@ func (w *world) resumeFromStore() error {
 	if err != nil {
 		return err
 	}
+	fetched, err := st.FetchedCount()
+	if err != nil {
+		return err
+	}
 	c, err := crawler.New(cfg, crawler.WithSink(st),
-		crawler.WithResume(crawler.Resume{Processed: processed, Pending: pending, MaxEdgeSeq: maxSeq}))
+		crawler.WithResume(crawler.Resume{Processed: processed, Fetched: fetched, Pending: pending, MaxEdgeSeq: maxSeq}))
 	if err != nil {
 		return err
 	}

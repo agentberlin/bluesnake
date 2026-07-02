@@ -364,6 +364,7 @@ func openForResume(storeDir, id string) (
 // resumeSource is the store surface loadResume reads (satisfied by *store.Crawl).
 type resumeSource interface {
 	ProcessedURLs() ([]string, error)
+	FetchedCount() (int, error)
 	PendingFrontier() ([]frontier.Item, error)
 	MaxEdgeSeq() (int64, error)
 	AdmittedItems() ([]frontier.Item, error)
@@ -379,6 +380,9 @@ func loadResume(src resumeSource, needAdmitted bool) (crawler.Resume, error) {
 	var err error
 	if r.Processed, err = src.ProcessedURLs(); err != nil {
 		return crawler.Resume{}, fmt.Errorf("resume: load processed set: %w", err)
+	}
+	if r.Fetched, err = src.FetchedCount(); err != nil {
+		return crawler.Resume{}, fmt.Errorf("resume: load fetched count: %w", err)
 	}
 	if r.Pending, err = src.PendingFrontier(); err != nil {
 		return crawler.Resume{}, fmt.Errorf("resume: load pending frontier: %w", err)

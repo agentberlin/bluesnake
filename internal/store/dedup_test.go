@@ -268,4 +268,28 @@ func TestAdmittedItemsUnionForResume(t *testing.T) {
 			t.Errorf("AdmittedItems[%s] depth = %d, want %d", u, got[u], d)
 		}
 	}
+
+	// The stranded pages∩frontier pair (a crash between Page() and
+	// FrontierDone(), the EC-02 window) must be counted ONCE, not twice: the
+	// two sets are NOT guaranteed disjoint, exactly there (#74 R7). Forge the
+	// pair with raw SQL — Admit correctly refuses to create it.
+	if _, err := c.db.Exec(
+		`INSERT INTO frontier(url, depth, redirect_hops, source) VALUES('https://ex.com/a', 1, 0, '')`); err != nil {
+		t.Fatal(err)
+	}
+	items, err = c.AdmittedItems()
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, it := range items {
+		counts[it.URL]++
+	}
+	if counts["https://ex.com/a"] != 1 {
+		t.Errorf("stranded pages∩frontier URL counted %d times, want 1 — resume rehydration double-charges the bucket (R7)",
+			counts["https://ex.com/a"])
+	}
+	if len(items) != len(want) {
+		t.Errorf("AdmittedItems returned %d rows with a stranded pair present, want %d", len(items), len(want))
+	}
 }

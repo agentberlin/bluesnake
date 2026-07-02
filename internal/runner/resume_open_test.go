@@ -112,7 +112,7 @@ func TestOpenForResumePurgesStrandedFrontierRows(t *testing.T) {
 // refusal arms (#74 N15): a resume-state read error must refuse the resume,
 // not silently degrade (e.g. an edge-seq of 0 reproduces the R2 corruption).
 type erroringResumeSource struct {
-	failProcessed, failPending, failSeq, failAdmitted bool
+	failProcessed, failFetched, failPending, failSeq, failAdmitted bool
 }
 
 var errLoad = errors.New("store read failed")
@@ -122,6 +122,12 @@ func (s *erroringResumeSource) ProcessedURLs() ([]string, error) {
 		return nil, errLoad
 	}
 	return []string{"https://e.com/"}, nil
+}
+func (s *erroringResumeSource) FetchedCount() (int, error) {
+	if s.failFetched {
+		return 0, errLoad
+	}
+	return 1, nil
 }
 func (s *erroringResumeSource) PendingFrontier() ([]frontier.Item, error) {
 	if s.failPending {
@@ -150,6 +156,7 @@ func TestResumeRefusedOnResumeStateLoadError(t *testing.T) {
 		needAdmitted bool
 	}{
 		{"processed", &erroringResumeSource{failProcessed: true}, false},
+		{"fetched-count", &erroringResumeSource{failFetched: true}, false},
 		{"pending", &erroringResumeSource{failPending: true}, false},
 		{"edge-seq", &erroringResumeSource{failSeq: true}, false},
 		{"admitted", &erroringResumeSource{failAdmitted: true}, true},

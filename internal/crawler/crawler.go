@@ -171,9 +171,13 @@ func WithLimiter(l *limiter.Limiter) Option {
 // surface silently carried a different subset of the resume fix, lived in
 // exactly those anonymous type-assertions.
 type Resume struct {
-	// Processed lists every URL already recorded (never re-fetched). It also
-	// seeds the MaxURLs budget so the cap spans sessions.
+	// Processed lists every URL already recorded (never re-fetched).
 	Processed []string
+	// Fetched is how many MaxURLs fetch slots the prior session(s) consumed —
+	// recorded pages MINUS robots-blocked ones, which record without a fetch
+	// (store.FetchedCount). It seeds the cumulative MaxURLs budget; seeding
+	// from len(Processed) would over-charge blocked pages (#74 N11).
+	Fetched int
 	// Pending is the admitted-but-unprocessed frontier tail to re-queue.
 	Pending []frontier.Item
 	// MaxEdgeSeq continues the gated-edge sequence past the prior session, so
@@ -358,8 +362,9 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 	// c.fetched below) is a fetch counter that starts at zero each session, so
 	// without this seed every resumed session would grant a fresh MaxURLs budget
 	// and a paused-then-resumed crawl could fetch far more than a straight one.
-	// Seeding from the already-recorded pages makes the cap span both sessions.
-	c.fetched.Store(int64(len(c.resume.Processed)))
+	// Seeded from the slots the prior sessions actually consumed (not the page
+	// count — robots-blocked pages record without a fetch, #74 N11).
+	c.fetched.Store(int64(c.resume.Fetched))
 	// Continue the gated-edge seq past the prior session so resume's new edges
 	// sort after session-1's: MIN(seq) first-wins discovered_from stays stable.
 	c.edgeSeq.Store(c.resume.MaxEdgeSeq)
