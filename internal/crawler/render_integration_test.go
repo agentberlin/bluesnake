@@ -1,7 +1,6 @@
 package crawler
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -55,15 +54,13 @@ func TestCrawlerRenderingIntegration(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c, err := New(cfg)
+	sink := newCapSink()
+	c, err := New(cfg, WithSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	res, err := c.Run(context.Background(), srv.URL+"/")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runCap(t, c, sink, srv.URL+"/")
 
 	root := res.Pages[srv.URL+"/"]
 	if root == nil || root.JSDiff == nil {
@@ -156,15 +153,13 @@ func TestRenderedStructuredDataFromDOM(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c, err := New(cfg)
+	sink := newCapSink()
+	c, err := New(cfg, WithSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	res, err := c.Run(context.Background(), srv.URL+"/")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runCap(t, c, sink, srv.URL+"/")
 	root := res.Pages[srv.URL+"/"]
 	if root == nil || root.StructuredData == nil {
 		t.Fatalf("root/StructuredData missing: %+v", root)
