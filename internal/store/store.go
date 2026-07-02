@@ -14,8 +14,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/agentberlin/bluesnake/internal/analyze"
@@ -84,7 +86,17 @@ CREATE INDEX IF NOT EXISTS links_dst ON links(dst);
 CREATE TABLE IF NOT EXISTS edges(src TEXT, dst TEXT, hyperlink INT, seq INTEGER);
 CREATE INDEX IF NOT EXISTS edges_dst ON edges(dst);
 CREATE INDEX IF NOT EXISTS edges_src ON edges(src);
-CREATE TABLE IF NOT EXISTS frontier(url TEXT PRIMARY KEY, depth INT, redirect_hops INT, source TEXT);
+-- frontier is the durable work QUEUE, not just the resume mirror (issue #77,
+-- MEMORY-SCALING.md §5.2): rows are born claimed=1 by Admit (invisible to the
+-- feeder until the frontier's cap checks pass), published claimable (claimed=0)
+-- by Enqueue, claimed back in (depth, seq) batches by the crawl's feeder, and
+-- deleted by FrontierDone. seq is the monotonic admission order that makes the
+-- feeder's pull deterministic (never rowid — deletes would reorder it).
+-- (frontier_claim, the feeder's (claimed, depth, seq) index, is created in
+-- openCrawlDB AFTER the migration ladder: on a pre-v5 DB this schema runs
+-- before the ladder adds the columns the index needs.)
+CREATE TABLE IF NOT EXISTS frontier(url TEXT PRIMARY KEY, depth INT, redirect_hops INT, source TEXT,
+  claimed INT NOT NULL DEFAULT 0, seq INTEGER);
 -- content_hash is the on-disk authority for the raw-body identical-content
 -- short-circuit (R8): hash -> the first (canonical) URL that claimed it. It bounds
 -- the formerly-unbounded in-RAM seenContent map (MEMORY-SCALING.md §5.4 / #70 M4),
@@ -163,6 +175,14 @@ type Crawl struct {
 	// Per-crawl and in-memory; a fresh (cold) filter on resume is fine — the
 	// authoritative INSERT … WHERE NOT EXISTS(pages) backstops every miss.
 	bloom *bloom.Filter
+
+	// frontierSeq assigns each admitted frontier row its monotonic admission
+	// rank (the feeder's deterministic pull order, MEMORY-SCALING.md §5.2).
+	// Seeded at open from MAX(seq) over the LIVE rows, so a resumed session's
+	// admissions always sort after every surviving pending row (EC-07); done
+	// rows are deleted, so their ranks may be reused — nothing live orders
+	// against them.
+	frontierSeq atomic.Int64
 
 	// WARC archive (extraction.store_warc), created lazily on first Archive.
 	// archiveMu guards the lazy init and the writes — the crawler calls
@@ -352,10 +372,27 @@ func openCrawlDB(dir, id string, bloomCap int) (*Crawl, error) {
 		db.Close()
 		return nil, err
 	}
+	// The feeder's claim index references columns the v5 migration adds, so it
+	// cannot ride crawlSchema (which runs before the ladder on a pre-v5 DB).
+	// Creating it here — after the ladder — covers fresh, migrated and current
+	// DBs with one idempotent statement.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS frontier_claim ON frontier(claimed, depth, seq)`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if bloomCap <= 0 {
 		bloomCap = bloomCapacityFor(storedMaxURLs(db))
 	}
-	return &Crawl{ID: id, dir: dir, db: db, bloom: bloom.New(bloomCap, 0.01)}, nil
+	c := &Crawl{ID: id, dir: dir, db: db, bloom: bloom.New(bloomCap, 0.01)}
+	// Continue the frontier admission rank above every surviving row, so a
+	// resumed session's discoveries sort after the pending tail (EC-07).
+	var maxSeq int64
+	if err := db.QueryRow(`SELECT COALESCE(MAX(seq), 0) FROM frontier`).Scan(&maxSeq); err != nil {
+		db.Close()
+		return nil, err
+	}
+	c.frontierSeq.Store(maxSeq)
+	return c, nil
 }
 
 // --- schema versioning & migrations ---------------------------------------
@@ -382,6 +419,29 @@ var crawlMigrations = []migration{
 	{2, "pages.duplicate_of", func(tx *sql.Tx) error { return addColumn(tx, "pages", "duplicate_of TEXT") }},
 	{3, "issues.detail_in_pk", migrateIssuesDetailPK},
 	{4, "pages.minhash+pre_edges", migrateMinhashMarkPreEdges},
+	{5, "frontier.claimed+seq", migrateFrontierClaimedSeq},
+}
+
+// migrateFrontierClaimedSeq adds the bounded-frontier queue columns (issue #77,
+// MEMORY-SCALING.md §5.2): claimed marks rows handed to the in-RAM ready-buffer
+// and seq pins the deterministic (depth, seq) pull order. These are QUEUE
+// metadata, not analytical data, so — unlike the additive-nullable §0.3 columns
+// that stay NULL until re-crawl — surviving pending rows are backfilled:
+// seq=rowid (their true insertion order; the table only ever grew, so live
+// rowids are admission-ordered) and claimed=0 (immediately claimable). An
+// interrupted pre-v5 crawl therefore resumes with a deterministic pull order
+// instead of NULL-first arbitrariness.
+func migrateFrontierClaimedSeq(tx *sql.Tx) error {
+	if err := addColumn(tx, "frontier", "claimed INT NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := addColumn(tx, "frontier", "seq INTEGER"); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`UPDATE frontier SET seq = rowid`)
+	return err
+	// (The (claimed, depth, seq) index is created by openCrawlDB after the
+	// ladder — one site covers fresh, migrated and current DBs alike.)
 }
 
 // migrateMinhashMarkPreEdges adds the nullable near-dup minhash column and marks
@@ -823,10 +883,14 @@ func (c *Crawl) Admit(it frontier.Item) (bool, error) {
 			return false, nil
 		}
 	}
+	// The row is born claimed=1 — INVISIBLE to the feeder's WHERE claimed=0 —
+	// and only published claimable by Enqueue after the frontier's cap checks
+	// pass. Without this, the feeder could claim (and a worker crawl) a URL in
+	// the window between this INSERT and a cap-overflow rollback's Remove.
 	res, err := c.db.Exec(
-		`INSERT OR IGNORE INTO frontier(url, depth, redirect_hops, source)
-		 SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM pages WHERE url = ?)`,
-		it.URL, it.Depth, it.RedirectHops, it.Source, it.URL)
+		`INSERT OR IGNORE INTO frontier(url, depth, redirect_hops, source, claimed, seq)
+		 SELECT ?, ?, ?, ?, 1, ? WHERE NOT EXISTS (SELECT 1 FROM pages WHERE url = ?)`,
+		it.URL, it.Depth, it.RedirectHops, it.Source, c.frontierSeq.Add(1), it.URL)
 	if err != nil {
 		return false, err
 	}
@@ -864,6 +928,82 @@ func (c *Crawl) Count() (int, error) {
 	err := c.db.QueryRow(
 		`SELECT COUNT(*) FROM (SELECT url FROM frontier UNION SELECT url FROM pages)`).Scan(&n)
 	return n, err
+}
+
+// --- frontier.Queue: the durable work-queue authority -------------------------
+// The frontier table IS the crawl's work queue (issue #77, MEMORY-SCALING.md
+// §5.2/§5.3): the in-RAM ready-buffer is a bounded window over it, refilled by
+// the crawl's single feeder goroutine, so per-crawl RAM no longer scales with
+// the discovered frontier. Lifecycle of a row: Admit (born claimed=1, invisible)
+// → Enqueue (published claimable, claimed=0) → ClaimBatch (claimed=1, handed to
+// the buffer) → FrontierDone (deleted). Recover resets orphaned claims at every
+// Run start (EC-01), so a crash or pause never strands work.
+
+// Enqueue publishes an admitted row as claimable work. It is the second half of
+// the two-step admission (Admit wrote the row born-claimed); the frontier calls
+// it only after every cap check passed, so a cap-overflow rollback (Remove) can
+// never race the feeder into crawling an over-cap URL.
+func (c *Crawl) Enqueue(it frontier.Item) error {
+	_, err := c.db.Exec(`UPDATE frontier SET claimed = 0 WHERE url = ?`, it.URL)
+	return err
+}
+
+// ClaimBatch atomically claims up to n published rows in (depth, seq) order —
+// the deterministic BFS pull order (never rowid: deletes reorder it) — and
+// returns them for the ready-buffer. The NOT-EXISTS(pages) guard mirrors
+// PendingFrontier's: a row stranded by a crash between Page() and
+// FrontierDone() (EC-02) must never be re-fetched. RETURNING emits rows in
+// unspecified order, so the batch is re-sorted before it is returned.
+func (c *Crawl) ClaimBatch(n int) ([]frontier.Item, error) {
+	rows, err := c.db.Query(
+		`UPDATE frontier SET claimed = 1 WHERE url IN (
+			SELECT url FROM frontier
+			WHERE claimed = 0
+			  AND NOT EXISTS (SELECT 1 FROM pages WHERE pages.url = frontier.url)
+			ORDER BY depth, seq LIMIT ?)
+		 RETURNING url, depth, redirect_hops, source, seq`, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type ranked struct {
+		it  frontier.Item
+		seq int64
+	}
+	var batch []ranked
+	for rows.Next() {
+		var r ranked
+		var seq sql.NullInt64 // pre-v5 rows are backfilled, but stay NULL-safe
+		if err := rows.Scan(&r.it.URL, &r.it.Depth, &r.it.RedirectHops, &r.it.Source, &seq); err != nil {
+			return nil, err
+		}
+		r.seq = seq.Int64
+		batch = append(batch, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(batch, func(i, j int) bool {
+		if batch[i].it.Depth != batch[j].it.Depth {
+			return batch[i].it.Depth < batch[j].it.Depth
+		}
+		return batch[i].seq < batch[j].seq
+	})
+	items := make([]frontier.Item, len(batch))
+	for i, r := range batch {
+		items[i] = r.it
+	}
+	return items, nil
+}
+
+// Recover resets every claimed row back to claimable at Run start (EC-01): a
+// crash's orphaned claimed=1 rows and a pause's in-buffer rows become pending
+// work exactly once each. The durable rows themselves are the queue, so the
+// pending argument (the in-memory queue's restore payload) is ignored. Deleted
+// (FrontierDone) rows stay gone — Recover resurrects claims, never deletions.
+func (c *Crawl) Recover([]frontier.Item) error {
+	_, err := c.db.Exec(`UPDATE frontier SET claimed = 0 WHERE claimed <> 0`)
+	return err
 }
 
 // FirstWithContent is the on-disk authority for the raw-body identical-content

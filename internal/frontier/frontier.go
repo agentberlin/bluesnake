@@ -35,6 +35,31 @@ type Dedup interface {
 	Count() (int, error)
 }
 
+// Queue is the crawl's work-queue authority (issue #77, MEMORY-SCALING.md
+// §5.2/§5.3): the store between an item's admission and its hand-off to a
+// worker. The crawler's in-RAM ready-buffer is a bounded window over it,
+// refilled by a single feeder goroutine, so per-crawl RAM does not scale with
+// the discovered frontier when the authority is durable (the SQLite store).
+// The engine falls back to an in-memory queue (frontier-linear by design) for
+// library/test sinks with no persistence.
+type Queue interface {
+	// Enqueue publishes an item that passed dedup AND every cap check as
+	// claimable work. The durable authority flips the born-claimed row Admit
+	// wrote to claimable — the two-step publish is what keeps a row invisible
+	// to the feeder until its admission is complete, so a cap-overflow
+	// rollback (Remove) can never race the feeder into crawling the URL.
+	Enqueue(it Item) error
+	// ClaimBatch atomically claims up to n published items in (depth, seq)
+	// order — deterministic BFS pull order — marking them in-flight so no
+	// item is ever handed out twice (WP-08).
+	ClaimBatch(n int) ([]Item, error)
+	// Recover prepares the queue at Run start: the durable authority resets
+	// orphaned in-flight claims (a crash's or pause's claimed rows, EC-01) so
+	// they become claimable again; the in-memory authority — whose rows died
+	// with the process — re-enqueues the caller-supplied pending items.
+	Recover(pending []Item) error
+}
+
 // memDedup is the default exact in-memory dedup: a set of admitted URL strings.
 type memDedup struct {
 	mu   sync.Mutex
