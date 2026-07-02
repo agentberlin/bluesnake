@@ -272,8 +272,10 @@ func TestInterruptAndResume(t *testing.T) {
 	defer st2.Close()
 	processed, _ = st2.ProcessedURLs()
 	pending, _ = st2.PendingFrontier()
+	maxSeq, _ := st2.MaxEdgeSeq()
 	seeds, _ := st2.Seeds()
-	c2, err := crawler.New(cfg, crawler.WithSink(st2), crawler.WithResume(processed, pending))
+	c2, err := crawler.New(cfg, crawler.WithSink(st2),
+		crawler.WithResume(crawler.Resume{Processed: processed, Pending: pending, MaxEdgeSeq: maxSeq}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -942,7 +944,9 @@ func TestListModeResumeRestoresAllSeeds(t *testing.T) {
 		}
 		processed, _ := st.ProcessedURLs()
 		pending, _ := st.PendingFrontier()
-		c, err := crawler.New(cfg, crawler.WithSink(st), crawler.WithResume(processed, pending))
+		maxSeq, _ := st.MaxEdgeSeq()
+		c, err := crawler.New(cfg, crawler.WithSink(st),
+			crawler.WithResume(crawler.Resume{Processed: processed, Pending: pending, MaxEdgeSeq: maxSeq}))
 		if err != nil {
 			t.Fatal(err)
 		}

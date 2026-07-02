@@ -1,6 +1,14 @@
 GO ?= go
 PKGS := ./...
-COVER_PKGS := ./internal/...
+# The coverage gate spans internal/ AND cmd/ — cmd/bluesnake being outside the
+# gate (plus having no unit tests at all) is the structural reason a CLI-only
+# resume-corruption bug shipped invisibly (#74 R1/R4). NOTE: acceptance
+# scenarios exec the built binary as a subprocess, which in-process coverage
+# instrumentation cannot see — the cmd/ unit tests are what count here.
+COVER_PKGS := ./internal/... ./cmd/...
+# -coverpkg wants a comma-separated pattern list (space-separated would parse as
+# package arguments).
+COVERPKG := ./internal/...,./cmd/...
 # Aggregate statement-coverage gate across COVER_PKGS (see docs/DESIGN.md §6).
 COVER_MIN := 90
 
@@ -44,7 +52,7 @@ desktop-dev:
 test: unit acceptance
 
 unit:
-	$(GO) test $(COVER_PKGS) ./cmd/... ./tunnelserver/...
+	$(GO) test $(COVER_PKGS) ./tunnelserver/...
 
 acceptance: build
 	$(GO) test ./test/...
@@ -60,7 +68,7 @@ race:
 # acceptance contribution is partial; the @chrome scenarios (excluded by default)
 # are what fill the render package's coverage on a Chrome-equipped CI toolchain.
 cover: build
-	$(GO) test -coverpkg=$(COVER_PKGS) -coverprofile=coverage.out $(COVER_PKGS) ./test/...
+	$(GO) test -coverpkg=$(COVERPKG) -coverprofile=coverage.out $(COVER_PKGS) ./test/...
 	@$(GO) tool cover -func=coverage.out | tail -1
 	@total=$$($(GO) tool cover -func=coverage.out | tail -1 | awk '{gsub("%","",$$3); print int($$3)}'); \
 	if [ $$total -lt $(COVER_MIN) ]; then echo "coverage $$total% is below $(COVER_MIN)%"; exit 1; fi

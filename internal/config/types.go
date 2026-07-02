@@ -173,6 +173,13 @@ type LimitsConfig struct {
 	ByPath          []PathLimit `yaml:"by_path"`
 }
 
+// AnyBucketCap reports whether a per-bucket admission cap (per-depth,
+// per-subdomain, or per-path) is configured — i.e. whether a resume must load
+// the stored admitted set to rehydrate the frontier's bucket counters (FR-08).
+func (l *LimitsConfig) AnyBucketCap() bool {
+	return l.MaxURLsPerDepth >= 0 || l.MaxPerSubdomain >= 0 || len(l.ByPath) > 0
+}
+
 type RenderingConfig struct {
 	Mode             string `yaml:"mode"`          // text | javascript
 	WaitStrategy     string `yaml:"wait_strategy"` // adaptive | fixed (DESIGN.md §8: fixed = load event + full AJAX sleep, compare-stable snapshots)

@@ -1007,7 +1007,7 @@ func TestResumeRespectsMaxURLs(t *testing.T) {
 		{URL: s.server.URL + "/p1", Depth: 1, Source: seed},
 		{URL: s.server.URL + "/p2", Depth: 1, Source: seed},
 	}
-	c, err := New(cfg, WithResume(processed, pending))
+	c, err := New(cfg, WithResume(Resume{Processed: processed, Pending: pending}))
 	if err != nil {
 		t.Fatal(err)
 	}

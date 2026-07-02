@@ -351,7 +351,7 @@ func TestSinkPageErrorPropagates(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &run{st: st}
-	s := &sink{inner: st, r: r}
+	s := &sink{Crawl: st, r: r}
 	st.Close() // make the inner store fail
 
 	rec := &crawler.PageRecord{URL: "http://ex.com/p", StatusCode: 200, State: crawler.StateCrawled}
@@ -373,7 +373,7 @@ func TestSinkAdmitErrorPropagates(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &run{st: st}
-	s := &sink{inner: st, r: r}
+	s := &sink{Crawl: st, r: r}
 	st.Close()
 
 	if _, err := s.Admit(frontier.Item{URL: "http://ex.com/q"}); err == nil {
@@ -395,7 +395,7 @@ func TestSinkPageAndFrontierHappy(t *testing.T) {
 	defer st.Close()
 	obs := &recObs{}
 	r := &run{st: st}
-	s := &sink{inner: st, r: r, obs: obs}
+	s := &sink{Crawl: st, r: r, obs: obs}
 
 	if err := s.Page(&crawler.PageRecord{URL: "http://ex.com/a", StatusCode: 200, State: crawler.StateCrawled, Indexable: true}); err != nil {
 		t.Fatal(err)

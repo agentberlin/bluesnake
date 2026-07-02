@@ -20,6 +20,8 @@ func (w *world) registerStoreSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a stored crawl of a (\d+)-page fixture site interrupted after (\d+) pages$`, w.storedInterruptedCrawl)
 	sc.Step(`^the crawl is resumed from the store$`, w.resumeFromStore)
 	sc.Step(`^a stored cross-linked crawl interrupted before the shortcut page$`, w.storedCrossLinkedCrawl)
+	sc.Step(`^the stored crawl predates the link-graph format$`, w.storedCrawlPreEdges)
+	sc.Step(`^the stored crawl aggregates are unchanged$`, w.storedAggregatesUnchanged)
 	sc.Step(`^a stored list-mode crawl with one seed pending$`, w.storedListModeCrawl)
 	sc.Step(`^all (\d+) pages are processed in the store$`, w.storeProcessedCount)
 	sc.Step(`^the stored crawl has issues recorded$`, w.storeHasIssues)
@@ -155,6 +157,50 @@ func (w *world) storedInterruptedCrawl(pages, interruptAfter int) error {
 		return fmt.Errorf("crawl was not interrupted")
 	}
 	return store.SetStatus(w.storeDirPath(), st.ID, store.StatusInterrupted, res.Crawled, res.Total)
+}
+
+// storedCrawlPreEdges forges the state the v4 forward-migration leaves on a
+// genuinely old crawl: the pre_edges marker set and an empty edges table. It
+// also plants distinctive non-zero aggregates so the corrupting write a resume
+// would perform (zeroing inlinks/discovered_from over the empty edges table,
+// #74 R1) is visible, and remembers them for storedAggregatesUnchanged.
+func (w *world) storedCrawlPreEdges() error {
+	st, err := store.OpenCrawl(w.storeDirPath(), w.storedCrawlID)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	for _, q := range []string{
+		`INSERT OR REPLACE INTO meta(key, value) VALUES('pre_edges','1')`,
+		`DELETE FROM edges`,
+		`UPDATE pages SET inlinks = 7, discovered_from = 'forged://src'`,
+	} {
+		if _, err := st.DB().Exec(q); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// storedAggregatesUnchanged asserts every page still carries the aggregates
+// storedCrawlPreEdges planted — a refused resume must not have touched them.
+func (w *world) storedAggregatesUnchanged() error {
+	st, err := store.OpenCrawl(w.storeDirPath(), w.storedCrawlID)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	pages, err := st.LoadPages()
+	if err != nil {
+		return err
+	}
+	for url, rec := range pages {
+		if rec.Inlinks != 7 || rec.DiscoveredFrom != "forged://src" {
+			return fmt.Errorf("%s aggregates changed: inlinks=%d discovered_from=%q, want 7/forged://src",
+				url, rec.Inlinks, rec.DiscoveredFrom)
+		}
+	}
+	return nil
 }
 
 // storedCrossLinkedCrawl deterministically constructs an interrupted crawl
@@ -294,7 +340,12 @@ func (w *world) resumeFromStore() error {
 	if err != nil {
 		return err
 	}
-	c, err := crawler.New(cfg, crawler.WithSink(st), crawler.WithResume(processed, pending))
+	maxSeq, err := st.MaxEdgeSeq()
+	if err != nil {
+		return err
+	}
+	c, err := crawler.New(cfg, crawler.WithSink(st),
+		crawler.WithResume(crawler.Resume{Processed: processed, Pending: pending, MaxEdgeSeq: maxSeq}))
 	if err != nil {
 		return err
 	}

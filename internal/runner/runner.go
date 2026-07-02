@@ -9,12 +9,12 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
-	"github.com/agentberlin/bluesnake/internal/fetch"
 	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/frontier"
 	"github.com/agentberlin/bluesnake/internal/limiter"
@@ -130,7 +130,7 @@ type run struct {
 // Run executes the crawl described by spec and blocks until it ends. It
 // satisfies queue.Executor.
 func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(crawlID string)) (string, error) {
-	st, cfg, seeds, processed, pending, resumed, err := e.open(ctx, spec)
+	st, cfg, seeds, resume, err := e.open(ctx, spec)
 	if err != nil {
 		// surface the failure to the observer so callers awaiting a start (the MCP
 		// backend, the CLI) always see a terminal event even when no crawl began.
@@ -141,10 +141,12 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 	}
 
 	r := &run{
-		st: st, seeds: seeds, resumed: resumed, started: time.Now(),
-		threads:    cfg.Speed.MaxThreads,
-		total:      len(processed),
-		discovered: len(processed) + len(pending),
+		st: st, seeds: seeds, resumed: resume != nil, started: time.Now(),
+		threads: cfg.Speed.MaxThreads,
+	}
+	if resume != nil {
+		r.total = len(resume.Processed)
+		r.discovered = len(resume.Processed) + len(resume.Pending)
 	}
 	// One global limiter shared across every crawl this executor runs, so M
 	// parallel crawls honour a single process-wide fetch ceiling. Fall back to a
@@ -159,11 +161,11 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 		lim = limiter.New(cfg.Speed.MaxGlobalThreads, 1)
 	}
 	opts := []crawler.Option{
-		crawler.WithSink(&sink{inner: st, r: r, obs: e.obs}),
+		crawler.WithSink(&sink{Crawl: st, r: r, obs: e.obs}),
 		crawler.WithLimiter(lim),
 	}
-	if resumed {
-		opts = append(opts, crawler.WithResume(processed, pending))
+	if resume != nil {
+		opts = append(opts, crawler.WithResume(*resume))
 	}
 	c, err := crawler.New(cfg, opts...)
 	if err != nil {
@@ -224,7 +226,7 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 			StoreDir:  e.storeDir,
 			Cfg:       cfg,
 			Seeds:     seeds,
-			Resumed:   resumed,
+			Resumed:   resume != nil,
 			Completed: !res.Interrupted || mode == "stop",
 		})
 		lim.ReleaseFinalize()
@@ -259,11 +261,11 @@ func markTerminal(storeDir string, st *store.Crawl, status string) error {
 	return store.SetStatus(storeDir, st.ID, status, crawled, total)
 }
 
-// open resolves a spec into an open crawl ready to run: a fresh crawl, or an
-// existing one restored for resume (which uses the crawl's frozen config and
-// seeds, not the spec).
+// open resolves a spec into an open crawl ready to run: a fresh crawl (resume
+// == nil), or an existing one restored for resume (which uses the crawl's
+// frozen config and seeds, not the spec).
 func (e *Executor) open(ctx context.Context, spec queue.JobSpec) (
-	st *store.Crawl, cfg *config.Config, seeds, processed []string, pending []frontier.Item, resumed bool, err error,
+	st *store.Crawl, cfg *config.Config, seeds []string, resume *crawler.Resume, err error,
 ) {
 	if spec.ResumeID != "" {
 		return openForResume(e.storeDir, spec.ResumeID)
@@ -286,15 +288,28 @@ func (e *Executor) open(ctx context.Context, spec queue.JobSpec) (
 }
 
 // openForResume restores an existing crawl for a resume job: its frozen config,
-// every seed (so host classification and the depth BFS re-root from all of them),
-// and the processed/pending frontier sets. The spec's profile/config are ignored
-// — a resume must run the crawl's own frozen config.
+// every seed (so host classification and the depth BFS re-root from all of
+// them), and the complete crawler.Resume state. It is the ONLY resume-open
+// path — every surface reaches it through the queue dispatcher — so its guards
+// (pre-edges, completed-status, stranded-row purge, load-error refusal) hold
+// structurally rather than per-surface. The spec's profile/config are ignored:
+// a resume must run the crawl's own frozen config.
 func openForResume(storeDir, id string) (
-	st *store.Crawl, cfg *config.Config, seeds, processed []string, pending []frontier.Item, resumed bool, err error,
+	st *store.Crawl, cfg *config.Config, seeds []string, resume *crawler.Resume, err error,
 ) {
+	// A completed crawl has nothing to resume; accepting it would briefly
+	// de-complete the registry row (finalize records the interim interrupted
+	// status first) and, on a later failure, leave it that way (#74 N9).
+	status, err := store.CrawlStatus(storeDir, id)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if status == store.StatusCompleted {
+		return nil, nil, nil, nil, errCompleted(id)
+	}
 	st, err = store.OpenCrawl(storeDir, id)
 	if err != nil {
-		return
+		return nil, nil, nil, nil, err
 	}
 	closeOnErr := func() { st.Close(); st = nil }
 	// A crawl created before the gated `edges` table existed cannot be safely
@@ -331,22 +346,66 @@ func openForResume(storeDir, id string) (
 		err = errNoSeed(id)
 		return
 	}
-	processed, err = st.ProcessedURLs()
+	// A crash between Page() and FrontierDone() strands a pages∩frontier pair
+	// (EC-02). PendingFrontier skips it, but left in place it double-counts in
+	// the admitted-set rehydration below and accretes across resumes (#74 N14).
+	if _, err = st.PurgeStrandedFrontier(); err != nil {
+		closeOnErr()
+		return
+	}
+	r, err := loadResume(st, cfg.Limits.AnyBucketCap())
 	if err != nil {
 		closeOnErr()
 		return
 	}
-	pending, err = st.PendingFrontier()
-	if err != nil {
-		closeOnErr()
-		return
+	return st, cfg, seeds, &r, nil
+}
+
+// resumeSource is the store surface loadResume reads (satisfied by *store.Crawl).
+type resumeSource interface {
+	ProcessedURLs() ([]string, error)
+	PendingFrontier() ([]frontier.Item, error)
+	MaxEdgeSeq() (int64, error)
+	AdmittedItems() ([]frontier.Item, error)
+}
+
+// loadResume assembles the crawler.Resume state from the store. Any load error
+// refuses the resume — silently degrading (e.g. restarting the edge seq at 0 on
+// a MaxEdgeSeq read error) would corrupt first-wins discovered_from exactly the
+// way the missing-capability bug did (#74 N15). The admitted set is loaded only
+// when a per-bucket cap is configured; it is dead weight otherwise.
+func loadResume(src resumeSource, needAdmitted bool) (crawler.Resume, error) {
+	var r crawler.Resume
+	var err error
+	if r.Processed, err = src.ProcessedURLs(); err != nil {
+		return crawler.Resume{}, fmt.Errorf("resume: load processed set: %w", err)
 	}
-	return st, cfg, seeds, processed, pending, true, nil
+	if r.Pending, err = src.PendingFrontier(); err != nil {
+		return crawler.Resume{}, fmt.Errorf("resume: load pending frontier: %w", err)
+	}
+	if r.MaxEdgeSeq, err = src.MaxEdgeSeq(); err != nil {
+		return crawler.Resume{}, fmt.Errorf("resume: load edge sequence: %w", err)
+	}
+	if needAdmitted {
+		if r.Admitted, err = src.AdmittedItems(); err != nil {
+			return crawler.Resume{}, fmt.Errorf("resume: load admitted set: %w", err)
+		}
+	}
+	return r, nil
 }
 
 type errNoSeed string
 
 func (e errNoSeed) Error() string { return "crawl " + string(e) + " has no stored seed" }
+
+// errCompleted is returned when a resume targets a crawl that already ran to
+// completion — there is no pending tail, and re-opening it would de-complete
+// the registry row.
+type errCompleted string
+
+func (e errCompleted) Error() string {
+	return "crawl " + string(e) + " is already completed — nothing to resume (re-crawl for a fresh audit)"
+}
 
 // errPreEdges is returned when a resume targets a crawl that predates the gated
 // edges table — it cannot be finalized without corrupting inlinks/discovered_from,
@@ -476,32 +535,37 @@ func (r *run) onPage(rec *crawler.PageRecord) {
 }
 
 // sink tees the crawl stream: persistence first (the real store sink), then the
-// executor's live counters and the surface observer's per-page hook. It also IS
-// the crawl's frontier dedup authority (MEMORY-SCALING.md §5.1): forwarding the
-// five Dedup methods to the store makes store.Admit the on-disk visited-set
-// authority on every production surface. That is what persists pending frontier
-// rows (so a paused crawl resumes without losing pages) and bounds the visited
-// set to disk — previously this struct didn't satisfy frontier.Dedup, so the
-// engine silently fell back to the in-RAM set and never wrote frontier rows,
-// losing pages on resume (the C1 regression). It forwards every optional sink
-// extension the store implements (blobs, WARC, sitemaps).
+// executor's live counters and the surface observer's per-page hook. It EMBEDS
+// *store.Crawl, so every optional store capability the engine sniffs — Blob,
+// Archive, SitemapEntry, LlmsTxt, FirstWithContent, the frontier.Dedup methods,
+// and anything added later — forwards by promotion; only the methods the
+// executor intercepts for live counters (Page, Admit, Remove) are overridden.
+// The wrapper used to hand-forward each capability instead, and every method it
+// missed became a silent per-surface data-loss bug: frontier.Dedup (the #70 C1
+// resume loss), and LlmsTxtSink (llms.txt audit rows recorded on the CLI path
+// only) — the class #74 closed. Promotion flips the failure mode of a missed
+// method from silent corruption to, at worst, a missed live-counter intercept.
 type sink struct {
-	inner *store.Crawl
-	r     *run
-	obs   Observer
+	*store.Crawl
+	r   *run
+	obs Observer
 }
 
+// Compile-time pins: documentation of the capability surface the production
+// sink must carry. With embedding they can no longer fail for a capability the
+// store implements; they still catch a store-side capability removal.
 var (
 	_ crawler.Sink        = (*sink)(nil)
 	_ crawler.BlobSink    = (*sink)(nil)
 	_ crawler.ArchiveSink = (*sink)(nil)
 	_ crawler.SitemapSink = (*sink)(nil)
+	_ crawler.LlmsTxtSink = (*sink)(nil)
 	_ crawler.ContentSink = (*sink)(nil) // the identical-content authority must reach the store, not the in-RAM fallback
 	_ frontier.Dedup      = (*sink)(nil)
 )
 
 func (t *sink) Page(rec *crawler.PageRecord) error {
-	if err := t.inner.Page(rec); err != nil {
+	if err := t.Crawl.Page(rec); err != nil {
 		return err
 	}
 	t.r.onPage(rec)
@@ -511,19 +575,17 @@ func (t *sink) Page(rec *crawler.PageRecord) error {
 	return nil
 }
 
-func (t *sink) FrontierDone(url string) error { return t.inner.FrontierDone(url) }
-
-// --- frontier.Dedup: the store is the visited-set authority on every surface ---
-// Admission now happens here (not via a separate FrontierAdd), so this is also
-// where the live Discovered counter advances — fixing the frozen-at-0 progress
-// on MCP/desktop (M1). Admit/Remove/Seen/MarkSeen/Count forward to the store;
-// the engine's frontier calls them outside its cap mutex.
+// --- frontier.Dedup live-counter intercepts ----------------------------------
+// The store is the visited-set authority on every surface; admission happens in
+// its Admit (the durable frontier write), so this is also where the live
+// Discovered counter advances (M1). The other Dedup methods (Seen, MarkSeen,
+// Count) forward by promotion.
 
 // Admit records a novel URL as a durable frontier row (the resume authority) and,
 // on a first admission, advances Discovered. A re-discovered URL (already a
 // frontier or pages row) returns first=false and is not counted again.
 func (t *sink) Admit(it frontier.Item) (first bool, err error) {
-	first, err = t.inner.Admit(it)
+	first, err = t.Crawl.Admit(it)
 	if err == nil && first {
 		t.r.mu.Lock()
 		t.r.discovered++
@@ -535,7 +597,7 @@ func (t *sink) Admit(it frontier.Item) (first bool, err error) {
 // Remove undoes a just-admitted row (the frontier's cap-overflow rollback), so it
 // also rolls back the Discovered bump Admit made for it.
 func (t *sink) Remove(url string) error {
-	if err := t.inner.Remove(url); err != nil {
+	if err := t.Crawl.Remove(url); err != nil {
 		return err
 	}
 	t.r.mu.Lock()
@@ -545,22 +607,3 @@ func (t *sink) Remove(url string) error {
 	t.r.mu.Unlock()
 	return nil
 }
-
-func (t *sink) Seen(url string) (bool, error) { return t.inner.Seen(url) }
-func (t *sink) MarkSeen(urls []string) error  { return t.inner.MarkSeen(urls) }
-func (t *sink) Count() (int, error)           { return t.inner.Count() }
-
-// FirstWithContent delegates the raw-body identical-content authority to the
-// store's content_hash table (crawler.ContentSink). Without this the engine fell
-// back to its in-RAM seenContent map on every surface — the #70 M4 bound was inert
-// in production, and a resume's cold map re-minted a second canonical for content
-// already claimed in the prior session (P11).
-func (t *sink) FirstWithContent(hash, url string, claim bool) (string, bool, error) {
-	return t.inner.FirstWithContent(hash, url, claim)
-}
-
-func (t *sink) Blob(url, kind string, data []byte) error { return t.inner.Blob(url, kind, data) }
-
-func (t *sink) SitemapEntry(sitemap, url string) error { return t.inner.SitemapEntry(sitemap, url) }
-
-func (t *sink) Archive(url string, res *fetch.Result) error { return t.inner.Archive(url, res) }

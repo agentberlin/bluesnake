@@ -926,6 +926,21 @@ func (c *Crawl) PendingFrontier() ([]frontier.Item, error) {
 	return items, rows.Err()
 }
 
+// PurgeStrandedFrontier deletes frontier rows whose URL already has a pages row
+// — the pair a crash between Page() and FrontierDone() strands (the EC-02
+// window). PendingFrontier merely skips such rows, so without this purge they
+// accrete across resumes and double-count in AdmittedItems' counter rehydration
+// (#74 N14/R7). Called by the resume-open path; returns how many rows it purged.
+func (c *Crawl) PurgeStrandedFrontier() (int, error) {
+	res, err := c.db.Exec(`DELETE FROM frontier
+		WHERE EXISTS (SELECT 1 FROM pages WHERE pages.url = frontier.url)`)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
 // AdmittedItems returns every URL the crawl has admitted, with its admit-time
 // depth — the union of crawled pages and pending frontier rows. The two sets are
 // disjoint: Admit refuses a URL that already has a pages row, and FrontierDone
@@ -1556,6 +1571,26 @@ func ListCrawls(dir string) ([]Info, error) {
 		infos = append(infos, in)
 	}
 	return infos, rows.Err()
+}
+
+// CrawlStatus reads one crawl's registry status. Unknown ids return an error
+// (the registry row is created with the crawl, so a missing row means a missing
+// or foreign crawl).
+func CrawlStatus(dir, id string) (string, error) {
+	reg, err := registryDB(dir)
+	if err != nil {
+		return "", err
+	}
+	defer reg.Close()
+	var status string
+	switch err := reg.QueryRow(`SELECT status FROM crawls WHERE id = ?`, id).Scan(&status); err {
+	case nil:
+		return status, nil
+	case sql.ErrNoRows:
+		return "", fmt.Errorf("crawl %q not found", id)
+	default:
+		return "", err
+	}
 }
 
 // SetStatus updates a crawl's registry row. crawled is URLs fetched; total is

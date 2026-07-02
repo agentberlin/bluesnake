@@ -7,15 +7,17 @@ import (
 	"os/signal"
 	"regexp"
 	"syscall"
+	"time"
 
 	"github.com/agentberlin/bluesnake/internal/compare"
 	"github.com/agentberlin/bluesnake/internal/config"
-	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/export"
 	"github.com/agentberlin/bluesnake/internal/finalize"
-	"github.com/agentberlin/bluesnake/internal/limiter"
+	"github.com/agentberlin/bluesnake/internal/queue"
+	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var urlToken = regexp.MustCompile(`https?://\S+`)
@@ -57,13 +59,13 @@ func newListCmd() *cobra.Command {
 				return exitErr{2, err}
 			}
 
-			var seeds []string
+			// The seed source resolves here for file/stdin input; a --sitemap is
+			// fetched by the executor when the job runs (fresh at run time), the
+			// same deferral every other surface gets.
+			spec := queue.JobSpec{Mode: "list"}
 			switch {
 			case sitemapURL != "":
-				seeds, err = crawler.FetchSitemapURLs(cmd.Context(), cfg, sitemapURL)
-				if err != nil {
-					return exitErr{1, err}
-				}
+				spec.SitemapURL = sitemapURL
 			case len(args) == 1:
 				var data []byte
 				if args[0] == "-" {
@@ -74,51 +76,57 @@ func newListCmd() *cobra.Command {
 				if err != nil {
 					return exitErr{2, err}
 				}
-				seeds = urlToken.FindAllString(string(data), -1)
+				seeds := urlToken.FindAllString(string(data), -1)
+				if len(seeds) == 0 {
+					return exitErr{2, fmt.Errorf("no http(s):// URLs found in the input")}
+				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "list mode: %d URLs\n", len(seeds))
+				spec.URLs = seeds
 			default:
 				return exitErr{2, fmt.Errorf("provide a URL list file, '-' for stdin, or --sitemap <url>")}
 			}
-			if len(seeds) == 0 {
-				return exitErr{2, fmt.Errorf("no http(s):// URLs found in the input")}
-			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "list mode: %d URLs\n", len(seeds))
-
-			st, err := store.CreateCrawl(storeDir, seeds, "list", cfg)
+			cfgYAML, err := yaml.Marshal(cfg)
 			if err != nil {
 				return exitErr{1, err}
 			}
-			defer st.Close()
-			c, err := crawler.New(cfg, crawler.WithSink(st),
-				crawler.WithLimiter(limiter.New(cfg.Speed.MaxGlobalThreads, 1)))
-			if err != nil {
-				return exitErr{2, err}
-			}
-			defer c.Close()
+			spec.ConfigYAML = string(cfgYAML)
+
+			// One crawl path: the list audit runs through the same queue wiring as
+			// crawl/resume, so limiter/finalize behaviour cannot drift per-command.
+			obs := &cliObserver{done: make(chan struct{})}
+			disp := queue.New(queue.NewMemStore(), runner.New(storeDir, obs))
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-			res, err := c.Run(ctx, seeds...)
-			if err != nil {
+			if err := disp.Start(ctx); err != nil {
 				return exitErr{1, err}
 			}
-			out, ferr := finalize.Crawl(c, st, res, finalize.Params{
-				StoreDir: storeDir, Cfg: cfg, Seeds: seeds, Completed: !res.Interrupted,
-			})
-			if !quiet {
-				// Page records are streamed to the store, not held in res; the
-				// summary tally reads them back (best-effort — the headline counts
-				// come from finalize regardless).
-				pages, _ := st.LoadPages()
-				printSummary(cmd, pages, out.Crawled, out.Total, res.Duration)
-				fmt.Fprintf(cmd.OutOrStdout(), "Crawl ID: %s\n", st.ID)
+			if _, err := disp.Enqueue(spec, "manual", "", "list"); err != nil {
+				return exitErr{1, err}
 			}
-			if res.Interrupted {
-				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", st.ID, storeDir)
+			<-obs.done
+			disp.Shutdown()
+
+			out := obs.outcome()
+			if out.Err != nil && out.Status != store.StatusInterrupted && out.CrawlID == "" {
+				// the crawl never started (sitemap fetch failure, bad seed, ...)
+				fmt.Fprintln(cmd.ErrOrStderr(), out.Err)
+				return exitErr{1, out.Err}
+			}
+			if !quiet {
+				obs.tally().print(cmd.OutOrStdout(), out.Crawled, out.Total, time.Duration(out.DurationSec)*time.Second)
+				fmt.Fprintf(cmd.OutOrStdout(), "Crawl ID: %s\n", out.CrawlID)
+			}
+			if out.Status == store.StatusInterrupted {
+				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", out.CrawlID, storeDir)
 				return exitErr{3, fmt.Errorf("interrupted")}
 			}
-			if ferr != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), "finalize:", ferr)
+			if out.Err != nil {
+				fmt.Fprintln(cmd.ErrOrStderr(), "finalize:", out.Err)
 			} else if !quiet {
-				printAnalysis(cmd, st.ID, out)
+				printAnalysis(cmd, out.CrawlID, finalize.Outcome{
+					Analyzed: out.Analyzed, Chains: out.Chains, NearDups: out.NearDups,
+					IssueTotal: out.IssueTotal, IssueChecks: out.IssueChecks,
+				})
 			}
 			return nil
 		},

@@ -164,13 +164,32 @@ func WithLimiter(l *limiter.Limiter) Option {
 	return func(c *Crawler) { c.limiter = l }
 }
 
+// Resume is the complete preseeded state of a stored crawl, loaded by the
+// caller (the runner's single resume-open path) and handed to the engine as
+// plain data. The engine performs NO capability sniffing on its sink to
+// reconstruct resume state — the #74 R1/R2/R3 class, where each production
+// surface silently carried a different subset of the resume fix, lived in
+// exactly those anonymous type-assertions.
+type Resume struct {
+	// Processed lists every URL already recorded (never re-fetched). It also
+	// seeds the MaxURLs budget so the cap spans sessions.
+	Processed []string
+	// Pending is the admitted-but-unprocessed frontier tail to re-queue.
+	Pending []frontier.Item
+	// MaxEdgeSeq continues the gated-edge sequence past the prior session, so
+	// MIN(seq) first-wins discovered_from stays stable across the resume.
+	MaxEdgeSeq int64
+	// Admitted replays the full admitted set through the frontier's per-bucket
+	// counters (FR-08). Loaded only when a bucket cap is configured
+	// (config.LimitsConfig.AnyBucketCap); empty otherwise.
+	Admitted []frontier.Item
+}
+
 // WithResume preseeds the crawler from a stored crawl: processed URLs are
-// never re-fetched; pending items re-enter the frontier.
-func WithResume(processed []string, pending []frontier.Item) Option {
-	return func(c *Crawler) {
-		c.resumeProcessed = processed
-		c.resumePending = pending
-	}
+// never re-fetched; pending items re-enter the frontier; the edge sequence and
+// per-bucket admission counters continue where the prior session stopped.
+func WithResume(r Resume) Option {
+	return func(c *Crawler) { c.resume = r }
 }
 
 // Result is the outcome of a crawl. Page records are streamed to the Sink as the
@@ -201,15 +220,14 @@ type Crawler struct {
 	tokens  chan struct{}
 	fetched atomic.Int64
 
-	sink            Sink
-	renderer        *render.Renderer
-	extractEngine   *extract.Engine
-	fetchOpts       []fetch.Option
-	limiter         *limiter.Limiter // process-wide fetch cap; nil ⇒ unlimited
-	resumeProcessed []string
-	resumePending   []frontier.Item
-	sinkErrOnce     sync.Once
-	sinkErr         error
+	sink          Sink
+	renderer      *render.Renderer
+	extractEngine *extract.Engine
+	fetchOpts     []fetch.Option
+	limiter       *limiter.Limiter // process-wide fetch cap; nil ⇒ unlimited
+	resume        Resume
+	sinkErrOnce   sync.Once
+	sinkErr       error
 
 	// Page records are streamed straight to the sink and never retained
 	// (stream-and-drop); these atomic tallies replace counting over a held map.
@@ -329,40 +347,26 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 		}()
 	}
 
-	c.frontier.MarkSeen(c.resumeProcessed)
+	// Resume state arrives as plain data (WithResume), loaded by the caller from
+	// the store — the engine never sniffs its sink for resume capabilities (the
+	// #74 R1/R2/R3 class of surface-asymmetric bugs lived in those assertions).
+	c.frontier.MarkSeen(c.resume.Processed)
 	// Resume the crawl-total budget cumulatively: the MaxURLs limit (checked via
 	// c.fetched below) is a fetch counter that starts at zero each session, so
 	// without this seed every resumed session would grant a fresh MaxURLs budget
 	// and a paused-then-resumed crawl could fetch far more than a straight one.
 	// Seeding from the already-recorded pages makes the cap span both sessions.
-	c.fetched.Store(int64(len(c.resumeProcessed)))
+	c.fetched.Store(int64(len(c.resume.Processed)))
 	// Continue the gated-edge seq past the prior session so resume's new edges
 	// sort after session-1's: MIN(seq) first-wins discovered_from stays stable.
-	if len(c.resumeProcessed) > 0 {
-		if m, ok := c.sink.(interface{ MaxEdgeSeq() (int64, error) }); ok {
-			if maxSeq, err := m.MaxEdgeSeq(); err == nil {
-				c.edgeSeq.Store(maxSeq)
-			}
-		}
-	}
-
+	c.edgeSeq.Store(c.resume.MaxEdgeSeq)
 	// Rehydrate the per-bucket admission counters from the stored admitted set so
 	// this resumed session enforces per-depth / per-subdomain / per-path caps
-	// against the totals the earlier session(s) accrued, instead of restarting each
-	// bucket at zero and over-admitting (FR-08 / MEMORY-SCALING.md §5.1, M3). Only
-	// needed when such a cap is configured and the sink can supply the admitted set
-	// (the store can; an in-memory test sink keeps its own running counters).
-	if c.resuming() && c.anyBucketCapSet() {
-		if ai, ok := c.sink.(interface {
-			AdmittedItems() ([]frontier.Item, error)
-		}); ok {
-			items, err := ai.AdmittedItems()
-			if err != nil {
-				c.noteSinkErr(err)
-			} else {
-				c.frontier.RehydrateCounters(items)
-			}
-		}
+	// against the totals the earlier session(s) accrued, instead of restarting
+	// each bucket at zero and over-admitting (FR-08 / MEMORY-SCALING.md §5.1).
+	// The loader supplies Admitted only when such a cap is configured.
+	if len(c.resume.Admitted) > 0 {
+		c.frontier.RehydrateCounters(c.resume.Admitted)
 	}
 
 	// Bounded worker pool (MEMORY-SCALING.md §5.2): N persistent workers drain a
@@ -409,7 +413,7 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 	// Resume's pending rows are ALREADY admitted (they survive in the frontier
 	// table / the in-memory set), so Admit would dedup-reject them. Readmit re-
 	// records them without consuming limit budget and re-queues them for crawling.
-	for _, item := range c.resumePending {
+	for _, item := range c.resume.Pending {
 		c.frontier.Readmit(item)
 		pool.push(item)
 	}
@@ -460,19 +464,6 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 		Duration:    time.Since(start),
 	}
 	return res, c.sinkErr
-}
-
-// resuming reports whether this crawl was preseeded from a stored crawl.
-func (c *Crawler) resuming() bool {
-	return len(c.resumeProcessed) > 0 || len(c.resumePending) > 0
-}
-
-// anyBucketCapSet reports whether a per-bucket admission cap (per-depth,
-// per-subdomain, or per-path) is configured — i.e. whether the resume counter
-// rehydration is needed at all.
-func (c *Crawler) anyBucketCapSet() bool {
-	lim := &c.cfg.Limits
-	return lim.MaxURLsPerDepth >= 0 || lim.MaxPerSubdomain >= 0 || len(lim.ByPath) > 0
 }
 
 // NoDepth marks pages with no followed-link path from a seed (discovered

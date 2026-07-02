@@ -9,22 +9,19 @@ import (
 	"github.com/agentberlin/bluesnake/internal/frontier"
 )
 
-// fcSink is a capturing sink that also answers as the content-hash authority and
-// the admitted-set source, exercising the crawler's store-delegation branches
-// (firstWithContent → FirstWithContent; resume rehydration → AdmittedItems)
-// without pulling in the store package (which would be an import cycle).
+// fcSink is a capturing sink that also answers as the content-hash authority,
+// exercising the crawler's store-delegation branch (firstWithContent →
+// FirstWithContent) without pulling in the store package (import cycle).
 type fcSink struct {
 	*capSink
 	fcCanonical string
 	fcFirst     bool
 	fcErr       error
-	admitted    []frontier.Item
 }
 
 func (s *fcSink) FirstWithContent(hash, url string, claim bool) (string, bool, error) {
 	return s.fcCanonical, s.fcFirst, s.fcErr
 }
-func (s *fcSink) AdmittedItems() ([]frontier.Item, error) { return s.admitted, nil }
 
 // TestFirstWithContentDelegatesToSink covers the store-backed identical-content
 // path (#70 M4): when the sink is the content authority, firstWithContent forwards
@@ -53,21 +50,52 @@ func TestFirstWithContentDelegatesToSink(t *testing.T) {
 	}
 }
 
-// TestResumeRehydratesCountersWiring covers the crawler's resume wiring (#70 M3):
-// when resuming with a per-bucket cap configured and a sink that can supply the
-// admitted set, Run consults AdmittedItems and replays them through the frontier
-// counters. The counter effect itself is pinned in the frontier package; here we
-// exercise the crawler-side wiring end to end.
-func TestResumeRehydratesCountersWiring(t *testing.T) {
-	s := newSite(t, map[string]string{"/": "<p>x</p>"})
+// TestResumeStateApplied pins that the crawler applies the WithResume data —
+// no sink capability sniffing involved (#74 D2). The admitted set replays
+// through the per-bucket counters, so a bucket that filled in the "prior
+// session" admits nothing more; the edge sequence continues past MaxEdgeSeq,
+// so this session's gated edges sort after the prior session's. (The old
+// TestResumeRehydratesCountersWiring asserted only that Run returned nil —
+// deleting the entire rehydration block kept it green, #74 R10. The full
+// production-path effect is pinned by TestResumeEquivalence_ThroughRunner and
+// TestResume_NoOverAdmitPerBucket_ThroughRunner in test/.)
+func TestResumeStateApplied(t *testing.T) {
+	s := newSite(t, map[string]string{
+		"/":  `<a href="/new1">n1</a> <a href="/new2">n2</a>`,
+		"/a": `<p>a</p>`, "/new1": `<p>n1</p>`, "/new2": `<p>n2</p>`,
+	})
+	abs := func(p string) string { return s.server.URL + p }
 	cfg := config.Default()
-	cfg.Limits.MaxURLsPerDepth = 5 // a per-bucket cap → anyBucketCapSet() is true
-	sink := &fcSink{capSink: newCapSink(), admitted: []frontier.Item{{URL: "https://seen/", Depth: 0}}}
-	c, err := New(cfg, WithSink(sink), WithResume([]string{"https://seen/"}, nil))
+	cfg.Speed.MaxThreads = 1
+	cfg.Limits.MaxURLsPerDepth = 3 // depth-1 bucket: 2 admitted in the "prior session" + 1 here
+	sink := newCapSink()
+	c, err := New(cfg, WithSink(sink), WithResume(Resume{
+		Processed:  []string{abs("/a")},
+		Pending:    []frontier.Item{{URL: abs("/"), Depth: 0}},
+		MaxEdgeSeq: 40,
+		// Two depth-1 URLs already admitted by the prior session: only ONE of
+		// /new1, /new2 may still fit the depth-1 bucket of 3.
+		Admitted: []frontier.Item{{URL: abs("/a"), Depth: 1}, {URL: abs("/old"), Depth: 1}},
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Run(context.Background(), s.server.URL+"/"); err != nil {
+	if _, err := c.Run(context.Background(), abs("/")); err != nil {
 		t.Fatal(err)
+	}
+	pages := sink.snapshot()
+	if pages[abs("/new1")] == nil && pages[abs("/new2")] == nil {
+		t.Error("no new depth-1 page crawled — rehydrated counters over-count")
+	}
+	if pages[abs("/new1")] != nil && pages[abs("/new2")] != nil {
+		t.Error("both /new1 and /new2 crawled — the admitted set did not rehydrate the depth-1 bucket counter")
+	}
+	// Edge seqs continue past the prior session's MaxEdgeSeq.
+	for _, rec := range pages {
+		for _, e := range rec.GatedEdges {
+			if e.Seq <= 40 {
+				t.Errorf("edge %s->%s got seq %d, want > the prior session's MaxEdgeSeq 40", rec.URL, e.Dst, e.Seq)
+			}
+		}
 	}
 }
