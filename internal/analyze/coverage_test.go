@@ -496,6 +496,49 @@ func TestCatalogueFixtureCoverage(t *testing.T) {
 	}
 }
 
+// TestIssuePartitionMatchesEmitters pins the two-writer partition of the
+// stored issues table (#75): the set of ids the analyze phase emits must be
+// EXACTLY issues.AnalysisIDs() — the partition store.SaveAnalysis owns and
+// replaces — and the catalogue evaluator must never emit into it (SaveIssues
+// owns and replaces the rest). The kitchen sink triggers every catalogue id
+// (enforced above), so both directions are checked non-vacuously: an
+// analyze-computed check missing from AnalysisIDs, a stale AnalysisIDs entry
+// the analyze phase no longer emits, and an id emitted by both phases all
+// fail here.
+func TestIssuePartitionMatchesEmitters(t *testing.T) {
+	pages, sitemaps, llmstxt := kitchenSink()
+	cfg := config.Default()
+	cfg.Content.NearDuplicates.Enabled = true
+	cfg.Resources.Images.Store = true
+	cfg.Links.External.Store = true
+	cfg.Extraction.StructuredData.JSONLD = true
+
+	analysis := map[string]bool{}
+	for _, id := range issues.AnalysisIDs() {
+		if _, ok := issues.Lookup(id); !ok {
+			t.Errorf("issues.AnalysisIDs() lists %s which is not in the catalogue", id)
+		}
+		analysis[id] = true
+	}
+	for _, o := range issues.Evaluate(pages, cfg) {
+		if analysis[o.IssueID] {
+			t.Errorf("catalogue evaluator emitted analysis-phase id %s — it would be wiped by the next re-analysis", o.IssueID)
+		}
+	}
+	emitted := map[string]bool{}
+	for _, o := range Run(pages, sitemaps, llmstxt, cfg).Occurrences {
+		emitted[o.IssueID] = true
+		if !analysis[o.IssueID] {
+			t.Errorf("analyze phase emitted %s which is not in issues.AnalysisIDs() — the `issues` refresh would wipe it", o.IssueID)
+		}
+	}
+	for id := range analysis {
+		if !emitted[id] {
+			t.Errorf("issues.AnalysisIDs() lists %s but the analyze phase never emits it — stale partition entry", id)
+		}
+	}
+}
+
 func TestHealthySiteTriggersNothing(t *testing.T) {
 	pages := healthyPages()
 	cfg := config.Default()

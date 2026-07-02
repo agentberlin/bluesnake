@@ -5,10 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/agentberlin/bluesnake/internal/analyze"
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/frontier"
-	"github.com/agentberlin/bluesnake/internal/issues"
 	"github.com/agentberlin/bluesnake/internal/parse"
 )
 
@@ -324,7 +324,7 @@ func TestOperationsOnClosedCrawlReturnErrors(t *testing.T) {
 		"SaveDepthsMap":        func() error { return c.SaveDepthsMap(map[string]int{"https://ex.com/": 0}) },
 		"LoadPages":            func() error { _, err := c.LoadPages(); return err },
 		"SaveIssues":           func() error { return c.SaveIssues(nil) },
-		"AddIssues":            func() error { return c.AddIssues([]issues.Occurrence{{URL: "u", IssueID: "i"}}) },
+		"SaveAnalysis":         func() error { return c.SaveAnalysis(&analyze.Results{}) },
 		"IssueCounts":          func() error { _, err := c.IssueCounts(); return err },
 		"IssueURLs":            func() error { _, err := c.IssueURLs("i"); return err },
 		"SitemapIndex":         func() error { _, err := c.SitemapIndex(); return err },

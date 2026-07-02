@@ -516,7 +516,8 @@ func TestIssuesDetailPKMigration(t *testing.T) {
 	}
 
 	// the rebuilt PK now accepts a SECOND distinct detail for the same (url, issue)
-	if err := c2.AddIssues([]issues.Occurrence{
+	if err := c2.SaveIssues([]issues.Occurrence{
+		{URL: "https://ex.com/", IssueID: "structured_validation_error", Detail: "Recipe: missing required property name"},
 		{URL: "https://ex.com/", IssueID: "structured_validation_error", Detail: "Recipe: missing required property image"},
 	}); err != nil {
 		t.Fatal(err)
@@ -754,11 +755,9 @@ func TestAnalysisPersistence(t *testing.T) {
 	if counts["content_near_duplicate"] != 1 {
 		t.Errorf("analysis issues not added: %v", counts)
 	}
-	// re-running SaveIssues (per-page evaluation) then AddIssues keeps both layers
+	// re-running SaveIssues (per-page evaluation) replaces only the catalogue
+	// partition — the analysis-phase rows SaveAnalysis wrote survive (#75)
 	if err := c.SaveIssues([]issues.Occurrence{{URL: "https://ex.com/", IssueID: "title_missing"}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.AddIssues(results.Occurrences); err != nil {
 		t.Fatal(err)
 	}
 	counts, _ = c.IssueCounts()

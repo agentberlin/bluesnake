@@ -279,6 +279,9 @@ func evaluateIssues(st *store.Crawl, lite map[string]*crawler.PageRecord, cfg *c
 // Issues re-evaluates only the issue catalogue over the full stored graph
 // (without the graph analyses), persisting the occurrences. Used by the `issues`
 // command, which lists issues and wants a cheap refresh, not a full re-analysis.
+// The analysis-phase occurrences it does not recompute (redirect_chain,
+// content_near_duplicate, hreflang_*, ... — issues.AnalysisIDs) stay untouched:
+// SaveIssues replaces only the catalogue partition of the issues table (#75).
 func Issues(st *store.Crawl, cfg *config.Config) error {
 	lite, err := st.LoadPagesLite()
 	if err != nil {

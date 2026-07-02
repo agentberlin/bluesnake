@@ -1323,14 +1323,38 @@ func (c *Crawl) StreamContentText(fn func(url, text string) error) error {
 	return rows.Err()
 }
 
-// SaveIssues replaces all stored issue occurrences.
+// analysisIssueArgs / analysisIssuePlaceholders memoize the analysis-phase
+// issue-id set (issues.AnalysisIDs) in SQL form for the two partition-scoped
+// deletes below: the issues table has exactly two writers, and each replaces
+// exactly the partition it owns (#75) — SaveIssues everything else, and
+// SaveAnalysis these ids.
+var analysisIssueArgs = func() []any {
+	ids := issues.AnalysisIDs()
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	return args
+}()
+
+var analysisIssuePlaceholders = strings.TrimSuffix(
+	strings.Repeat("?,", len(analysisIssueArgs)), ",")
+
+// SaveIssues replaces the catalogue-evaluation partition of the issues table:
+// every stored row EXCEPT the analysis-phase checks (issues.AnalysisIDs),
+// which are owned and replaced by SaveAnalysis. This is what lets the cheap
+// catalogue-only refresh (`bluesnake issues`) re-evaluate the catalogue
+// without wiping a completed crawl's analysis findings (#75). Callers must
+// pass only catalogue-evaluation occurrences — the partition is pinned by
+// analyze.TestIssuePartitionMatchesEmitters.
 func (c *Crawl) SaveIssues(occs []issues.Occurrence) error {
 	tx, err := c.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM issues`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM issues WHERE issue NOT IN (`+analysisIssuePlaceholders+`)`,
+		analysisIssueArgs...); err != nil {
 		return err
 	}
 	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO issues(url, issue, detail) VALUES(?,?,?)`)
@@ -1502,35 +1526,23 @@ func (c *Crawl) SitemapIndex() (analyze.SitemapIndex, error) {
 	return index, rows.Err()
 }
 
-// AddIssues appends occurrences without clearing existing ones (the analysis
-// phase adds to the per-page evaluation).
-func (c *Crawl) AddIssues(occs []issues.Occurrence) error {
-	tx, err := c.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO issues(url, issue, detail) VALUES(?,?,?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	for _, o := range occs {
-		if _, err := stmt.Exec(o.URL, o.IssueID, o.Detail); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-// SaveAnalysis writes the analysis pass back: per-page metrics, chains, and
-// the analysis-phase issue occurrences.
+// SaveAnalysis writes the analysis pass back, atomically REPLACING everything
+// the analysis phase owns (#75): the per-page metric columns (reset to their
+// schema defaults first, so a page absent from this run's result maps — e.g.
+// after re-analyzing with near-duplicates disabled — reads as never-computed
+// instead of keeping the previous run's values), the stored chains, and the
+// analysis-phase partition of the issues table (issues.AnalysisIDs; SaveIssues
+// owns and replaces the rest).
 func (c *Crawl) SaveAnalysis(r *analyze.Results) error {
 	tx, err := c.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE pages SET link_score = 0, unique_inlinks = 0,
+		unique_outlinks = 0, closest_similarity = 0, near_dup_count = 0`); err != nil {
+		return err
+	}
 	for url, score := range r.LinkScores {
 		if _, err := tx.Exec(`UPDATE pages SET link_score = ? WHERE url = ?`, score, url); err != nil {
 			return err
@@ -1559,10 +1571,21 @@ func (c *Crawl) SaveAnalysis(r *analyze.Results) error {
 	if _, err := tx.Exec(`INSERT OR REPLACE INTO analysis(key, value) VALUES('chains', ?)`, string(chains)); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if _, err := tx.Exec(`DELETE FROM issues WHERE issue IN (`+analysisIssuePlaceholders+`)`,
+		analysisIssueArgs...); err != nil {
 		return err
 	}
-	return c.AddIssues(r.Occurrences)
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO issues(url, issue, detail) VALUES(?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, o := range r.Occurrences {
+		if _, err := stmt.Exec(o.URL, o.IssueID, o.Detail); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // Chains returns the stored redirect/canonical chains.

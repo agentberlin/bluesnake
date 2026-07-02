@@ -7,6 +7,7 @@ package issues
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/agentberlin/bluesnake/internal/config"
@@ -257,6 +258,62 @@ var catalogue = []Def{
 	{"llms_txt_broken_link", "llms_txt", "Broken Curated Link", Issue, High},
 	{"llms_txt_link_non_indexable", "llms_txt", "Non-Indexable Curated Link", Warning, Medium},
 	{"llms_txt_link_unverified", "llms_txt", "Unverified Curated Link", Warning, Low},
+}
+
+// analysisPhase is the set of catalogue checks computed by the analyze package
+// (the post-crawl graph analyses), not by Evaluate — the "Analysis phase"
+// entries above. It partitions the stored issues table between its two
+// writers: store.SaveIssues owns and replaces every row EXCEPT these, and
+// store.SaveAnalysis owns and replaces exactly these — which is what lets the
+// catalogue-only refresh (`bluesnake issues`) run without wiping a completed
+// crawl's analysis findings, and a re-analysis run without leaving stale
+// analysis rows behind (#75). The partition is pinned against what each phase
+// actually emits by analyze.TestIssuePartitionMatchesEmitters: adding an
+// analyze-computed check without listing it here (or vice versa) fails that
+// meta-test.
+var analysisPhase = map[string]bool{
+	"redirect_chain":                  true,
+	"redirect_loop":                   true,
+	"canonical_chain":                 true,
+	"content_near_duplicate":          true,
+	"hreflang_non_200":                true,
+	"hreflang_missing_return":         true,
+	"hreflang_invalid_code":           true,
+	"hreflang_missing_self_reference": true,
+	"hreflang_missing_x_default":      true,
+	"hreflang_inconsistent_return":    true,
+	"hreflang_non_canonical_return":   true,
+	"hreflang_noindex_return":         true,
+	"hreflang_unlinked":               true,
+	"pagination_non_200":              true,
+	"pagination_sequence_error":       true,
+	"pagination_loop":                 true,
+	"pagination_unlinked":             true,
+	"sitemap_orphan":                  true,
+	"sitemap_non_indexable":           true,
+	"sitemap_in_multiple":             true,
+	"sitemap_not_in_sitemap":          true,
+	"sitemap_nested_as_url":           true,
+	"sitemap_over_50k":                true,
+	"llms_txt_missing":                true,
+	"llms_txt_invalid_format":         true,
+	"llms_txt_missing_summary":        true,
+	"llms_txt_malformed_link_list":    true,
+	"llms_full_txt_missing":           true,
+	"llms_txt_broken_link":            true,
+	"llms_txt_link_non_indexable":     true,
+	"llms_txt_link_unverified":        true,
+}
+
+// AnalysisIDs returns the ids of the analysis-phase checks, sorted — the
+// issues-table partition the analyze phase owns (see analysisPhase).
+func AnalysisIDs() []string {
+	ids := make([]string, 0, len(analysisPhase))
+	for id := range analysisPhase {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 var defByID = func() map[string]Def {
