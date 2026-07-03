@@ -47,7 +47,9 @@ func newProfilesCmd() *cobra.Command {
 			}
 			for _, n := range names {
 				if n == runner.DefaultProfileName {
-					fmt.Fprintf(cmd.OutOrStdout(), "%s  (the app settings — used when no profile is named)\n", n)
+					// the desktop/MCP default; the CLI itself stays on built-in
+					// defaults unless --profile names it, so say so precisely
+					fmt.Fprintf(cmd.OutOrStdout(), "%s  (the app settings — what the desktop and MCP use unless a profile is named)\n", n)
 				} else {
 					fmt.Fprintln(cmd.OutOrStdout(), n)
 				}

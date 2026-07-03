@@ -253,11 +253,12 @@ type StartRequest struct {
 	Rate       float64  `json:"rate"`     // URLs/sec, 0 = unlimited
 	MaxDepth   int      `json:"maxDepth"` // -1 = unlimited
 	Rendering  string   `json:"rendering"`
-	// SiteChecks is the form's site-wide-checks selector. Like every other
+	// SiteChecks is the setup card's site-wide-checks selector (New Crawl and
+	// the project "Crawl all" dialog share the card). Like every other
 	// quick-config field it is absolute — the choice is frozen into the crawl
 	// regardless of the profile: "auto" (gate on full-domain crawls), "all"
 	// (force everything on, render diff included), "off" (never). "" = no
-	// override (non-form callers: welcome shortcut, projects crawl-all).
+	// override (non-form callers, e.g. the welcome shortcut).
 	SiteChecks string `json:"siteChecks"`
 }
 
