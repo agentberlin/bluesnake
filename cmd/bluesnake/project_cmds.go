@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os/signal"
@@ -9,6 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/project"
@@ -191,7 +193,7 @@ func newProjectCmd() *cobra.Command {
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s\n", card.ProjectName)
 			if card.ConfigDiverges {
-				fmt.Fprintf(cmd.ErrOrStderr(), "⚠ configs differ across sites (%v) — interpret with care; re-crawl for a fair comparison\n", card.DivergingDims)
+				fmt.Fprintf(cmd.ErrOrStderr(), "⚠ setups differ across sites (%v) — often deliberate with per-site saved setups, but not fully apples-to-apples; `crawl-all --setup app` (or --profile) re-crawls with one shared setup\n", card.DivergingDims)
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 2, 2, ' ', 0)
 			head := "SITE\tROLE\tWHEN\tURLS\tINDEX%\tERR\tWARN\tOPP\tLINKSCORE\tRENDER"
@@ -258,17 +260,41 @@ func newProjectCmd() *cobra.Command {
 		parallel        int
 		crawlAllConfig  string
 		crawlAllProfile string
+		crawlAllSetup   string
 	)
 	crawlAllCmd := &cobra.Command{
 		Use:   "crawl-all <project-id>",
 		Short: "Crawl every member domain of the project (up to --parallel at once)",
-		Args:  cobra.ExactArgs(1),
+		Long: "Crawl every member domain of the project. By default each member crawls with its own\n" +
+			"site's last-crawl setup (app settings when never crawled) — the per-site mode (#88).\n" +
+			"--profile, --config, or --setup app|defaults override that with ONE shared setup for\n" +
+			"every member.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// one shared config for every member (from --profile or --config);
-			// resolve it first so a bad flag combination fails before any queueing
-			cfg, err := baseConfig(storeDir, crawlAllProfile, crawlAllConfig)
-			if err != nil {
-				return exitErr{2, err}
+			// Resolve the shared override-all base when one is asked for (nil =
+			// the default per-site mode, where each member resolves its own
+			// last-crawl setup below); a bad flag combination fails before any
+			// queueing.
+			var shared *config.Config
+			var err error
+			setupSet := cmd.Flags().Changed("setup")
+			switch {
+			case crawlAllProfile != "" || crawlAllConfig != "":
+				if setupSet {
+					return exitErr{2, errors.New("--setup is mutually exclusive with --profile/--config (they ARE the setup)")}
+				}
+				if shared, err = baseConfig(storeDir, crawlAllProfile, crawlAllConfig); err != nil {
+					return exitErr{2, err}
+				}
+			case crawlAllSetup == "app":
+				if shared, err = runner.LoadProfile(storeDir, ""); err != nil {
+					return exitErr{2, err}
+				}
+			case crawlAllSetup == "defaults":
+				shared = config.Default()
+			case crawlAllSetup == "last": // the default: per-site setups
+			default:
+				return exitErr{2, fmt.Errorf("--setup must be last, app or defaults (got %q)", crawlAllSetup)}
 			}
 			s, err := open()
 			if err != nil {
@@ -283,17 +309,59 @@ func newProjectCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "project has no member domains to crawl")
 				return nil
 			}
-			// Parallelism comes from --parallel when set, else the config's
-			// max_concurrent_crawls knob (M2), so off-CLI surfaces and the CLI agree.
+			// In per-site mode every member resolves (and validates) its base up
+			// front — through the same runner.ResolveBase the other surfaces
+			// freeze with — so an unreadable last-crawl setup fails the command
+			// before anything is queued, naming the member.
+			type memberJob struct {
+				domain string
+				yaml   string
+				source string
+			}
+			jobs := make([]memberJob, 0, len(members))
+			for _, m := range members {
+				j := memberJob{domain: m.Domain}
+				cfg := shared
+				if shared == nil {
+					var src runner.BaseSource
+					cfg, src, err = runner.ResolveBase(storeDir, queue.JobSpec{URL: "https://" + m.Domain, ConfigSource: "last"})
+					if err != nil {
+						return exitErr{2, fmt.Errorf("%s: %w", m.Domain, err)}
+					}
+					if err := cfg.Validate(); err != nil {
+						return exitErr{2, fmt.Errorf("%s: %w", m.Domain, err)}
+					}
+					if src.Kind == "last" {
+						j.source = fmt.Sprintf("last crawl setup (%s, %s)", src.CrawlID, src.Started.Format("2006-01-02"))
+					} else {
+						j.source = "app settings (site not crawled before)"
+					}
+				}
+				data, err := yaml.Marshal(cfg)
+				if err != nil {
+					return exitErr{1, err}
+				}
+				j.yaml = string(data)
+				jobs = append(jobs, j)
+			}
+			// Parallelism comes from --parallel when set, else the
+			// max_concurrent_crawls knob of the shared config — or, in per-site
+			// mode, of the app settings, matching how the desktop and MCP read
+			// their process wiring from the default profile (M2). The same
+			// config drives the ONE process-wide limiter: per-member configs
+			// can't each set process caps.
+			wiring := shared
+			if wiring == nil {
+				if wiring, err = runner.LoadProfile(storeDir, ""); err != nil {
+					return exitErr{2, err}
+				}
+			}
+			cfg := wiring
 			if !cmd.Flags().Changed("parallel") && cfg.Speed.MaxConcurrentCrawls > 0 {
 				parallel = cfg.Speed.MaxConcurrentCrawls
 			}
 			if parallel < 1 {
 				parallel = 1
-			}
-			cfgYAML, err := yaml.Marshal(cfg)
-			if err != nil {
-				return exitErr{1, err}
 			}
 			// In-process drain: the dispatcher runs up to `parallel` member crawls at
 			// once through the shared executor, with ONE process-wide limiter bounding
@@ -314,8 +382,11 @@ func newProjectCmd() *cobra.Command {
 			if err := disp.Start(ctx); err != nil {
 				return exitErr{1, err}
 			}
-			for _, m := range members {
-				if _, err := disp.Enqueue(queue.JobSpec{URL: "https://" + m.Domain, ConfigYAML: string(cfgYAML)}, "project", args[0], m.Domain); err != nil {
+			for _, j := range jobs {
+				if j.source != "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "%s — %s\n", j.domain, j.source)
+				}
+				if _, err := disp.Enqueue(queue.JobSpec{URL: "https://" + j.domain, ConfigYAML: j.yaml}, "project", args[0], j.domain); err != nil {
 					return exitErr{1, err}
 				}
 			}
@@ -339,8 +410,9 @@ func newProjectCmd() *cobra.Command {
 	}
 
 	crawlAllCmd.Flags().IntVar(&parallel, "parallel", 1, "member crawls to run at once (default: speed.max_concurrent_crawls)")
-	crawlAllCmd.Flags().StringVar(&crawlAllConfig, "config", "", "config file (YAML) applied to every member crawl")
-	crawlAllCmd.Flags().StringVar(&crawlAllProfile, "profile", "", "named config profile applied to every member crawl (see 'bluesnake config profiles')")
+	crawlAllCmd.Flags().StringVar(&crawlAllConfig, "config", "", "config file (YAML) applied to every member crawl (override-all)")
+	crawlAllCmd.Flags().StringVar(&crawlAllProfile, "profile", "", "named config profile applied to every member crawl (override-all; see 'bluesnake config profiles')")
+	crawlAllCmd.Flags().StringVar(&crawlAllSetup, "setup", "last", "last: each member's own last-crawl setup (default); app|defaults: one shared setup for every member")
 	cmd.AddCommand(createCmd, lsCmd, rmCmd, addCmd, removeCmd, showCmd, compareCmd, diffCmd, crawlAllCmd)
 	return cmd
 }

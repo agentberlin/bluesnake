@@ -248,26 +248,36 @@ type StartRequest struct {
 	URL        string   `json:"url"`
 	ListURLs   []string `json:"listUrls"`
 	SitemapURL string   `json:"sitemapUrl"`
-	Profile    string   `json:"profile"`
-	Threads    int      `json:"threads"`
-	Rate       float64  `json:"rate"`     // URLs/sec, 0 = unlimited
-	MaxDepth   int      `json:"maxDepth"` // -1 = unlimited
-	Rendering  string   `json:"rendering"`
+	// ConfigSource picks the base config: "last" reuses the seed site's most
+	// recent spider-crawl setup (falling back to the app settings for a
+	// never-crawled site — the form's default source); "" is the pre-#88
+	// semantics (Profile, or the app settings when none).
+	ConfigSource string  `json:"configSource"`
+	Profile      string  `json:"profile"`
+	Threads      int     `json:"threads"`
+	Rate         float64 `json:"rate"`     // URLs/sec: 0 = unlimited, -1 = untouched (no override)
+	MaxDepth     int     `json:"maxDepth"` // -1 = unlimited, 0 = untouched (no override)
+	Rendering    string  `json:"rendering"`
 	// SiteChecks is the setup card's site-wide-checks selector (New Crawl and
 	// the project "Crawl all" dialog share the card). Like every other
 	// quick-config field it is absolute — the choice is frozen into the crawl
-	// regardless of the profile: "auto" (gate on full-domain crawls), "all"
-	// (force everything on, render diff included), "off" (never). "" = no
-	// override (non-form callers, e.g. the welcome shortcut).
+	// regardless of the base config: "auto" (gate on full-domain crawls),
+	// "all" (force everything on, render diff included), "off" (never). "" =
+	// no override (untouched knob, or non-form callers).
 	SiteChecks string `json:"siteChecks"`
 }
 
 // toSpec translates the desktop's start form into the neutral queue job spec:
 // the per-field knobs (threads/rate/depth/rendering) become dotted-path config
 // overrides, so the runner's BuildConfig is the single config-building path.
+// Every knob is absolute when set and silent when untouched — the card shows
+// the resolved base's values (SetupPreview) and only emits the ones the user
+// changed, so "Last crawl setup" and profiles show through exactly, and any
+// touched knob layers over every base (in "crawl all", batch-wide).
 func (req StartRequest) toSpec() queue.JobSpec {
-	cfg := map[string]any{
-		"speed.max_urls_per_sec": req.Rate, // 0 = unlimited, set unconditionally
+	cfg := map[string]any{}
+	if req.Rate >= 0 {
+		cfg["speed.max_urls_per_sec"] = req.Rate // 0 = an explicit unlimited
 	}
 	if req.Threads > 0 {
 		cfg["speed.max_threads"] = req.Threads
@@ -291,7 +301,10 @@ func (req StartRequest) toSpec() queue.JobSpec {
 		// at enqueue time, exactly like a mistyped rendering mode.
 		cfg["site_checks.enabled"] = req.SiteChecks
 	}
-	spec := queue.JobSpec{Mode: req.Mode, Profile: req.Profile, Config: cfg}
+	spec := queue.JobSpec{Mode: req.Mode, Profile: req.Profile, ConfigSource: req.ConfigSource, Config: cfg}
+	if len(cfg) == 0 {
+		spec.Config = nil
+	}
 	if req.Mode == "list" {
 		spec.URLs = req.ListURLs
 		spec.SitemapURL = req.SitemapURL

@@ -1795,8 +1795,11 @@ func ListCrawls(dir string) ([]Info, error) {
 		return nil, err
 	}
 	defer reg.Close()
+	// rowid breaks started-time ties (second granularity) deterministically:
+	// same-second crawls list in creation order, so "the most recent crawl"
+	// is well-defined for consumers like runner.FindLastSetup.
 	rows, err := reg.Query(`SELECT id, seed, mode, status, started, COALESCE(finished, 0), crawled, COALESCE(total, 0)
-		FROM crawls ORDER BY started`)
+		FROM crawls ORDER BY started, rowid`)
 	if err != nil {
 		return nil, err
 	}

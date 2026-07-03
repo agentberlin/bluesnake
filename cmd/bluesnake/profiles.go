@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/spf13/cobra"
 )
@@ -31,6 +32,46 @@ func baseConfig(storeDir, profile, cfgFile string) (*config.Config, error) {
 	}
 }
 
+// crawlBase resolves the spider crawl's base config from the --setup /
+// --profile / --config trio, and describes the resolution so the command can
+// say out loud which setup a crawl is about to run with (#88 makes the
+// implicit default history-dependent, so it must never be silent):
+//
+//	--profile / --config    explicit base, wins; --setup must stay untouched
+//	--setup last (default)  the seed site's last-crawl setup; app settings
+//	                        (the saved default profile) when never crawled
+//	--setup app             the app settings, explicitly
+//	--setup defaults        built-in defaults — the pinned, history-free base
+//	                        (what a bare crawl meant before #88; use in CI)
+func crawlBase(storeDir, setup string, setupSet bool, profile, cfgFile, seedURL string) (*config.Config, string, error) {
+	if profile != "" || cfgFile != "" {
+		if setupSet {
+			return nil, "", errors.New("--setup is mutually exclusive with --profile/--config (they ARE the setup)")
+		}
+		cfg, err := baseConfig(storeDir, profile, cfgFile)
+		return cfg, "", err
+	}
+	switch setup {
+	case "defaults":
+		return config.Default(), "setup: built-in defaults", nil
+	case "app":
+		cfg, err := runner.LoadProfile(storeDir, "")
+		return cfg, "setup: app settings", err
+	case "last":
+		cfg, src, err := runner.ResolveBase(storeDir, queue.JobSpec{URL: seedURL, ConfigSource: "last"})
+		if err != nil {
+			return nil, "", err
+		}
+		if src.Kind == "last" {
+			return cfg, fmt.Sprintf("setup: last crawl of this site (%s, %s) — --setup app|defaults, --profile or --config override",
+				src.CrawlID, src.Started.Format("2006-01-02")), nil
+		}
+		return cfg, "setup: app settings (site not crawled before)", nil
+	default:
+		return nil, "", fmt.Errorf("--setup must be last, app or defaults (got %q)", setup)
+	}
+}
+
 // newProfilesCmd lists the saved profiles, default (the app settings) first —
 // the CLI twin of MCP's list_profiles.
 func newProfilesCmd() *cobra.Command {
@@ -47,9 +88,11 @@ func newProfilesCmd() *cobra.Command {
 			}
 			for _, n := range names {
 				if n == runner.DefaultProfileName {
-					// the desktop/MCP default; the CLI itself stays on built-in
-					// defaults unless --profile names it, so say so precisely
-					fmt.Fprintf(cmd.OutOrStdout(), "%s  (the app settings — what the desktop and MCP use unless a profile is named)\n", n)
+					// every surface's base when a site has no last-crawl setup
+					// and no profile is named (`crawl --setup app` selects it
+					// explicitly; `--setup defaults` bypasses it for the pinned
+					// built-ins)
+					fmt.Fprintf(cmd.OutOrStdout(), "%s  (the app settings — the fallback base on every surface when a site has no last-crawl setup)\n", n)
 				} else {
 					fmt.Fprintln(cmd.OutOrStdout(), n)
 				}

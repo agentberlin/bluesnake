@@ -159,6 +159,10 @@ type world struct {
 	queueObs     *queueObserver
 	queueSeeds   []string
 	crashedJobID string
+
+	// setup-source steps
+	setupSeed   string
+	frozenSetup queue.JobSpec
 }
 
 type routeSpec struct {
@@ -348,6 +352,9 @@ func initializeScenario(sc *godog.ScenarioContext) {
 
 	// --- crawl queue (registered in queue_steps_test.go) ---
 	w.registerQueueSteps(sc)
+
+	// --- setup sources (registered in setup_sources_steps_test.go) ---
+	w.registerSetupSourceSteps(sc)
 
 	// --- issues (registered in issues_steps_test.go) ---
 	w.registerIssuesSteps(sc)

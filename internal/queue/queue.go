@@ -39,6 +39,15 @@ type JobSpec struct {
 	Profile    string         `json:"profile,omitempty"`
 	Config     map[string]any `json:"config,omitempty"` // dotted path -> value
 	ResumeID   string         `json:"resume_id,omitempty"`
+	// ConfigSource selects where the base config comes from. "" is the
+	// pre-#88 semantics: the named Profile, or the app settings when none.
+	// "last" resolves the seed site's most recent spider crawl and reuses its
+	// frozen config (runner.FindLastSetup), falling back to the app settings
+	// for a never-crawled site — how every surface defaults since #88, so a
+	// domain remembers its setup with nothing persisted anywhere. Spider-only
+	// and mutually exclusive with Profile; resolved (and frozen) at enqueue
+	// like everything else, so it names a lookup rule, not a live reference.
+	ConfigSource string `json:"config_source,omitempty"`
 	// ConfigYAML is the fully-frozen effective config, resolved at enqueue time
 	// (runner.FreezeSpec): the CLI builds it from a file/flags, the
 	// profile-based surfaces (desktop, MCP) from profile + overrides. Once set,

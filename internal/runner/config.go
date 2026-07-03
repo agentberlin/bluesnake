@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
@@ -88,11 +89,65 @@ func ListProfileNames(storeDir string) []string {
 	return names
 }
 
+// BaseSource says where a resolved base config came from, so surfaces can
+// show the truth of what will run (the CLI's provenance line, the desktop's
+// setup preview, the MCP start_crawl response).
+type BaseSource struct {
+	Kind    string // "last" | "app" | "profile"
+	CrawlID string // Kind "last": the crawl whose frozen setup was reused
+	Started time.Time
+}
+
+// ResolveBase resolves a spec's base config — the layer under the dotted-path
+// overrides — and reports its provenance. This is the single resolution path
+// (#88): FreezeSpec freezes through it at enqueue, and the preview surfaces
+// call it directly, so what a user is shown and what a job runs can never
+// disagree.
+//
+//	ConfigSource ""     -> the named Profile, or the app settings when none
+//	ConfigSource "last" -> the seed site's most recent spider crawl's frozen
+//	                       config (FindLastSetup); app settings when the site
+//	                       has never been crawled. Spider-only, and mutually
+//	                       exclusive with Profile.
+func ResolveBase(storeDir string, spec queue.JobSpec) (*config.Config, BaseSource, error) {
+	switch spec.ConfigSource {
+	case "":
+		kind := "app"
+		if spec.Profile != "" {
+			kind = "profile"
+		}
+		cfg, err := LoadProfile(storeDir, spec.Profile)
+		return cfg, BaseSource{Kind: kind}, err
+	case "last":
+		if spec.Profile != "" {
+			return nil, BaseSource{}, fmt.Errorf("config_source \"last\" and a profile are mutually exclusive — the profile IS the setup source")
+		}
+		if spec.Mode == "list" {
+			return nil, BaseSource{}, fmt.Errorf("config_source \"last\" applies to spider crawls only — a list audit has no single site whose setup could be reused")
+		}
+		ls, err := FindLastSetup(storeDir, spec.URL)
+		if err != nil {
+			return nil, BaseSource{}, err
+		}
+		if ls == nil {
+			cfg, err := LoadProfile(storeDir, "")
+			return cfg, BaseSource{Kind: "app"}, err
+		}
+		cfg, err := config.Load([]byte(ls.ConfigYAML))
+		if err != nil {
+			return nil, BaseSource{}, fmt.Errorf("crawl %s's frozen config: %w — pick another setup source", ls.CrawlID, err)
+		}
+		return cfg, BaseSource{Kind: "last", CrawlID: ls.CrawlID, Started: ls.Started}, nil
+	default:
+		return nil, BaseSource{}, fmt.Errorf("unknown config_source %q (\"last\" or empty)", spec.ConfigSource)
+	}
+}
+
 // BuildConfig assembles the effective config for a job spec:
-// profile (or defaults) -> list-mode adjustments -> dotted-path overrides.
+// base (ResolveBase) -> list-mode adjustments -> dotted-path overrides.
 // Overrides win over everything, including the list-mode depth adjustment.
 func BuildConfig(storeDir string, spec queue.JobSpec) (*config.Config, error) {
-	cfg, err := LoadProfile(storeDir, spec.Profile)
+	cfg, _, err := ResolveBase(storeDir, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -121,15 +176,17 @@ func BuildConfig(storeDir string, spec queue.JobSpec) (*config.Config, error) {
 }
 
 // FreezeSpec validates a job spec for enqueue and freezes its effective config
-// into ConfigYAML: profile (or defaults) + dotted-path overrides are resolved
-// NOW, so a queued job runs with exactly the config the user saw when they
-// enqueued it — editing a profile afterwards changes future enqueues, never
-// jobs already sitting in the queue. A resume job passes through untouched (it
-// runs its crawl's own frozen config), and an already-frozen spec (CLI
-// file/flags, desktop re-run) is validated as-is. The profile name stays on
-// the spec as provenance; the executor ignores it once ConfigYAML is set. The
-// live sitemap fetch and final seed resolution stay deferred to run time
-// (ResolveSeeds), so a list-mode job still reads a fresh sitemap when it runs.
+// into ConfigYAML: the base (ResolveBase — last-crawl setup, profile, or app
+// settings) + dotted-path overrides are resolved NOW, so a queued job runs
+// with exactly the config the user saw when they enqueued it — editing a
+// profile (or finishing another crawl of the same site) afterwards changes
+// future enqueues, never jobs already sitting in the queue. A resume job
+// passes through untouched (it runs its crawl's own frozen config), and an
+// already-frozen spec (CLI file/flags, desktop re-run) is validated as-is.
+// The profile name and config source stay on the spec as provenance; the
+// executor ignores them once ConfigYAML is set. The live sitemap fetch and
+// final seed resolution stay deferred to run time (ResolveSeeds), so a
+// list-mode job still reads a fresh sitemap when it runs.
 func FreezeSpec(storeDir string, spec queue.JobSpec) (queue.JobSpec, error) {
 	if spec.ResumeID != "" {
 		return spec, nil

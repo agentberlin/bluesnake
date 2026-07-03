@@ -104,11 +104,12 @@ func (s *Server) buildTools() []Tool {
 				names := runner.ListProfileNames(s.backend.StoreDir())
 				out := map[string]any{
 					"profiles": names,
-					"note":     "start_crawl uses \"" + runner.DefaultProfileName + "\" semantics when no profile is given: the saved default profile if present, otherwise built-in defaults. get_profile_config shows a profile's effective settings.",
+					"note": "By default a spider start_crawl reuses the setup the site last ran with; a never-crawled site (and setup \"app_settings\") uses \"" +
+						runner.DefaultProfileName + "\" semantics: the saved default profile if present, otherwise built-in defaults. get_profile_config shows a profile's effective settings.",
 				}
 				if len(names) == 0 {
 					out["profiles"] = []string{}
-					out["note"] = "No saved profiles yet — start_crawl will use built-in defaults (Screaming Frog-parity settings). The desktop app's Settings view creates profiles."
+					out["note"] = "No saved profiles yet — start_crawl reuses a site's last-crawl setup by default and falls back to built-in defaults (Screaming Frog-parity settings). The desktop app's Settings view creates profiles."
 				}
 				return jsonText(out)
 			},
@@ -142,8 +143,10 @@ func (s *Server) buildTools() []Tool {
 		{
 			Name: "start_crawl",
 			Description: "Start a crawl in the background and return its crawl_id immediately. Spider mode (default) needs `url`; " +
-				"list mode audits a fixed set via `urls` or `sitemap_url`. Base config comes from `profile` (or defaults); " +
-				"any knob from list_config_options can be overridden per-crawl via `config`. " +
+				"list mode audits a fixed set via `urls` or `sitemap_url`. The base config is chosen by `setup`: by default a spider crawl " +
+				"reuses the setup its site last ran with (falling back to the app settings for a never-crawled site), so a domain remembers " +
+				"its configuration; pass setup \"app_settings\" or a `profile` to override. " +
+				"Any knob from list_config_options can be overridden per-crawl via `config` (overrides apply on top of the base). " +
 				"Poll crawl_status to watch progress. Crawls run in parallel up to speed.max_concurrent_crawls " +
 				"(from the default profile, default 1); a start beyond that capacity is rejected — pause or stop a running crawl first.",
 			InputSchema: schema(map[string]any{
@@ -151,7 +154,8 @@ func (s *Server) buildTools() []Tool {
 				"mode":        map[string]any{"type": "string", "enum": []string{"spider", "list"}, "description": "spider (default) follows links from url; list audits a fixed URL set."},
 				"urls":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "URLs to audit in list mode."},
 				"sitemap_url": strProp("XML sitemap whose URLs become the list (list mode)."),
-				"profile":     strProp("Config profile to start from (see list_profiles)."),
+				"setup":       map[string]any{"type": "string", "enum": []string{"last", "app_settings"}, "description": "Base config source: \"last\" (spider default) reuses the seed site's most recent crawl setup; \"app_settings\" uses the saved defaults. Mutually exclusive with profile."},
+				"profile":     strProp("Config profile to use as the base (see list_profiles). Mutually exclusive with setup."),
 				"config":      map[string]any{"type": "object", "additionalProperties": true, "description": "Dotted-path overrides, e.g. {\"limits.max_urls\": 500, \"speed.max_threads\": 10, \"rendering.mode\": \"javascript\"}. Discover keys with list_config_options."},
 			}),
 			handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
@@ -159,14 +163,37 @@ func (s *Server) buildTools() []Tool {
 				if err := decodeArgs(raw, &req); err != nil {
 					return "", err
 				}
+				switch req.Setup {
+				case "", "last", "app_settings":
+				default:
+					return "", fmt.Errorf("setup must be \"last\" or \"app_settings\" (got %q)", req.Setup)
+				}
+				if req.Setup != "" && req.Profile != "" {
+					return "", fmt.Errorf("setup and profile are mutually exclusive — a profile IS the setup")
+				}
+				// Name the base the crawl will resolve, before the start creates a
+				// registry row that would itself be the site's most recent crawl.
+				spec := req.Spec()
+				base := "app settings"
+				switch {
+				case spec.Profile != "":
+					base = fmt.Sprintf("profile %q", spec.Profile)
+				case spec.ConfigSource == "last":
+					if ls, err := runner.FindLastSetup(s.backend.StoreDir(), spec.URL); err == nil && ls != nil {
+						base = fmt.Sprintf("last crawl setup of the site (crawl %s, %s)", ls.CrawlID, ls.Started.Format("2006-01-02"))
+					} else {
+						base = "app settings (site not crawled before)"
+					}
+				}
 				id, err := s.backend.StartCrawl(ctx, req)
 				if err != nil {
 					return "", err
 				}
 				return jsonText(map[string]any{
-					"crawl_id": id,
-					"state":    "running",
-					"next":     "Poll crawl_status (a few seconds apart) until state is \"completed\"; then issue_summary and query.",
+					"crawl_id":    id,
+					"state":       "running",
+					"base_config": base,
+					"next":        "Poll crawl_status (a few seconds apart) until state is \"completed\"; then issue_summary and query.",
 				})
 			},
 		},
