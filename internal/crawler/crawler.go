@@ -223,7 +223,6 @@ func WithResume(r Resume) Option {
 type Result struct {
 	Crawled     int // URLs fetched (state == crawled); excludes robots-blocked/errored
 	Total       int // all URLs recorded (crawled + robots-blocked + errored): SF's "URLs Encountered"
-	SiteChecks  []SiteCheckRecord
 	Interrupted bool
 	Duration    time.Duration
 }
@@ -268,10 +267,13 @@ type Crawler struct {
 	sitemapMu    sync.Mutex
 	sitemapHosts map[string]bool // authority -> sitemap auto-discovery already run (R17)
 
+	// Site-check reports are streamed to the sink like page records and never
+	// retained (finalize and the desktop read them back from the store) —
+	// only the pass's live counters stay in memory, for SiteCheckProgress.
 	siteCheckMu       sync.Mutex
-	siteChecks        []SiteCheckRecord // reports from the site-check pass (DESIGN.md §5.10)
-	siteCheckState    string            // "" (pass not part of this crawl) | "running" | "done"
-	siteCheckFindings int               // findings derived from the reports stored so far
+	siteCheckState    string // "" (pass not part of this crawl) | "running" | "done"
+	siteChecksRan     int    // reports stored so far
+	siteCheckFindings int    // findings derived from the reports stored so far
 }
 
 // SiteCheckProgress reports the live status of the site-check pass for
@@ -281,7 +283,7 @@ type Crawler struct {
 func (c *Crawler) SiteCheckProgress() (state string, checks, findings int) {
 	c.siteCheckMu.Lock()
 	defer c.siteCheckMu.Unlock()
-	return c.siteCheckState, len(c.siteChecks), c.siteCheckFindings
+	return c.siteCheckState, c.siteChecksRan, c.siteCheckFindings
 }
 
 func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
@@ -575,7 +577,6 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 	res := &Result{
 		Crawled:     int(c.crawledCount.Load()),
 		Total:       int(c.totalCount.Load()),
-		SiteChecks:  c.siteChecks,
 		Interrupted: ctx.Err() != nil,
 		Duration:    time.Since(start),
 	}

@@ -180,3 +180,23 @@ func TestRunnerParallelGlobalCapProcessWide(t *testing.T) {
 		t.Errorf("peak concurrent page fetches across both MCP crawls = %d, want <= %d (one shared process-wide limiter)", got, G)
 	}
 }
+
+// ProcessLimiter hands run_tool the same limiter the crawls run under —
+// present exactly when the wiring is parallel (nil single-crawl = P17
+// fallback, no process caps).
+func TestRunnerProcessLimiterWiring(t *testing.T) {
+	single := t.TempDir()
+	r := NewRunner(single)
+	t.Cleanup(r.Shutdown)
+	if r.ProcessLimiter() != nil {
+		t.Error("single-crawl wiring: ProcessLimiter should be nil")
+	}
+
+	par := t.TempDir()
+	writeDefaultProfile(t, par, "speed:\n  max_concurrent_crawls: 2\n")
+	rp := NewRunner(par)
+	t.Cleanup(rp.Shutdown)
+	if rp.ProcessLimiter() == nil {
+		t.Error("parallel wiring: ProcessLimiter should be the shared limiter")
+	}
+}

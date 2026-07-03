@@ -71,7 +71,9 @@ func crawl(t *testing.T, s *site, mutate func(*config.Config)) *crawlT {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return capFinalize(c, sink.snapshot(), res, seed)
+	ct := capFinalize(c, sink.snapshot(), res, seed)
+	ct.SiteChecks = sink.siteCheckRecs()
+	return ct
 }
 
 func (s *site) page(res *crawlT, path string) *PageRecord {

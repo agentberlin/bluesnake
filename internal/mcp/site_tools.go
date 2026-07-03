@@ -37,12 +37,12 @@ func (s *Server) siteTools() []Tool {
 				"target": strProp("Site root (render/structured/serp take the exact page URL; empty is allowed where a tool needs no fetch)."),
 				"args":   map[string]any{"type": "object", "description": "Tool-specific options — see list_tools."},
 			}, "tool", "target"),
-			handler: runSiteTool,
+			handler: s.runSiteTool,
 		},
 	}
 }
 
-func runSiteTool(ctx context.Context, raw json.RawMessage) (string, error) {
+func (s *Server) runSiteTool(ctx context.Context, raw json.RawMessage) (string, error) {
 	var a struct {
 		Tool   string          `json:"tool"`
 		Target string          `json:"target"`
@@ -56,7 +56,10 @@ func runSiteTool(ctx context.Context, raw json.RawMessage) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	rep, err := sitecheck.New(cfg, client).RunTool(ctx, a.Tool, a.Target, a.Args)
+	// The backend's process limiter makes tool-run fetches/renders count
+	// against the same ceilings as the crawls running beside them.
+	chk := sitecheck.New(cfg, client, sitecheck.WithLimiter(s.backend.ProcessLimiter()))
+	rep, err := chk.RunTool(ctx, a.Tool, a.Target, a.Args)
 	if err != nil {
 		return "", err
 	}

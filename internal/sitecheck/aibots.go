@@ -163,7 +163,7 @@ func (c *Checker) AIBots(ctx context.Context, site string, opts AIBotOptions) (*
 	if err != nil {
 		return nil, err
 	}
-	rf := FetchRobots(ctx, c.client, root)
+	rf := FetchRobots(ctx, capped{c}, root)
 	var f *robots.File
 	if rf.Found() {
 		f = robots.Parse(rf.Body)
@@ -184,7 +184,7 @@ func (c *Checker) EvaluateAIBots(ctx context.Context, root string, f *robots.Fil
 		Caveat:      AIBotCaveat,
 	}
 	if opts.Live {
-		res := c.client.Fetch(ctx, rep.URL)
+		res := c.fetch(ctx, rep.URL)
 		rep.ControlStatus, rep.ControlError = res.StatusCode, res.FetchError
 	}
 	for _, bot := range assembleBots(opts) {
@@ -196,7 +196,7 @@ func (c *Checker) EvaluateAIBots(ctx context.Context, root string, f *robots.Fil
 		}
 		if opts.Live && !bot.TokenOnly() {
 			r.Probed = true
-			res := c.client.FetchWith(ctx, rep.URL, fetch.Override{UserAgent: bot.UserAgent})
+			res := c.fetchWith(ctx, rep.URL, fetch.Override{UserAgent: bot.UserAgent})
 			r.LiveStatus, r.LiveError = res.StatusCode, res.FetchError
 			r.BlockedLive = blockedLive(r, rep)
 		}

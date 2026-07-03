@@ -693,6 +693,19 @@ on except `render_diff` (launches headless Chrome — a different cost class;
 the desktop New Crawl form's "run all checks" toggle and
 `site_checks.render_diff: true` opt in).
 
+**Slot discipline (GL-08/REN-01).** `sitecheck.WithLimiter` injects the
+process-wide `limiter.Limiter` into the Checker, which itself brackets every
+check fetch with a global fetch slot and the render diff's Chrome render with
+a render slot — never both at once (the limiter's lock-order rule: the raw
+fetch completes and releases before the render acquires). One implementation,
+every surface: the crawl pass injects the crawler's limiter; the desktop
+Tools hub and MCP `run_tool` inject their `runner.ProcessWiring` limiter
+(exposed as `mcp.Backend.ProcessLimiter`), so interactive tool runs count
+against the same ceilings as the crawls they run beside; CLI `tools`
+one-shots inject nothing — nothing runs beside them (the P17 single-crawl
+fallback, applied to a no-crawl process). robots.txt keeps its documented
+serialized bypass via the robots manager's raw client.
+
 **Surfaces** (engine-first per §0): CLI `bluesnake tools` — one command
 group, so the top level stays flat regardless of tool count (`list`, then one
 subcommand per registry entry with typed flags). MCP — exactly two functions:
@@ -1274,6 +1287,23 @@ by design, like the resume fixtures); `crawl_overview`'s issue counts carry
 the site-check findings unchanged. Also: the tools CLI renderers gained
 in-process surface tests (`tools_cmds_test.go`) — the BDD features exercise
 them only through the built binary, which the coverage gate cannot see.
+
+**Same day — architecture review pass against the merged mainline.** The
+merge-day GL-08 fix was localized (a `cappedFetcher` + `WithRenderGate`
+closure in the crawler, tool surfaces uncapped); the review replaced it with
+the §5.10 slot-discipline design: `sitecheck.WithLimiter` puts fetch/render
+slot bracketing inside the Checker itself, the desktop Tools hub and MCP
+`run_tool` now inject the process limiter (new `mcp.Backend.ProcessLimiter`;
+previously an interactive render tool run could launch Chrome outside REN-01
+on a parallel-crawl process), and CLI one-shots stay uncapped by design.
+Pinned by `sitecheck/limiter_test.go` (cap-1 pool across a multi-fetch check
+proves release; saturated pools degrade to error reports without touching
+the network) plus wiring tests on both dispatcher surfaces. Two smaller
+drifts fixed: `Result.SiteChecks` dropped (reports were retained on the
+Result for tests only — finalize and the desktop read the store; the Result
+stays counters-only per §5.4, with `SiteCheckProgress` keeping its counts),
+and the SERP mock's hardcoded Google light-blue became the `--serp-link`
+token with a dark-theme value.
 
 **Implemented but scoped down (extension points exist):**
 - Issues catalogue: **164 = the full issues library computable on the current

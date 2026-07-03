@@ -49,7 +49,7 @@ func (c *Checker) LlmsTxt(ctx context.Context, site string) (*LlmsReport, error)
 	}
 	for _, k := range kinds {
 		target := root + k.path
-		res := c.client.Fetch(ctx, target)
+		res := c.fetch(ctx, target)
 		f := LlmsFile{URL: target, Kind: k.kind, Status: res.StatusCode}
 		f.Found = res.FetchError == "" && res.StatusCode == 200
 		if f.Found {

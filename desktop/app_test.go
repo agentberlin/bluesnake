@@ -21,7 +21,7 @@ func testApp(t *testing.T) *App {
 // The Tools binding drives the whole hub through the sitecheck dispatcher —
 // the robots tester's inline-body path replaced the old App.TestRobots.
 func TestToolsAppRunRobots(t *testing.T) {
-	ta := NewToolsApp()
+	ta := NewToolsApp(testApp(t))
 	if len(ta.ListTools()) < 7 {
 		t.Fatalf("registry = %v", ta.ListTools())
 	}

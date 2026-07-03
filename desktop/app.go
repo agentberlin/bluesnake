@@ -13,6 +13,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
@@ -37,6 +38,7 @@ type App struct {
 	disp   *queue.Dispatcher
 	obs    *uiObserver
 	queueW int
+	lim    *limiter.Limiter // process-wide caps when queueW > 1; nil ⇒ single-crawl wiring
 
 	cacheMu    sync.Mutex
 	pagesCache map[string]map[string]*crawler.PageRecord // crawlID -> pages
@@ -134,6 +136,7 @@ func (a *App) ensureQueue() {
 		runtime.LogWarningf(a.ctx, "queue: default profile unreadable, running single-crawl: %v", err)
 	}
 	a.queueW = w
+	a.lim = lim
 	a.obs = &uiObserver{app: a, emit: func(event string, data ...interface{}) {
 		runtime.EventsEmit(a.ctx, event, data...)
 	}}
@@ -143,6 +146,18 @@ func (a *App) ensureQueue() {
 	}
 	a.exec = runner.New(a.storeDir, a.obs, opts...)
 	a.disp = queue.New(queue.NewSQLiteStore(a.storeDir), a.exec, queue.WithConcurrency(w))
+}
+
+// processLimiter exposes the process-wide limiter to the interactive tool
+// surfaces (the Tools hub, the embedded MCP server's run_tool), so tool-run
+// fetches and renders share the same ceilings as the crawls they run beside
+// (GL-08/REN-01). nil under single-crawl wiring — no process caps, matching
+// the executor's P17 fallback.
+func (a *App) processLimiter() *limiter.Limiter {
+	a.ensureQueue()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lim
 }
 
 func (a *App) invalidate(id string) {

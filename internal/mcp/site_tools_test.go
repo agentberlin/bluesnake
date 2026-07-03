@@ -10,7 +10,7 @@ import (
 )
 
 func TestListToolsRegistry(t *testing.T) {
-	s := NewServer(nil, "test")
+	s := NewServer(&fakeBackend{}, "test")
 	out, isErr := callTool(t, s, "list_tools", map[string]any{})
 	if isErr {
 		t.Fatalf("list_tools errored: %s", out)
@@ -32,7 +32,7 @@ func TestRunToolRobots(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewServer(nil, "test")
+	s := NewServer(&fakeBackend{}, "test")
 	out, isErr := callTool(t, s, "run_tool", map[string]any{
 		"tool": "robots", "target": srv.URL,
 		"args": map[string]any{"urls": []string{srv.URL + "/private/x"}, "user_agent": "somebot"},
@@ -64,7 +64,7 @@ func TestRunToolRobots(t *testing.T) {
 }
 
 func TestRunToolInlineRobotsBody(t *testing.T) {
-	s := NewServer(nil, "test")
+	s := NewServer(&fakeBackend{}, "test")
 	out, isErr := callTool(t, s, "run_tool", map[string]any{
 		"tool": "robots", "target": "",
 		"args": map[string]any{
@@ -81,7 +81,7 @@ func TestRunToolInlineRobotsBody(t *testing.T) {
 }
 
 func TestRunToolErrors(t *testing.T) {
-	s := NewServer(nil, "test")
+	s := NewServer(&fakeBackend{}, "test")
 	out, isErr := callTool(t, s, "run_tool", map[string]any{"tool": "nope", "target": "x"})
 	if !isErr || !strings.Contains(out, "available:") {
 		t.Errorf("unknown tool result = %q (isErr=%v), want the available list", out, isErr)
@@ -102,7 +102,7 @@ func TestRunToolStructured(t *testing.T) {
 </script></head><body></body></html>`)
 	}))
 	defer srv.Close()
-	s := NewServer(nil, "test")
+	s := NewServer(&fakeBackend{}, "test")
 	out, isErr := callTool(t, s, "run_tool", map[string]any{"tool": "structured", "target": srv.URL})
 	if isErr {
 		t.Fatalf("run_tool errored: %s", out)
@@ -113,7 +113,7 @@ func TestRunToolStructured(t *testing.T) {
 }
 
 func TestRunToolSerp(t *testing.T) {
-	s := NewServer(nil, "test")
+	s := NewServer(&fakeBackend{}, "test")
 	out, isErr := callTool(t, s, "run_tool", map[string]any{
 		"tool": "serp", "target": "",
 		"args": map[string]any{"title": strings.Repeat("Wide Widget Warehouse ", 5)},
@@ -131,7 +131,7 @@ func TestRunToolLlms(t *testing.T) {
 		w.WriteHeader(404)
 	}))
 	defer srv.Close()
-	s := NewServer(nil, "test")
+	s := NewServer(&fakeBackend{}, "test")
 	out, isErr := callTool(t, s, "run_tool", map[string]any{"tool": "llms", "target": srv.URL})
 	if isErr {
 		t.Fatalf("run_tool errored: %s", out)

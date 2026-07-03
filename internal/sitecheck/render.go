@@ -15,8 +15,9 @@ const jsContentMinRatio = 2
 
 // RenderDiffReport is the raw-vs-rendered audit for one URL: what a
 // non-rendering consumer (text crawlers, most AI bots) sees versus what a
-// browser builds. Findings reuse the JavaScript-tab catalogue IDs that
-// rendered crawls emit per page, so the two paths never disagree.
+// browser builds. Findings are site-level signals with their own
+// analysis-owned catalogue IDs — see Findings below; the full per-field diff
+// stays report-only for the tool UIs.
 type RenderDiffReport struct {
 	URL         string `json:"url"`
 	FetchStatus int    `json:"fetch_status"`
@@ -45,28 +46,27 @@ type RenderDiffReport struct {
 // rendered crawling gives.
 func (c *Checker) RenderDiff(ctx context.Context, pageURL string) (*RenderDiffReport, error) {
 	pageURL = normalizePageURL(pageURL)
-	r, err := render.New(c.cfg)
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-
 	rep := &RenderDiffReport{URL: pageURL}
-	res := c.client.Fetch(ctx, pageURL)
+	res := c.fetch(ctx, pageURL)
 	rep.FetchStatus, rep.FetchError = res.StatusCode, res.FetchError
 	if res.FetchError != "" || res.StatusCode < 200 || res.StatusCode >= 300 {
 		return rep, nil
 	}
 	rawFacts := parse.Parse(pageURL, res.Body, res.Headers, c.cfg)
 
-	if c.renderGate != nil {
-		release, ok := c.renderGate(ctx)
-		if !ok {
-			rep.RenderError = "cancelled while waiting for a render slot"
-			return rep, nil
-		}
-		defer release()
+	r, err := render.New(c.cfg)
+	if err != nil {
+		return nil, err
 	}
+	defer r.Close()
+
+	// Render slot (REN-01): the raw fetch above completed and released its
+	// fetch slot — a fetch slot and a render slot are never held together.
+	if !c.lim.AcquireRender(ctx) {
+		rep.RenderError = "cancelled while waiting for a render slot"
+		return rep, nil
+	}
+	defer c.lim.ReleaseRender()
 	rendered, err := r.Render(ctx, pageURL)
 	if err != nil {
 		rep.RenderError = err.Error()

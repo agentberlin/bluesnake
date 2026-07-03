@@ -24,6 +24,7 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/fetch"
+	"github.com/agentberlin/bluesnake/internal/limiter"
 )
 
 // Check kinds — the site_checks storage rows and DecodeFindings dispatch.
@@ -65,10 +66,11 @@ type Reporter interface {
 	Findings() []Finding
 }
 
-// Fetcher is the checks' HTTP dependency. Standalone tools hand in the plain
-// *fetch.Client; the crawl pass hands in the crawler's capped fetcher so
-// every out-of-band check fetch takes a global fetch slot like a worker
-// fetch (GL-08 — only robots.txt keeps its documented serialized bypass).
+// Fetcher is the checks' HTTP dependency — every surface hands in its plain
+// fetch client (the crawl pass reuses the crawler's). Slot discipline is not
+// the client's job: the Checker brackets its own fetches and renders with the
+// limiter injected via WithLimiter, so every surface gets the process-wide
+// caps from the one implementation.
 type Fetcher interface {
 	Fetch(ctx context.Context, rawURL string) *fetch.Result
 	FetchWith(ctx context.Context, rawURL string, o fetch.Override) *fetch.Result
@@ -76,22 +78,26 @@ type Fetcher interface {
 
 // Checker runs site-level checks over a shared fetcher.
 type Checker struct {
-	cfg        *config.Config
-	client     Fetcher
-	renderGate func(ctx context.Context) (release func(), ok bool)
+	cfg    *config.Config
+	client Fetcher
+	lim    *limiter.Limiter // nil ⇒ no process-wide caps (one-shot CLI runs)
 }
 
 // Option configures a Checker.
 type Option func(*Checker)
 
-// WithRenderGate brackets RenderDiff's headless-Chrome render with the
-// caller's slot acquire/release — the crawl pass passes the process-wide
-// render cap (REN-01). It gates only the render: the page fetch before it is
-// capped separately through the Fetcher, because a fetch slot and a render
-// slot must never be held together (the limiter's lock-order rule). ok=false
-// means the wait was cancelled; the check degrades to a render error.
-func WithRenderGate(gate func(ctx context.Context) (release func(), ok bool)) Option {
-	return func(c *Checker) { c.renderGate = gate }
+// WithLimiter runs every check fetch and the render diff's Chrome render under
+// the process-wide concurrency caps: each fetch takes a global fetch slot
+// exactly like a crawl worker's page fetch (GL-08), and the render takes a
+// render slot (REN-01) — never both at once, the limiter's lock-order rule
+// (the raw fetch before a render completes and releases its slot first). The
+// crawl pass injects the crawler's limiter; dispatcher-owning surfaces (the
+// desktop Tools hub, MCP run_tool) inject their runner.ProcessWiring limiter,
+// so interactive tool runs share the same ceilings as the crawls they run
+// beside. One-shot processes (CLI `bluesnake tools`) inject nothing: no crawl
+// runs beside them, mirroring the executor's single-crawl P17 fallback.
+func WithLimiter(l *limiter.Limiter) Option {
+	return func(c *Checker) { c.lim = l }
 }
 
 func New(cfg *config.Config, client Fetcher, opts ...Option) *Checker {
@@ -100,6 +106,38 @@ func New(cfg *config.Config, client Fetcher, opts ...Option) *Checker {
 		o(c)
 	}
 	return c
+}
+
+// fetch runs one check fetch under the process-wide fetch cap. A cancel while
+// waiting degrades to an error result — a check must report, never fail.
+func (c *Checker) fetch(ctx context.Context, rawURL string) *fetch.Result {
+	if !c.lim.AcquireFetch(ctx) {
+		return &fetch.Result{URL: rawURL, FetchError: "cancelled while waiting for a fetch slot"}
+	}
+	defer c.lim.ReleaseFetch()
+	return c.client.Fetch(ctx, rawURL)
+}
+
+// fetchWith is fetch with a per-request override (the AI-bot probes' UA swap).
+func (c *Checker) fetchWith(ctx context.Context, rawURL string, o fetch.Override) *fetch.Result {
+	if !c.lim.AcquireFetch(ctx) {
+		return &fetch.Result{URL: rawURL, FetchError: "cancelled while waiting for a fetch slot"}
+	}
+	defer c.lim.ReleaseFetch()
+	return c.client.FetchWith(ctx, rawURL, o)
+}
+
+// capped is the Checker's slot-taking view of its client — handed to shared
+// fetch helpers (FetchRobots) so their fetches take slots like every direct
+// check fetch does.
+type capped struct{ c *Checker }
+
+func (v capped) Fetch(ctx context.Context, rawURL string) *fetch.Result {
+	return v.c.fetch(ctx, rawURL)
+}
+
+func (v capped) FetchWith(ctx context.Context, rawURL string, o fetch.Override) *fetch.Result {
+	return v.c.fetchWith(ctx, rawURL, o)
 }
 
 // DecodeFindings re-derives the findings from a stored report of the given

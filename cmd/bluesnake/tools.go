@@ -446,7 +446,10 @@ func newToolsSitemapCmd() *cobra.Command {
 }
 
 // newToolChecker builds a checker over the default config — tools are
-// stateless one-shots, not crawls.
+// stateless one-shots in their own process. No limiter: nothing runs beside
+// a one-shot, so there is no process-wide ceiling to share (the executor's
+// single-crawl P17 fallback, applied to a no-crawl process). In-process
+// surfaces (desktop Tools hub, MCP run_tool) inject theirs via WithLimiter.
 func newToolChecker() (*sitecheck.Checker, error) {
 	cfg := config.Default()
 	client, err := fetch.New(cfg)

@@ -59,7 +59,7 @@ func (c *Checker) Serp(ctx context.Context, opts SerpOptions) (*SerpReport, erro
 	title, desc := opts.Title, opts.Description
 	if opts.URL != "" {
 		rep.URL = normalizePageURL(opts.URL)
-		res := c.client.Fetch(ctx, rep.URL)
+		res := c.fetch(ctx, rep.URL)
 		rep.FetchStatus, rep.FetchError = res.StatusCode, res.FetchError
 		if res.FetchError != "" || res.StatusCode < 200 || res.StatusCode >= 300 {
 			return rep, nil

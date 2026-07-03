@@ -13,13 +13,15 @@ import (
 // ToolsApp is the Wails binding for the standalone Tools hub — the desktop
 // surface of internal/sitecheck. Like ProjectApp it is a SEPARATE bound struct
 // so Wails generates its own ToolsApp.js and the core App binding stays
-// untouched. It holds no state: tool runs are throwaway by design (nothing is
-// persisted anywhere); the same checks run automatically during full-domain
-// crawls via site_checks and surface in the ordinary issues view.
-type ToolsApp struct{}
+// untouched. Tool runs are throwaway by design (nothing is persisted
+// anywhere); the same checks run automatically during full-domain crawls via
+// site_checks and surface in the ordinary issues view. The App reference
+// exists only for the process limiter: tool runs share the fetch/render
+// ceilings of the crawls they run beside.
+type ToolsApp struct{ app *App }
 
 // NewToolsApp constructs the binding.
-func NewToolsApp() *ToolsApp { return &ToolsApp{} }
+func NewToolsApp(app *App) *ToolsApp { return &ToolsApp{app: app} }
 
 // ListTools returns the sitecheck registry — the hub renders one card per
 // entry, so a new tool needs no desktop registration beyond its sub-view.
@@ -44,7 +46,8 @@ func (t *ToolsApp) RunTool(name, target, argsJSON string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	rep, err := sitecheck.New(cfg, client).RunTool(context.Background(), name, target, json.RawMessage(argsJSON))
+	chk := sitecheck.New(cfg, client, sitecheck.WithLimiter(t.app.processLimiter()))
+	rep, err := chk.RunTool(context.Background(), name, target, json.RawMessage(argsJSON))
 	if err != nil {
 		return "", err
 	}

@@ -481,7 +481,7 @@ function SerpTool({ meta, onBack, prefill }) {
         {/* the snippet mock — Google desktop result styling, truncation applied */}
         <div className="card" style={{ padding: "16px 18px", alignSelf: "start" }}>
           <div style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 3 }} className="mono">{urlShort(target) || "example.com"}</div>
-          <div style={{ fontSize: 17, lineHeight: 1.3, color: "#1a0dab", marginBottom: 4, fontFamily: "arial, sans-serif" }}>
+          <div style={{ fontSize: 17, lineHeight: 1.3, color: "var(--serp-link)", marginBottom: 4, fontFamily: "arial, sans-serif" }}>
             {(rep && rep.title && (rep.title.truncated || rep.title.text)) || <span style={{ color: "var(--ink-faint)" }}>Your title appears here</span>}
           </div>
           <div style={{ fontSize: 13, lineHeight: 1.45, color: "var(--ink-2)", fontFamily: "arial, sans-serif" }}>

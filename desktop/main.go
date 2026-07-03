@@ -42,7 +42,7 @@ func main() {
 		// ProjectApp and ToolsApp are SEPARATE bound structs (project_app.go,
 		// tools_app.go); each generates its own .js binding and leaves the
 		// core App binding untouched, so the features stay cleanly removable.
-		Bind: []interface{}{app, NewProjectApp(app), NewToolsApp()},
+		Bind: []interface{}{app, NewProjectApp(app), NewToolsApp(app)},
 		Mac: &mac.Options{
 			TitleBar:             mac.TitleBarHiddenInset(),
 			Appearance:           mac.DefaultAppearance,

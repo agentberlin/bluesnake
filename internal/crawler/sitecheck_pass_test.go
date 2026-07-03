@@ -103,17 +103,16 @@ func TestSiteCheckPassStoresReports(t *testing.T) {
 		"/a": "<html></html>",
 	})
 	sink := &captureSink{}
-	res := crawlWithSink(t, s, sink, nil)
+	crawlWithSink(t, s, sink, nil)
 
+	// Reports reach tests the way they reach production consumers: through
+	// the sink (the Result carries only counters).
 	kinds := map[string]SiteCheckRecord{}
-	for _, rec := range res.SiteChecks {
+	for _, rec := range sink.recs {
 		kinds[rec.Kind] = rec
 	}
 	if len(kinds) != 3 {
-		t.Fatalf("result site checks = %+v, want robots + sitemap + ai_bots", res.SiteChecks)
-	}
-	if len(sink.recs) != 3 {
-		t.Fatalf("sink got %d records, want 3", len(sink.recs))
+		t.Fatalf("sink site checks = %+v, want robots + sitemap + ai_bots", sink.recs)
 	}
 
 	// The fixture has no robots.txt and no sitemap: the stored reports must
@@ -126,7 +125,7 @@ func TestSiteCheckPassStoresReports(t *testing.T) {
 		t.Error("robots.txt reported found on a fixture without one")
 	}
 	ids := map[string]bool{}
-	for _, rec := range res.SiteChecks {
+	for _, rec := range sink.recs {
 		for _, f := range sitecheck.DecodeFindings(rec.Kind, rec.Report) {
 			ids[f.IssueID] = true
 		}
@@ -138,11 +137,12 @@ func TestSiteCheckPassStoresReports(t *testing.T) {
 
 func TestSiteCheckPassSkippedWhenGatedOff(t *testing.T) {
 	s := newSite(t, map[string]string{"/": "<html></html>"})
-	res := crawlWithSink(t, s, &captureSink{}, func(c *config.Config) {
+	sink := &captureSink{}
+	crawlWithSink(t, s, sink, func(c *config.Config) {
 		c.SiteChecks.Enabled = "never"
 	})
-	if len(res.SiteChecks) != 0 {
-		t.Errorf("site checks ran with enabled=never: %+v", res.SiteChecks)
+	if len(sink.recs) != 0 {
+		t.Errorf("site checks ran with enabled=never: %+v", sink.recs)
 	}
 }
 
@@ -191,9 +191,10 @@ func TestSiteCheckPassAIBots(t *testing.T) {
 		s.server.URL + `/</loc></url></urlset>`
 	blockClaude(s)
 
-	res := crawlWithSink(t, s, &captureSink{}, nil)
+	sink := &captureSink{}
+	crawlWithSink(t, s, sink, nil)
 	ids := map[string]bool{}
-	for _, rec := range res.SiteChecks {
+	for _, rec := range sink.recs {
 		for _, f := range sitecheck.DecodeFindings(rec.Kind, rec.Report) {
 			ids[f.IssueID] = true
 		}
@@ -225,8 +226,9 @@ func TestSiteCheckPassHealthySite(t *testing.T) {
 	s.pages["/sitemap.xml"] = `<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>` +
 		s.server.URL + `/</loc></url></urlset>`
 
-	res := crawlWithSink(t, s, &captureSink{}, nil)
-	for _, rec := range res.SiteChecks {
+	sink := &captureSink{}
+	crawlWithSink(t, s, sink, nil)
+	for _, rec := range sink.recs {
 		if f := sitecheck.DecodeFindings(rec.Kind, rec.Report); f != nil {
 			t.Errorf("healthy site: %s findings = %+v, want none", rec.Kind, f)
 		}

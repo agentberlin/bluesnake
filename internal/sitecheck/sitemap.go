@@ -216,7 +216,7 @@ func (c *Checker) expandIndex(ctx context.Context, f *SitemapFile, depth int, re
 
 func (c *Checker) fetchSitemapFile(ctx context.Context, u, source string, viaRobots bool, opts *SitemapOptions) *SitemapFile {
 	f := &SitemapFile{URL: u, Source: source, DeclaredInRobots: viaRobots}
-	res := c.client.Fetch(ctx, u)
+	res := c.fetch(ctx, u)
 	f.Status, f.FetchError, f.ContentType = res.StatusCode, res.FetchError, res.ContentType
 	if res.FetchError != "" || res.StatusCode < 200 || res.StatusCode >= 300 {
 		return f
@@ -283,7 +283,7 @@ func (c *Checker) fetchSitemapFile(ctx context.Context, u, source string, viaRob
 		}
 		if opts.CheckEntries > 0 && len(f.EntryChecks) < opts.CheckEntries {
 			ec := EntryCheck{URL: loc}
-			r := c.client.Fetch(ctx, loc)
+			r := c.fetch(ctx, loc)
 			ec.Status, ec.Error = r.StatusCode, r.FetchError
 			f.EntryChecks = append(f.EntryChecks, ec)
 		}

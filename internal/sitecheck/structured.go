@@ -29,7 +29,7 @@ type StructuredReport struct {
 // those keys budget per-page crawl cost; running this tool is consent.
 func (c *Checker) Structured(ctx context.Context, pageURL string) (*StructuredReport, error) {
 	rep := &StructuredReport{URL: normalizePageURL(pageURL)}
-	res := c.client.Fetch(ctx, rep.URL)
+	res := c.fetch(ctx, rep.URL)
 	rep.FetchStatus, rep.FetchError = res.StatusCode, res.FetchError
 	if res.FetchError != "" || res.StatusCode < 200 || res.StatusCode >= 300 {
 		return rep, nil

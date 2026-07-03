@@ -72,7 +72,10 @@ func (rf *RobotsFetch) Found() bool {
 // FetchRobots retrieves a site root's robots.txt with Google fetch semantics
 // (up to five redirect hops — RFC 9309 / Google REP — with the terminal
 // response deciding). It is shared with the crawler's robots manager so one
-// crawl never fetches the same host's file twice.
+// crawl never fetches the same host's file twice. The caller's client decides
+// slot discipline: Checker paths pass their capped view, while the robots
+// manager passes its raw client — the robots fetch's documented GL-08 bypass
+// (serialized per host, at most one uncapped fetch per crawl).
 func FetchRobots(ctx context.Context, client Fetcher, root string) *RobotsFetch {
 	rf := &RobotsFetch{URL: root + "/robots.txt"}
 	target := rf.URL
@@ -102,7 +105,7 @@ func (c *Checker) Robots(ctx context.Context, site string, opts RobotsOptions) (
 	if err != nil {
 		return nil, err
 	}
-	return c.EvaluateRobots(root, FetchRobots(ctx, c.client, root), opts), nil
+	return c.EvaluateRobots(root, FetchRobots(ctx, capped{c}, root), opts), nil
 }
 
 // EvaluateRobots builds the audit report over an already-retrieved
