@@ -266,6 +266,24 @@ type Crawler struct {
 
 	sitemapMu    sync.Mutex
 	sitemapHosts map[string]bool // authority -> sitemap auto-discovery already run (R17)
+
+	// Site-check reports are streamed to the sink like page records and never
+	// retained (finalize and the desktop read them back from the store) —
+	// only the pass's live counters stay in memory, for SiteCheckProgress.
+	siteCheckMu       sync.Mutex
+	siteCheckState    string // "" (pass not part of this crawl) | "running" | "done"
+	siteChecksRan     int    // reports stored so far
+	siteCheckFindings int    // findings derived from the reports stored so far
+}
+
+// SiteCheckProgress reports the live status of the site-check pass for
+// progress surfaces: state "" when the pass is not part of this crawl,
+// otherwise "running"/"done", plus the reports stored and the findings
+// derived so far.
+func (c *Crawler) SiteCheckProgress() (state string, checks, findings int) {
+	c.siteCheckMu.Lock()
+	defer c.siteCheckMu.Unlock()
+	return c.siteCheckState, c.siteChecksRan, c.siteCheckFindings
 }
 
 func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
@@ -481,6 +499,24 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 			enqueue(item)
 		}
 	}
+	// The site-check pass (robots.txt / sitemap audits, DESIGN.md §5.10)
+	// runs concurrently with the crawl — it adds nothing to the frontier, so
+	// it never joins the worker WaitGroup; its own barrier below keeps the
+	// Result complete.
+	var siteChecksDone chan struct{}
+	if c.siteChecksApply(seeds[0]) {
+		siteChecksDone = make(chan struct{})
+		c.siteCheckMu.Lock()
+		c.siteCheckState = "running"
+		c.siteCheckMu.Unlock()
+		go func() {
+			defer close(siteChecksDone)
+			c.runSiteChecks(ctx, seeds[0])
+			c.siteCheckMu.Lock()
+			c.siteCheckState = "done"
+			c.siteCheckMu.Unlock()
+		}()
+	}
 	// A page first linked before an interrupt keeps its true (session-1)
 	// discovered_from across resume because that discovery edge persists in the
 	// store's gated `edges` table; finalize's first-wins (seq-MIN) read recovers it
@@ -529,6 +565,9 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 		}()
 	}
 	wg.Wait()
+	if siteChecksDone != nil {
+		<-siteChecksDone
+	}
 
 	// Page records were streamed to the store and dropped; every per-page aggregate
 	// — shortest-path depth, full-graph inlinks, first-wins (seed-locked)

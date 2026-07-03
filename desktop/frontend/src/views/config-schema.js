@@ -83,6 +83,18 @@ export const SECTIONS = [
     tg("robots.show_blocked_internal", "Show blocked internal URLs"),
     tg("robots.show_blocked_external", "Show blocked external URLs"),
   ]},
+  { id: "site_checks", label: "Site Checks", icon: "wrench", fields: [
+    ch("site_checks.enabled", "Run site-wide checks", ["auto", "always", "never"], "Auto audits full-domain crawls only (root-seeded spider, no include filters); the New Crawl form can override per crawl."),
+    tg("site_checks.robots", "robots.txt audit", "File health: missing, server errors, blocks-all, invalid lines, size."),
+    tg("site_checks.sitemap", "Sitemap audit", "Discovery plus per-file validation: XML shape, protocol limits, entry hygiene."),
+    tg("site_checks.ai_bots.check", "AI-bot robots.txt verdicts", "Which AI crawlers (GPTBot, ClaudeBot, …) robots.txt allows. No extra requests."),
+    tg("site_checks.ai_bots.live_probe", "AI-bot live probes", "One fetch of the site root per AI crawler with that bot's User-Agent, against a control fetch — catches CDN/WAF blocks."),
+    lst("site_checks.ai_bots.skip", "AI bots to skip", "Registry bot names to leave out of both layers.", true),
+    tg("site_checks.render_diff", "Seed-page JS render diff", "Diffs the seed raw vs rendered (needs Chrome; text-mode crawls only). Off by default — it launches headless Chrome.", true),
+    tg("llms_txt.check", "llms.txt audit", "Fetch and validate /llms.txt at crawl start."),
+    tg("llms_txt.fetch_full", "Fetch /llms-full.txt too", null, true),
+    tg("llms_txt.crawl_linked", "Crawl curated llms.txt links", "Adds the file's curated links to the crawl so they can be verified.", true),
+  ]},
   { id: "rewriting", label: "URL Rewriting", icon: "replace", fields: [
     lst("url_rewriting.remove_params", "Remove query parameters"),
     tg("url_rewriting.lowercase", "Lowercase all URLs", null, true),

@@ -187,6 +187,14 @@ var catalogue = []Def{
 	{"js_contains_links", "javascript", "Contains JavaScript Links", Warning, Medium},
 	{"js_structured_data_only", "javascript", "Structured Data Only in Rendered HTML", Warning, Medium},
 	{"js_console_errors", "javascript", "Pages With JavaScript Errors", Warning, Low},
+	// emitted by the seed-page render diff (DESIGN.md §5.10). These carry
+	// their own IDs — not the per-page js_* ones above — because issue
+	// ownership (#75) is per ID: the per-page checks are evaluate-owned
+	// (rendered crawls), the render-diff findings analysis-owned (text
+	// crawls); sharing an ID would let each writer wipe the other's rows.
+	{"js_dependent_content", "javascript", "Content Dependent on JavaScript", Warning, High},
+	{"js_dependent_links", "javascript", "Navigation Dependent on JavaScript", Warning, High},
+	{"js_changed_robots_directives", "javascript", "Indexing Directives Changed by JavaScript", Issue, High},
 	// Validation (HTML parseability for search bots)
 	{"validation_missing_head", "validation", "Missing <head> Tag", Issue, High},
 	{"validation_multiple_head", "validation", "Multiple <head> Tags", Issue, High},
@@ -258,6 +266,29 @@ var catalogue = []Def{
 	{"llms_txt_broken_link", "llms_txt", "Broken Curated Link", Issue, High},
 	{"llms_txt_link_non_indexable", "llms_txt", "Non-Indexable Curated Link", Warning, Medium},
 	{"llms_txt_link_unverified", "llms_txt", "Unverified Curated Link", Warning, Low},
+	// Site-level checks (DESIGN.md §5.10): the crawl's site-check pass
+	// stores reports; findings are derived in the analyze phase via
+	// internal/sitecheck — the same derivation the standalone tools show.
+	// robots.txt file-level audit (distinct from per-page internal_blocked_robots)
+	{"robots_txt_missing", "robots_txt", "Missing robots.txt", Opportunity, Low},
+	{"robots_txt_server_error", "robots_txt", "robots.txt Server Error", Issue, High},
+	{"robots_txt_blocks_all", "robots_txt", "robots.txt Blocks All Crawlers", Issue, High},
+	{"robots_txt_invalid_lines", "robots_txt", "robots.txt Invalid Lines", Warning, Low},
+	{"robots_txt_too_large", "robots_txt", "robots.txt Over 500 KiB", Warning, Medium},
+	{"robots_txt_no_sitemap", "robots_txt", "robots.txt Missing Sitemap Directive", Opportunity, Low},
+	// AI-crawler access audit (Warning throughout: blocking AI bots can be
+	// deliberate policy — the check's job is visibility)
+	{"ai_bot_blocked_robots", "ai_bots", "AI Bot Blocked by robots.txt", Warning, Medium},
+	{"ai_bots_all_blocked_robots", "ai_bots", "All AI Crawlers Blocked by robots.txt", Warning, High},
+	{"ai_bot_blocked_live", "ai_bots", "AI Bot Blocked at the Edge", Warning, High},
+	// XML sitemap file-level audit (the set-op checks above cover entries vs crawl)
+	{"sitemap_missing", "sitemaps", "No XML Sitemap Found", Opportunity, Medium},
+	{"sitemap_fetch_error", "sitemaps", "XML Sitemap Fetch Error", Issue, High},
+	{"sitemap_invalid_xml", "sitemaps", "XML Sitemap Invalid", Issue, High},
+	{"sitemap_over_50mb", "sitemaps", "XML Sitemap Over 50MB", Issue, Medium},
+	{"sitemap_cross_host_urls", "sitemaps", "XML Sitemap With Cross-Host URLs", Warning, Medium},
+	{"sitemap_invalid_lastmod", "sitemaps", "XML Sitemap Invalid lastmod Values", Warning, Low},
+	{"sitemap_empty", "sitemaps", "Empty XML Sitemap", Warning, Low},
 }
 
 // analysisOwned marks the catalogue checks computed by the analyze package's
@@ -286,6 +317,19 @@ var analysisOwned = map[string]bool{
 	"llms_txt_missing_summary": true, "llms_txt_malformed_link_list": true,
 	"llms_full_txt_missing": true, "llms_txt_broken_link": true,
 	"llms_txt_link_non_indexable": true, "llms_txt_link_unverified": true,
+	// site-check findings (DESIGN.md §5.10): re-derived by analyze.Run from
+	// the stored site_checks reports, so SaveAnalysis owns their rows.
+	"robots_txt_missing": true, "robots_txt_server_error": true,
+	"robots_txt_blocks_all": true, "robots_txt_invalid_lines": true,
+	"robots_txt_too_large": true, "robots_txt_no_sitemap": true,
+	"sitemap_missing": true, "sitemap_fetch_error": true,
+	"sitemap_invalid_xml": true, "sitemap_over_50mb": true,
+	"sitemap_cross_host_urls": true, "sitemap_invalid_lastmod": true,
+	"sitemap_empty":         true,
+	"ai_bot_blocked_robots": true, "ai_bots_all_blocked_robots": true,
+	"ai_bot_blocked_live":  true,
+	"js_dependent_content": true, "js_dependent_links": true,
+	"js_changed_robots_directives": true,
 }
 
 var defByID = func() map[string]Def {

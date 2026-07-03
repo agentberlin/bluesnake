@@ -478,6 +478,9 @@ func (w *world) checkExitCode(want int) error {
 }
 
 func (w *world) outputContains(substr string) error {
+	if w.server != nil {
+		substr = strings.ReplaceAll(substr, "<serverurl>", w.server.URL)
+	}
 	if !strings.Contains(w.out, substr) {
 		return fmt.Errorf("output does not contain %q:\n%s", substr, w.out)
 	}

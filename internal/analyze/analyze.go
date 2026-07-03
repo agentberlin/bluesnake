@@ -7,7 +7,6 @@ package analyze
 
 import (
 	"fmt"
-	"net/url"
 	"sort"
 	"strings"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/issues"
 	"github.com/agentberlin/bluesnake/internal/minhash"
 	"github.com/agentberlin/bluesnake/internal/parse"
+	"github.com/agentberlin/bluesnake/internal/sitecheck"
 )
 
 // Chain is one redirect or canonical chain.
@@ -78,6 +78,14 @@ type LlmsTxtData struct {
 	Links []LlmsTxtLink
 }
 
+// SiteCheck is one stored site-level check report (DESIGN.md §5.10): the
+// crawl's site-check pass persisted it; this phase re-derives its findings.
+type SiteCheck struct {
+	Kind    string
+	Subject string
+	Report  []byte
+}
+
 // Run executes every enabled analysis over the crawl's pages.
 // Option configures a Run.
 type Option func(*analyzer)
@@ -90,7 +98,7 @@ func WithLinks(links []crawler.LinkRow) Option {
 	return func(a *analyzer) { a.links = links }
 }
 
-func Run(pages map[string]*crawler.PageRecord, sitemaps SitemapIndex, llmstxt *LlmsTxtData, cfg *config.Config, opts ...Option) *Results {
+func Run(pages map[string]*crawler.PageRecord, sitemaps SitemapIndex, llmstxt *LlmsTxtData, siteChecks []SiteCheck, cfg *config.Config, opts ...Option) *Results {
 	r := &Results{
 		LinkScores: map[string]float64{},
 		UniqueIn:   map[string]int{},
@@ -122,7 +130,22 @@ func Run(pages map[string]*crawler.PageRecord, sitemaps SitemapIndex, llmstxt *L
 	if cfg.Analysis.LlmsTxt && llmstxt != nil && len(llmstxt.Files) > 0 {
 		a.llmsTxt(llmstxt)
 	}
+	// Site-check findings need no analysis.* gate: reports exist iff the
+	// crawl's pass ran (site_checks config gated it there). Re-derivation
+	// keeps re-analysis idempotent without refetching anything.
+	a.siteChecks(siteChecks)
 	return r
+}
+
+// siteChecks maps stored site-level check reports to issue occurrences via
+// the single derivation in internal/sitecheck — the same findings the
+// standalone tools show.
+func (a *analyzer) siteChecks(checks []SiteCheck) {
+	for _, sc := range checks {
+		for _, f := range sitecheck.DecodeFindings(sc.Kind, sc.Report) {
+			a.add(f.URL, f.IssueID, f.Detail)
+		}
+	}
 }
 
 type analyzer struct {
@@ -750,48 +773,18 @@ func (a *analyzer) sitemaps(index SitemapIndex) {
 // the llms.txt URL for file-level checks, the curated target for link checks —
 // so the issues table needs no synthetic page rows.
 func (a *analyzer) llmsTxt(d *LlmsTxtData) {
-	type group struct{ primary, full *LlmsTxtFile }
-	hostOf := func(u string) string {
-		if p, err := url.Parse(u); err == nil {
-			return p.Host
-		}
-		return u
+	// File-level checks: one implementation, shared with the standalone
+	// `tools llms` tester (sitecheck.LlmsReport.Findings), so the two paths
+	// can never disagree.
+	rep := &sitecheck.LlmsReport{}
+	for _, f := range d.Files {
+		rep.Files = append(rep.Files, sitecheck.LlmsFile{
+			URL: f.URL, Kind: f.Kind, Status: f.Status, Found: f.Found,
+			Title: f.Title, Summary: f.Summary, Malformed: f.Malformed,
+		})
 	}
-	byHost := map[string]*group{}
-	for i := range d.Files {
-		f := &d.Files[i]
-		g := byHost[hostOf(f.URL)]
-		if g == nil {
-			g = &group{}
-			byHost[hostOf(f.URL)] = g
-		}
-		switch f.Kind {
-		case "llms_txt":
-			g.primary = f
-		case "llms_full_txt":
-			g.full = f
-		}
-	}
-	for _, g := range byHost {
-		if g.primary == nil {
-			continue
-		}
-		if !g.primary.Found {
-			a.add(g.primary.URL, "llms_txt_missing", "")
-			continue // nothing else to validate when the file is absent
-		}
-		if g.primary.Title == "" {
-			a.add(g.primary.URL, "llms_txt_invalid_format", "missing H1 title")
-		}
-		if g.primary.Summary == "" {
-			a.add(g.primary.URL, "llms_txt_missing_summary", "")
-		}
-		if g.primary.Malformed {
-			a.add(g.primary.URL, "llms_txt_malformed_link_list", "")
-		}
-		if g.full != nil && !g.full.Found {
-			a.add(g.full.URL, "llms_full_txt_missing", "")
-		}
+	for _, f := range rep.Findings() {
+		a.add(f.URL, f.IssueID, f.Detail)
 	}
 
 	// Cross-validate curated links against the crawl. A link absent from the

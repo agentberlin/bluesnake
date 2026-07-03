@@ -30,10 +30,22 @@ type Group struct {
 	Rules  []Rule
 }
 
+// IgnoredLine is a robots.txt line that parsing skipped as malformed: not a
+// comment or blank line, but either missing the key:value form or carrying a
+// rule before any user-agent group. Spec-valid constructs — empty rule paths,
+// unrecognized-but-well-formed directives (RFC 9309 §2.2.4) — are never
+// reported. Parsing behaviour is unchanged; this exists for the tester and
+// the site-check audit.
+type IgnoredLine struct {
+	Line int    // 1-based
+	Raw  string // trimmed text, comment stripped
+}
+
 // File is a parsed robots.txt.
 type File struct {
 	Groups   []Group
 	Sitemaps []string
+	Ignored  []IgnoredLine
 }
 
 // Verdict is the result of testing a URL.
@@ -62,6 +74,7 @@ func Parse(data []byte) *File {
 		}
 		key, value, ok := strings.Cut(line, ":")
 		if !ok {
+			f.Ignored = append(f.Ignored, IgnoredLine{Line: lineNo, Raw: line})
 			continue
 		}
 		key = strings.ToLower(strings.TrimSpace(key))
@@ -76,8 +89,13 @@ func Parse(data []byte) *File {
 			lastWasAgent = true
 		case "allow", "disallow":
 			lastWasAgent = false
-			if current == nil || value == "" {
-				continue // rules before any group, and empty paths, have no effect
+			if current == nil {
+				// a rule before any user-agent group has no effect — malformed
+				f.Ignored = append(f.Ignored, IgnoredLine{Line: lineNo, Raw: line})
+				continue
+			}
+			if value == "" {
+				continue // an empty path is spec-valid: no restriction
 			}
 			raw := "Disallow: " + value
 			if key == "allow" {
