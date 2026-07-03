@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -125,10 +126,14 @@ func TestEndToEndProxy(t *testing.T) {
 	addr, _ := startServer(t)
 
 	// Fake local MCP server: asserts the client rewrote Host to localhost.
+	// Guarded by a mutex — the handler runs on the httptest server's goroutine
+	// while the assertions read on the test goroutine.
+	var mu sync.Mutex
 	var sawHost, sawPath string
 	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawHost = r.Host
-		sawPath = r.URL.Path
+		mu.Lock()
+		sawHost, sawPath = r.Host, r.URL.Path
+		mu.Unlock()
 		io.WriteString(w, `{"jsonrpc":"2.0","result":"pong"}`)
 	}))
 	defer local.Close()
@@ -137,24 +142,52 @@ func TestEndToEndProxy(t *testing.T) {
 	reg := register(t, addr)
 	id := startClient(t, addr, localAddr, reg)
 
-	// Public request through the tunnel.
-	resp, err := clientTo(addr).Post(id.MCPURL(), "application/json", strings.NewReader(`{"jsonrpc":"2.0","method":"ping"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	// Public request through the tunnel, retried past the registration window.
+	resp, body := postThroughTunnel(t, clientTo(addr), id.MCPURL(), `{"jsonrpc":"2.0","method":"ping"}`)
 	if resp.StatusCode != 200 {
 		t.Fatalf("public request status %d: %s", resp.StatusCode, body)
 	}
 	if !strings.Contains(string(body), "pong") {
 		t.Errorf("unexpected body: %s", body)
 	}
-	if sawPath != "/mcp" {
-		t.Errorf("local MCP saw path %q, want /mcp", sawPath)
+	mu.Lock()
+	gotHost, gotPath := sawHost, sawPath
+	mu.Unlock()
+	if gotPath != "/mcp" {
+		t.Errorf("local MCP saw path %q, want /mcp", gotPath)
 	}
-	if sawHost != localAddr {
-		t.Errorf("local MCP saw Host %q, want %q (DNS-rebinding rewrite)", sawHost, localAddr)
+	if gotHost != localAddr {
+		t.Errorf("local MCP saw Host %q, want %q (DNS-rebinding rewrite)", gotHost, localAddr)
+	}
+}
+
+// postThroughTunnel POSTs to the public URL, retrying while the server still
+// returns the transient "tunnel not connected" 502.
+//
+// The tunnel client reports StateOnline (so startClient returns) the instant it
+// has read the auth response and stood up its yamux session — but the SERVER
+// registers the tunnel as routable a beat later: the gateway replies to auth,
+// then adds the session to its routing registry. A public request fired in that
+// sub-millisecond window (as this test does, immediately after "online") reaches
+// the server before the registry entry exists and gets a 502. The window is
+// benign in production (a user pastes the URL seconds later) but races the test
+// under load. Polling the real public path is what we actually want to assert:
+// that once the tunnel is up, requests proxy through.
+func postThroughTunnel(t *testing.T, cl *http.Client, url, body string) (*http.Response, []byte) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, err := cl.Post(url, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusBadGateway && strings.Contains(string(b), "not connected") && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		return resp, b
 	}
 }
 
