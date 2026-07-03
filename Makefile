@@ -67,8 +67,15 @@ race:
 # instrumentation (that would need GOCOVERDIR integration-test coverage), so the
 # acceptance contribution is partial; the @chrome scenarios (excluded by default)
 # are what fill the render package's coverage on a Chrome-equipped CI toolchain.
+#
+# -count=1 bypasses the test cache: under go1.26 cached results replay coverage
+# block tables from the source snapshot they were built against (golang/go#74873),
+# and merging those with fresh rows puts duplicate blocks with shifted positions
+# into coverage.out that `go tool cover -func` counts as phantom unhit statements
+# (observed: 91% deflated to ~82%). `go clean -testcache` does NOT purge them.
+# Drop -count=1 once the upstream fix ships (milestoned Go 1.27).
 cover: build
-	$(GO) test -coverpkg=$(COVERPKG) -coverprofile=coverage.out $(COVER_PKGS) ./test/...
+	$(GO) test -count=1 -coverpkg=$(COVERPKG) -coverprofile=coverage.out $(COVER_PKGS) ./test/...
 	@$(GO) tool cover -func=coverage.out | tail -1
 	@total=$$($(GO) tool cover -func=coverage.out | tail -1 | awk '{gsub("%","",$$3); print int($$3)}'); \
 	if [ $$total -lt $(COVER_MIN) ]; then echo "coverage $$total% is below $(COVER_MIN)%"; exit 1; fi
