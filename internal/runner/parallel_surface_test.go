@@ -62,9 +62,12 @@ func slowLeafSite(t *testing.T, leaves int) *httptest.Server {
 	return srv
 }
 
+// The 90s budget must survive `make cover` CPU saturation (-count=1 runs the
+// whole suite fresh, every package in parallel): goroutine winddown has been
+// seen to take >30s there. Passing paths return in milliseconds regardless.
 func waitUntil(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
