@@ -1,8 +1,12 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/agentberlin/bluesnake/internal/compare"
 	"github.com/agentberlin/bluesnake/internal/project"
+	"github.com/agentberlin/bluesnake/internal/queue"
+	"github.com/agentberlin/bluesnake/internal/runner"
 )
 
 // ProjectApp is the Wails binding for the opt-in project layer (competitor
@@ -23,16 +27,19 @@ func NewProjectApp(app *App) *ProjectApp {
 	return &ProjectApp{storeDir: app.storeDir, app: app}
 }
 
-// CrawlAll enqueues a spider crawl for every member domain of the project with
-// ONE shared setup — the request's profile + quick-config overrides apply to
-// each member, exactly like the New Crawl form (per-site saved setups are a
-// separate, planned feature). Every job's effective config is frozen at
-// enqueue (EnqueueCrawl → runner.FreezeSpec) like any other crawl. Returns how
-// many jobs it queued. The crawls drain through the app's single dispatcher
-// (up to speed.max_concurrent_crawls at a time), interleaved with any
-// hand-started crawls. A standalone crawl of a member domain already
-// auto-joins the project, so this is just "(re)crawl everything in this
-// project now".
+// CrawlAll enqueues a spider crawl for every member domain of the project.
+// The request's setup applies per member in two layers (#88): the base —
+// ConfigSource "last" gives each member its own site's last-crawl setup
+// (falling back to the app settings for a never-crawled member; the dialog's
+// default), while a profile (or none) is one shared base for every member —
+// and, over whichever base, the request's touched quick knobs as batch-wide
+// absolute overrides. Nothing is stored per member: the setup belongs to the
+// domain, resolved (and frozen — EnqueueCrawl → runner.FreezeSpec) at
+// enqueue like any other crawl. Returns how many jobs it queued. The crawls
+// drain through the app's single dispatcher (up to
+// speed.max_concurrent_crawls at a time), interleaved with any hand-started
+// crawls. A standalone crawl of a member domain already auto-joins the
+// project, so this is just "(re)crawl everything in this project now".
 func (a *ProjectApp) CrawlAll(projectID string, req StartRequest) (int, error) {
 	s, err := a.open()
 	if err != nil {
@@ -43,14 +50,25 @@ func (a *ProjectApp) CrawlAll(projectID string, req StartRequest) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	n := 0
+	// Freeze every member's spec before queueing any, so one member whose
+	// setup can't resolve (e.g. an unreadable last crawl) fails the whole
+	// batch cleanly instead of leaving a partial queue.
+	specs := make([]queue.JobSpec, 0, len(members))
 	for _, m := range members {
 		// members are always spider crawls of their domain root; only the
-		// request's profile + config knobs carry over
+		// request's setup source, profile and touched knobs carry over
 		spec := req.toSpec()
 		spec.Mode, spec.URLs, spec.SitemapURL = "", nil, ""
 		spec.URL = "https://" + m.Domain
-		if _, err := a.app.EnqueueCrawl(spec, "project", projectID, m.Domain); err != nil {
+		frozen, err := runner.FreezeSpec(a.storeDir, spec)
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", m.Domain, err)
+		}
+		specs = append(specs, frozen)
+	}
+	n := 0
+	for i, m := range members {
+		if _, err := a.app.EnqueueCrawl(specs[i], "project", projectID, m.Domain); err != nil {
 			return n, err
 		}
 		n++
@@ -59,6 +77,47 @@ func (a *ProjectApp) CrawlAll(projectID string, req StartRequest) (int, error) {
 }
 
 func (a *ProjectApp) open() (*project.Store, error) { return project.Open(a.storeDir) }
+
+// MemberSetup is one row of the crawl-all dialog's per-site plan: which setup
+// the member will crawl with when each site uses its own ("last") source.
+type MemberSetup struct {
+	Domain  string `json:"domain"`
+	Role    string `json:"role"`
+	HasLast bool   `json:"hasLast"`           // false: never crawled — app settings
+	CrawlID string `json:"crawlId,omitempty"` // the crawl whose setup will be reused
+	Started int64  `json:"started,omitempty"` // unix seconds
+	Error   string `json:"error,omitempty"`   // that crawl's setup can't be read
+}
+
+// CrawlAllPlan previews the per-member resolution the default crawl-all mode
+// will use, through the same lookup enqueue resolves with
+// (runner.FindLastSetup) — computed here in the desktop layer so the project
+// package stays untouched by the setup-source feature. A member whose last
+// crawl can't provide its setup is reported, not skipped: the dialog shows
+// the problem before "start" would hit it.
+func (a *ProjectApp) CrawlAllPlan(projectID string) ([]MemberSetup, error) {
+	s, err := a.open()
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	members, err := s.Members(projectID)
+	if err != nil {
+		return nil, err
+	}
+	plan := make([]MemberSetup, 0, len(members))
+	for _, m := range members {
+		row := MemberSetup{Domain: m.Domain, Role: string(m.Role)}
+		switch ls, err := runner.FindLastSetup(a.storeDir, "https://"+m.Domain); {
+		case err != nil:
+			row.Error = err.Error()
+		case ls != nil:
+			row.HasLast, row.CrawlID, row.Started = true, ls.CrawlID, ls.Started.Unix()
+		}
+		plan = append(plan, row)
+	}
+	return plan, nil
+}
 
 // SiteView is one project member plus its full (classified) crawl history.
 type SiteView struct {

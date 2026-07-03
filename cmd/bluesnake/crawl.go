@@ -22,6 +22,7 @@ func newCrawlCmd() *cobra.Command {
 	var (
 		cfgFile   string
 		profile   string
+		setup     string
 		storeDir  string
 		sets      []string
 		threads   int
@@ -39,10 +40,13 @@ func newCrawlCmd() *cobra.Command {
 		Short: "Crawl a site in spider mode",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := baseConfig(storeDir, profile, cfgFile)
+			cfg, source, err := crawlBase(storeDir, setup, cmd.Flags().Changed("setup"), profile, cfgFile, args[0])
 			if err != nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), err)
 				return exitErr{2, err}
+			}
+			if source != "" && !quiet {
+				fmt.Fprintln(cmd.OutOrStdout(), source)
 			}
 			for _, s := range sets {
 				if err := cfg.Set(s); err != nil {
@@ -126,6 +130,7 @@ func newCrawlCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&cfgFile, "config", "", "config file (YAML)")
 	cmd.Flags().StringVar(&profile, "profile", "", "named config profile to start from (see 'bluesnake config profiles')")
+	cmd.Flags().StringVar(&setup, "setup", "last", "base setup: last (the site's last-crawl setup), app (app settings), defaults (built-ins)")
 	cmd.Flags().StringVar(&storeDir, "store-dir", defaultStoreDir(), "crawl storage directory")
 	cmd.Flags().StringArrayVar(&sets, "set", nil, "dotted-path config override (key.path=value), repeatable")
 	cmd.Flags().IntVar(&threads, "threads", 0, "max concurrent threads (speed.max_threads)")

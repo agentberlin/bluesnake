@@ -49,6 +49,9 @@ export const api = {
   compareCrawls: (prevId, currId) => call("CompareCrawls", prevId, currId),
 
   listProfiles: () => call("ListProfiles"),
+  // resolves a setup source (last / app settings / profile) to its quick-knob
+  // values + provenance, through the same path enqueue freezes with
+  setupPreview: (source, profile, url) => call("SetupPreview", source, profile, url),
   duplicateProfile: (src, dst) => call("DuplicateProfile", src, dst),
   deleteProfile: (name) => call("DeleteProfile", name),
   getProfileConfig: (profile) => call("GetProfileConfig", profile).then((s) => JSON.parse(s)),
@@ -100,6 +103,7 @@ export const projectApi = {
   comparison: (id, includeOptional) => pcall("ProjectComparison", id, includeOptional),
   diff: (id, domain) => pcall("ProjectDiff", id, domain),
   crawlAll: (id, req) => pcall("CrawlAll", id, req),
+  crawlAllPlan: (id) => pcall("CrawlAllPlan", id), // per-member setup resolution for the dialog
 };
 
 /* Standalone Tools hub. Bound as a SEPARATE Go struct (window.go.main.ToolsApp,

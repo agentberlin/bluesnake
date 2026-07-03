@@ -12,21 +12,39 @@ import (
 )
 
 // StartRequest is the start_crawl tool's payload: seeds plus the same config
-// surface the CLI exposes (profile + dotted-path overrides).
+// surface the CLI exposes (setup source or profile, + dotted-path overrides).
 type StartRequest struct {
 	Mode       string         `json:"mode,omitempty"` // spider (default) | list
 	URL        string         `json:"url,omitempty"`
 	URLs       []string       `json:"urls,omitempty"`
 	SitemapURL string         `json:"sitemap_url,omitempty"`
+	Setup      string         `json:"setup,omitempty"` // last (spider default) | app_settings
 	Profile    string         `json:"profile,omitempty"`
 	Config     map[string]any `json:"config,omitempty"` // dotted path -> value
 }
 
-// Spec turns the tool payload into the neutral queue job spec the executor runs.
+// Spec turns the tool payload into the neutral queue job spec the executor
+// runs, mapping the setup param to the spec's config source — including the
+// #88 default: a spider start that names neither a setup nor a profile reuses
+// the seed site's last-crawl setup. List mode never defaults to "last" (a
+// list audit has no single site whose setup could be reused); an explicit
+// "last" maps through verbatim so the shared freeze path rejects it with the
+// canonical message. Unknown setup values also map through and fail there —
+// the tool handler pre-validates for a friendlier error.
 func (r StartRequest) Spec() queue.JobSpec {
+	src := r.Setup
+	switch r.Setup {
+	case "":
+		if r.Profile == "" && r.Mode != "list" {
+			src = "last"
+		}
+	case "app_settings":
+		src = ""
+	}
 	return queue.JobSpec{
 		Mode: r.Mode, URL: r.URL, URLs: r.URLs,
 		SitemapURL: r.SitemapURL, Profile: r.Profile, Config: r.Config,
+		ConfigSource: src,
 	}
 }
 

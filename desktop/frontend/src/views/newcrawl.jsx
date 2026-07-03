@@ -5,24 +5,87 @@ import React, { useEffect, useState } from "react";
 import { Icon, Btn, Seg, Toggle } from "../ui";
 import { api, DEFAULT_PROFILE, profileLabel } from "../api";
 
-/* The crawl setup — the profile picker plus the quick knobs. One object so the
-   whole card is reusable: New Crawl renders it inline; the project "Crawl all"
-   dialog reuses it, keeping both journeys identical. */
+/* The crawl setup — the source picker (last crawl setup / app settings /
+   profiles) plus the quick knobs. One object so the whole card is reusable:
+   New Crawl renders it inline; the project "Crawl all" dialog reuses it,
+   keeping both journeys identical.
+
+   source "last" reuses the setup the typed site last ran with (the #88
+   default), falling back to the app settings for a never-crawled site. The
+   knob values are display state mirroring the resolved base (useBaseKnobs →
+   App.SetupPreview); only knobs the user then touches become overrides, so
+   the chosen base shows through exactly unless deliberately changed. */
 export function defaultCrawlSetup() {
-  // ups matches the 5-thread default so the rate cap isn't the bottleneck; 0 = unlimited
-  return { profile: DEFAULT_PROFILE, depth: "", threads: 5, ups: 5, rendering: "text", siteChecks: "auto" };
+  return { source: "last", profile: DEFAULT_PROFILE, depth: "", threads: 5, ups: 5, rendering: "text", siteChecks: "auto", touched: {} };
 }
 
-/* Map the setup card's state to the backend StartRequest knobs. */
+/* Map the setup card's state to the backend StartRequest knobs: untouched
+   knobs send their "no override" sentinel (0 / "" / rate -1), touched knobs
+   are absolute — frozen into the crawl regardless of the base config. */
 export function setupToRequest(s) {
+  const t = s.touched || {};
   return {
-    profile: s.profile,
-    threads: s.threads,
-    rate: s.ups,
-    maxDepth: s.depth === "" ? -1 : Math.max(0, parseInt(s.depth, 10) || 0),
-    rendering: s.rendering,
-    siteChecks: s.siteChecks,
+    configSource: s.source || "",
+    profile: s.source === "last" ? "" : s.profile,
+    threads: t.threads ? s.threads : 0,
+    rate: t.ups ? s.ups : -1,
+    maxDepth: t.depth ? (s.depth === "" ? -1 : Math.max(0, parseInt(s.depth, 10) || 0)) : 0,
+    rendering: t.rendering ? s.rendering : "",
+    siteChecks: t.siteChecks ? s.siteChecks : "",
   };
+}
+
+/* useLastSetup watches the typed URL and resolves the site's last-crawl setup
+   (null when the site was never crawled, the URL isn't valid yet, or the
+   feature is off for this mode). Debounced; returns the full SetupPreview so
+   the caller can both offer the picker option and mirror its knobs. */
+export function useLastSetup(url, enabled) {
+  const [last, setLast] = useState(null);
+  const u = (url || "").trim();
+  const urlOk = enabled && /^https?:\/\/.+\..+/.test(u);
+  useEffect(() => {
+    if (!urlOk) { setLast(null); return; }
+    let stale = false;
+    const t = setTimeout(() => {
+      api.setupPreview("last", "", u)
+        .then((p) => !stale && setLast(p && p.source === "last" ? p : null))
+        .catch(() => !stale && setLast(null));
+    }, 250);
+    return () => { stale = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlOk ? u : ""]);
+  return last;
+}
+
+/* useBaseKnobs keeps the setup's knob values mirroring its resolved base —
+   the same resolution enqueue freezes with (App.SetupPreview →
+   runner.ResolveBase) — and resets the touched-set whenever the base changes,
+   so the card always shows the truth of what will run. */
+export function useBaseKnobs(setup, setSetup, lastPreview) {
+  const effectiveLast = setup.source === "last" && !!lastPreview;
+  const lastKey = effectiveLast ? lastPreview.crawlId : "";
+  useEffect(() => {
+    let stale = false;
+    const apply = (p) => {
+      if (stale || !p) return;
+      setSetup((s) => ({
+        ...s,
+        depth: p.depth < 0 ? "" : String(p.depth),
+        threads: p.threads,
+        ups: p.rate,
+        rendering: p.rendering,
+        siteChecks: p.siteChecks,
+        touched: {},
+      }));
+    };
+    if (effectiveLast) {
+      apply(lastPreview);
+    } else {
+      api.setupPreview("", setup.source === "last" ? "" : setup.profile, "").then(apply).catch(() => {});
+    }
+    return () => { stale = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveLast, lastKey, setup.source, setup.profile]);
 }
 
 export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCrawl, initialUrl }) {
@@ -39,6 +102,11 @@ export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCr
   useEffect(() => {
     api.listProfiles().then((p) => { if (p && p.length) setProfiles(p); }).catch(() => {});
   }, []);
+
+  // resolve the typed site's last-crawl setup and mirror the selected base
+  // into the knobs (spider only — a list audit has no single site)
+  const lastPreview = useLastSetup(url, mode === "spider");
+  useBaseKnobs(setup, setSetup, mode === "spider" ? lastPreview : null);
 
   const listCount = listText.trim().split("\n").filter(Boolean).length;
   const valid = mode === "spider"
@@ -60,7 +128,8 @@ export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCr
         url: url.trim(),
         listUrls: mode === "list" && listSrc !== "sitemap" ? listText.trim().split("\n").map((s) => s.trim()).filter(Boolean) : [],
         sitemapUrl: mode === "list" && listSrc === "sitemap" ? sitemapUrl.trim() : "",
-        ...setupToRequest(setup),
+        // list mode has no "last" source — fall back to the app settings base
+        ...setupToRequest(mode === "list" ? { ...setup, source: "" } : setup),
       });
     } catch (e) {
       setErr(String(e && e.message ? e.message : e));
@@ -132,7 +201,11 @@ export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCr
           {err && <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, color: "var(--s-4xx)", fontSize: 12.5, fontWeight: 500 }}><Icon name="circle-alert" size={15} />{err}</div>}
 
           {/* quick config — the shared setup card */}
-          <CrawlSetupCard profiles={profiles} value={setup} onChange={setSetup} style={{ marginTop: 24 }} />
+          <CrawlSetupCard profiles={profiles} value={setup} onChange={setSetup} style={{ marginTop: 24 }}
+            lastOption={mode === "spider" ? lastPreview : null}
+            hint={mode === "spider" && setup.source === "last" && lastPreview
+              ? "reusing this site's last crawl setup — change anything below"
+              : undefined} />
 
           <div style={{ marginTop: 18, display: "flex", alignItems: "center", justifyContent: "center", gap: 16, fontSize: 11.5, color: "var(--ink-faint)" }}>
             <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Icon name="bot" size={13} /> Obeys robots.txt</span>
@@ -146,10 +219,22 @@ export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCr
   );
 }
 
-/* The shared crawl-setup card: profile picker + quick knobs + politeness.
-   Controlled — the caller owns the setup object (see defaultCrawlSetup). */
-export function CrawlSetupCard({ profiles, value, onChange, style, hint }) {
-  const set = (patch) => onChange({ ...value, ...patch });
+/* The shared crawl-setup card: source picker + quick knobs + politeness.
+   Controlled — the caller owns the setup object (see defaultCrawlSetup).
+   lastOption (a SetupPreview or null) adds "Last crawl setup — <date>" as the
+   first picker choice; touching a knob marks it as an override, picking a
+   source resets the overrides so the new base shows through. */
+export function CrawlSetupCard({ profiles, value, onChange, style, hint, lastOption }) {
+  const KNOBS = ["depth", "threads", "ups", "rendering", "siteChecks"];
+  const set = (patch) => {
+    const touched = { ...(value.touched || {}) };
+    for (const k of Object.keys(patch)) if (KNOBS.includes(k)) touched[k] = true;
+    onChange({ ...value, ...patch, touched });
+  };
+  const pick = (v) => onChange(v === "__last__"
+    ? { ...value, source: "last", touched: {} }
+    : { ...value, source: "", profile: v, touched: {} });
+  const picked = value.source === "last" && lastOption ? "__last__" : value.profile;
   return (
     <div className="card" style={{ padding: 0, overflow: "hidden", ...style }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--border-soft)" }}>
@@ -157,7 +242,8 @@ export function CrawlSetupCard({ profiles, value, onChange, style, hint }) {
         <span style={{ fontSize: 12.5, fontWeight: 650 }}>Crawl setup</span>
         <span className="hint" style={{ marginLeft: 2 }}>{hint || "frozen into this crawl"}</span>
         <div style={{ flex: 1 }} />
-        <select className="input" value={value.profile} onChange={(e) => set({ profile: e.target.value })} style={{ width: "auto", height: 28, fontSize: 12, fontWeight: 600 }}>
+        <select className="input" value={picked} onChange={(e) => pick(e.target.value)} style={{ width: "auto", height: 28, fontSize: 12, fontWeight: 600 }}>
+          {lastOption && <option value="__last__">{"Last crawl setup — " + fmtSetupDate(lastOption.started)}</option>}
           {profiles.map((p) => <option key={p} value={p}>{profileLabel(p)}</option>)}
         </select>
       </div>
@@ -200,6 +286,8 @@ export function CrawlSetupCard({ profiles, value, onChange, style, hint }) {
     </div>
   );
 }
+
+const fmtSetupDate = (unix) => (unix ? new Date(unix * 1000).toISOString().slice(0, 10) : "");
 
 export function Setup({ label, hint, children }) {
   return (

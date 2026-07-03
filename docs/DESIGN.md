@@ -146,6 +146,8 @@ Global flags: `--config <file>`, `--store-dir <dir>` (default `~/.bluesnake`), `
 
 Every config key is overridable as a flag using dotted names: `--set spider.limits.max_depth=3 --set speed.max_threads=10` plus dedicated shorthand flags for the common ones (`--depth`, `--threads`, `--rate`, `--include`, `--exclude`, `--user-agent`, ...).
 
+Base setup (§5.11): `crawl` defaults to reusing the setup the seed's site last ran with; `--setup last|app|defaults` picks the base explicitly (`app` = the saved default profile, `defaults` = the pinned built-ins for CI), `--profile <name>`/`--config <file>` are the named bases — all mutually exclusive, with `--set`/shorthands overlaying whichever base wins. The resolved source is printed. `projects crawl-all` resolves per member by default (each site's own last setup) and treats `--profile`/`--config`/`--setup app|defaults` as override-all.
+
 Named profiles (the configs the desktop app manages; the default one is presented there as "App settings") are readable and usable from the CLI — `config profiles` lists them, `config show --profile <name>` prints one, and `crawl`/`list`/`projects crawl-all` accept `--profile <name>` as the base config (mutually exclusive with `--config`; `--set` and shorthand flags apply on top). The CLI never creates or edits profiles. Every enqueue path — CLI, desktop, MCP — freezes the effective config into the job spec at enqueue time (`runner.FreezeSpec`), so a queued job is immune to profile edits made while it waits; the crawl then freezes its own copy into the crawl DB at start (`store.CreateCrawl`) as before.
 
 Crawl UX (headless but informative): single-line progress (crawled/queued/errors/URLs-sec), `--progress none|line|live`; non-zero exit codes contract: `0` ok, `1` crawl error, `2` config error, `3` interrupted (resumable).
@@ -631,7 +633,7 @@ Design decisions:
 - **Exact site identity, no folding.** A site key is the literal lowercased `host[:port]` of the seed. `example.com`, `www.example.com`, `a.example.com` and `example.com:8080` are **distinct** sites by design (it reuses none of the engine's `www`-stripping host derivers — it has its own `SiteKey`).
 - **Associated vs comparable.** Every same-host crawl is *associated* and shown under the site; only a **finished, full-site spider crawl of the root that is not scope-narrowed** (`scope.include` empty) is *comparable* and feeds the numbers. Path crawls, list audits, running, and narrowed crawls are surfaced greyed-out with a reason — visible, but excluded from the math.
 - **Dual-mode comparison.** Per-competitor *over time* reuses the pairwise `compare` engine verbatim (same domain ⇒ meaningful URL/issue deltas). *Cross-competitor* is a new read-only **metric scorecard** (`scorecard.go`): site size, indexable rate, status-code mix, issue counts by severity, link score, near-dups (+ optional avg word count / Flesch / schema.org coverage via SQLite JSON functions). Cross-domain URL comparison is **not** offered — disjoint URL sets make it degenerate. All metrics are single-pass SQL aggregates over each crawl DB; `LoadPages` is never used (it would reintroduce the per-crawl memory blow-up).
-- **One shared setup per batch; per-site config is planned (#88); fairness is surfaced, not enforced.** "Crawl all" runs the same setup journey as New Crawl (the shared setup card: profile picker + quick knobs, site-checks selector included) and applies that one setup to every member, each job's effective config frozen at enqueue like any other crawl. A member's Crawl button opens New Crawl prefilled with the site rather than starting immediately, so per-site adjustments use the ordinary crawl flow. Per-member *saved* setups (a profile assigned per member, resolved and frozen per job) are designed in issue #88 and deliberately not shipped yet. When competitors' latest crawls used materially different settings (rendering, depth, robots), the scorecard shows per-site config badges and a divergence banner rather than silently emitting an unfair number; the remedy is re-crawling.
+- **Per-site setups belong to the domain, not the project (#88); fairness is surfaced, not enforced.** A site remembers the setup its last crawl ran with (§5.11 — derived from the crawl registry at enqueue; *nothing* is stored in the project layer, which this feature leaves byte-for-byte untouched). "Crawl all" therefore defaults to **each site's saved setup** (per-member resolution shown in the dialog via `CrawlAllPlan`) with **"one setup for every site"** as the explicit override mode — the shared setup card (base picker + touched-only quick knobs, site-checks selector included), each job's effective config frozen at enqueue like any other crawl. A member's Crawl button opens New Crawl prefilled with the site, where the site's last setup is preselected by §5.11's default. When competitors' latest crawls used materially different settings (rendering, depth, robots), the scorecard shows per-site config badges and a divergence banner — worded to acknowledge the divergence may be deliberate per-site setup — and the strict-fairness remedy is "Crawl all" with one shared setup.
 - **Out of scope:** a scheduler. On-demand crawling of a project's sites is the building block a future scheduler would drive (§8).
 
 Surfaces (engine-first, all three per §0): the CLI `bluesnake projects` subtree; five MCP tools (`list_projects`, `create_project`, `add_competitor`, `remove_competitor`, `project_comparison`); and a desktop **Projects** view (Overview + Comparison) bound through a *separate* `ProjectApp` Wails struct so the core `App` binding (and its generated `App.js`) stay untouched.
@@ -721,6 +723,66 @@ link back to the matching tool ("re-test after fix" without re-crawling).
 The registry (`sitecheck.Tools()`) is the single catalogue all three
 enumerate — adding a tool = one check + one registry entry + one desktop
 sub-view.
+
+### 5.11 Crawl setup sources — a site remembers its setup (#88)
+
+Every crawl start resolves its **base config** from one of three sources, on
+every surface:
+
+1. **Last crawl setup** (the default): the frozen config of the site's most
+   recent **spider** crawl. Derived at enqueue from two facts that already
+   exist — the registry knows each crawl's seed, and every crawl freezes its
+   effective config into its own DB at `CreateCrawl` — so per-site config
+   divergence needs **no storage anywhere**: no per-member profile columns,
+   no site→config table. Deleting a crawl forgets that setup; profile edits
+   and deletes can never dangle (the original #88 sketch's
+   deleted-profile problem dissolves). Falls back to the app settings for a
+   never-crawled site.
+2. **App settings** — the saved default profile (built-in defaults when none
+   is saved): `runner.LoadProfile("")`, the pre-#88 no-profile semantics.
+3. **A named profile** (or, CLI-only, a config file / the pinned built-in
+   defaults).
+
+Design points:
+
+- **Site identity** is the exact lowercased `host[:port]` of the seed —
+  deliberately the same rule as the project layer's `SiteKey` (§5.9):
+  scheme/path never matter, www/subdomains/ports never fold. The core keeps
+  its own tiny host helper so it never imports the removable project package.
+  List-mode crawls neither establish nor consume a "last" setup (their frozen
+  config bakes in list-mode adjustments — depth 0, robots ignored — that
+  would be wrong to inherit; and a list audit has no single site).
+- **One resolution path.** `runner.ResolveBase(spec)` maps
+  `queue.JobSpec.ConfigSource` (`"" | "last"`) + `Profile` to a base config
+  with provenance; `FreezeSpec`/`BuildConfig` freeze through it at enqueue,
+  and every preview surface (desktop `App.SetupPreview`, the CLI provenance
+  line, the MCP `base_config` response field) reads through it — so what a
+  user is shown and what a job runs can never disagree. Freeze-at-enqueue
+  semantics are unchanged: "last" names a lookup rule resolved at enqueue,
+  never a live reference; jobs already queued are immune to later crawls.
+  An unreadable last-crawl config fails **loudly**, naming the crawl —
+  silently sliding to an older setup would be spooky.
+- **Surfaces.** Desktop: the setup card's picker gains "Last crawl setup —
+  <date>" as the first option whenever the typed site has history
+  (auto-selected by default; hidden in list mode), and the quick knobs are
+  now **touched-only overrides initialized from the resolved base**
+  (`SetupPreview`) — untouched knobs send no-override sentinels
+  (`StartRequest.Rate: -1`), so the chosen base shows through exactly (this
+  also fixed the latent gap where the card's fixed defaults silently stomped
+  a profile's rendering mode). CLI: `--setup last|app|defaults` (§3). MCP:
+  `start_crawl`'s `setup` param (`last` default for spider, `app_settings`),
+  mutually exclusive with `profile`. Projects: crawl-all per-member default
+  + override-all mode (§5.9); the member Crawl button needs no code — New
+  Crawl prefilled resolves the member's last setup by construction, which
+  also answers the "same domain from New Crawl directly" question: the setup
+  belongs to the domain, so *every* start of that site preselects it,
+  project page or not.
+- **The CLI's bare-run stance is revisited** (supersedes the 2026-07-03
+  config-UX delta's item 2): a bare `bluesnake crawl` now resolves last →
+  app settings → built-ins, like every other surface, and always prints the
+  source it resolved. Since the default is history-dependent either way,
+  reproducibility is an explicit opt-in: `--setup defaults` (or
+  `--config`/`--profile`) pins the base for CI.
 
 ---
 
@@ -1342,6 +1404,41 @@ setups are designed in issue #88, out of scope here. Pinned by
 `profiles_cli_test.go`, the extended `project_crawlall_test.go`
 (shared-setup + frozen-at-enqueue assertions), and the existing
 desktop/MCP validation tests migrated to FreezeSpec.
+
+**2026-07-03 — crawl setup sources: a site remembers its setup (#88, new
+§5.11).** Per-site crawl config landed as *domain-keyed stickiness*, not the
+per-member profile columns the issue first sketched (superseded by the issue's
+final design comment): a new crawl's default base is the frozen config of the
+site's most recent spider crawl — derived at enqueue from the registry + that
+crawl's own DB, **zero new storage**, `internal/project` byte-for-byte
+untouched. `queue.JobSpec.ConfigSource` (`""|"last"`) resolves through the
+single new `runner.ResolveBase` path (used by `FreezeSpec` and every preview
+surface; `runner.FindLastSetup` does the lookup — exact `host[:port]` match,
+spider-only, newest-first via a deterministic `ListCrawls` rowid tiebreak,
+loud error on an unreadable crawl). Surfaces: desktop New Crawl gains the
+"Last crawl setup — <date>" picker option (auto-selected when the typed site
+has history) with **touched-only quick knobs** initialized from
+`App.SetupPreview` (untouched knobs send no-override sentinels — also fixing
+the latent card-defaults-stomp-the-profile gap); "Crawl all" defaults to each
+site's saved setup (`ProjectApp.CrawlAllPlan` previews the per-member
+resolution; batch specs freeze atomically before any enqueue) with "one setup
+for every site" as the override mode; CLI `crawl --setup last|app|defaults`
+(bare runs now resolve last → app settings → built-ins and print their
+source — revisiting the config-UX delta's bare-CLI stance, with `--setup
+defaults` as the pinned CI base) and `projects crawl-all` per-member default
+with `--profile`/`--config`/`--setup app|defaults` as override-all; MCP
+`start_crawl` gains `setup` (`last` default for spider | `app_settings`,
+exclusive with `profile`) and reports the resolved `base_config`. Divergence
+banner copy on both scorecard surfaces now distinguishes deliberate per-site
+setups from accidental inconsistency. Pinned by
+`runner/lastsetup_test.go` (site matching, newest-wins, list-skip,
+unreadable-crawl error, freeze/fallback/validation, provenance),
+`desktop/setup_source_test.go` (untouched-knob sentinels, SetupPreview
+provenance+knob mapping, per-site CrawlAll freezing, CrawlAllPlan),
+`mcp/setup_source_test.go` (setup mapping incl. the list-mode non-default,
+param validation, base_config reporting), `cmd/setup_cli_test.go` (real
+two-crawl stickiness E2E, per-member crawl-all output + frozen configs, flag
+exclusions) and four `features/setup_sources.feature` scenarios.
 
 **Implemented but scoped down (extension points exist):**
 - Issues catalogue: **164 = the full issues library computable on the current

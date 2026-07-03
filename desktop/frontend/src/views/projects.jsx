@@ -6,7 +6,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Icon, Btn, IconBtn, BrandMark, Empty, Modal, Seg, Toggle, CopyButton } from "../ui";
 import { api, projectApi, hostOf, DEFAULT_PROFILE } from "../api";
-import { CrawlSetupCard, defaultCrawlSetup, setupToRequest } from "./newcrawl";
+import { CrawlSetupCard, defaultCrawlSetup, setupToRequest, useBaseKnobs } from "./newcrawl";
 
 const fmtDate = (v) => {
   if (!v) return "—";
@@ -140,26 +140,36 @@ function ProjectDetail({ project, onBack, onCrawlSite, onDeleted, onRenamed }) {
   );
 }
 
-/* "Crawl all" runs the same setup journey as New Crawl — the shared setup card
-   (profile + quick config), applied to every member. One setup for the whole
-   batch; per-site saved setups are a separate, planned feature. */
+/* "Crawl all" has two modes (#88). Default: every site crawls with its own
+   saved setup — the setup its domain last ran with, app settings when never
+   crawled; nothing is stored per member, the resolution happens when each job
+   is queued. Override: the shared setup card (a base + touched quick knobs)
+   applied to every member — today's one-setup-for-the-batch journey. */
 function CrawlAllModal({ project, onClose }) {
+  const [mode, setMode] = useState("perSite");
   const [profiles, setProfiles] = useState([DEFAULT_PROFILE]);
-  const [setup, setSetup] = useState(defaultCrawlSetup());
-  const [count, setCount] = useState(null);
+  const [setup, setSetup] = useState({ ...defaultCrawlSetup(), source: "" });
+  const [plan, setPlan] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   useEffect(() => {
     api.listProfiles().then((p) => p && p.length && setProfiles(p)).catch(() => {});
-    projectApi.sites(project.id).then((s) => setCount((s || []).length)).catch(() => {});
+    projectApi.crawlAllPlan(project.id).then((rows) => setPlan(rows || [])).catch(() => setPlan([]));
   }, [project.id]);
+  useBaseKnobs(setup, setSetup, null); // mirror the shared card's base
+
+  const count = plan == null ? null : plan.length;
+  const planBroken = mode === "perSite" && (plan || []).some((m) => m.error);
 
   async function go() {
     setBusy(true);
     setErr("");
     try {
-      await projectApi.crawlAll(project.id, setupToRequest(setup));
+      // per-site mode: each member resolves its own last-crawl setup at
+      // enqueue; no quick knobs — switch to "one setup" to shape the batch
+      const req = mode === "perSite" ? { configSource: "last", rate: -1 } : setupToRequest(setup);
+      await projectApi.crawlAll(project.id, req);
       onClose();
       // the dispatcher starts the first crawl and crawl:started switches to its
       // live view; the rest run behind it (up to the parallel-crawl slots).
@@ -171,15 +181,44 @@ function CrawlAllModal({ project, onClose }) {
 
   return <Modal icon="radar" title={"Crawl all sites — " + project.name} onClose={onClose} width={640}
     body={<div>
-      <div className="hint" style={{ marginBottom: 12 }}>
-        One setup for every site in this project, frozen into each crawl when it's queued.
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
+        <Seg value={mode} onChange={setMode} options={[
+          { value: "perSite", label: "Each site's saved setup" },
+          { value: "shared", label: "One setup for every site" },
+        ]} />
       </div>
-      <CrawlSetupCard profiles={profiles} value={setup} onChange={setSetup} hint="frozen into each crawl" />
+      {mode === "perSite" ? (
+        <div>
+          <div className="hint" style={{ marginBottom: 10 }}>
+            Every site crawls with the setup it last ran with — resolved when its job is queued and frozen into the crawl. Sites never crawled before use the app settings.
+          </div>
+          <div className="card" style={{ overflow: "hidden" }}>
+            {plan == null && <div style={{ padding: 16, textAlign: "center", color: "var(--ink-faint)", fontSize: 12.5 }}>Loading…</div>}
+            {(plan || []).map((m) => (
+              <div key={m.domain} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderTop: "1px solid var(--border-soft)", fontSize: 12 }}>
+                <span className="mono" style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{m.domain}</span>
+                {m.error
+                  ? <span style={{ color: "var(--s-4xx)", display: "flex", alignItems: "center", gap: 6 }}><Icon name="circle-alert" size={13} />{m.error}</span>
+                  : m.hasLast
+                    ? <span style={{ color: "var(--ink-2)" }}>last crawl setup · {fmtDate(m.started)}</span>
+                    : <span style={{ color: "var(--ink-faint)" }}>app settings · never crawled</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div>
+          <div className="hint" style={{ marginBottom: 12 }}>
+            One setup for every site in this project, frozen into each crawl when it's queued.
+          </div>
+          <CrawlSetupCard profiles={profiles} value={setup} onChange={setSetup} hint="frozen into each crawl" />
+        </div>
+      )}
       {err && <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8, color: "var(--s-4xx)", fontSize: 12.5, fontWeight: 500 }}><Icon name="circle-alert" size={15} />{err}</div>}
     </div>}
     actions={<>
       <Btn onClick={onClose} disabled={busy}>Cancel</Btn>
-      <Btn variant="primary" icon="radar" onClick={go} disabled={busy || count === 0}>
+      <Btn variant="primary" icon="radar" onClick={go} disabled={busy || count === 0 || planBroken}>
         {busy ? "Queuing…" : "Queue " + (count == null ? "all" : count) + (count === 1 ? " crawl" : " crawls")}
       </Btn>
     </>} />;
@@ -266,7 +305,7 @@ function Overview({ project, onCrawlSite }) {
 
         <div className="hint" style={{ marginTop: 14, display: "flex", gap: 7, alignItems: "flex-start" }}>
           <Icon name="info" size={13} style={{ marginTop: 1, flex: "0 0 13px" }} />
-          <span>"Crawl all" applies one setup to every site; a site's Crawl button opens New Crawl prefilled so you can adjust its setup. Per-site saved setups and scheduled re-crawls are coming later.</span>
+          <span>"Crawl all" uses each site's saved setup by default — the setup its last crawl ran with — or one shared setup for the whole batch. A site's Crawl button opens New Crawl prefilled with its last setup preselected. Scheduled re-crawls are coming later.</span>
         </div>
       </div>
     </div>
@@ -328,7 +367,7 @@ function Comparison({ project }) {
           <div className="card" style={{ padding: "11px 14px", marginBottom: 14, display: "flex", gap: 9, alignItems: "center", borderColor: "color-mix(in oklab, var(--sev-warn) 40%, var(--border))", background: "color-mix(in oklab, var(--sev-warn) 6%, var(--surface))" }}>
             <Icon name="triangle-alert" size={15} style={{ color: "var(--sev-warn)", flex: "0 0 15px" }} />
             <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>
-              Sites were crawled with different settings ({(card.diverging_dims || []).join(", ")}) — metrics aren't fully apples-to-apples. Re-crawl each site for a fair comparison.
+              Sites were crawled with different setups ({(card.diverging_dims || []).join(", ")}) — often deliberate with per-site saved setups, but the metrics aren't fully apples-to-apples. For a strictly fair comparison, "Crawl all" with one setup for every site.
             </span>
           </div>
         )}
