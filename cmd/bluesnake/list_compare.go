@@ -24,22 +24,19 @@ var urlToken = regexp.MustCompile(`https?://\S+`)
 
 func newListCmd() *cobra.Command {
 	var (
-		cfgFile, storeDir, sitemapURL string
-		sets                          []string
-		followRedirects               bool
-		quiet                         bool
+		cfgFile, profile, storeDir, sitemapURL string
+		sets                                   []string
+		followRedirects                        bool
+		quiet                                  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "list [<file>|-]",
 		Short: "Audit a list of URLs (file, stdin, or --sitemap <url>)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg := config.Default()
-			var err error
-			if cfgFile != "" {
-				if cfg, err = config.LoadFile(cfgFile); err != nil {
-					return exitErr{2, err}
-				}
+			cfg, err := baseConfig(storeDir, profile, cfgFile)
+			if err != nil {
+				return exitErr{2, err}
 			}
 			for _, s := range sets {
 				if err := cfg.Set(s); err != nil {
@@ -132,6 +129,7 @@ func newListCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&cfgFile, "config", "", "config file (YAML)")
+	cmd.Flags().StringVar(&profile, "profile", "", "named config profile to start from (see 'bluesnake config profiles')")
 	cmd.Flags().StringVar(&storeDir, "store-dir", defaultStoreDir(), "crawl storage directory")
 	cmd.Flags().StringArrayVar(&sets, "set", nil, "config override, repeatable")
 	cmd.Flags().StringVar(&sitemapURL, "sitemap", "", "download a sitemap (or index) as the URL source")

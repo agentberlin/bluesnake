@@ -137,7 +137,7 @@ bluesnake sitemap <crawl-id>           # generate XML sitemap(s) from a crawl
 bluesnake compare <id-prev> <id-curr>  # crawl comparison (+ change detection)
 bluesnake projects [ls|create|add|show|compare|diff]  # competitor-study layer (opt-in, own DB; §5.9)
 bluesnake robots test <url...>         # robots.txt tester (live or --robots-file)
-bluesnake config init|validate|show    # emit commented default config / validate / effective config
+bluesnake config init|validate|show|profiles  # default config / validate / effective config / list saved profiles
 bluesnake serve                        # read-only localhost JSON API over the crawl store (--addr)
 bluesnake mcp                          # MCP server for LLM agents over streamable HTTP (--addr, default 127.0.0.1:8473)
 ```
@@ -145,6 +145,8 @@ bluesnake mcp                          # MCP server for LLM agents over streamab
 Global flags: `--config <file>`, `--store-dir <dir>` (default `~/.bluesnake`), `--output <dir>`, `--format csv|json|jsonl|xlsx`, `--timestamped-output`, `--overwrite`, `--quiet/--verbose`, `--log json|text`.
 
 Every config key is overridable as a flag using dotted names: `--set spider.limits.max_depth=3 --set speed.max_threads=10` plus dedicated shorthand flags for the common ones (`--depth`, `--threads`, `--rate`, `--include`, `--exclude`, `--user-agent`, ...).
+
+Named profiles (the configs the desktop app manages; the default one is presented there as "App settings") are readable and usable from the CLI — `config profiles` lists them, `config show --profile <name>` prints one, and `crawl`/`list`/`projects crawl-all` accept `--profile <name>` as the base config (mutually exclusive with `--config`; `--set` and shorthand flags apply on top). The CLI never creates or edits profiles. Every enqueue path — CLI, desktop, MCP — freezes the effective config into the job spec at enqueue time (`runner.FreezeSpec`), so a queued job is immune to profile edits made while it waits; the crawl then freezes its own copy into the crawl DB at start (`store.CreateCrawl`) as before.
 
 Crawl UX (headless but informative): single-line progress (crawled/queued/errors/URLs-sec), `--progress none|line|live`; non-zero exit codes contract: `0` ok, `1` crawl error, `2` config error, `3` interrupted (resumable).
 

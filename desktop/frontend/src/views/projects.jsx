@@ -5,7 +5,8 @@
    =========================================================================== */
 import React, { useEffect, useMemo, useState } from "react";
 import { Icon, Btn, IconBtn, BrandMark, Empty, Modal, Seg, Toggle, CopyButton } from "../ui";
-import { projectApi, hostOf } from "../api";
+import { api, projectApi, hostOf, DEFAULT_PROFILE } from "../api";
+import { CrawlSetupCard, defaultCrawlSetup, setupToRequest } from "./newcrawl";
 
 const fmtDate = (v) => {
   if (!v) return "—";
@@ -14,7 +15,7 @@ const fmtDate = (v) => {
 };
 const ageDays = (unix) => (unix ? Math.floor((Date.now() - unix * 1000) / 86400000) : null);
 
-export function ProjectsView({ onCrawlSite, crawlBusyMsg }) {
+export function ProjectsView({ onCrawlSite }) {
   const [projects, setProjects] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [selId, setSelId] = useState(null);
@@ -27,7 +28,7 @@ export function ProjectsView({ onCrawlSite, crawlBusyMsg }) {
 
   if (sel) {
     return <ProjectDetail project={sel} onBack={() => { setSelId(null); load(); }}
-      onCrawlSite={onCrawlSite} crawlBusyMsg={crawlBusyMsg}
+      onCrawlSite={onCrawlSite}
       onDeleted={() => { setSelId(null); load(); }}
       onRenamed={load} />;
   }
@@ -103,22 +104,11 @@ function CreateProjectModal({ onClose, onCreated }) {
     </>} />;
 }
 
-function ProjectDetail({ project, onBack, onCrawlSite, onDeleted, onRenamed, crawlBusyMsg }) {
+function ProjectDetail({ project, onBack, onCrawlSite, onDeleted, onRenamed }) {
   const [tab, setTab] = useState("overview");
   const [confirmDel, setConfirmDel] = useState(false);
   const [renaming, setRenaming] = useState(false);
-  const [queuing, setQueuing] = useState(false);
-
-  async function crawlAll() {
-    setQueuing(true);
-    try {
-      await projectApi.crawlAll(project.id);
-    } finally {
-      setQueuing(false);
-    }
-    // the dispatcher starts the first crawl and crawl:started switches to its
-    // live view; the rest run one at a time behind it.
-  }
+  const [crawlAllOpen, setCrawlAllOpen] = useState(false);
 
   return (
     <div className="main">
@@ -127,17 +117,18 @@ function ProjectDetail({ project, onBack, onCrawlSite, onDeleted, onRenamed, cra
         <BrandMark seed={"https://" + project.main_domain} size={24} />
         <span className="title" style={{ marginLeft: 2 }}>{project.name}</span>
         <div style={{ flex: 1 }} />
-        <Btn icon="radar" disabled={queuing} onClick={crawlAll}
-          title="Queue a crawl of every member domain (runs one at a time)">
-          {queuing ? "Queuing…" : "Crawl all"}
+        <Btn icon="radar" onClick={() => setCrawlAllOpen(true)}
+          title="Set up and queue a crawl of every member domain">
+          Crawl all
         </Btn>
         <Seg value={tab} onChange={setTab} options={[{ value: "overview", label: "Overview" }, { value: "comparison", label: "Comparison" }]} />
         <IconBtn icon="pencil" title="Rename" onClick={() => setRenaming(true)} />
         <IconBtn icon="trash-2" title="Delete project" onClick={() => setConfirmDel(true)} />
       </div>
       {tab === "overview"
-        ? <Overview project={project} onCrawlSite={onCrawlSite} crawlBusyMsg={crawlBusyMsg} />
+        ? <Overview project={project} onCrawlSite={onCrawlSite} />
         : <Comparison project={project} />}
+      {crawlAllOpen && <CrawlAllModal project={project} onClose={() => setCrawlAllOpen(false)} />}
       {confirmDel && <Modal icon="trash-2" danger title="Delete project?" onClose={() => setConfirmDel(false)}
         body={<>This removes the project <b>{project.name}</b> and its competitor list. Your crawls are not deleted.</>}
         actions={<>
@@ -147,6 +138,51 @@ function ProjectDetail({ project, onBack, onCrawlSite, onDeleted, onRenamed, cra
       {renaming && <RenameModal project={project} onClose={() => setRenaming(false)} onDone={() => { setRenaming(false); onRenamed(); }} />}
     </div>
   );
+}
+
+/* "Crawl all" runs the same setup journey as New Crawl — the shared setup card
+   (profile + quick config), applied to every member. One setup for the whole
+   batch; per-site saved setups are a separate, planned feature. */
+function CrawlAllModal({ project, onClose }) {
+  const [profiles, setProfiles] = useState([DEFAULT_PROFILE]);
+  const [setup, setSetup] = useState(defaultCrawlSetup());
+  const [count, setCount] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    api.listProfiles().then((p) => p && p.length && setProfiles(p)).catch(() => {});
+    projectApi.sites(project.id).then((s) => setCount((s || []).length)).catch(() => {});
+  }, [project.id]);
+
+  async function go() {
+    setBusy(true);
+    setErr("");
+    try {
+      await projectApi.crawlAll(project.id, setupToRequest(setup));
+      onClose();
+      // the dispatcher starts the first crawl and crawl:started switches to its
+      // live view; the rest run behind it (up to the parallel-crawl slots).
+    } catch (e) {
+      setErr(String(e));
+      setBusy(false);
+    }
+  }
+
+  return <Modal icon="radar" title={"Crawl all sites — " + project.name} onClose={onClose} width={640}
+    body={<div>
+      <div className="hint" style={{ marginBottom: 12 }}>
+        One setup for every site in this project, frozen into each crawl when it's queued.
+      </div>
+      <CrawlSetupCard profiles={profiles} value={setup} onChange={setSetup} hint="frozen into each crawl" />
+      {err && <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8, color: "var(--s-4xx)", fontSize: 12.5, fontWeight: 500 }}><Icon name="circle-alert" size={15} />{err}</div>}
+    </div>}
+    actions={<>
+      <Btn onClick={onClose} disabled={busy}>Cancel</Btn>
+      <Btn variant="primary" icon="radar" onClick={go} disabled={busy || count === 0}>
+        {busy ? "Queuing…" : "Queue " + (count == null ? "all" : count) + (count === 1 ? " crawl" : " crawls")}
+      </Btn>
+    </>} />;
 }
 
 function RenameModal({ project, onClose, onDone }) {
@@ -169,7 +205,7 @@ const reasonLabel = {
   "scope-narrowed": "section-scoped",
 };
 
-function Overview({ project, onCrawlSite, crawlBusyMsg }) {
+function Overview({ project, onCrawlSite }) {
   const [sites, setSites] = useState([]);
   const [busy, setBusy] = useState(true);
   const [adding, setAdding] = useState("");
@@ -215,7 +251,7 @@ function Overview({ project, onCrawlSite, crawlBusyMsg }) {
                     ))}
                   </div>
                 </div>
-                {onCrawlSite && <Btn size="sm" icon="radar" onClick={() => onCrawlSite(s.domain)} title={crawlBusyMsg ? "Queued behind the running crawl" : "Crawl this site"}>Crawl</Btn>}
+                {onCrawlSite && <Btn size="sm" icon="radar" onClick={() => onCrawlSite(s.domain)} title="Set up a crawl of this site — opens New Crawl prefilled">Crawl</Btn>}
                 {s.role !== "main" && <IconBtn icon="x" title="Remove competitor" onClick={async () => { await projectApi.removeCompetitor(project.id, s.domain); load(); }} />}
               </div>
             );
@@ -230,7 +266,7 @@ function Overview({ project, onCrawlSite, crawlBusyMsg }) {
 
         <div className="hint" style={{ marginTop: 14, display: "flex", gap: 7, alignItems: "flex-start" }}>
           <Icon name="info" size={13} style={{ marginTop: 1, flex: "0 0 13px" }} />
-          <span>Each site is crawled with the default config — change a site's settings from its own crawl, not here. Scheduled re-crawls are coming later.</span>
+          <span>"Crawl all" applies one setup to every site; a site's Crawl button opens New Crawl prefilled so you can adjust its setup. Per-site saved setups and scheduled re-crawls are coming later.</span>
         </div>
       </div>
     </div>

@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/project"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
@@ -10,7 +11,8 @@ import (
 // TestProjectCrawlAllEnqueues pins that "crawl all" enqueues one job per project
 // member into the core queue (source=project), driving crawls through the same
 // dispatcher as hand-started ones — without the core App depending on the
-// project layer.
+// project layer. It also pins that the shared setup (profile knobs) reaches
+// every member job and that each job's config is frozen at enqueue.
 func TestProjectCrawlAllEnqueues(t *testing.T) {
 	a := testApp(t)
 	a.ensureQueue() // build the queue over the temp store dir (no drain loop in tests)
@@ -29,12 +31,31 @@ func TestProjectCrawlAllEnqueues(t *testing.T) {
 	}
 	s.Close()
 
-	n, err := pa.CrawlAll(p.ID)
+	n, err := pa.CrawlAll(p.ID, StartRequest{Threads: 2, Rate: 1, MaxDepth: -1, Rendering: "text"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 2 {
 		t.Fatalf("CrawlAll enqueued %d jobs, want 2 (main + competitor)", n)
+	}
+
+	// every member job carries the shared setup, frozen at enqueue
+	raw, err := a.disp.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, j := range raw {
+		if j.Spec.ConfigYAML == "" {
+			t.Errorf("job %s (%s) was enqueued unfrozen", j.ID, j.Label)
+			continue
+		}
+		cfg, err := config.Load([]byte(j.Spec.ConfigYAML))
+		if err != nil {
+			t.Fatalf("job %s frozen config: %v", j.ID, err)
+		}
+		if cfg.Speed.MaxThreads != 2 {
+			t.Errorf("job %s max_threads = %d, want the shared setup's 2", j.ID, cfg.Speed.MaxThreads)
+		}
 	}
 
 	jobs, err := a.ListQueue()

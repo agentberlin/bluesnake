@@ -1,22 +1,37 @@
 /* ===========================================================================
-   New Crawl — URL entry, mode, profile, quick config, politeness
+   New Crawl — URL entry, mode, crawl setup (profile + quick config, politeness)
    =========================================================================== */
 import React, { useEffect, useState } from "react";
 import { Icon, Btn, Seg, Toggle } from "../ui";
-import { api } from "../api";
+import { api, DEFAULT_PROFILE, profileLabel } from "../api";
 
-export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCrawl }) {
+/* The crawl setup — the profile picker plus the quick knobs. One object so the
+   whole card is reusable: New Crawl renders it inline; the project "Crawl all"
+   dialog reuses it, keeping both journeys identical. */
+export function defaultCrawlSetup() {
+  // ups matches the 5-thread default so the rate cap isn't the bottleneck; 0 = unlimited
+  return { profile: DEFAULT_PROFILE, depth: "", threads: 5, ups: 5, rendering: "text" };
+}
+
+/* Map the setup card's state to the backend StartRequest knobs. */
+export function setupToRequest(s) {
+  return {
+    profile: s.profile,
+    threads: s.threads,
+    rate: s.ups,
+    maxDepth: s.depth === "" ? -1 : Math.max(0, parseInt(s.depth, 10) || 0),
+    rendering: s.rendering,
+  };
+}
+
+export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCrawl, initialUrl }) {
   const [mode, setMode] = useState("spider");
-  const [url, setUrl] = useState("https://");
+  const [url, setUrl] = useState(initialUrl || "https://");
   const [listSrc, setListSrc] = useState("paste");
   const [listText, setListText] = useState("");
   const [sitemapUrl, setSitemapUrl] = useState("");
-  const [profiles, setProfiles] = useState(["Default audit"]);
-  const [profile, setProfile] = useState("Default audit");
-  const [depth, setDepth] = useState(""); // "" = unlimited
-  const [threads, setThreads] = useState(5);
-  const [ups, setUps] = useState(5); // matches the 5-thread default so the rate cap isn't the bottleneck; 0 = unlimited
-  const [rendering, setRendering] = useState("text");
+  const [profiles, setProfiles] = useState([DEFAULT_PROFILE]);
+  const [setup, setSetup] = useState(defaultCrawlSetup());
   const [err, setErr] = useState("");
   const [starting, setStarting] = useState(false);
 
@@ -44,11 +59,7 @@ export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCr
         url: url.trim(),
         listUrls: mode === "list" && listSrc !== "sitemap" ? listText.trim().split("\n").map((s) => s.trim()).filter(Boolean) : [],
         sitemapUrl: mode === "list" && listSrc === "sitemap" ? sitemapUrl.trim() : "",
-        profile,
-        threads,
-        rate: ups,
-        maxDepth: depth === "" ? -1 : Math.max(0, parseInt(depth, 10) || 0),
-        rendering,
+        ...setupToRequest(setup),
       });
     } catch (e) {
       setErr(String(e && e.message ? e.message : e));
@@ -63,7 +74,7 @@ export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCr
         <Icon name="radar" size={17} />
         <span className="title">New Crawl</span>
         <div style={{ flex: 1 }} />
-        <Btn icon="sliders-horizontal" onClick={() => onOpenSettings(profile)}>All settings</Btn>
+        <Btn icon="sliders-horizontal" onClick={() => onOpenSettings(setup.profile)}>All settings</Btn>
       </div>
 
       <div className="scroll" style={{ padding: "40px 24px" }}>
@@ -119,45 +130,8 @@ export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCr
 
           {err && <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, color: "var(--s-4xx)", fontSize: 12.5, fontWeight: 500 }}><Icon name="circle-alert" size={15} />{err}</div>}
 
-          {/* quick config */}
-          <div className="card" style={{ marginTop: 24, padding: 0, overflow: "hidden" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--border-soft)" }}>
-              <Icon name="settings-2" size={15} style={{ color: "var(--ink-3)" }} />
-              <span style={{ fontSize: 12.5, fontWeight: 650 }}>Crawl setup</span>
-              <span className="hint" style={{ marginLeft: 2 }}>frozen into this crawl</span>
-              <div style={{ flex: 1 }} />
-              <select className="input" value={profile} onChange={(e) => setProfile(e.target.value)} style={{ width: "auto", height: 28, fontSize: 12, fontWeight: 600 }}>
-                {profiles.map((p) => <option key={p}>{p}</option>)}
-              </select>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0 }}>
-              <Setup label="Max crawl depth" hint="Clicks from start · blank = unlimited">
-                <input className="input mono" value={depth} placeholder="∞ unlimited" onChange={(e) => setDepth(e.target.value.replace(/\D/g, ""))} style={{ height: 28 }} />
-              </Setup>
-              <Setup label="Rendering">
-                <Seg value={rendering} onChange={setRendering} options={[{ value: "text", label: "Text only" }, { value: "javascript", label: "JavaScript" }]} />
-                {rendering === "javascript" && (
-                  <div style={{ marginTop: 8, display: "flex", gap: 7, alignItems: "flex-start", fontSize: 11, color: "var(--sev-warn)", lineHeight: 1.45 }}>
-                    <Icon name="triangle-alert" size={13} style={{ marginTop: 1, flex: "0 0 13px" }} />
-                    <span>JavaScript rendering loads each page in headless Chrome — slower, and Chrome/Chromium must be installed.</span>
-                  </div>
-                )}
-              </Setup>
-              <Setup label="Threads" hint="Parallel downloads">
-                <Stepper value={threads} min={1} max={50} onChange={setThreads} />
-              </Setup>
-            </div>
-            {/* politeness — surfaced, not buried */}
-            <div style={{ padding: "13px 16px", borderTop: "1px solid var(--border-soft)", background: "var(--surface-2)", display: "flex", alignItems: "center", gap: 13 }}>
-              <Icon name="heart-handshake" size={17} style={{ color: "var(--ink-3)", flex: "0 0 17px" }} />
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontSize: 12, fontWeight: 600 }}>Be polite — {ups === 0 ? "unlimited rate" : ups + " URLs / second"}</div>
-                <div className="hint">Crawling uses someone else's server. The throttle is courtesy as much as performance.</div>
-              </div>
-              <input type="range" min={0} max={20} value={ups} onChange={(e) => setUps(+e.target.value)} style={{ width: 150, accentColor: "var(--accent)" }} />
-              <span className="mono" style={{ fontSize: 12, width: 56, textAlign: "right", color: "var(--ink-2)" }}>{ups === 0 ? "max" : ups + "/s"}</span>
-            </div>
-          </div>
+          {/* quick config — the shared setup card */}
+          <CrawlSetupCard profiles={profiles} value={setup} onChange={setSetup} style={{ marginTop: 24 }} />
 
           <div style={{ marginTop: 18, display: "flex", alignItems: "center", justifyContent: "center", gap: 16, fontSize: 11.5, color: "var(--ink-faint)" }}>
             <span style={{ display: "flex", alignItems: "center", gap: 6 }}><Icon name="bot" size={13} /> Obeys robots.txt</span>
@@ -166,6 +140,52 @@ export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCr
           </div>
 
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* The shared crawl-setup card: profile picker + quick knobs + politeness.
+   Controlled — the caller owns the setup object (see defaultCrawlSetup). */
+export function CrawlSetupCard({ profiles, value, onChange, style, hint }) {
+  const set = (patch) => onChange({ ...value, ...patch });
+  return (
+    <div className="card" style={{ padding: 0, overflow: "hidden", ...style }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 16px", borderBottom: "1px solid var(--border-soft)" }}>
+        <Icon name="settings-2" size={15} style={{ color: "var(--ink-3)" }} />
+        <span style={{ fontSize: 12.5, fontWeight: 650 }}>Crawl setup</span>
+        <span className="hint" style={{ marginLeft: 2 }}>{hint || "frozen into this crawl"}</span>
+        <div style={{ flex: 1 }} />
+        <select className="input" value={value.profile} onChange={(e) => set({ profile: e.target.value })} style={{ width: "auto", height: 28, fontSize: 12, fontWeight: 600 }}>
+          {profiles.map((p) => <option key={p} value={p}>{profileLabel(p)}</option>)}
+        </select>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0 }}>
+        <Setup label="Max crawl depth" hint="Clicks from start · blank = unlimited">
+          <input className="input mono" value={value.depth} placeholder="∞ unlimited" onChange={(e) => set({ depth: e.target.value.replace(/\D/g, "") })} style={{ height: 28 }} />
+        </Setup>
+        <Setup label="Rendering">
+          <Seg value={value.rendering} onChange={(v) => set({ rendering: v })} options={[{ value: "text", label: "Text only" }, { value: "javascript", label: "JavaScript" }]} />
+          {value.rendering === "javascript" && (
+            <div style={{ marginTop: 8, display: "flex", gap: 7, alignItems: "flex-start", fontSize: 11, color: "var(--sev-warn)", lineHeight: 1.45 }}>
+              <Icon name="triangle-alert" size={13} style={{ marginTop: 1, flex: "0 0 13px" }} />
+              <span>JavaScript rendering loads each page in headless Chrome — slower, and Chrome/Chromium must be installed.</span>
+            </div>
+          )}
+        </Setup>
+        <Setup label="Threads" hint="Parallel downloads">
+          <Stepper value={value.threads} min={1} max={50} onChange={(v) => set({ threads: v })} />
+        </Setup>
+      </div>
+      {/* politeness — surfaced, not buried */}
+      <div style={{ padding: "13px 16px", borderTop: "1px solid var(--border-soft)", background: "var(--surface-2)", display: "flex", alignItems: "center", gap: 13 }}>
+        <Icon name="heart-handshake" size={17} style={{ color: "var(--ink-3)", flex: "0 0 17px" }} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: 12, fontWeight: 600 }}>Be polite — {value.ups === 0 ? "unlimited rate" : value.ups + " URLs / second"}</div>
+          <div className="hint">Crawling uses someone else's server. The throttle is courtesy as much as performance.</div>
+        </div>
+        <input type="range" min={0} max={20} value={value.ups} onChange={(e) => set({ ups: +e.target.value })} style={{ width: 150, accentColor: "var(--accent)" }} />
+        <span className="mono" style={{ fontSize: 12, width: 56, textAlign: "right", color: "var(--ink-2)" }}>{value.ups === 0 ? "max" : value.ups + "/s"}</span>
       </div>
     </div>
   );

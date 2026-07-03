@@ -6,7 +6,6 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/queue"
-	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
@@ -73,8 +72,6 @@ func (a *App) CrawlConfig(id string) (CrawlConfigInfo, error) {
 // config as a ConfigYAML spec — the executor's already-wired frozen-config path
 // (see internal/runner/runner.go). Returns the queue job id.
 func (a *App) RerunCrawl(id string) (string, error) {
-	a.ensureQueue()
-
 	st, err := store.OpenCrawl(a.storeDir, id)
 	if err != nil {
 		return "", err
@@ -101,14 +98,7 @@ func (a *App) RerunCrawl(id string) (string, error) {
 	} else {
 		spec.URL = seeds[0]
 	}
-	if err := runner.ValidateSpec(a.storeDir, spec); err != nil {
-		return "", err
-	}
-	j, err := a.disp.Enqueue(spec, "manual", "", "re-run "+seeds[0])
-	if err != nil {
-		return "", err
-	}
-	return j.ID, nil
+	return a.EnqueueCrawl(spec, "manual", "", "re-run "+seeds[0])
 }
 
 // SaveCrawlConfigAsProfile turns a crawl's frozen config into a reusable named

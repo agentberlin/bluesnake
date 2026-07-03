@@ -3,7 +3,6 @@ package main
 import (
 	"github.com/agentberlin/bluesnake/internal/compare"
 	"github.com/agentberlin/bluesnake/internal/project"
-	"github.com/agentberlin/bluesnake/internal/queue"
 )
 
 // ProjectApp is the Wails binding for the opt-in project layer (competitor
@@ -24,13 +23,17 @@ func NewProjectApp(app *App) *ProjectApp {
 	return &ProjectApp{storeDir: app.storeDir, app: app}
 }
 
-// CrawlAll enqueues a default spider crawl for every member domain of the
-// project, returning how many jobs it queued. The crawls drain through the
-// app's single dispatcher (up to speed.max_concurrent_crawls at a time),
-// interleaved with any hand-started crawls. A standalone crawl of a member
-// domain already auto-joins the project, so this is just "(re)crawl everything
-// in this project now".
-func (a *ProjectApp) CrawlAll(projectID string) (int, error) {
+// CrawlAll enqueues a spider crawl for every member domain of the project with
+// ONE shared setup — the request's profile + quick-config overrides apply to
+// each member, exactly like the New Crawl form (per-site saved setups are a
+// separate, planned feature). Every job's effective config is frozen at
+// enqueue (EnqueueCrawl → runner.FreezeSpec) like any other crawl. Returns how
+// many jobs it queued. The crawls drain through the app's single dispatcher
+// (up to speed.max_concurrent_crawls at a time), interleaved with any
+// hand-started crawls. A standalone crawl of a member domain already
+// auto-joins the project, so this is just "(re)crawl everything in this
+// project now".
+func (a *ProjectApp) CrawlAll(projectID string, req StartRequest) (int, error) {
 	s, err := a.open()
 	if err != nil {
 		return 0, err
@@ -42,7 +45,11 @@ func (a *ProjectApp) CrawlAll(projectID string) (int, error) {
 	}
 	n := 0
 	for _, m := range members {
-		spec := queue.JobSpec{URL: "https://" + m.Domain}
+		// members are always spider crawls of their domain root; only the
+		// request's profile + config knobs carry over
+		spec := req.toSpec()
+		spec.Mode, spec.URLs, spec.SitemapURL = "", nil, ""
+		spec.URL = "https://" + m.Domain
 		if _, err := a.app.EnqueueCrawl(spec, "project", projectID, m.Domain); err != nil {
 			return n, err
 		}

@@ -1,6 +1,13 @@
 /* Thin bridge to the Wails backend. Bound Go methods live on
    window.go.main.App; runtime events on window.runtime. */
 
+/* The default profile IS the app settings: internally it's a profile like any
+   other (auto-created, undeletable, what every crawl uses unless it names a
+   profile), but the UI never says "Default audit" — it presents it as the
+   app's settings, with named profiles as explicit snapshots of them. */
+export const DEFAULT_PROFILE = "Default audit";
+export const profileLabel = (p) => (!p || p === DEFAULT_PROFILE ? "App settings" : p);
+
 function backend() {
   if (!window.go || !window.go.main || !window.go.main.App) {
     throw new Error("backend not available — run inside the Wails app (wails dev)");
@@ -45,6 +52,7 @@ export const api = {
 
   listProfiles: () => call("ListProfiles"),
   duplicateProfile: (src, dst) => call("DuplicateProfile", src, dst),
+  deleteProfile: (name) => call("DeleteProfile", name),
   getProfileConfig: (profile) => call("GetProfileConfig", profile).then((s) => JSON.parse(s)),
   getConfigValues: (profile, keys) => call("GetConfigValues", profile, keys),
   setConfigValues: (profile, vals) => call("SetConfigValues", profile, vals),
@@ -93,7 +101,7 @@ export const projectApi = {
   sites: (id) => pcall("ProjectSites", id),
   comparison: (id, includeOptional) => pcall("ProjectComparison", id, includeOptional),
   diff: (id, domain) => pcall("ProjectDiff", id, domain),
-  crawlAll: (id) => pcall("CrawlAll", id),
+  crawlAll: (id, req) => pcall("CrawlAll", id, req),
 };
 
 /* Open a URL in the user's default browser (Wails runtime), falling back to a

@@ -290,8 +290,13 @@ func (e *Executor) open(ctx context.Context, spec queue.JobSpec) (
 		return openForResume(e.storeDir, spec.ResumeID)
 	}
 	if spec.ConfigYAML != "" {
+		// the normal path: every enqueue surface freezes the effective config
+		// into the spec (runner.FreezeSpec), so the job runs the exact config
+		// that was current when it was enqueued
 		cfg, err = config.Load([]byte(spec.ConfigYAML))
 	} else {
+		// legacy persisted queue rows (enqueued before freeze-at-enqueue) still
+		// carry only profile + overrides; resolve them at run time as before
 		cfg, err = BuildConfig(e.storeDir, spec)
 	}
 	if err != nil {
