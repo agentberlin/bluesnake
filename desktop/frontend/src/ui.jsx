@@ -214,7 +214,7 @@ export function Ring({ value, total, size = 44, stroke = 5, color = "var(--sev-o
 }
 
 /* ---- reusable modal --------------------------------------------------- */
-export function Modal({ title, body, actions, onClose, icon, danger }) {
+export function Modal({ title, body, actions, onClose, icon, danger, width }) {
   useEffect(() => {
     const h = (e) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", h);
@@ -222,7 +222,7 @@ export function Modal({ title, body, actions, onClose, icon, danger }) {
   }, []);
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "oklch(0.2 0.02 262 / 0.42)", backdropFilter: "blur(2px)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", animation: "fadeUp .15s ease" }}>
-      <div onClick={(e) => e.stopPropagation()} className="card fade" style={{ width: 420, padding: 22, boxShadow: "var(--shadow-lg)" }}>
+      <div onClick={(e) => e.stopPropagation()} className="card fade" style={{ width: width || 420, maxWidth: "calc(100vw - 48px)", padding: 22, boxShadow: "var(--shadow-lg)" }}>
         <div style={{ display: "flex", gap: 13, marginBottom: 14 }}>
           {icon && <div style={{ width: 38, height: 38, flex: "0 0 38px", display: "flex", alignItems: "center", justifyContent: "center", background: danger ? "color-mix(in oklab, var(--s-4xx) 14%, transparent)" : "var(--accent-soft)", color: danger ? "var(--s-4xx)" : "var(--accent)" }}><Icon name={icon} size={19} /></div>}
           <div style={{ minWidth: 0, flex: 1 }}>

@@ -16,7 +16,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
-func TestValidateSpec(t *testing.T) {
+func TestFreezeSpecValidation(t *testing.T) {
 	dir := t.TempDir()
 	cases := []struct {
 		name string
@@ -35,9 +35,13 @@ func TestValidateSpec(t *testing.T) {
 		{"bad config override", queue.JobSpec{URL: "https://e.com/", Config: map[string]any{"robots.mode": "nonsense"}}, false},
 	}
 	for _, c := range cases {
-		err := ValidateSpec(dir, c.spec)
+		frozen, err := FreezeSpec(dir, c.spec)
 		if (err == nil) != c.ok {
-			t.Errorf("%s: ValidateSpec err=%v, want ok=%v", c.name, err, c.ok)
+			t.Errorf("%s: FreezeSpec err=%v, want ok=%v", c.name, err, c.ok)
+		}
+		// every accepted non-resume spec must come out frozen
+		if err == nil && c.spec.ResumeID == "" && frozen.ConfigYAML == "" {
+			t.Errorf("%s: FreezeSpec returned an unfrozen spec (empty ConfigYAML)", c.name)
 		}
 	}
 }

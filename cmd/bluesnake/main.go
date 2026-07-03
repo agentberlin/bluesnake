@@ -127,20 +127,21 @@ func newConfigCmd() *cobra.Command {
 	}
 
 	var cfgFile string
+	var profile string
 	var sets []string
 	var crawlID string
 	var storeDir string
 	showCmd := &cobra.Command{
 		Use:   "show",
-		Short: "Print the effective configuration (file + overrides over defaults), or a stored crawl's frozen config with --crawl",
+		Short: "Print the effective configuration (file/profile + overrides over defaults), or a stored crawl's frozen config with --crawl",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --crawl prints the exact config frozen into a stored crawl at start —
 			// the same config resume/analyze reuse, and what the desktop Setup tab
-			// shows. It's a standalone source: combining it with --config/--set would
-			// be ambiguous, so that's rejected.
+			// shows. It's a standalone source: combining it with --config/--profile/
+			// --set would be ambiguous, so that's rejected.
 			if crawlID != "" {
-				if cfgFile != "" || len(sets) > 0 {
-					err := errors.New("--crawl reads the crawl's frozen config; it can't be combined with --config or --set")
+				if cfgFile != "" || profile != "" || len(sets) > 0 {
+					err := errors.New("--crawl reads the crawl's frozen config; it can't be combined with --config, --profile, or --set")
 					fmt.Fprintln(cmd.ErrOrStderr(), err)
 					return exitErr{2, err}
 				}
@@ -157,14 +158,10 @@ func newConfigCmd() *cobra.Command {
 				cmd.OutOrStdout().Write([]byte(cfgYAML))
 				return nil
 			}
-			c := config.Default()
-			var err error
-			if cfgFile != "" {
-				c, err = config.LoadFile(cfgFile)
-				if err != nil {
-					fmt.Fprintln(cmd.ErrOrStderr(), err)
-					return exitErr{2, err}
-				}
+			c, err := baseConfig(storeDir, profile, cfgFile)
+			if err != nil {
+				fmt.Fprintln(cmd.ErrOrStderr(), err)
+				return exitErr{2, err}
 			}
 			for _, s := range sets {
 				if err := c.Set(s); err != nil {
@@ -185,10 +182,11 @@ func newConfigCmd() *cobra.Command {
 		},
 	}
 	showCmd.Flags().StringVar(&cfgFile, "config", "", "config file")
+	showCmd.Flags().StringVar(&profile, "profile", "", "named config profile to show (see 'bluesnake config profiles')")
 	showCmd.Flags().StringArrayVar(&sets, "set", nil, "dotted-path override (key.path=value), repeatable")
 	showCmd.Flags().StringVar(&crawlID, "crawl", "", "print the config frozen into this stored crawl id")
 	showCmd.Flags().StringVar(&storeDir, "store-dir", defaultStoreDir(), "crawl storage directory")
 
-	cfgCmd.AddCommand(initCmd, validateCmd, showCmd)
+	cfgCmd.AddCommand(initCmd, validateCmd, showCmd, newProfilesCmd())
 	return cfgCmd
 }

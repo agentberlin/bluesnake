@@ -9,7 +9,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/queue"
@@ -22,6 +21,7 @@ import (
 func newCrawlCmd() *cobra.Command {
 	var (
 		cfgFile   string
+		profile   string
 		storeDir  string
 		sets      []string
 		threads   int
@@ -39,13 +39,10 @@ func newCrawlCmd() *cobra.Command {
 		Short: "Crawl a site in spider mode",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg := config.Default()
-			var err error
-			if cfgFile != "" {
-				if cfg, err = config.LoadFile(cfgFile); err != nil {
-					fmt.Fprintln(cmd.ErrOrStderr(), err)
-					return exitErr{2, err}
-				}
+			cfg, err := baseConfig(storeDir, profile, cfgFile)
+			if err != nil {
+				fmt.Fprintln(cmd.ErrOrStderr(), err)
+				return exitErr{2, err}
 			}
 			for _, s := range sets {
 				if err := cfg.Set(s); err != nil {
@@ -128,6 +125,7 @@ func newCrawlCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&cfgFile, "config", "", "config file (YAML)")
+	cmd.Flags().StringVar(&profile, "profile", "", "named config profile to start from (see 'bluesnake config profiles')")
 	cmd.Flags().StringVar(&storeDir, "store-dir", defaultStoreDir(), "crawl storage directory")
 	cmd.Flags().StringArrayVar(&sets, "set", nil, "dotted-path config override (key.path=value), repeatable")
 	cmd.Flags().IntVar(&threads, "threads", 0, "max concurrent threads (speed.max_threads)")

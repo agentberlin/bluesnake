@@ -1,23 +1,26 @@
 /* ===========================================================================
-   Settings & Profiles — curated tree bound to the real config schema
-   (dotted yaml-tag keys), search, simple/advanced, raw YAML editor.
+   Settings — the app settings (internally the default profile: what every
+   crawl uses unless it picks a profile) plus named profiles as snapshots of
+   them. Curated tree bound to the real config schema (dotted yaml-tag keys),
+   search, simple/advanced, raw YAML editor.
    =========================================================================== */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Icon, Btn, IconBtn, Search, Toggle, Seg, Empty, Toast, Modal } from "../ui";
-import { api, on, openURL } from "../api";
+import { api, on, openURL, DEFAULT_PROFILE, profileLabel } from "../api";
 import { SECTIONS, getPath, encodeVal } from "./config-schema";
 
 export function SettingsView({ profileName, focus, onBack, backLabel }) {
-  const [profiles, setProfiles] = useState(["Default audit"]);
-  const [profile, setProfile] = useState(profileName || "Default audit");
+  const [profiles, setProfiles] = useState([DEFAULT_PROFILE]);
+  const [profile, setProfile] = useState(profileName || DEFAULT_PROFILE);
   const [cfg, setCfg] = useState(null);
   const [pending, setPending] = useState({}); // key -> new value
   const [active, setActive] = useState("scope");
   const [advanced, setAdvanced] = useState(false);
   const [q, setQ] = useState("");
   const [toast, setToast] = useState(null);
-  const [dup, setDup] = useState(false);
+  const [dup, setDup] = useState(false); // "save as profile" (app settings) / duplicate (named profile)
   const [dupName, setDupName] = useState("");
+  const [del, setDel] = useState(false); // delete confirm for a named profile
   const [yamlMode, setYamlMode] = useState(false);
   const [yamlText, setYamlText] = useState("");
   const [cliAvail, setCliAvail] = useState(false); // CLI install panel only shows when an embedded CLI exists (macOS app)
@@ -44,6 +47,8 @@ export function SettingsView({ profileName, focus, onBack, backLabel }) {
   // profile chrome (search, advanced, save) and don't load profile config.
   const appSection = active === "mcp" || active === "cli" || active === "updates";
 
+  const isApp = profile === DEFAULT_PROFILE; // presenting the default profile as "App settings"
+
   async function save() {
     try {
       const vals = {};
@@ -52,7 +57,7 @@ export function SettingsView({ profileName, focus, onBack, backLabel }) {
         vals[k] = encodeVal(f, pending[k]);
       }
       await api.setConfigValues(profile, vals);
-      fireToast("Profile saved — used by the next crawl that picks it", "save");
+      fireToast(isApp ? "Settings saved — the next crawl uses them" : "Profile saved — used by the next crawl that picks it", "save");
       reload(profile);
     } catch (e) {
       fireToast("Invalid value: " + e, "circle-alert");
@@ -61,7 +66,7 @@ export function SettingsView({ profileName, focus, onBack, backLabel }) {
   async function saveYaml() {
     try {
       await api.saveProfileYAML(profile, yamlText);
-      fireToast("Profile YAML saved", "save");
+      fireToast(isApp ? "Settings YAML saved" : "Profile YAML saved", "save");
       reload(profile);
     } catch (e) {
       fireToast(String(e), "circle-alert");
@@ -73,13 +78,23 @@ export function SettingsView({ profileName, focus, onBack, backLabel }) {
       {/* category rail */}
       <div style={{ width: 218, flex: "0 0 218px", borderRight: "1px solid var(--border-soft)", background: "var(--sidebar)", display: "flex", flexDirection: "column", minHeight: 0 }}>
         <div style={{ padding: 11 }}>
-          <div style={{ fontSize: 10.5, fontWeight: 600, color: "var(--ink-faint)", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 7 }}>Profile</div>
+          <div style={{ fontSize: 10.5, fontWeight: 600, color: "var(--ink-faint)", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 7 }}>Configuration</div>
           <select className="input" value={profile} onChange={(e) => setProfile(e.target.value)} style={{ fontWeight: 600, fontSize: 12.5 }}>
-            {profiles.map((p) => <option key={p}>{p}</option>)}
+            {profiles.map((p) => <option key={p} value={p}>{profileLabel(p)}</option>)}
           </select>
           <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-            <Btn size="sm" icon="copy" style={{ flex: 1 }} onClick={() => { setDupName(profile + " copy"); setDup(true); }}>Duplicate</Btn>
+            {isApp
+              ? <Btn size="sm" icon="bookmark-plus" style={{ flex: 1 }} title="Snapshot the current app settings as a named, reusable profile" onClick={() => { setDupName(""); setDup(true); }}>Save as profile</Btn>
+              : <>
+                  <Btn size="sm" icon="copy" style={{ flex: 1 }} onClick={() => { setDupName(profile + " copy"); setDup(true); }}>Duplicate</Btn>
+                  <IconBtn icon="trash-2" title="Delete this profile" onClick={() => setDel(true)} />
+                </>}
             <Btn size="sm" icon={yamlMode ? "list" : "file-code"} style={{ flex: 1 }} onClick={() => setYamlMode((v) => !v)}>{yamlMode ? "Tree" : "YAML"}</Btn>
+          </div>
+          <div className="hint" style={{ marginTop: 8, lineHeight: 1.45 }}>
+            {isApp
+              ? "Every crawl uses these settings unless it picks a profile."
+              : "A saved snapshot — pick it on the New Crawl form to use it."}
           </div>
         </div>
         {!yamlMode && (
@@ -112,14 +127,14 @@ export function SettingsView({ profileName, focus, onBack, backLabel }) {
         <div className="toolbar">
           {onBack && <Btn size="sm" variant="ghost" icon="arrow-left" onClick={onBack} style={{ marginRight: 2 }}>{backLabel || "Back"}</Btn>}
           <span className="title" style={{ fontSize: 13.5 }}>Settings</span>
-          <span className="sub">{appSection && !yamlMode ? "Application" : profile}</span>
+          <span className="sub">{appSection && !yamlMode ? "Application" : profileLabel(profile)}</span>
           <div style={{ flex: 1 }} />
           {!yamlMode && !appSection && <>
             <Search value={q} onChange={setQ} placeholder="Search all settings…" width={230} />
             <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--ink-2)" }}>
               <Toggle on={advanced} onChange={setAdvanced} /> Advanced
             </label>
-            <Btn icon="save" variant="primary" disabled={!changedCount} onClick={save}>Save profile</Btn>
+            <Btn icon="save" variant="primary" disabled={!changedCount} onClick={save}>{isApp ? "Save settings" : "Save profile"}</Btn>
           </>}
           {yamlMode && <Btn icon="save" variant="primary" onClick={saveYaml}>Save YAML</Btn>}
         </div>
@@ -134,7 +149,7 @@ export function SettingsView({ profileName, focus, onBack, backLabel }) {
 
         {yamlMode ? (
           <div className="scroll" style={{ padding: "16px 20px", display: "flex", flexDirection: "column" }}>
-            <div className="hint" style={{ marginBottom: 10 }}>The full profile file — every setting the engine understands, including custom search, custom extraction and link positions. Validated on save.</div>
+            <div className="hint" style={{ marginBottom: 10 }}>The full configuration file — every setting the engine understands, including custom search, custom extraction and link positions. Validated on save.</div>
             <textarea className="input mono" value={yamlText} onChange={(e) => setYamlText(e.target.value)} spellCheck={false}
               style={{ flex: 1, minHeight: 420, padding: 14, lineHeight: 1.65, fontSize: 11.5, resize: "none" }} />
           </div>
@@ -171,20 +186,42 @@ export function SettingsView({ profileName, focus, onBack, backLabel }) {
       </div>
 
       {dup && (
-        <Modal onClose={() => setDup(false)} icon="copy" title="Duplicate profile"
-          body={<input className="input" value={dupName} autoFocus onChange={(e) => setDupName(e.target.value)} placeholder="New profile name" style={{ marginTop: 6 }} />}
+        <Modal onClose={() => setDup(false)} icon={isApp ? "bookmark-plus" : "copy"}
+          title={isApp ? "Save as profile" : "Duplicate profile"}
+          body={<div>
+            {isApp && <div className="hint" style={{ marginBottom: 6 }}>Snapshots the current app settings as a named profile you can pick on the New Crawl form. The app settings themselves stay as they are.</div>}
+            {changedCount > 0 && <div className="hint" style={{ marginBottom: 6, color: "var(--sev-warn)" }}>You have unsaved changes — they won't be included. Save first to snapshot them.</div>}
+            <input className="input" value={dupName} autoFocus onChange={(e) => setDupName(e.target.value)} placeholder="New profile name" style={{ marginTop: 6 }} />
+          </div>}
           actions={<>
             <Btn onClick={() => setDup(false)}>Cancel</Btn>
-            <Btn variant="primary" icon="copy" onClick={async () => {
+            <Btn variant="primary" icon={isApp ? "bookmark-plus" : "copy"} disabled={!dupName.trim()} onClick={async () => {
               try {
                 await api.duplicateProfile(profile, dupName);
                 const ps = await api.listProfiles();
                 setProfiles(ps);
                 setProfile(dupName.trim());
                 setDup(false);
-                fireToast("Profile duplicated", "copy");
+                fireToast(isApp ? "Profile saved from the app settings" : "Profile duplicated", "copy");
               } catch (e) { fireToast(String(e), "circle-alert"); }
-            }}>Duplicate</Btn>
+            }}>{isApp ? "Save profile" : "Duplicate"}</Btn>
+          </>} />
+      )}
+      {del && (
+        <Modal onClose={() => setDel(false)} icon="trash-2" danger title="Delete profile?"
+          body={<>This deletes the profile <b>{profile}</b>. Crawls that used it keep their own frozen copy of its settings.</>}
+          actions={<>
+            <Btn onClick={() => setDel(false)}>Cancel</Btn>
+            <Btn variant="primary" icon="trash-2" onClick={async () => {
+              try {
+                await api.deleteProfile(profile);
+                const ps = await api.listProfiles();
+                setProfiles(ps && ps.length ? ps : [DEFAULT_PROFILE]);
+                setProfile(DEFAULT_PROFILE);
+                setDel(false);
+                fireToast("Profile deleted", "trash-2");
+              } catch (e) { fireToast(String(e), "circle-alert"); }
+            }}>Delete</Btn>
           </>} />
       )}
       {toast && <Toast {...toast} />}

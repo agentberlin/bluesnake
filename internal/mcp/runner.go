@@ -57,10 +57,13 @@ func (r *Runner) ProcessLimiter() *limiter.Limiter { return r.lim }
 // mcp.Backend -------------------------------------------------------------
 
 func (r *Runner) StartCrawl(ctx context.Context, req StartRequest) (string, error) {
-	if err := runner.ValidateSpec(r.storeDir, req.Spec()); err != nil {
+	// freeze the effective config at enqueue (profile + overrides → ConfigYAML),
+	// so a profile edit while the job waits can't reshape it
+	spec, err := runner.FreezeSpec(r.storeDir, req.Spec())
+	if err != nil {
 		return "", err
 	}
-	return StartViaQueue(ctx, r.disp, r.maxCrawls, &r.startMu, req.Spec(), req.Label())
+	return StartViaQueue(ctx, r.disp, r.maxCrawls, &r.startMu, spec, req.Label())
 }
 
 func (r *Runner) ResumeCrawl(id string) (string, error) {

@@ -9,7 +9,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/project"
@@ -256,14 +255,21 @@ func newProjectCmd() *cobra.Command {
 	}
 
 	var (
-		parallel       int
-		crawlAllConfig string
+		parallel        int
+		crawlAllConfig  string
+		crawlAllProfile string
 	)
 	crawlAllCmd := &cobra.Command{
 		Use:   "crawl-all <project-id>",
 		Short: "Crawl every member domain of the project (up to --parallel at once)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// one shared config for every member (from --profile or --config);
+			// resolve it first so a bad flag combination fails before any queueing
+			cfg, err := baseConfig(storeDir, crawlAllProfile, crawlAllConfig)
+			if err != nil {
+				return exitErr{2, err}
+			}
 			s, err := open()
 			if err != nil {
 				return err
@@ -276,12 +282,6 @@ func newProjectCmd() *cobra.Command {
 			if len(members) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "project has no member domains to crawl")
 				return nil
-			}
-			cfg := config.Default()
-			if crawlAllConfig != "" {
-				if cfg, err = config.LoadFile(crawlAllConfig); err != nil {
-					return exitErr{2, err}
-				}
 			}
 			// Parallelism comes from --parallel when set, else the config's
 			// max_concurrent_crawls knob (M2), so off-CLI surfaces and the CLI agree.
@@ -340,6 +340,7 @@ func newProjectCmd() *cobra.Command {
 
 	crawlAllCmd.Flags().IntVar(&parallel, "parallel", 1, "member crawls to run at once (default: speed.max_concurrent_crawls)")
 	crawlAllCmd.Flags().StringVar(&crawlAllConfig, "config", "", "config file (YAML) applied to every member crawl")
+	crawlAllCmd.Flags().StringVar(&crawlAllProfile, "profile", "", "named config profile applied to every member crawl (see 'bluesnake config profiles')")
 	cmd.AddCommand(createCmd, lsCmd, rmCmd, addCmd, removeCmd, showCmd, compareCmd, diffCmd, crawlAllCmd)
 	return cmd
 }

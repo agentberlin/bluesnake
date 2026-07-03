@@ -12,6 +12,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/queue"
+	"gopkg.in/yaml.v3"
 )
 
 // Profile resolution and config/seed building, shared by every surface (it used
@@ -119,26 +120,49 @@ func BuildConfig(storeDir string, spec queue.JobSpec) (*config.Config, error) {
 	return cfg, nil
 }
 
-// ValidateSpec checks a job spec without touching the network, so a surface can
-// reject a bad request at enqueue time (unknown profile, bad config override,
-// malformed seed) and still surface the precise error — the live sitemap fetch
-// and final seed resolution stay deferred to run time (ResolveSeeds). A resume
-// job is validated when it runs (the crawl must exist on disk).
-func ValidateSpec(storeDir string, spec queue.JobSpec) error {
+// FreezeSpec validates a job spec for enqueue and freezes its effective config
+// into ConfigYAML: profile (or defaults) + dotted-path overrides are resolved
+// NOW, so a queued job runs with exactly the config the user saw when they
+// enqueued it — editing a profile afterwards changes future enqueues, never
+// jobs already sitting in the queue. A resume job passes through untouched (it
+// runs its crawl's own frozen config), and an already-frozen spec (CLI
+// file/flags, desktop re-run) is validated as-is. The profile name stays on
+// the spec as provenance; the executor ignores it once ConfigYAML is set. The
+// live sitemap fetch and final seed resolution stay deferred to run time
+// (ResolveSeeds), so a list-mode job still reads a fresh sitemap when it runs.
+func FreezeSpec(storeDir string, spec queue.JobSpec) (queue.JobSpec, error) {
 	if spec.ResumeID != "" {
-		return nil
+		return spec, nil
+	}
+	if err := validateSeedShape(spec); err != nil {
+		return queue.JobSpec{}, err
 	}
 	if spec.ConfigYAML != "" {
 		cfg, err := config.Load([]byte(spec.ConfigYAML))
 		if err != nil {
-			return err
+			return queue.JobSpec{}, err
 		}
 		if err := cfg.Validate(); err != nil {
-			return err
+			return queue.JobSpec{}, err
 		}
-	} else if _, err := BuildConfig(storeDir, spec); err != nil {
-		return err
+		return spec, nil
 	}
+	cfg, err := BuildConfig(storeDir, spec)
+	if err != nil {
+		return queue.JobSpec{}, err
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return queue.JobSpec{}, err
+	}
+	spec.ConfigYAML = string(data)
+	spec.Config = nil // folded into ConfigYAML
+	return spec, nil
+}
+
+// validateSeedShape checks the spec's seed surface (mode + url/urls) without
+// touching config or the network.
+func validateSeedShape(spec queue.JobSpec) error {
 	switch spec.Mode {
 	case "", "spider":
 		if !strings.HasPrefix(spec.URL, "http://") && !strings.HasPrefix(spec.URL, "https://") {

@@ -251,8 +251,10 @@ func (b *desktopBackend) ProcessLimiter() *limiter.Limiter { return b.app.proces
 func (b *desktopBackend) StartCrawl(ctx context.Context, req mcp.StartRequest) (string, error) {
 	a := b.app
 	a.ensureQueue()
-	spec := req.Spec()
-	if err := runner.ValidateSpec(a.storeDir, spec); err != nil {
+	// freeze the effective config at enqueue (like every other start path), so
+	// a profile edit while the job waits can't reshape it
+	spec, err := runner.FreezeSpec(a.storeDir, req.Spec())
+	if err != nil {
 		return "", err
 	}
 	// the observer emits crawl:started when the dispatcher begins the crawl, so

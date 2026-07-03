@@ -155,15 +155,15 @@ func TestBuildConfigListModeIgnoreRobots(t *testing.T) {
 	}
 }
 
-// TestValidateSpecConfigYAMLInvalid covers ValidateSpec's ConfigYAML
+// TestFreezeSpecConfigYAMLInvalid covers FreezeSpec's ConfigYAML
 // validation-error arm (parses but fails Validate).
-func TestValidateSpecConfigYAMLInvalid(t *testing.T) {
-	err := ValidateSpec(t.TempDir(), queue.JobSpec{
+func TestFreezeSpecConfigYAMLInvalid(t *testing.T) {
+	_, err := FreezeSpec(t.TempDir(), queue.JobSpec{
 		URL:        "https://e.com/",
 		ConfigYAML: "speed:\n  max_threads: 0\n", // parses, fails Validate
 	})
 	if err == nil || !strings.Contains(err.Error(), "max_threads") {
-		t.Errorf("ValidateSpec with an invalid ConfigYAML err=%v, want a max_threads error", err)
+		t.Errorf("FreezeSpec with an invalid ConfigYAML err=%v, want a max_threads error", err)
 	}
 }
 

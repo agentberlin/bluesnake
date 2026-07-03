@@ -253,11 +253,12 @@ type StartRequest struct {
 	Rate       float64  `json:"rate"`     // URLs/sec, 0 = unlimited
 	MaxDepth   int      `json:"maxDepth"` // -1 = unlimited
 	Rendering  string   `json:"rendering"`
-	// SiteChecks is the form's site-wide-checks selector. Like every other
+	// SiteChecks is the setup card's site-wide-checks selector (New Crawl and
+	// the project "Crawl all" dialog share the card). Like every other
 	// quick-config field it is absolute — the choice is frozen into the crawl
 	// regardless of the profile: "auto" (gate on full-domain crawls), "all"
 	// (force everything on, render diff included), "off" (never). "" = no
-	// override (non-form callers: welcome shortcut, projects crawl-all).
+	// override (non-form callers, e.g. the welcome shortcut).
 	SiteChecks string `json:"siteChecks"`
 }
 
@@ -318,27 +319,13 @@ func (req StartRequest) label() string {
 // jumps to the live view on the crawl:started event; when a crawl is already
 // running it queues behind it.
 func (a *App) StartCrawl(req StartRequest) (string, error) {
-	a.ensureQueue()
-	spec := req.toSpec()
-	if err := runner.ValidateSpec(a.storeDir, spec); err != nil {
-		return "", err
-	}
-	j, err := a.disp.Enqueue(spec, "manual", "", req.label())
-	if err != nil {
-		return "", err
-	}
-	return j.ID, nil
+	return a.EnqueueCrawl(req.toSpec(), "manual", "", req.label())
 }
 
 // ResumeCrawl enqueues a job that resumes an existing crawl.
 func (a *App) ResumeCrawl(id string) (string, error) {
-	a.ensureQueue()
 	a.invalidate(id)
-	j, err := a.disp.Enqueue(queue.JobSpec{ResumeID: id}, "manual", "", "resume "+id)
-	if err != nil {
-		return "", err
-	}
-	return j.ID, nil
+	return a.EnqueueCrawl(queue.JobSpec{ResumeID: id}, "manual", "", "resume "+id)
 }
 
 // PauseCrawl interrupts one live crawl by id, leaving it resumable; other
@@ -459,11 +446,19 @@ func (a *App) ListQueue() ([]QueueItem, error) {
 	return out, nil
 }
 
-// EnqueueCrawl adds a job to the queue and returns its id. It is the entry point
-// the removable project layer uses to drive "crawl all" through the same queue
-// without the core App depending on the project package.
+// EnqueueCrawl validates a job, freezes its effective config (profile +
+// overrides resolve to ConfigYAML now, so a later profile edit never reshapes
+// an already-queued job), and adds it to the queue, returning the job id. It
+// is the one desktop enqueue path: StartCrawl, resume, re-run, and the
+// removable project layer's "crawl all" all pass through here (the project
+// layer calls it so it can drive the same queue without the core App
+// depending on the project package).
 func (a *App) EnqueueCrawl(spec queue.JobSpec, source, projectID, label string) (string, error) {
 	a.ensureQueue()
+	spec, err := runner.FreezeSpec(a.storeDir, spec)
+	if err != nil {
+		return "", err
+	}
 	j, err := a.disp.Enqueue(spec, source, projectID, label)
 	if err != nil {
 		return "", err

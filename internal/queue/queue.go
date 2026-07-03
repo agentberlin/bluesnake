@@ -26,9 +26,11 @@ import (
 
 // JobSpec is the neutral description of a crawl to run: the same surface the
 // CLI/MCP expose (profile + dotted-path config overrides) plus a ResumeID for a
-// job that continues an existing crawl. The executor turns it into a real crawl
-// at run time (so e.g. a list-mode sitemap is fetched when the job runs, not when
-// it is enqueued).
+// job that continues an existing crawl. Seeds still resolve at run time (a
+// list-mode sitemap is fetched when the job runs, not when it is enqueued),
+// but the config does NOT: every enqueue path freezes the effective config
+// into ConfigYAML via runner.FreezeSpec, so a queued job is immune to profile
+// edits made while it waits.
 type JobSpec struct {
 	Mode       string         `json:"mode,omitempty"` // spider (default) | list
 	URL        string         `json:"url,omitempty"`
@@ -37,9 +39,12 @@ type JobSpec struct {
 	Profile    string         `json:"profile,omitempty"`
 	Config     map[string]any `json:"config,omitempty"` // dotted path -> value
 	ResumeID   string         `json:"resume_id,omitempty"`
-	// ConfigYAML is a fully-frozen config used instead of Profile+Config. The CLI
-	// sets it (it builds its config from a file/flags rather than a named
-	// profile); the profile-based surfaces leave it empty.
+	// ConfigYAML is the fully-frozen effective config, resolved at enqueue time
+	// (runner.FreezeSpec): the CLI builds it from a file/flags, the
+	// profile-based surfaces (desktop, MCP) from profile + overrides. Once set,
+	// Profile/Config are provenance only — the executor runs this YAML. Empty
+	// only on legacy queue rows persisted before the freeze-at-enqueue change;
+	// those resolve their profile at run time instead.
 	ConfigYAML string `json:"config_yaml,omitempty"`
 }
 

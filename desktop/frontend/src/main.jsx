@@ -7,7 +7,7 @@ import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import "@fontsource/jetbrains-mono/600.css";
 import "./styles.css";
-import { api, on, urlShort, hostOf, openURL } from "./api";
+import { api, on, urlShort, hostOf, openURL, DEFAULT_PROFILE } from "./api";
 import { Icon, IconBtn, BrandMark, Modal, Btn, CopyButton } from "./ui";
 import { CrawlManager } from "./views/home";
 import { Welcome } from "./views/welcome";
@@ -45,7 +45,8 @@ function App() {
   const [liveCrawlIds, setLiveCrawlIds] = useState([]); // every currently-running crawl (parallel-aware)
   const [queueJobs, setQueueJobs] = useState([]);
   const [resultsTab, setResultsTab] = useState("internal");
-  const [settingsProfile, setSettingsProfile] = useState("Default audit");
+  const [settingsProfile, setSettingsProfile] = useState("");
+  const [newCrawlUrl, setNewCrawlUrl] = useState(""); // prefill for the New Crawl form (project site buttons)
   const [detail, setDetail] = useState(null); // {crawlId, url}
   const [issueFilter, setIssueFilter] = useState(null); // {id, name}
   const [collapsed, setCollapsed] = useState(false);
@@ -168,6 +169,14 @@ function App() {
     setView("results");
   }
 
+  // Every "start a crawl" affordance routes through the New Crawl form — with
+  // an optional prefilled URL (a project site's Crawl button) — so picking the
+  // setup is always part of the journey rather than a hidden default.
+  function openNewCrawl(prefill) {
+    setNewCrawlUrl(prefill || "");
+    setView("new");
+  }
+
   async function startCrawl(req) {
     // Starting enqueues a job. When idle the dispatcher picks it up within a tick
     // and the crawl:started event opens the live view; when a crawl is already
@@ -184,7 +193,7 @@ function App() {
     if (u && !/^https?:\/\//i.test(u)) u = "https://" + u;
     return startCrawl({
       mode: "spider", url: u, listUrls: [], sitemapUrl: "",
-      profile: "Default audit", threads: 5, rate: 2, maxDepth: -1, rendering: "text",
+      profile: DEFAULT_PROFILE, threads: 5, rate: 2, maxDepth: -1, rendering: "text",
     });
   }
   async function resumeCrawl(c) {
@@ -307,8 +316,8 @@ function App() {
         <div className={"sidebar" + (collapsed ? " collapsed" : "")}>
           <div className="sb-top">
             {collapsed
-              ? <button className="btn-newcrawl" title={crawlActive ? "Add a crawl to the queue" : "New Crawl"} onClick={() => setView("new")} style={{ width: 34, height: 34, padding: 0 }}><Icon name="plus" size={16} /></button>
-              : <button className="btn-newcrawl" title={crawlActive ? "Queued behind the running crawl" : "New Crawl"} onClick={() => setView("new")}><Icon name="plus" size={15} />New Crawl</button>}
+              ? <button className="btn-newcrawl" title={crawlActive ? "Add a crawl to the queue" : "New Crawl"} onClick={() => openNewCrawl()} style={{ width: 34, height: 34, padding: 0 }}><Icon name="plus" size={16} /></button>
+              : <button className="btn-newcrawl" title={crawlActive ? "Queued behind the running crawl" : "New Crawl"} onClick={() => openNewCrawl()}><Icon name="plus" size={15} />New Crawl</button>}
           </div>
           <div className="sb-nav">
             {nav.map((n) => (
@@ -361,16 +370,16 @@ function App() {
         {/* main routed content */}
         {view === "home" && crawlsLoaded && (
           crawls.length === 0
-            ? <Welcome onStart={startFromWelcome} onConfigure={() => setView("new")}
+            ? <Welcome onStart={startFromWelcome} onConfigure={() => openNewCrawl()}
                 onMcp={() => { setSettingsFocus({ section: "mcp" }); setSettingsBack({ view: "home", label: "Back" }); setView("settings"); }} />
-            : <CrawlManager crawls={crawls} onOpen={openCrawl} onOpenSetup={openCrawlSetup} onResume={resumeCrawl} onNew={() => setView("new")} onDelete={deleteCrawl} storage={storage} crawlBusyMsg={crawlBusyMsg} />
+            : <CrawlManager crawls={crawls} onOpen={openCrawl} onOpenSetup={openCrawlSetup} onResume={resumeCrawl} onNew={() => openNewCrawl()} onDelete={deleteCrawl} storage={storage} crawlBusyMsg={crawlBusyMsg} />
         )}
-        {view === "new" && <NewCrawl onStart={startCrawl} onOpenSettings={(p) => { setSettingsProfile(p); setSettingsBack({ view: "new", label: "New Crawl" }); setView("settings"); }} crawlBusyMsg={crawlBusyMsg} onViewActiveCrawl={viewActiveCrawl} />}
+        {view === "new" && <NewCrawl key={newCrawlUrl || "blank"} initialUrl={newCrawlUrl} onStart={startCrawl} onOpenSettings={(p) => { setSettingsProfile(p); setSettingsBack({ view: "new", label: "New Crawl" }); setView("settings"); }} crawlBusyMsg={crawlBusyMsg} onViewActiveCrawl={viewActiveCrawl} />}
         {view === "queue" && <QueueView jobs={queueJobs} liveCrawlIds={liveCrawlIds} onRefresh={refreshQueue}
           onCancel={(id) => api.cancelJob(id).then(refreshQueue).catch(() => {})}
           onClear={(id) => api.clearJob(id).then(refreshQueue).catch(() => {})}
           onOpenCrawl={(crawlId) => { const c = crawls.find((x) => x.id === crawlId); if (c) openCrawl(c); }}
-          onNew={() => setView("new")} />}
+          onNew={() => openNewCrawl()} />}
         {view === "results" && activeCrawl && (
           <ResultsWorkspace
             crawl={activeCrawl}
@@ -390,10 +399,9 @@ function App() {
         )}
         {view === "settings" && <SettingsView profileName={settingsProfile} focus={settingsFocus}
           onBack={settingsBack ? () => setView(settingsBack.view) : null} backLabel={settingsBack ? settingsBack.label : null} />}
-        {view === "projects" && <ProjectsView crawlBusyMsg={crawlBusyMsg} onCrawlSite={(domain) => startCrawl({
-          mode: "spider", url: "https://" + domain, listUrls: [], sitemapUrl: "",
-          profile: "Default audit", threads: 5, rate: 2, maxDepth: -1, rendering: "text",
-        })} />}
+        {/* a project site's Crawl button opens the New Crawl journey prefilled
+            (same setup step as any crawl) instead of starting immediately */}
+        {view === "projects" && <ProjectsView onCrawlSite={(domain) => openNewCrawl("https://" + domain)} />}
         {view === "tools" && <ToolsView initial={toolsLink} onConsumedInitial={() => setToolsLink(null)} />}
       </div>
 
