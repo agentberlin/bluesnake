@@ -39,10 +39,10 @@ func main() {
 		},
 		OnStartup:  app.startup,
 		OnShutdown: app.shutdown,
-		// ProjectApp is a SEPARATE bound struct for the opt-in project layer
-		// (project_app.go); it generates its own ProjectApp.js and leaves the
-		// core App binding untouched, so the feature stays cleanly removable.
-		Bind: []interface{}{app, NewProjectApp(app)},
+		// ProjectApp and ToolsApp are SEPARATE bound structs (project_app.go,
+		// tools_app.go); each generates its own .js binding and leaves the
+		// core App binding untouched, so the features stay cleanly removable.
+		Bind: []interface{}{app, NewProjectApp(app), NewToolsApp()},
 		Mac: &mac.Options{
 			TitleBar:             mac.TitleBarHiddenInset(),
 			Appearance:           mac.DefaultAppearance,

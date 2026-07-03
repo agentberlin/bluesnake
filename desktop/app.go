@@ -3,12 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -18,7 +15,6 @@ import (
 	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/issues"
 	"github.com/agentberlin/bluesnake/internal/queue"
-	"github.com/agentberlin/bluesnake/internal/robots"
 	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
@@ -196,6 +192,12 @@ type StartRequest struct {
 	Rate       float64  `json:"rate"`     // URLs/sec, 0 = unlimited
 	MaxDepth   int      `json:"maxDepth"` // -1 = unlimited
 	Rendering  string   `json:"rendering"`
+	// SiteChecks is the form's site-wide-checks selector. Like every other
+	// quick-config field it is absolute — the choice is frozen into the crawl
+	// regardless of the profile: "auto" (gate on full-domain crawls), "all"
+	// (force everything on, render diff included), "off" (never). "" = no
+	// override (non-form callers: welcome shortcut, projects crawl-all).
+	SiteChecks string `json:"siteChecks"`
 }
 
 // toSpec translates the desktop's start form into the neutral queue job spec:
@@ -213,6 +215,19 @@ func (req StartRequest) toSpec() queue.JobSpec {
 	}
 	if req.Rendering != "" {
 		cfg["rendering.mode"] = req.Rendering
+	}
+	switch req.SiteChecks {
+	case "":
+		// no override — the profile's site_checks config decides
+	case "all":
+		cfg["site_checks.enabled"] = "always"
+		cfg["site_checks.render_diff"] = true
+	case "off":
+		cfg["site_checks.enabled"] = "never"
+	default:
+		// "auto", or any raw value — config validation rejects unknown enums
+		// at enqueue time, exactly like a mistyped rendering mode.
+		cfg["site_checks.enabled"] = req.SiteChecks
 	}
 	spec := queue.JobSpec{Mode: req.Mode, Profile: req.Profile, Config: cfg}
 	if req.Mode == "list" {
@@ -394,55 +409,6 @@ func (a *App) awaitCrawlID(ctx context.Context, jobID string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("crawl did not start in time")
-}
-
-// ---------------------------------------------------------------------------
-// robots tester
-
-type RobotsVerdict struct {
-	URL     string `json:"url"`
-	Allowed bool   `json:"allowed"`
-	Line    int    `json:"line"`
-	Rule    string `json:"rule"`
-}
-
-func (a *App) TestRobots(robotsTxt, token string, urls []string) []RobotsVerdict {
-	f := robots.Parse([]byte(robotsTxt))
-	out := make([]RobotsVerdict, 0, len(urls))
-	for _, u := range urls {
-		u = strings.TrimSpace(u)
-		if u == "" {
-			continue
-		}
-		v := f.Verdict(token, u)
-		rv := RobotsVerdict{URL: u, Allowed: v.Allowed}
-		if v.Rule != nil {
-			rv.Line = v.Rule.Line
-			rv.Rule = v.Rule.Raw
-		}
-		out = append(out, rv)
-	}
-	return out
-}
-
-// FetchRobots downloads the live robots.txt for the host of the given URL.
-func (a *App) FetchRobots(site string) (string, error) {
-	u, err := url.Parse(site)
-	if err != nil || u.Host == "" {
-		return "", fmt.Errorf("enter a full URL, e.g. https://example.com")
-	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(u.Scheme + "://" + u.Host + "/robots.txt")
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("robots.txt returned HTTP %d", resp.StatusCode)
-	}
-	buf := make([]byte, 512*1024)
-	n, _ := resp.Body.Read(buf)
-	return string(buf[:n]), nil
 }
 
 // ---------------------------------------------------------------------------

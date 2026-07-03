@@ -26,7 +26,7 @@ const DATASETS = [
 
 const ROW_LIMIT = 2000;
 
-export function ResultsWorkspace({ crawl, live, tab, setTab, issueFilter, setIssueFilter, onOpenDetail, onFilterByIssue, onResume, crawlBusyMsg }) {
+export function ResultsWorkspace({ crawl, live, tab, setTab, issueFilter, setIssueFilter, onOpenDetail, onFilterByIssue, onOpenTool, onResume, crawlBusyMsg }) {
   const [toast, setToast] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [analyseMenu, setAnalyseMenu] = useState(false);
@@ -172,7 +172,7 @@ export function ResultsWorkspace({ crawl, live, tab, setTab, issueFilter, setIss
             )}
 
             {tab === "overview" && <ResultsOverview crawl={crawl} setTab={setTab} onFilterByIssue={onFilterByIssue} />}
-            {tab === "issues" && <IssuesBrowser crawlId={crawl.id} onFilterByIssue={onFilterByIssue} />}
+            {tab === "issues" && <IssuesBrowser crawlId={crawl.id} onFilterByIssue={onFilterByIssue} onOpenTool={onOpenTool} />}
             {tab !== "overview" && tab !== "issues" && (
               loading ? <Loading />
                 : error ? <Empty icon="circle-alert" title="Couldn't load dataset">{error}</Empty>
@@ -271,6 +271,8 @@ function ResultsOverview({ crawl, setTab, onFilterByIssue }) {
           ))}
         </div>
 
+        <SiteHealthStrip health={o.siteHealth} setTab={setTab} />
+
         <div className="card" style={{ overflow: "hidden" }}>
           <div style={{ padding: "13px 16px", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center" }}>
             <span style={{ fontSize: 12.5, fontWeight: 650 }}>Top issues to fix</span><div style={{ flex: 1 }} /><Btn size="sm" variant="ghost" icon="arrow-right" onClick={() => setTab("issues")}>All issues</Btn>
@@ -296,6 +298,50 @@ function ResultsOverview({ crawl, setTab, onFilterByIssue }) {
           <Icon name="git-compare" size={16} />
           <span>Crawl analysis ran automatically on finish. Changed a threshold? <b style={{ color: "var(--ink)" }}>Re-analyse</b> recomputes scores and issues without re-downloading anything.</span>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* Site health — the crawl's site-wide checks (robots.txt, sitemaps, AI-bot
+   access, …) rolled up one chip per check KIND, so the strip stays one row
+   no matter how many individual issue IDs the family grows. Each chip leads
+   with the check's positive story (the report summary) and badges the
+   derived findings with the same severity encoding as the issues view. */
+const HEALTH_ICONS = {
+  robots: "bot", sitemap: "map", ai_bots: "sparkles",
+  render_diff: "monitor-play", llms_txt: "file-text",
+};
+
+function SiteHealthStrip({ health, setTab }) {
+  if (!health || !health.length) return null;
+  return (
+    <div className="card" style={{ overflow: "hidden", marginBottom: 14 }}>
+      <div style={{ padding: "13px 16px", borderBottom: "1px solid var(--border-soft)", display: "flex", alignItems: "center", gap: 8 }}>
+        <Icon name="wrench" size={14} style={{ color: "var(--ink-3)" }} />
+        <span style={{ fontSize: 12.5, fontWeight: 650 }}>Site-wide checks</span>
+        <span className="hint">audited at crawl start</span>
+        <div style={{ flex: 1 }} />
+        <Btn size="sm" variant="ghost" icon="arrow-right" onClick={() => setTab("issues")}>Details</Btn>
+      </div>
+      {/* hairline separators in both directions via the gap trick, so the
+          grid can wrap at any width without doubled borders */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 1, background: "var(--border-soft)" }}>
+        {health.map((h) => {
+          const sev = h.findings > 0 ? (SEV[h.severity] || SEV.warning) : null;
+          return (
+            <div key={h.kind} style={{ background: "var(--surface)", padding: "12px 15px", cursor: "default" }} onClick={() => setTab("issues")}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <Icon name={HEALTH_ICONS[h.kind] || "wrench"} size={14} style={{ color: "var(--ink-3)" }} />
+                <span style={{ fontSize: 12, fontWeight: 600, flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{h.label}</span>
+                {sev
+                  ? <span className="badge tint" style={{ "--c": sev.c }}><Icon name={sev.icon} size={11} />{h.findings}</span>
+                  : <span className="badge tint" style={{ "--c": "var(--sev-ok)" }}><Icon name="circle-check" size={11} />passed</span>}
+              </div>
+              <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-faint)", marginTop: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={h.summary}>{h.summary}</div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

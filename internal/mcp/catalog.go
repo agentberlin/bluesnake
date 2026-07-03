@@ -37,6 +37,7 @@ var skipPrefixes = []string{
 var enums = map[string][]string{
 	"mode":                      {"spider", "list"},
 	"robots.mode":               {"respect", "ignore", "ignore-report"},
+	"site_checks.enabled":       {"auto", "always", "never"},
 	"rendering.mode":            {"text", "javascript"},
 	"rendering.wait_strategy":   {"adaptive", "fixed"},
 	"advanced.cookie_storage":   {"session", "persistent", "none"},
@@ -100,6 +101,16 @@ var descriptions = map[string]string{
 	"sitemaps.crawl_linked":             "Crawl XML sitemaps referenced by the site.",
 	"sitemaps.auto_discover_via_robots": "Discover sitemaps from robots.txt Sitemap: lines and crawl them.",
 	"sitemaps.urls":                     "Explicit sitemap URLs to crawl in addition to discovered ones.",
+
+	"site_checks.enabled": "Site-level audits (robots.txt, sitemaps, AI-bot access) at crawl start. auto = only for full-domain crawls (root-seeded spider crawl, no include patterns); always/never override.",
+	"site_checks.robots":  "Audit the seed host's robots.txt: reachability, syntax, blocks-all, size, Sitemap directive.",
+	"site_checks.sitemap": "Discover and validate the site's XML sitemaps: fetchability, XML shape, protocol limits, entry hygiene.",
+
+	"site_checks.ai_bots.check":      "Evaluate robots.txt for every AI crawler in the registry (GPTBot, ClaudeBot, PerplexityBot, ...). No extra requests.",
+	"site_checks.ai_bots.live_probe": "Also fetch the site root once per fetcher bot with that bot's User-Agent (plus one control fetch) to catch WAF/CDN-level blocks.",
+	"site_checks.ai_bots.bots":       "AI-bot registry extensions/overrides. Items: {name, operator, purpose training|search|user_action, robots_token, user_agent}.",
+	"site_checks.ai_bots.skip":       "Registry bot names to exclude from the audit.",
+	"site_checks.render_diff":        "Diff the seed page raw vs JavaScript-rendered (text-mode crawls; needs Chrome, skips without it). Off by default — launches headless Chrome.",
 
 	"extraction.directives.meta_robots":                         "Extract meta robots directives.",
 	"extraction.directives.x_robots_tag":                        "Extract X-Robots-Tag response headers.",

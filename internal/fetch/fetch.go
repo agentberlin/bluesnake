@@ -122,9 +122,22 @@ func New(cfg *config.Config, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
+// Override customizes a single request without touching the configured
+// profile — the AI-bot live probes fetch as each bot's User-Agent
+// (DESIGN.md §5.10). Zero value = the configured behaviour.
+type Override struct {
+	UserAgent string            // replaces http.user_agent when non-empty
+	Headers   map[string]string // applied last, over browser and configured headers
+}
+
 // Fetch performs one request. The context bounds the whole call in addition
 // to the configured response timeout.
 func (c *Client) Fetch(ctx context.Context, rawURL string) *Result {
+	return c.FetchWith(ctx, rawURL, Override{})
+}
+
+// FetchWith is Fetch with a per-request override.
+func (c *Client) FetchWith(ctx context.Context, rawURL string, o Override) *Result {
 	res := &Result{URL: rawURL}
 
 	u, err := url.Parse(rawURL)
@@ -146,7 +159,7 @@ func (c *Client) Fetch(ctx context.Context, rawURL string) *Result {
 
 	attempts := 1 + c.cfg.Advanced.Retry5xx
 	for range attempts {
-		c.doOnce(ctx, u, res)
+		c.doOnce(ctx, u, res, o)
 		if res.FetchError != "" || res.StatusCode < 500 {
 			break
 		}
@@ -154,7 +167,7 @@ func (c *Client) Fetch(ctx context.Context, rawURL string) *Result {
 	return res
 }
 
-func (c *Client) doOnce(ctx context.Context, u *url.URL, res *Result) {
+func (c *Client) doOnce(ctx context.Context, u *url.URL, res *Result, o Override) {
 	*res = Result{URL: res.URL} // reset between retries
 
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
@@ -165,15 +178,23 @@ func (c *Client) doOnce(ctx context.Context, u *url.URL, res *Result) {
 		res.FetchError = err.Error()
 		return
 	}
-	req.Header.Set("User-Agent", c.cfg.HTTP.UserAgent)
+	ua := c.cfg.HTTP.UserAgent
+	if o.UserAgent != "" {
+		ua = o.UserAgent
+	}
+	req.Header.Set("User-Agent", ua)
 	if c.cfg.HTTP.BrowserHeaders {
 		// Screaming Frog's measured default request profile (v24.1).
 		req.Header.Set("Accept", browserAccept)
 		req.Header.Set("Cache-Control", "no-cache")
 		req.Header.Set("Pragma", "no-cache")
 	}
-	// Configured headers win over the browser defaults above.
+	// Configured headers win over the browser defaults above; per-request
+	// override headers win over everything.
 	for name, value := range c.cfg.HTTP.Headers {
+		req.Header.Set(name, value)
+	}
+	for name, value := range o.Headers {
 		req.Header.Set(name, value)
 	}
 	c.applyAuth(req)

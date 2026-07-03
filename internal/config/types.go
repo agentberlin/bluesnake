@@ -14,6 +14,7 @@ type Config struct {
 	Links            LinksConfig        `yaml:"links"`
 	Sitemaps         SitemapsConfig     `yaml:"sitemaps"`
 	LlmsTxt          LlmsTxtConfig      `yaml:"llms_txt"`
+	SiteChecks       SiteChecksConfig   `yaml:"site_checks"`
 	Extraction       ExtractionConfig   `yaml:"extraction"`
 	Limits           LimitsConfig       `yaml:"limits"`
 	Rendering        RenderingConfig    `yaml:"rendering"`
@@ -99,6 +100,46 @@ type LlmsTxtConfig struct {
 	Check       bool `yaml:"check"`        // fetch & validate /llms.txt at all
 	FetchFull   bool `yaml:"fetch_full"`   // also fetch /llms-full.txt
 	CrawlLinked bool `yaml:"crawl_linked"` // admit the curated links into the frontier
+}
+
+// SiteChecksConfig controls the crawl-integrated site-level checks
+// (DESIGN.md §5.10): out-of-band audits of the seed host's robots.txt and
+// XML sitemaps that run alongside the crawl and surface as ordinary issues.
+// "auto" runs them only for a full-domain audit — a root-seeded spider crawl
+// that is not scope-narrowed; "always"/"never" override the heuristic. The
+// standalone `bluesnake tools` testers ignore this section: running a tool is
+// itself the opt-in.
+type SiteChecksConfig struct {
+	Enabled string             `yaml:"enabled"` // auto | always | never
+	Robots  bool               `yaml:"robots"`
+	Sitemap bool               `yaml:"sitemap"`
+	AIBots  AIBotsChecksConfig `yaml:"ai_bots"`
+	// RenderDiff runs a raw-vs-rendered diff of the seed page (text-mode
+	// crawls only; rendered crawls diff every page). Off by default: unlike
+	// the other checks it launches headless Chrome, a different cost class
+	// from a handful of HTTP requests.
+	RenderDiff bool `yaml:"render_diff"`
+}
+
+// AIBotsChecksConfig controls the AI-crawler access audit: robots.txt
+// verdicts for the embedded bot registry (no extra requests) and, with
+// live_probe, one fetch of the site root per fetcher bot with that bot's
+// User-Agent plus one control fetch — catching WAF/CDN-level blocks
+// robots.txt testing cannot see.
+type AIBotsChecksConfig struct {
+	Check     bool        `yaml:"check"`
+	LiveProbe bool        `yaml:"live_probe"`
+	Bots      []CustomBot `yaml:"bots"` // registry extensions/overrides (matched by name)
+	Skip      []string    `yaml:"skip"` // registry bot names to exclude
+}
+
+// CustomBot is one config-supplied AI-bot registry entry.
+type CustomBot struct {
+	Name        string `yaml:"name"`
+	Operator    string `yaml:"operator"`
+	Purpose     string `yaml:"purpose"`      // training | search | user_action
+	RobotsToken string `yaml:"robots_token"` // defaults to name
+	UserAgent   string `yaml:"user_agent"`   // empty = robots-token-only entry, never probed
 }
 
 type PageDetailsConfig struct {

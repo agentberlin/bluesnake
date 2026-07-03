@@ -359,6 +359,8 @@ func (s *Server) buildTools() []Tool {
 			},
 		},
 	}
+	// Standalone site testers (list_tools/run_tool); see site_tools.go.
+	tools = append(tools, s.siteTools()...)
 	// Project tools are an additive, removable layer; see project_tools.go.
 	return append(tools, s.projectTools()...)
 }
@@ -640,6 +642,7 @@ const schemaNotes = `Notes:
 - sitemap_entries: URLs listed per sitemap.
 - llmstxt: one row per fetched /llms.txt (and /llms-full.txt); found is 0/1, title/summary/malformed capture structural validation, content holds the raw body.
 - llmstxt_links: curated links listed in llms.txt (src is the llms.txt URL, url the target) — provenance independent of the link graph; the llms_txt_* issues cross-check these against pages.
+- site_checks: one row per site-level audit report from a full-domain crawl (kind is robots|sitemap|ai_bots|render_diff; subject is the audited URL; report is the full JSON — query with json_extract). The derived robots_txt_*/sitemap_*/ai_bot_*/js_* findings are ordinary rows in issues.
 - analysis: post-crawl analysis blobs (redirect chains, near-duplicate clusters) keyed by analysis name.
 
 Example queries:

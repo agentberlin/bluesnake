@@ -137,6 +137,7 @@ type Result struct {
 	Pages       map[string]*PageRecord
 	Crawled     int // URLs fetched (state == crawled); excludes robots-blocked/errored
 	Total       int // all URLs recorded (crawled + robots-blocked + errored): SF's "URLs Encountered"
+	SiteChecks  []SiteCheckRecord
 	Interrupted bool
 	Duration    time.Duration
 }
@@ -176,6 +177,21 @@ type Crawler struct {
 
 	sitemapMu    sync.Mutex
 	sitemapHosts map[string]bool // authority -> sitemap auto-discovery already run (R17)
+
+	siteCheckMu       sync.Mutex
+	siteChecks        []SiteCheckRecord // reports from the site-check pass (DESIGN.md §5.10)
+	siteCheckState    string            // "" (pass not part of this crawl) | "running" | "done"
+	siteCheckFindings int               // findings derived from the reports stored so far
+}
+
+// SiteCheckProgress reports the live status of the site-check pass for
+// progress surfaces: state "" when the pass is not part of this crawl,
+// otherwise "running"/"done", plus the reports stored and the findings
+// derived so far.
+func (c *Crawler) SiteCheckProgress() (state string, checks, findings int) {
+	c.siteCheckMu.Lock()
+	defer c.siteCheckMu.Unlock()
+	return c.siteCheckState, len(c.siteChecks), c.siteCheckFindings
 }
 
 type inlinkInfo struct {
@@ -311,6 +327,24 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 			spawn(item)
 		}
 	}
+	// The site-check pass (robots.txt / sitemap audits, DESIGN.md §5.10)
+	// runs concurrently with the crawl — it adds nothing to the frontier, so
+	// it never joins the worker WaitGroup; its own barrier below keeps the
+	// Result complete.
+	var siteChecksDone chan struct{}
+	if c.siteChecksApply(seeds[0]) {
+		siteChecksDone = make(chan struct{})
+		c.siteCheckMu.Lock()
+		c.siteCheckState = "running"
+		c.siteCheckMu.Unlock()
+		go func() {
+			defer close(siteChecksDone)
+			c.runSiteChecks(ctx, seeds[0])
+			c.siteCheckMu.Lock()
+			c.siteCheckState = "done"
+			c.siteCheckMu.Unlock()
+		}()
+	}
 	// On resume, preserve each pending URL's original (session-1) discoverer,
 	// captured in the frontier when it was first admitted, so a page first
 	// linked before the interrupt keeps its true DiscoveredFrom instead of
@@ -333,6 +367,9 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 		spawn(item)
 	}
 	wg.Wait()
+	if siteChecksDone != nil {
+		<-siteChecksDone
+	}
 
 	// resumed runs see only this session's pages — the BFS would have no
 	// crawled seed to start from, so keep admit-time depths there
@@ -342,6 +379,7 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 
 	res := &Result{
 		Pages:       c.pages,
+		SiteChecks:  c.siteChecks,
 		Interrupted: ctx.Err() != nil,
 		Duration:    time.Since(start),
 	}

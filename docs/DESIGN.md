@@ -136,7 +136,7 @@ bluesnake issues <crawl-id>            # issues summary (and per-issue export)
 bluesnake sitemap <crawl-id>           # generate XML sitemap(s) from a crawl
 bluesnake compare <id-prev> <id-curr>  # crawl comparison (+ change detection)
 bluesnake projects [ls|create|add|show|compare|diff]  # competitor-study layer (opt-in, own DB; §5.9)
-bluesnake robots test <url...>         # robots.txt tester (live or --robots-file)
+bluesnake tools <tool> [args]          # standalone site testers (robots, sitemap, ...; `tools list`)
 bluesnake config init|validate|show    # emit commented default config / validate / effective config
 bluesnake serve                        # read-only localhost JSON API over the crawl store (--addr)
 bluesnake mcp                          # MCP server for LLM agents over streamable HTTP (--addr, default 127.0.0.1:8473)
@@ -154,7 +154,7 @@ Crawl UX (headless but informative): single-line progress (crawled/queued/errors
 
 ## 4. Configuration schema (YAML)
 
-One file = one crawl profile. Everything has a default; an empty file is a valid config. Full schema (abridged here; canonical commented version is emitted by `bluesnake config init` and kept in `docs/examples/bluesnake.yaml`):
+One file = one crawl profile. Everything has a default; an empty file is a valid config. Full schema (abridged here; the canonical commented version is whatever `bluesnake config init` emits — generated from the schema, never hand-maintained):
 
 ```yaml
 mode: spider            # spider | list  (set implicitly by CLI subcommand)
@@ -198,6 +198,18 @@ llms_txt:                        # /llms.txt audit (llmstxt.org); site-level fil
   fetch_full: true               # also fetch /llms-full.txt
   crawl_linked: true             # admit the curated links into the frontier
                                  # (analysis.llms_txt gates the link cross-check)
+
+site_checks:                     # crawl-integrated site-level audits (§5.10)
+  enabled: auto                  # auto (full-domain crawls only) | always | never
+  robots: true                   # robots.txt file-level audit
+  sitemap: true                  # sitemap discovery + per-file validation
+  ai_bots:
+    check: true                  # robots.txt verdicts for the AI-bot registry
+    live_probe: true             # probe the site root with each fetcher bot's UA
+    bots: []                     # registry extensions/overrides
+    skip: []                     # registry bot names to exclude
+  render_diff: false             # seed-page JS-vs-raw diff (needs Chrome; off —
+                                 # a different cost class than the HTTP checks)
 
 extraction:
   page_details: {titles: true, meta_descriptions: true, meta_keywords: true,
@@ -517,6 +529,8 @@ CREATE TABLE sitemap_entries (sitemap_url TEXT, url TEXT, lastmod TEXT, attrs JS
 CREATE TABLE llmstxt       (url TEXT PRIMARY KEY, kind TEXT, status INT, found INT,  -- one row per /llms.txt + /llms-full.txt
                             title TEXT, summary TEXT, malformed INT, content TEXT);  -- (structural validation outcome)
 CREATE TABLE llmstxt_links (src TEXT, url TEXT, section TEXT, anchor TEXT);          -- curated links (provenance, cross-checked in analysis)
+CREATE TABLE site_checks   (kind TEXT, subject TEXT, report JSON, checked_at INT,    -- site-level audit reports (§5.10): robots|sitemap|ai_bots|render_diff,
+                            PRIMARY KEY (kind, subject));                            -- findings re-derived in analyze via sitecheck.DecodeFindings
 CREATE TABLE issues (
   page_id INTEGER NOT NULL REFERENCES pages(id),
   issue_id TEXT NOT NULL,    -- stable snake_case id, e.g. title_missing
@@ -615,6 +629,76 @@ Design decisions:
 
 Surfaces (engine-first, all three per §0): the CLI `bluesnake projects` subtree; five MCP tools (`list_projects`, `create_project`, `add_competitor`, `remove_competitor`, `project_comparison`); and a desktop **Projects** view (Overview + Comparison) bound through a *separate* `ProjectApp` Wails struct so the core `App` binding (and its generated `App.js`) stay untouched.
 
+### 5.10 Site tools & site checks — one engine, three surfaces
+
+`internal/sitecheck` implements **site-level checks** consumed two ways by
+every surface: **standalone tools** (interactive testers a user points at any
+URL — throwaway by design, results returned to the caller and never
+persisted) and the **crawl-integrated site-check pass** (the same checks run
+automatically at crawl start, reports persisted, findings emitted as ordinary
+catalogue issues). The llms.txt integration (§9, 2026-06-17) is the
+architectural template for the crawl half: out-of-band fetch at crawl start,
+own table, issues derived in analyze, idempotent on resume.
+
+**Reports vs findings.** Every check returns a JSON-serializable *report*
+(the full picture tool UIs render) and derives *findings* —
+`{IssueID, URL, Detail}` — from it. One derivation feeds both halves
+(`Reporter.Findings()`; analyze re-derives from stored reports via
+`sitecheck.DecodeFindings` without refetching), so a tester and a crawl can
+never disagree. `sitecheck` imports neither `issues` nor `crawler` (findings
+carry plain string IDs; `analyze` maps them) — that ordering is the import
+cycle-breaker.
+
+**The checks** (thresholds are code constants — published protocol limits,
+not preferences): *robots.txt* (Google REP fetch semantics — 5-hop redirect
+chain, 4xx ⇒ missing, 5xx ⇒ whole-site risk, 500 KiB cap; parse-level invalid
+lines via `robots.File.Ignored`; blocks-all; sitemap directives); *XML
+sitemaps* (discovery via robots directives ∪ `/sitemap.xml` conventions ∪
+declared, index recursion, gzip-aware sizes — which unblocked the >50 MB
+check — entry hygiene; robots-declared sitemaps are exempt from the
+cross-host finding per sitemaps.org cross-submission); *AI-bot access* (an
+embedded registry of ~16 crawlers — data, not code; robots verdicts per bot
+plus optional live probes with each fetcher's real UA via `fetch.FetchWith`,
+classified against a control fetch to catch edge/WAF blocks; token-only
+entries are never probed; robots-ignoring fetchers carry an "only an edge
+block works" note; all findings Warning — blocking can be policy); *JS render
+diff* (one URL raw vs Chrome-rendered over `parse.Facts`, reusing the
+JavaScript-tab issue IDs + `js_dependent_content`); *llms.txt* (file-level
+rules live here, `analyze` delegates); *structured data* and *SERP snippet
+preview* (tool-only — crawls already measure these per page; serp is pure
+unless given a URL).
+
+**Crawl pass.** Gate: `site_checks.enabled: auto` (default) runs the pass iff
+the crawl is a full-domain audit — spider mode, root seed, empty
+`scope.include`; `always`/`never` override; `limits.max_urls` deliberately
+does not gate (the checks are site-scoped and fixed-cost). One background
+goroutine at crawl start, fetches serialized, completion barrier before the
+crawl finishes; a failed check degrades, never fails the crawl. **One
+robots.txt fetch per crawl**: `robotsMgr` retains the raw retrieval (shared
+`sitecheck.FetchRobots`) and the audit reuses it; `robots.mode: ignore` still
+audits (reads, never gates); custom robots overrides skip the live audit and
+feed their `Sitemap:` directives to discovery. Storage: `site_checks (kind,
+subject, report JSON, PRIMARY KEY(kind, subject))`, INSERT OR REPLACE —
+resume re-runs idempotently. Config: `site_checks.{enabled, robots, sitemap,
+ai_bots.{check, live_probe, bots, skip}, render_diff}`; everything defaults
+on except `render_diff` (launches headless Chrome — a different cost class;
+the desktop New Crawl form's "run all checks" toggle and
+`site_checks.render_diff: true` opt in).
+
+**Surfaces** (engine-first per §0): CLI `bluesnake tools` — one command
+group, so the top level stays flat regardless of tool count (`list`, then one
+subcommand per registry entry with typed flags). MCP — exactly two functions:
+`list_tools` (the registry with argument schemas) and `run_tool` (dispatch by
+name through `sitecheck.RunTool`, strict args, report+findings JSON). Desktop
+— a **Tools** nav entry opening a hub (one card per registry entry) with
+per-tool sub-views, bound through a separate `ToolsApp` Wails struct
+(`ListTools`/`RunTool`, the §5.9 pattern); the robots tester's editor view
+runs on the same dispatcher (inline-body runs), site-check issue rows deep-
+link back to the matching tool ("re-test after fix" without re-crawling).
+The registry (`sitecheck.Tools()`) is the single catalogue all three
+enumerate — adding a tool = one check + one registry entry + one desktop
+sub-view.
+
 ---
 
 ## 6. Testing strategy (BDD)
@@ -661,6 +745,13 @@ Definition of done per milestone: feature file(s) green, unit coverage ≥ 90% f
 ---
 
 ## 8. Open questions / future
+- **More site tools** (the §5.10 family is live; each of these is ~pure
+  composition of existing internals — one check + one registry entry + one
+  desktop sub-view, per demand): indexability inspector (one URL through the
+  real pipeline → the §5.4 verdict with reason), redirect-chain tracer (live
+  follow with the analyze phase's chain semantics), UA compare / cloaking
+  checker (generalizes the AI-bot probe to arbitrary UAs), security headers
+  checker (single-URL report over signals `parse` already extracts).
 - Spelling/grammar: candidate libs need evaluation; schema already reserves columns.
 - Distributed crawling: out of scope; single-process concurrency is the design point.
 - Windows support: nothing platform-specific except Chrome discovery; CI matrix later.
@@ -974,6 +1065,146 @@ Product `gtin`/`description` — bluesnake under-warns vs SF on Product-with-off
 pages by exactly these), SF's property-VALUE *type* checks ("address must be of
 type PostalAddress" — a different validation dimension), and standalone-`Offer`
 merchant depth.
+
+**2026-07-03 — site tools T1: `internal/sitecheck` + crawl-integrated
+robots/sitemap audits + the `bluesnake tools` CLI group (§5.10).** A new
+`internal/sitecheck` package implements site-level checks as reports plus a
+single findings derivation shared by every consumer: the standalone testers
+(throwaway, never persisted) and the crawl-integrated site-check pass. The
+pass runs in one background goroutine at crawl start for **full-domain
+audits** (`site_checks.enabled: auto` = root-seeded spider crawl with empty
+`scope.include`; `always`/`never` override), stores reports in a new
+`site_checks (kind, subject, report JSON)` table (INSERT OR REPLACE — resume
+re-runs idempotently), and the analyze phase re-derives findings from stored
+reports via `sitecheck.DecodeFindings` (re-analysis never refetches). +13
+catalogue checks: robots.txt file-level (`robots_txt_missing` /
+`_server_error` / `_blocks_all` / `_invalid_lines` / `_too_large` /
+`_no_sitemap` — grounded in RFC 9309 + Google's fetch semantics: 4xx = missing,
+5xx/unreachable = whole-site risk, >5 redirect hops = 404, 500 KiB processing
+cap) and XML-sitemap file-level (`sitemap_missing` / `_fetch_error` /
+`_invalid_xml` / `_over_50mb` — previously deferred for uncaptured response
+sizes, now measured directly, gzip-aware — / `_cross_host_urls` /
+`_invalid_lastmod` / `_empty`, plus the existing `sitemap_over_50k` now also
+fired file-level). Correctness points, each pinned: **one robots.txt fetch
+per crawl** — `robotsMgr` retains the raw retrieval (shared
+`sitecheck.FetchRobots`) and the audit reuses it; `robots.mode: ignore` still
+audits the file (the audit reads, never gates — exactly one fetch, rules still
+ignored); custom robots overrides skip the live audit entirely and feed the
+override's `Sitemap:` directives to sitemap discovery; cross-host sitemap
+entries are exempt from the finding when the sitemap is robots-declared
+(sitemaps.org cross-submission); `robots.Parse` now reports skipped malformed
+lines (`File.Ignored`) without changing parse behaviour. CLI: the `tools`
+command group (registry-driven `tools list`, `tools robots` — re-homed from
+the removed `robots test`, now with live fetch — and `tools sitemap`).
+Pinned by `internal/sitecheck` (94%+ coverage), gating/pass/single-fetch
+crawler tests, store round-trip tests, the catalogue-coverage meta-test, and
+`features/site_checks.feature` + `features/tools.feature`.
+
+**Same day, T2 — the AI-bot access tester.** An embedded AI-crawler registry
+(`sitecheck.DefaultBots`, data not code: 16 entries with operator, purpose
+training|search|user_action, robots token, probe UA, operator-documented
+robots behaviour, doc URL; config-extendable via `site_checks.ai_bots.bots` /
+`.skip`) drives two audit layers: robots.txt verdicts per bot (zero extra
+requests — the crawl pass reuses its single robots fetch, custom overrides
+feed their own file) and, with `site_checks.ai_bots.live_probe` (default on),
+one fetch of the site root per fetcher bot with that bot's User-Agent via the
+new `fetch.FetchWith` per-request override, classified against a control
+fetch — edge/WAF blocks robots.txt testing can never see, attributed only
+when the control succeeds. Registry nuances encoded rather than hand-waved:
+token-only entries (Google-Extended, Applebot-Extended) are never probed;
+robots-ignoring fetchers (Perplexity-User, meta-externalfetcher, Bytespider)
+carry an "only an edge block is effective" note on their robots findings; the
+UA-spoofing caveat travels inside every report. +3 catalogue checks, Warning
+severity throughout (blocking AI bots can be deliberate policy —
+the audit's job is visibility): `ai_bot_blocked_robots` (one occurrence per
+bot), `ai_bots_all_blocked_robots` (headline over training+search crawlers
+only — user-action fetchers say nothing about crawl posture),
+`ai_bot_blocked_live`. CLI: `bluesnake tools aibots <site> [--live]
+[--skip]`. The interrupt/resume fetch-discipline pins (store test + BDD
+fixture) explicitly exclude the pass — its per-session re-probing is by
+design and pinned separately.
+
+**Same day, T3 + T5 — render diff, llms tool, MCP surface.** `tools render`
+diffs one URL raw vs Chrome-rendered (pure diff core over two `parse.Facts`,
+unit-tested without Chrome + a self-skipping real-Chrome e2e); findings reuse
+the JavaScript-tab catalogue IDs rendered crawls emit, plus one new
+`js_dependent_content` (raw text < half the rendered text). Crawl-integrated
+as a seed-page check for text-mode crawls, but `site_checks.render_diff`
+defaults **OFF** — a deliberate deviation from the original proposal:
+unlike the other checks it launches headless Chrome on every crawl. `tools
+llms` ships the standalone half of the llms.txt audit (the §9 2026-06-17
+follow-up); its file-level rules moved into
+`sitecheck.LlmsReport.Findings()` and `analyze.llmsTxt` now delegates there —
+one derivation, so the tool and the crawl cannot disagree (curated-link
+cross-checks stay in analyze; they need the crawl graph). MCP gains exactly
+two functions regardless of tool count: `list_tools` (the registry with arg
+schemas) and `run_tool` (strict per-tool args — unknown keys error with a
+self-correction hint), returning report+findings JSON; `get_database_schema`
+now documents the `site_checks` table.
+
+**Same day, T4 + T6 — structured/SERP tools, the desktop Tools hub, and the
+"run all checks" crawl toggle (completing the family; §5.10 is now the design
+of record — the interim docs/SITE-TOOLS.md was folded in and deleted).**
+`tools structured` fetches one URL and validates its schema.org markup with
+the crawler's own rich-results engine — extraction is forced on for the tool
+regardless of the `extraction.structured_data` config (those keys budget
+per-page crawl cost; running the tool is consent) — reusing the existing
+`structured_*` catalogue IDs; `tools serp` measures a title/description pair
+at Google's SERP font metrics (`internal/serpwidth`) against the
+`thresholds.*` limits, computes the pixel-accurate truncation preview, and
+optionally fetches a live page's actual texts (explicit args override —
+the live-editing loop); findings mirror `internal/issues`' per-page emission
+(same IDs, same details). Both are tool-only: no crawl half, no new kinds.
+The generic dispatcher moved into the engine as `sitecheck.RunTool(ctx, name,
+target, argsJSON)` — MCP `run_tool` and the new desktop binding are now thin
+wrappers over one dispatch, and `RobotsReport` carries the audited body
+(capped at Google's 500 KiB read) so a report is self-contained. Desktop: the
+`robots` nav entry became **Tools** — a hub page carded from the registry
+with seven sub-views; bindings live on a separate `ToolsApp` struct
+(`ListTools` + `RunTool`, findings decorated with catalogue
+severities/names), replacing `App.TestRobots`/`App.FetchRobots` outright —
+the robots editor now runs verdicts *and* the file-level audit through the
+same engine as everything else (inline-body runs; "Load live" uses the 5-hop
+REP fetch). Site-check issue rows in the crawl issues view deep-link to the
+matching tool prefilled with the crawl's seed. The New Crawl form gained a
+three-way **Site checks** selector — Auto / All / Off — that is *absolute*
+like every other quick-config field on the form (the choice is frozen into
+the crawl regardless of the profile; a one-way "force on" toggle was
+rejected for breaking that contract): Auto ⇒ `site_checks.enabled=auto`,
+All ⇒ `enabled=always` + `render_diff=true` (the render diff even on a
+text-only crawl, per product decision), Off ⇒ `enabled=never`; non-form
+entry points (welcome shortcut, projects crawl-all) send no override and
+defer to the profile, and a mistyped value is rejected by config validation
+at enqueue exactly like a bad rendering mode. The desktop Settings editor
+gained the missing curated **Site Checks** section (all seven `site_checks.*`
+keys plus the `llms_txt.*` trio, which had shipped 2026-06-17 without a
+section — same gap, same fix). Pinned by sitecheck/MCP/desktop unit tests
+(dispatcher, serp truncation fitting under max_px, structured config-
+independence, toggle→override mapping) and `tools structured`/`tools serp`
+BDD scenarios; frontend builds clean.
+
+**Same day — surfacing the pass: the overview "Site health" strip and the
+live-progress status line.** The pass had been invisible while running and
+its *successes* unreported (findings landed as ordinary issues; passing
+checks were only visible behind the issues view's "show passed" toggle). Two
+additions, both rolled up **by check kind, not issue ID** — kinds grow one
+per tool family, so the real estate stays one row no matter how many
+catalogue checks exist. (1) `Overview.SiteHealth`: one chip per stored
+report — positive summary straight from the report ("HTTP 200 · 1.5 KB · 4
+rules · 2 sitemap directives", "14/16 crawlers allowed · live-probed") via
+the new engine-level `sitecheck.Health` / `LlmsHealth` rollup (the llms.txt
+audit, which predates the `site_checks` table, joins the strip from its own
+storage), badged with the finding count at the family's worst catalogue
+severity, green "passed" otherwise; unknown/undecodable kinds degrade to no
+chip. (2) The crawler now exposes `SiteCheckProgress()` (state/reports/
+findings, fed by the pass as it stores each report) → `runner.Snapshot` →
+the desktop's `crawl:progress` payload, rendered as one slim status line in
+the live view ("auditing robots.txt, sitemaps and AI-bot access…" → "N
+checks ran · all clear / M findings") — a status line, not a bar segment,
+because the pass finishes within seconds of a minutes-long crawl and its
+fetches are not frontier items. Both views use the existing severity tokens
+and theme-aware badge components, so light/dark theming is inherited, not
+hand-rolled.
 
 **Implemented but scoped down (extension points exist):**
 - Issues catalogue: **164 = the full issues library computable on the current

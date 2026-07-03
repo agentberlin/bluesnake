@@ -73,6 +73,12 @@ func TestDefaults(t *testing.T) {
 		{"extraction.store_html", "false"},
 		{"sitemaps.crawl_linked", "true"},
 		{"sitemaps.auto_discover_via_robots", "true"},
+		{"site_checks.enabled", "auto"},
+		{"site_checks.robots", "true"},
+		{"site_checks.sitemap", "true"},
+		{"site_checks.ai_bots.check", "true"},
+		{"site_checks.ai_bots.live_probe", "true"},
+		{"site_checks.render_diff", "false"},
 		{"analysis.auto", "true"},
 		{"analysis.link_score", "true"},
 		{"list_mode.respect_robots", "false"},
@@ -179,6 +185,7 @@ func TestValidateErrors(t *testing.T) {
 		errLike string
 	}{
 		{"bad robots mode", "robots:\n  mode: obey\n", "robots.mode"},
+		{"bad site checks enabled", "site_checks:\n  enabled: sometimes\n", "site_checks.enabled"},
 		{"bad rendering mode", "rendering:\n  mode: chrome\n", "rendering.mode"},
 		{"bad cookie storage", "advanced:\n  cookie_storage: forever\n", "cookie_storage"},
 		{"bad percent encoding", "advanced:\n  percent_encoding: mixed\n", "percent_encoding"},

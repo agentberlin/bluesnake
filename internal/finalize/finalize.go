@@ -128,7 +128,11 @@ func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
-	results := analyze.Run(pages, sitemaps, llmstxt, cfg)
+	siteChecks, err := st.SiteChecks()
+	if err != nil {
+		return Outcome{}, err
+	}
+	results := analyze.Run(pages, sitemaps, llmstxt, siteChecks, cfg)
 	if err := st.SaveAnalysis(results); err != nil {
 		return Outcome{}, err
 	}

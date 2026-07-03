@@ -8,6 +8,7 @@ package analyze
 // build's test gate with a "no fixture triggers <id>" error.
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/issues"
 	"github.com/agentberlin/bluesnake/internal/parse"
+	"github.com/agentberlin/bluesnake/internal/sitecheck"
 	"github.com/agentberlin/bluesnake/internal/structured"
 )
 
@@ -38,7 +40,7 @@ func covRedirect(url, target string) *crawler.PageRecord {
 
 // kitchenSink builds one page set (plus a sitemap index) that collectively
 // trips every issue in the catalogue.
-func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex, *LlmsTxtData) {
+func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex, *LlmsTxtData, []SiteCheck) {
 	const ks = "https://ks.ex"
 	pages := map[string]*crawler.PageRecord{}
 	add := func(p *crawler.PageRecord) *crawler.PageRecord {
@@ -396,7 +398,79 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex, *LlmsTxtData) 
 		},
 	}
 
-	return pages, sitemaps, llmstxt
+	// --- site checks --- synthetic stored reports (built with the real
+	// sitecheck types, so field renames break loudly here) covering every
+	// robots.txt and sitemap file-level check.
+	siteChecks := []SiteCheck{
+		robotsCheck(&sitecheck.RobotsReport{ // → robots_txt_missing
+			URL: "https://miss.ex/robots.txt", Status: 404,
+		}),
+		robotsCheck(&sitecheck.RobotsReport{ // → robots_txt_server_error
+			URL: "https://err.ex/robots.txt", Status: 503,
+		}),
+		robotsCheck(&sitecheck.RobotsReport{ // → blocks_all + invalid_lines + too_large + no_sitemap
+			URL: "https://bad.ex/robots.txt", Status: 200, Found: true,
+			SizeBytes: 600 << 10, Groups: 1, Rules: 1,
+			BlocksAll: true, BlocksAllRule: "line 2: Disallow: /",
+			IgnoredLines: []sitecheck.IgnoredLine{{Line: 5, Raw: "Disallow /broken"}},
+		}),
+		sitemapCheck(&sitecheck.SitemapReport{ // → sitemap_missing
+			Site: "https://miss.ex", Missing: true,
+		}),
+		aiBotsCheck(&sitecheck.AIBotsReport{ // → blocked_robots + all_blocked + blocked_live
+			Site: "https://bad.ex", URL: "https://bad.ex/",
+			RobotsFound: true, Live: true, ControlStatus: 200,
+			Bots: []sitecheck.AIBotResult{
+				{Bot: sitecheck.Bot{Name: "GPTBot", Operator: "OpenAI", Purpose: "training", RespectsRobots: true},
+					RobotsLine: 2, RobotsRule: "Disallow: /"},
+				{Bot: sitecheck.Bot{Name: "ClaudeBot", Operator: "Anthropic", Purpose: "training", RespectsRobots: true,
+					UserAgent: "ClaudeBot/1.0"},
+					RobotsLine: 2, RobotsRule: "Disallow: /",
+					Probed: true, LiveStatus: 403, BlockedLive: true},
+			},
+		}),
+		renderDiffCheck(&sitecheck.RenderDiffReport{ // → js_dependent_content
+			URL: "https://bad.ex/", FetchStatus: 200, Rendered: true,
+			RawWordCount: 40, RenderedWordCount: 400,
+		}),
+		sitemapCheck(&sitecheck.SitemapReport{
+			Site: "https://bad.ex",
+			Files: []sitecheck.SitemapFile{
+				{URL: "https://bad.ex/gone.xml", Source: "robots", Status: 404},                                   // fetch_error
+				{URL: "https://bad.ex/bad.xml", Status: 200, Kind: "invalid", XMLError: "unexpected EOF"},         // invalid_xml
+				{URL: "https://bad.ex/empty.xml", Status: 200, Kind: "urlset"},                                    // empty
+				{URL: "https://bad.ex/big.xml", Status: 200, Kind: "urlset", Entries: 50001, SizeBytes: 60 << 20}, // over_50k + over_50mb
+				{URL: "https://bad.ex/x.xml", Status: 200, Kind: "urlset", Entries: 3, CrossHost: 2, // cross_host + invalid_lastmod
+					CrossHostEx: []string{"https://other.ex/a"}, InvalidLastmod: 1, InvalidLastmodEx: []string{"15/01/2026"}},
+			},
+		}),
+	}
+
+	return pages, sitemaps, llmstxt, siteChecks
+}
+
+func robotsCheck(rep *sitecheck.RobotsReport) SiteCheck {
+	return marshalCheck(sitecheck.KindRobots, rep.URL, rep)
+}
+
+func sitemapCheck(rep *sitecheck.SitemapReport) SiteCheck {
+	return marshalCheck(sitecheck.KindSitemap, rep.Site, rep)
+}
+
+func aiBotsCheck(rep *sitecheck.AIBotsReport) SiteCheck {
+	return marshalCheck(sitecheck.KindAIBots, rep.URL, rep)
+}
+
+func renderDiffCheck(rep *sitecheck.RenderDiffReport) SiteCheck {
+	return marshalCheck(sitecheck.KindRenderDiff, rep.URL, rep)
+}
+
+func marshalCheck(kind, subject string, rep any) SiteCheck {
+	data, err := json.Marshal(rep)
+	if err != nil {
+		panic(err)
+	}
+	return SiteCheck{Kind: kind, Subject: subject, Report: data}
 }
 
 // healthyPages is the negative fixture: a fully healthy two-page site that
@@ -468,8 +542,40 @@ func healthyLlmsTxt() *LlmsTxtData {
 	}
 }
 
+// healthySiteChecks is the negative site-check fixture: a reachable, sane
+// robots.txt and one valid sitemap — it must trip nothing.
+func healthySiteChecks() []SiteCheck {
+	return []SiteCheck{
+		robotsCheck(&sitecheck.RobotsReport{
+			Site: "https://healthy.ex", URL: "https://healthy.ex/robots.txt",
+			Status: 200, Found: true, SizeBytes: 120, Groups: 1, Rules: 1,
+			Sitemaps: []string{"https://healthy.ex/sitemap.xml"},
+		}),
+		sitemapCheck(&sitecheck.SitemapReport{
+			Site: "https://healthy.ex",
+			Files: []sitecheck.SitemapFile{{
+				URL: "https://healthy.ex/sitemap.xml", Source: "robots", DeclaredInRobots: true,
+				Status: 200, Kind: "urlset", Entries: 2, SizeBytes: 500,
+			}},
+		}),
+		aiBotsCheck(&sitecheck.AIBotsReport{
+			Site: "https://healthy.ex", URL: "https://healthy.ex/",
+			RobotsFound: true, Live: true, ControlStatus: 200,
+			Bots: []sitecheck.AIBotResult{{
+				Bot: sitecheck.Bot{Name: "GPTBot", Operator: "OpenAI", Purpose: "training",
+					RespectsRobots: true, UserAgent: "GPTBot/1.2"},
+				RobotsAllowed: true, Probed: true, LiveStatus: 200,
+			}},
+		}),
+		renderDiffCheck(&sitecheck.RenderDiffReport{
+			URL: "https://healthy.ex/", FetchStatus: 200, Rendered: true,
+			RawWordCount: 500, RenderedWordCount: 500,
+		}),
+	}
+}
+
 func TestCatalogueFixtureCoverage(t *testing.T) {
-	pages, sitemaps, llmstxt := kitchenSink()
+	pages, sitemaps, llmstxt, siteChecks := kitchenSink()
 	cfg := config.Default()
 	cfg.Content.NearDuplicates.Enabled = true
 	cfg.Resources.Images.Store = true           // image checks are storage-gated
@@ -480,7 +586,7 @@ func TestCatalogueFixtureCoverage(t *testing.T) {
 	for _, o := range issues.Evaluate(pages, cfg) {
 		triggered[o.IssueID] = true
 	}
-	for _, o := range Run(pages, sitemaps, llmstxt, cfg).Occurrences {
+	for _, o := range Run(pages, sitemaps, llmstxt, siteChecks, cfg).Occurrences {
 		triggered[o.IssueID] = true
 	}
 
@@ -503,7 +609,7 @@ func TestHealthySiteTriggersNothing(t *testing.T) {
 	for _, o := range issues.Evaluate(pages, cfg) {
 		t.Errorf("healthy page %s unexpectedly has %s (%s)", o.URL, o.IssueID, o.Detail)
 	}
-	for _, o := range Run(pages, nil, healthyLlmsTxt(), cfg).Occurrences {
+	for _, o := range Run(pages, nil, healthyLlmsTxt(), healthySiteChecks(), cfg).Occurrences {
 		t.Errorf("healthy page %s unexpectedly has analysis issue %s (%s)", o.URL, o.IssueID, o.Detail)
 	}
 }

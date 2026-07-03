@@ -18,6 +18,7 @@ func (w *world) registerIssuesSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^analysis is run$`, w.runAnalysisStep)
 	sc.Step(`^the crawl page "([^"]*)" has custom result "([^"]*)" with value "([^"]*)"$`, w.crawlPageCustomResult)
 	sc.Step(`^I crawl the site into a store$`, w.crawlIntoStore)
+	sc.Step(`^I crawl the site starting at "([^"]*)" into a store$`, w.crawlIntoStoreAt)
 	sc.Step(`^issues are evaluated$`, w.evaluateIssues)
 	sc.Step(`^the page "([^"]*)" has issue "([^"]*)"$`, w.pageHasIssue)
 	sc.Step(`^the page "([^"]*)" has issue "([^"]*)" with detail "([^"]*)"$`, w.pageHasIssueDetail)
@@ -25,6 +26,10 @@ func (w *world) registerIssuesSteps(sc *godog.ScenarioContext) {
 }
 
 func (w *world) crawlIntoStore() error {
+	return w.crawlIntoStoreAt("/")
+}
+
+func (w *world) crawlIntoStoreAt(path string) error {
 	srv := w.ensureServer()
 	cfg := config.Default()
 	for _, o := range w.crawlOverride {
@@ -36,7 +41,7 @@ func (w *world) crawlIntoStore() error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	st, err := store.CreateCrawl(w.storeDirPath(), []string{srv.URL + "/"}, "spider", cfg)
+	st, err := store.CreateCrawl(w.storeDirPath(), []string{srv.URL + path}, "spider", cfg)
 	if err != nil {
 		return err
 	}
@@ -46,7 +51,7 @@ func (w *world) crawlIntoStore() error {
 	if err != nil {
 		return err
 	}
-	if w.crawlResult, err = c.Run(context.Background(), srv.URL+"/"); err != nil {
+	if w.crawlResult, err = c.Run(context.Background(), srv.URL+path); err != nil {
 		return err
 	}
 	return st.UpdateInlinks(w.crawlResult.Pages)
@@ -79,7 +84,11 @@ func (w *world) runAnalysisStep() error {
 	if err != nil {
 		return err
 	}
-	results := analyze.Run(pages, sitemaps, llmstxt, cfg)
+	siteChecks, err := st.SiteChecks()
+	if err != nil {
+		return err
+	}
+	results := analyze.Run(pages, sitemaps, llmstxt, siteChecks, cfg)
 	w.issueOccs = append(occs, results.Occurrences...)
 	if err := st.SaveIssues(occs); err != nil {
 		return err

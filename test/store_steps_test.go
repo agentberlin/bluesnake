@@ -133,6 +133,11 @@ func (w *world) storedInterruptedCrawl(pages, interruptAfter int) error {
 	// non-deterministically. Single-threaded, no fetch is ever abandoned
 	// mid-flight: every fetched page is committed, so resume re-fetches nothing.
 	cfg.Speed.MaxThreads = 1
+	// The site-check pass re-runs idempotently on resume BY DESIGN (its own
+	// out-of-band fetches, incl. per-bot probes of the root). These scenarios
+	// pin the crawl's fetch discipline, so keep the audit out of the counts;
+	// the pass's resume idempotence is pinned at the store level.
+	cfg.SiteChecks.Enabled = "never"
 
 	st, err := store.CreateCrawl(w.storeDirPath(), []string{srv.URL + "/"}, "spider", cfg)
 	if err != nil {
