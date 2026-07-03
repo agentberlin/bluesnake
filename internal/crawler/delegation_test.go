@@ -75,8 +75,10 @@ func TestResumeStateApplied(t *testing.T) {
 		Pending:    []frontier.Item{{URL: abs("/"), Depth: 0}},
 		MaxEdgeSeq: 40,
 		// Two depth-1 URLs already admitted by the prior session: only ONE of
-		// /new1, /new2 may still fit the depth-1 bucket of 3.
-		Admitted: []frontier.Item{{URL: abs("/a"), Depth: 1}, {URL: abs("/old"), Depth: 1}},
+		// /new1, /new2 may still fit the depth-1 bucket of 3. The loader hands the
+		// crawler the pre-computed bucket counts (frontier.BucketCounts), not the
+		// admitted set (#77) — here the depth-1 counter carries 2.
+		PerDepth: map[int]int{1: 2},
 	}))
 	if err != nil {
 		t.Fatal(err)

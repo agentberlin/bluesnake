@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentberlin/bluesnake/internal/frontier"
+	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
@@ -97,15 +97,14 @@ func TestOpenForResumePurgesStrandedFrontierRows(t *testing.T) {
 		t.Fatal("openForResume returned no resume state")
 	}
 	// Rehydration must see each URL exactly once (pages ∪ frontier disjoint
-	// again): AdmittedItems is the counter-rehydration input the stranded pair
+	// again): EachAdmitted is the counter-rehydration input the stranded pair
 	// would double-count in (#74 R7).
-	admitted, err := st.AdmittedItems()
-	if err != nil {
-		t.Fatal(err)
-	}
 	seen := map[string]int{}
-	for _, it := range admitted {
-		seen[it.URL]++
+	if err := st.EachAdmitted(func(url string, _ int) error {
+		seen[url]++
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	for u, n := range seen {
 		if n > 1 {
@@ -147,41 +146,44 @@ func (s *erroringResumeSource) MaxEdgeSeq() (int64, error) {
 	}
 	return 9, nil
 }
-func (s *erroringResumeSource) AdmittedItems() ([]frontier.Item, error) {
+func (s *erroringResumeSource) EachAdmitted(fn func(url string, depth int) error) error {
 	if s.failAdmitted {
-		return nil, errLoad
+		return errLoad
 	}
-	return []frontier.Item{{URL: "https://e.com/", Depth: 0}}, nil
+	return fn("https://e.com/", 0)
 }
 
 func TestResumeRefusedOnResumeStateLoadError(t *testing.T) {
+	capOff := config.Default().Limits // no bucket caps (all -1) → AnyBucketCap false
+	capOn := capOff
+	capOn.MaxURLsPerDepth = 1 // AnyBucketCap() == true → the admitted stream is consulted
+
 	cases := []struct {
 		name string
 		src  *erroringResumeSource
-		// admitted loads only when a bucket cap is configured
-		needAdmitted bool
+		lim  config.LimitsConfig
 	}{
-		{"processed-count", &erroringResumeSource{failPageCount: true}, false},
-		{"fetched-count", &erroringResumeSource{failFetched: true}, false},
-		{"discovered-count", &erroringResumeSource{failCount: true}, false},
-		{"edge-seq", &erroringResumeSource{failSeq: true}, false},
-		{"admitted", &erroringResumeSource{failAdmitted: true}, true},
+		{"processed-count", &erroringResumeSource{failPageCount: true}, capOff},
+		{"fetched-count", &erroringResumeSource{failFetched: true}, capOff},
+		{"discovered-count", &erroringResumeSource{failCount: true}, capOff},
+		{"edge-seq", &erroringResumeSource{failSeq: true}, capOff},
+		{"admitted-stream", &erroringResumeSource{failAdmitted: true}, capOn},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := loadResume(tc.src, tc.needAdmitted); !errors.Is(err, errLoad) {
+			if _, err := loadResume(tc.src, &tc.lim); !errors.Is(err, errLoad) {
 				t.Errorf("loadResume with a failing %s read = %v, want the load error surfaced (refusal), not a silent degrade", tc.name, err)
 			}
 		})
 	}
-	// The admitted set is loaded ONLY under a bucket cap: with none configured a
-	// failing AdmittedItems must not even be consulted.
-	r, err := loadResume(&erroringResumeSource{failAdmitted: true}, false)
+	// The admitted stream is consulted ONLY under a bucket cap: with none
+	// configured a failing EachAdmitted must not even be reached.
+	r, err := loadResume(&erroringResumeSource{failAdmitted: true}, &capOff)
 	if err != nil {
-		t.Fatalf("loadResume without a bucket cap consulted AdmittedItems: %v", err)
+		t.Fatalf("loadResume without a bucket cap consulted EachAdmitted: %v", err)
 	}
-	if len(r.Admitted) != 0 {
-		t.Errorf("Admitted loaded without a bucket cap: %v", r.Admitted)
+	if r.PerDepth != nil || r.PerSub != nil || r.PerPath != nil {
+		t.Errorf("bucket counters loaded without a bucket cap: %v / %v / %v", r.PerDepth, r.PerSub, r.PerPath)
 	}
 	if r.MaxEdgeSeq != 9 {
 		t.Errorf("MaxEdgeSeq = %d, want 9", r.MaxEdgeSeq)

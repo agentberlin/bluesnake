@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/urlutil"
 )
 
 // TestAdmitExactlyOnceUnderConcurrency (FR-04/FR-19) is the load-bearing dedup
@@ -175,6 +176,26 @@ func TestPerPathLimit(t *testing.T) {
 	}
 }
 
+// rehydrateFromItems replays an already-admitted item slice through
+// BucketCounts + SetCounters — the production loader's stream (store.EachAdmitted)
+// collapsed to a fixed slice, so the unit tests exercise the exact counting the
+// resume path uses without a store.
+func rehydrateFromItems(t *testing.T, f *Frontier, items []Item) {
+	t.Helper()
+	pd, ps, pp, err := BucketCounts(&f.cfg.Limits, func(fn func(url string, depth int) error) error {
+		for _, it := range items {
+			if err := fn(it.URL, it.Depth); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("BucketCounts: %v", err)
+	}
+	f.SetCounters(pd, ps, pp)
+}
+
 // TestRehydrateCountersEnforcesCapsOnResume is the FR-08 guard (#70 M3): after a
 // resume rehydrates the per-bucket counters from the already-admitted set, the
 // per-depth / per-subdomain / per-path caps must bind against those carried-over
@@ -187,7 +208,7 @@ func TestRehydrateCountersEnforcesCapsOnResume(t *testing.T) {
 	})
 	// Replay two items the earlier session already admitted into every bucket
 	// (depth 1, host a.ex.com, /blog/), exactly filling each cap.
-	f.RehydrateCounters([]Item{
+	rehydrateFromItems(t, f, []Item{
 		{URL: "https://a.ex.com/blog/1", Depth: 1},
 		{URL: "https://a.ex.com/blog/2", Depth: 1},
 	})
@@ -201,6 +222,48 @@ func TestRehydrateCountersEnforcesCapsOnResume(t *testing.T) {
 	// buckets the prior session used.
 	if !f.Admit(Item{URL: "https://c.ex.com/shop/1", Depth: 2}) {
 		t.Error("an unrelated bucket must still admit after rehydration")
+	}
+}
+
+// TestPerSubRehydration_HostKeyMatchesUrlutilHost is the FR-17 guard: the
+// per-subdomain counter rehydration must fold hosts with the SAME key Admit's
+// perSub uses (urlutil.Host — port/case/userinfo normalized), or a resumed
+// MaxPerSubdomain cap binds on the wrong buckets. This is the exact property the
+// streaming rehydration (BucketCounts in Go over the admitted stream) preserves
+// and a SQL GROUP BY would break, so it is pinned directly: the rehydrated
+// perSub bucket must equal what live Admit accrues for the same URLs.
+func TestPerSubRehydration_HostKeyMatchesUrlutilHost(t *testing.T) {
+	// Four spellings of the same host: default-port explicit, uppercase, and
+	// userinfo — urlutil.Host folds all to "a.ex.com".
+	variants := []string{
+		"https://a.ex.com/p1",
+		"https://a.ex.com:443/p2", // default https port — folds away
+		"https://A.EX.COM/p3",     // case
+		"https://user@a.ex.com/p4",
+	}
+	for _, u := range variants {
+		if got := urlutil.Host(u); got != "a.ex.com" {
+			t.Fatalf("test premise broken: urlutil.Host(%q) = %q, want a.ex.com", u, got)
+		}
+	}
+
+	// Rehydrate the per-sub counter from those variants, with a cap of 4.
+	f := newFrontier(t, func(c *config.Config) { c.Limits.MaxPerSubdomain = 4 })
+	items := make([]Item, len(variants))
+	for i, u := range variants {
+		items[i] = Item{URL: u, Depth: 1}
+	}
+	rehydrateFromItems(t, f, items)
+
+	// All four folded into the single a.ex.com bucket, so it is now full: a fifth
+	// same-host URL must be rejected. A divergent host key (e.g. counting each
+	// spelling as its own subdomain) would leave the bucket at 1 and admit it.
+	if f.Admit(Item{URL: "https://a.ex.com/p5", Depth: 1}) {
+		t.Error("perSub rehydration did not fold host variants to urlutil.Host — the MaxPerSubdomain cap bound on the wrong bucket (FR-17)")
+	}
+	// A genuinely different subdomain is untouched.
+	if !f.Admit(Item{URL: "https://b.ex.com/p1", Depth: 1}) {
+		t.Error("an unrelated subdomain must still admit after rehydration")
 	}
 }
 

@@ -382,7 +382,7 @@ func openForResume(storeDir, id string) (
 		closeOnErr()
 		return
 	}
-	r, err := loadResume(st, cfg.Limits.AnyBucketCap())
+	r, err := loadResume(st, &cfg.Limits)
 	if err != nil {
 		closeOnErr()
 		return
@@ -396,7 +396,7 @@ type resumeSource interface {
 	Count() (int, error)
 	FetchedCount() (int, error)
 	MaxEdgeSeq() (int64, error)
-	AdmittedItems() ([]frontier.Item, error)
+	EachAdmitted(fn func(url string, depth int) error) error
 }
 
 // resumeState is the loader's result: the engine's plain-data Resume plus the
@@ -417,9 +417,15 @@ type resumeState struct {
 // orphaned claims and the feeder pulls them straight from the table), so
 // loading either slice would put a crawl- or frontier-sized copy back in RAM —
 // exactly the term this design removes. Only their counts are read, to seed
-// the live progress counters. The admitted set is loaded only when a
-// per-bucket cap is configured; it is dead weight otherwise.
-func loadResume(src resumeSource, needAdmitted bool) (resumeState, error) {
+// the live progress counters.
+//
+// The per-bucket admission counters are rehydrated only when a bucket cap is
+// configured (lim.AnyBucketCap). Even then the admitted set is STREAMED through
+// frontier.BucketCounts — never materialised — so all that is retained is the
+// small perDepth/perSub/perPath aggregate, closing the resume path's last
+// frontier-linear term (issue #77's documented residual). A stream error refuses
+// the resume like any other load error.
+func loadResume(src resumeSource, lim *config.LimitsConfig) (resumeState, error) {
 	var r resumeState
 	var err error
 	if r.processed, err = src.PageCount(); err != nil {
@@ -434,9 +440,10 @@ func loadResume(src resumeSource, needAdmitted bool) (resumeState, error) {
 	if r.MaxEdgeSeq, err = src.MaxEdgeSeq(); err != nil {
 		return resumeState{}, fmt.Errorf("resume: load edge sequence: %w", err)
 	}
-	if needAdmitted {
-		if r.Admitted, err = src.AdmittedItems(); err != nil {
-			return resumeState{}, fmt.Errorf("resume: load admitted set: %w", err)
+	if lim.AnyBucketCap() {
+		r.PerDepth, r.PerSub, r.PerPath, err = frontier.BucketCounts(lim, src.EachAdmitted)
+		if err != nil {
+			return resumeState{}, fmt.Errorf("resume: rehydrate bucket counters: %w", err)
 		}
 	}
 	return r, nil

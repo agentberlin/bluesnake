@@ -251,26 +251,56 @@ func (f *Frontier) Readmit(it Item) bool {
 	return true
 }
 
-// RehydrateCounters replays already-admitted items through the per-bucket
-// counters (perDepth, perSub, perPath) without touching dedup or applying caps,
-// so a resumed crawl carries the running bucket totals from the session(s) that
-// first admitted them. Without it the counters restart at zero on resume and a
-// crawl with MaxURLsPerDepth / MaxPerSubdomain / a ByPath cap could admit up to a
-// full extra bucket past what a straight crawl allowed (FR-08). It mirrors Admit's
-// increment block exactly (perDepth + perSub always; the first matching ByPath).
-func (f *Frontier) RehydrateCounters(items []Item) {
-	lim := &f.cfg.Limits
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, it := range items {
-		f.perDepth[it.Depth]++
-		f.perSub[urlutil.Host(it.URL)]++
+// BucketCounts accumulates the per-bucket admission counts (perDepth, perSub,
+// perPath) for an already-admitted URL stream, mirroring Admit's increment block
+// exactly (perDepth + perSub always; the first matching ByPath). It is how
+// resume rehydrates a session's carried-over bucket totals (FR-08) WITHOUT ever
+// materialising the frontier-sized admitted set: the caller streams the rows
+// straight from the store's EachAdmitted and only these small maps are retained
+// (issue #77 — the resume path's last frontier-linear term). perPath is
+// index-parallel to lim.ByPath. The host key is `urlutil.Host` — the same
+// derivation Admit's perSub uses — so a SQL GROUP BY here would mis-bucket
+// port/case/userinfo variants (FR-17); the counting must run in Go over the
+// stream, never in SQL.
+func BucketCounts(lim *config.LimitsConfig, stream func(fn func(url string, depth int) error) error) (perDepth map[int]int, perSub map[string]int, perPath []int, err error) {
+	perDepth = make(map[int]int)
+	perSub = make(map[string]int)
+	perPath = make([]int, len(lim.ByPath))
+	err = stream(func(url string, depth int) error {
+		perDepth[depth]++
+		perSub[urlutil.Host(url)]++
 		for i, pl := range lim.ByPath {
-			if strings.Contains(it.URL, pl.Pattern) {
-				f.perPath[i]++
+			if strings.Contains(url, pl.Pattern) {
+				perPath[i]++
 				break
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return perDepth, perSub, perPath, nil
+}
+
+// SetCounters installs the carried-over per-bucket admission counts a resume
+// computed with BucketCounts, so the per-depth / per-subdomain / per-path caps
+// bind against the running totals the earlier session(s) accrued instead of
+// restarting each bucket at zero and over-admitting (FR-08). perPath must be
+// index-parallel to cfg.Limits.ByPath (BucketCounts guarantees this); a nil map
+// or a length-mismatched slice leaves that dimension at zero. Nothing else in
+// the frontier is touched — dedup and the durable authority are the store's.
+func (f *Frontier) SetCounters(perDepth map[int]int, perSub map[string]int, perPath []int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if perDepth != nil {
+		f.perDepth = perDepth
+	}
+	if perSub != nil {
+		f.perSub = perSub
+	}
+	if len(perPath) == len(f.perPath) {
+		copy(f.perPath, perPath)
 	}
 }
 
