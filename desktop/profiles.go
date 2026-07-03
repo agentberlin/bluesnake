@@ -139,6 +139,14 @@ func (a *App) GetProfileConfig(profile string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return configMapJSON(cfg)
+}
+
+// configMapJSON re-encodes a config as JSON keyed by yaml tags — the dotted-path
+// keys the settings tree binds to (yaml.Marshal -> generic map -> json.Marshal).
+// Both the profile editor (GetProfileConfig) and the per-crawl Setup view
+// (CrawlConfig) read config through this exact shape, so they stay in lockstep.
+func configMapJSON(cfg *config.Config) (string, error) {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return "", err

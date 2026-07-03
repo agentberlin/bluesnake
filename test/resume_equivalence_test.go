@@ -151,7 +151,12 @@ func straightCrawl(t *testing.T, dir, seed string) string {
 
 // interruptResumeCrawl interrupts a crawl after `after` pages, finalises it as
 // interrupted (pause), then resumes it to completion and finalises again — the
-// exact two-session lifecycle the desktop/MCP/CLL pause+resume drives.
+// LIBRARY-LEVEL two-session lifecycle, with a bare *store.Crawl sink. The
+// production surfaces all drive runner.Executor with its wrapping sink instead;
+// that path is pinned by TestResumeEquivalence_ThroughRunner
+// (resume_equivalence_runner_test.go), which this harness cannot substitute
+// for: the bare store carries every optional capability, so a capability the
+// production wrapper drops is invisible here (#74 R2/R3).
 func interruptResumeCrawl(t *testing.T, dir, seed string, after int) string {
 	t.Helper()
 	cfg := equivCfg()
@@ -205,7 +210,18 @@ func interruptResumeCrawl(t *testing.T, dir, seed string, after int) string {
 		st2.Close()
 		t.Fatalf("bad interrupt split: processed=%d pending=%d", len(processed), len(pending))
 	}
-	c2, err := crawler.New(cfg, crawler.WithSink(st2), crawler.WithResume(processed, pending))
+	maxSeq, err := st2.MaxEdgeSeq()
+	if err != nil {
+		st2.Close()
+		t.Fatalf("max edge seq: %v", err)
+	}
+	fetched, err := st2.FetchedCount()
+	if err != nil {
+		st2.Close()
+		t.Fatalf("fetched count: %v", err)
+	}
+	c2, err := crawler.New(cfg, crawler.WithSink(st2),
+		crawler.WithResume(crawler.Resume{Processed: processed, Fetched: fetched, Pending: pending, MaxEdgeSeq: maxSeq}))
 	if err != nil {
 		st2.Close()
 		t.Fatalf("crawler2: %v", err)

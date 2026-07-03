@@ -12,8 +12,9 @@ export function CrawlProgress({ crawlId, onOpenResults, onResume, headerExtra })
   const [state, setState] = useState("running"); // running | paused | done
 
   useEffect(() => {
-    // rehydrate immediately, then stream
-    api.activeProgress().then((p) => p && setSnap(p)).catch(() => {});
+    // rehydrate THIS crawl immediately, then stream. Events carry crawl ids, so
+    // with several crawls running in parallel this view only ever renders its own.
+    api.activeProgress(crawlId).then((p) => p && setSnap(p)).catch(() => {});
     const offProgress = on("crawl:progress", (p) => {
       if (crawlId && p.crawlId !== crawlId) return;
       setSnap(p);
@@ -26,12 +27,12 @@ export function CrawlProgress({ crawlId, onOpenResults, onResume, headerExtra })
     return () => { offProgress(); offDone(); };
   }, [crawlId]);
 
-  async function pause() { await api.pauseCrawl(); }
-  async function stop() { await api.stopCrawl(); }
+  async function pause() { await api.pauseCrawl(crawlId); }
+  async function stop() { await api.stopCrawl(crawlId); }
   async function resume() {
     setDone(null);
     setState("running");
-    // Delegate to the app shell when embedded so liveCrawlId/activeCrawl stay in
+    // Delegate to the app shell when embedded so liveCrawlIds/activeCrawl stay in
     // sync; otherwise resume directly.
     if (onResume) onResume();
     else await api.resumeCrawl(crawlId);

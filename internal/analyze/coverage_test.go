@@ -429,9 +429,12 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex, *LlmsTxtData, 
 					Probed: true, LiveStatus: 403, BlockedLive: true},
 			},
 		}),
-		renderDiffCheck(&sitecheck.RenderDiffReport{ // → js_dependent_content
+		renderDiffCheck(&sitecheck.RenderDiffReport{ // → js_dependent_content + js_dependent_links + js_changed_robots_directives
 			URL: "https://bad.ex/", FetchStatus: 200, Rendered: true,
 			RawWordCount: 40, RenderedWordCount: 400,
+			RenderedOnlyLinks: 3, RenderedOnlyLinkEx: []string{"https://bad.ex/js-only"},
+			CanonicalChanged: true, RawCanonical: "https://bad.ex/raw", RenderedCanonical: "https://bad.ex/rendered",
+			NoindexOnlyRaw: true,
 		}),
 		sitemapCheck(&sitecheck.SitemapReport{
 			Site: "https://bad.ex",
@@ -598,6 +601,37 @@ func TestCatalogueFixtureCoverage(t *testing.T) {
 	for id := range triggered {
 		if _, ok := issues.Lookup(id); !ok {
 			t.Errorf("fixtures trigger %s which is not in the catalogue", id)
+		}
+	}
+}
+
+// TestCatalogueOwnershipPartition enforces the issue-ownership split (#75)
+// that store.SaveIssues' scoped replace relies on: Evaluate emits only
+// catalogue-evaluation checks and analyze.Run emits only checks marked
+// analysis-owned. Since the kitchen sink triggers every catalogue ID (the
+// coverage test above), a check emitted by the wrong phase — or a new analyze
+// check not registered in issues.analysisOwned — fails here rather than
+// silently becoming a row the wrong writer wipes or orphans.
+func TestCatalogueOwnershipPartition(t *testing.T) {
+	pages, sitemaps, llmstxt, siteChecks := kitchenSink()
+	cfg := config.Default()
+	cfg.Content.NearDuplicates.Enabled = true
+	cfg.Resources.Images.Store = true
+	cfg.Links.External.Store = true
+	cfg.Extraction.StructuredData.JSONLD = true
+
+	analysis := map[string]bool{}
+	for _, id := range issues.AnalysisIDs() {
+		analysis[id] = true
+	}
+	for _, o := range issues.Evaluate(pages, cfg) {
+		if analysis[o.IssueID] {
+			t.Errorf("Evaluate emitted %s, an analysis-owned check — the issues refresh would wipe rows it cannot recompute", o.IssueID)
+		}
+	}
+	for _, o := range Run(pages, sitemaps, llmstxt, siteChecks, cfg).Occurrences {
+		if !analysis[o.IssueID] {
+			t.Errorf("analyze.Run emitted %s, which is not analysis-owned — SaveAnalysis would reject or orphan it", o.IssueID)
 		}
 	}
 }

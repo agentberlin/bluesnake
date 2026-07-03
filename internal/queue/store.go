@@ -71,6 +71,10 @@ func (s *SQLiteStore) Cancel(jobID string) (bool, error) {
 	return store.CancelJob(s.dir, jobID)
 }
 
+func (s *SQLiteStore) Unclaim(jobID string) error {
+	return store.UnclaimJob(s.dir, jobID)
+}
+
 func (s *SQLiteStore) Reconcile() (int, error) {
 	return store.ReconcileRunningJobs(s.dir)
 }
@@ -158,6 +162,16 @@ func (m *MemStore) Cancel(jobID string) (bool, error) {
 		return true, nil
 	}
 	return false, nil
+}
+
+func (m *MemStore) Unclaim(jobID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if j := m.find(jobID); j != nil && j.Status == store.JobRunning {
+		j.Status = store.JobQueued
+		j.Started = time.Time{}
+	}
+	return nil
 }
 
 func (m *MemStore) Reconcile() (int, error) {

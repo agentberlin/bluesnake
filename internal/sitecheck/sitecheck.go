@@ -15,6 +15,7 @@
 package sitecheck
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,14 +65,41 @@ type Reporter interface {
 	Findings() []Finding
 }
 
-// Checker runs site-level checks over a shared fetch client.
-type Checker struct {
-	cfg    *config.Config
-	client *fetch.Client
+// Fetcher is the checks' HTTP dependency. Standalone tools hand in the plain
+// *fetch.Client; the crawl pass hands in the crawler's capped fetcher so
+// every out-of-band check fetch takes a global fetch slot like a worker
+// fetch (GL-08 — only robots.txt keeps its documented serialized bypass).
+type Fetcher interface {
+	Fetch(ctx context.Context, rawURL string) *fetch.Result
+	FetchWith(ctx context.Context, rawURL string, o fetch.Override) *fetch.Result
 }
 
-func New(cfg *config.Config, client *fetch.Client) *Checker {
-	return &Checker{cfg: cfg, client: client}
+// Checker runs site-level checks over a shared fetcher.
+type Checker struct {
+	cfg        *config.Config
+	client     Fetcher
+	renderGate func(ctx context.Context) (release func(), ok bool)
+}
+
+// Option configures a Checker.
+type Option func(*Checker)
+
+// WithRenderGate brackets RenderDiff's headless-Chrome render with the
+// caller's slot acquire/release — the crawl pass passes the process-wide
+// render cap (REN-01). It gates only the render: the page fetch before it is
+// capped separately through the Fetcher, because a fetch slot and a render
+// slot must never be held together (the limiter's lock-order rule). ok=false
+// means the wait was cancelled; the check degrades to a render error.
+func WithRenderGate(gate func(ctx context.Context) (release func(), ok bool)) Option {
+	return func(c *Checker) { c.renderGate = gate }
+}
+
+func New(cfg *config.Config, client Fetcher, opts ...Option) *Checker {
+	c := &Checker{cfg: cfg, client: client}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
 }
 
 // DecodeFindings re-derives the findings from a stored report of the given

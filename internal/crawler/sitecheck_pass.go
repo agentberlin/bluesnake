@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/url"
 
+	"github.com/agentberlin/bluesnake/internal/fetch"
 	"github.com/agentberlin/bluesnake/internal/robots"
 	"github.com/agentberlin/bluesnake/internal/sitecheck"
 )
@@ -52,20 +53,50 @@ func (c *Crawler) siteChecksApply(seed string) bool {
 	return (u.Path == "" || u.Path == "/") && u.RawQuery == "" && u.Fragment == ""
 }
 
+// cappedFetcher routes the site-check pass's out-of-band fetches through the
+// process-wide fetch cap (GL-08): each check fetch takes a global slot exactly
+// like a worker page fetch, so M parallel crawls' site-check traffic counts
+// against the same ceiling. A fetch cancelled while waiting for a slot
+// degrades to an error result — a check must report, never panic.
+type cappedFetcher struct{ c *Crawler }
+
+func (f cappedFetcher) Fetch(ctx context.Context, rawURL string) *fetch.Result {
+	if res := f.c.fetchCapped(ctx, rawURL); res != nil {
+		return res
+	}
+	return &fetch.Result{URL: rawURL, FetchError: "crawl cancelled"}
+}
+
+func (f cappedFetcher) FetchWith(ctx context.Context, rawURL string, o fetch.Override) *fetch.Result {
+	if !f.c.limiter.AcquireFetch(ctx) {
+		return &fetch.Result{URL: rawURL, FetchError: "crawl cancelled"}
+	}
+	defer f.c.limiter.ReleaseFetch()
+	return f.c.client.FetchWith(ctx, rawURL, o)
+}
+
 // runSiteChecks executes the site-level checks for the seed's host. It runs
 // in one background goroutine concurrent with the crawl — fetches within it
 // are sequential, so the out-of-band burst against the origin is bounded to
-// one in-flight request. Each report is stored via the sink (INSERT OR
-// REPLACE keyed on kind+subject, so a resume re-running the pass is
-// idempotent) and retained on the Result. A check that errors is skipped —
-// the pass can degrade but never fail the crawl.
+// one in-flight request, and each fetch holds a global fetch slot (the
+// cappedFetcher above; the robots.txt reuse below keeps that fetch's
+// documented bypass). Each report is stored via the sink (INSERT OR REPLACE
+// keyed on kind+subject, so a resume re-running the pass is idempotent) and
+// retained on the Result. A check that errors is skipped — the pass can
+// degrade but never fail the crawl.
 func (c *Crawler) runSiteChecks(ctx context.Context, seed string) {
 	u, err := url.Parse(seed)
 	if err != nil || u.Host == "" {
 		return
 	}
 	root := u.Scheme + "://" + u.Host
-	chk := sitecheck.New(c.cfg, c.client)
+	chk := sitecheck.New(c.cfg, cappedFetcher{c}, sitecheck.WithRenderGate(
+		func(ctx context.Context) (func(), bool) {
+			if !c.limiter.AcquireRender(ctx) {
+				return nil, false
+			}
+			return c.limiter.ReleaseRender, true
+		}))
 
 	record := func(kind, subject string, report any) {
 		data, err := json.Marshal(report)

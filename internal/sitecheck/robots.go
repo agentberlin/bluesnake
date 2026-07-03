@@ -73,7 +73,7 @@ func (rf *RobotsFetch) Found() bool {
 // (up to five redirect hops — RFC 9309 / Google REP — with the terminal
 // response deciding). It is shared with the crawler's robots manager so one
 // crawl never fetches the same host's file twice.
-func FetchRobots(ctx context.Context, client *fetch.Client, root string) *RobotsFetch {
+func FetchRobots(ctx context.Context, client Fetcher, root string) *RobotsFetch {
 	rf := &RobotsFetch{URL: root + "/robots.txt"}
 	target := rf.URL
 	var res *fetch.Result

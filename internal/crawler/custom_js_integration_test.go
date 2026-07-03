@@ -1,7 +1,6 @@
 package crawler
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -38,15 +37,13 @@ func TestCrawlerCustomJSIntegration(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, err := New(cfg)
+	sink := newCapSink()
+	c, err := New(cfg, WithSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	res, err := c.Run(context.Background(), srv.URL+"/")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runCap(t, c, sink, srv.URL+"/")
 
 	rec := res.Pages[srv.URL+"/"]
 	if rec == nil {
@@ -97,15 +94,13 @@ func TestCrawlerCustomJSCoexistsWithSearch(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, err := New(cfg)
+	sink := newCapSink()
+	c, err := New(cfg, WithSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	res, err := c.Run(context.Background(), srv.URL+"/")
-	if err != nil {
-		t.Fatal(err)
-	}
+	res := runCap(t, c, sink, srv.URL+"/")
 	rec := res.Pages[srv.URL+"/"]
 	kinds := map[string]bool{}
 	for _, cr := range rec.CustomResults {

@@ -59,6 +59,14 @@ func (c *Checker) RenderDiff(ctx context.Context, pageURL string) (*RenderDiffRe
 	}
 	rawFacts := parse.Parse(pageURL, res.Body, res.Headers, c.cfg)
 
+	if c.renderGate != nil {
+		release, ok := c.renderGate(ctx)
+		if !ok {
+			rep.RenderError = "cancelled while waiting for a render slot"
+			return rep, nil
+		}
+		defer release()
+	}
 	rendered, err := r.Render(ctx, pageURL)
 	if err != nil {
 		rep.RenderError = err.Error()
@@ -115,9 +123,12 @@ func hasNoindex(directives []string) bool {
 	return false
 }
 
-// Findings derives the issue occurrences: the JavaScript-tab IDs rendered
-// crawls already emit, plus js_dependent_content — the headline "this page's
-// content is invisible without JavaScript" signal.
+// Findings derives the site-level signals: is this site's content, navigation
+// or indexing posture invisible/different to non-rendering consumers? The
+// per-field diffs (title, description, h1, console errors) stay report-only —
+// the tool UIs render the full diff — because the per-page js_* catalogue IDs
+// are evaluate-owned (rendered crawls emit them per page) and issue ownership
+// (#75) is per ID: this derivation is analysis-owned, so it emits its own IDs.
 func (r *RenderDiffReport) Findings() []Finding {
 	if !r.Rendered {
 		return nil
@@ -130,26 +141,19 @@ func (r *RenderDiffReport) Findings() []Finding {
 		add("js_dependent_content", fmt.Sprintf("%d words in the raw HTML vs %d rendered", r.RawWordCount, r.RenderedWordCount))
 	}
 	if r.RenderedOnlyLinks > 0 {
-		add("js_contains_links", fmt.Sprintf("%d hyperlinks only in the rendered DOM (e.g. %s)",
+		add("js_dependent_links", fmt.Sprintf("%d hyperlinks only in the rendered DOM (e.g. %s)",
 			r.RenderedOnlyLinks, strings.Join(r.RenderedOnlyLinkEx, ", ")))
 	}
-	if r.TitleChanged {
-		add("js_title_updated", fmt.Sprintf("%q -> %q", r.RawTitle, r.RenderedTitle))
-	}
-	if r.DescriptionChanged {
-		add("js_description_updated", "")
-	}
-	if r.H1Changed {
-		add("js_h1_updated", "")
-	}
-	if r.CanonicalChanged {
-		add("js_canonical_mismatch", fmt.Sprintf("%q -> %q", r.RawCanonical, r.RenderedCanonical))
-	}
-	if r.NoindexOnlyRaw {
-		add("js_noindex_only_raw", "")
-	}
-	if len(r.ConsoleErrors) > 0 {
-		add("js_console_errors", strings.Join(r.ConsoleErrors, "; "))
+	// Indexing directives differing between raw and rendered is the classic
+	// JS-SEO gotcha: crawlers that don't render see a different canonical or
+	// a noindex the browser removes.
+	switch {
+	case r.CanonicalChanged && r.NoindexOnlyRaw:
+		add("js_changed_robots_directives", fmt.Sprintf("canonical %q -> %q; noindex present in raw HTML only", r.RawCanonical, r.RenderedCanonical))
+	case r.CanonicalChanged:
+		add("js_changed_robots_directives", fmt.Sprintf("canonical %q -> %q", r.RawCanonical, r.RenderedCanonical))
+	case r.NoindexOnlyRaw:
+		add("js_changed_robots_directives", "noindex present in raw HTML only (removed by JavaScript)")
 	}
 	return out
 }

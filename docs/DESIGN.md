@@ -249,6 +249,9 @@ rendering:
   flatten_shadow_dom: true
   flatten_iframes: true
   chrome_path: ""        # auto-detect
+  max_global_renders: 0  # concurrent Chrome renders across ALL running crawls;
+                         # 0 = auto (cores-scaled 2/4/8 — the per-crawl tab ceiling,
+                         # so a single crawl never notices it); see §5.8
 
 advanced:
   cookie_storage: session        # session | persistent | none
@@ -614,6 +617,8 @@ Each analyzer reads SQLite, writes back columns/tables; all are idempotent and r
 
 **Custom JavaScript snippets** (`custom_js`): snippet files load at renderer construction (a missing file is a config error naming the snippet). After the page settles, `action` snippets run first (results discarded — they exist to mutate the page), then `extraction` snippets; values are stored in `custom_results` with kind `js` (JS strings verbatim, anything else compact JSON, `error: …` when a snippet throws). Each snippet is bounded by its `timeout_sec` (default 5); a `content_types` list restricts which pages a snippet's results are stored for.
 
+**Global render slots** (`rendering.max_global_renders` — REN-01/#76): a render re-fetches the page plus every subresource inside a Chrome tab (~100-300MB each), so renders are a first-class bounded resource under the process-wide limiter (`internal/limiter`), in a slot pool **separate** from the fetch cap — a render is not a fetch: different weight, different resource axis. A worker holds a render slot only for the Chrome round-trip (released the moment `Render` returns, panic-safe, mirroring the fetch-slot pattern) and never holds a fetch slot at the same time — nested acquires across M crawls would starve or deadlock the pools against each other. `0` (the default) resolves via `render.GlobalRenderCap` to the same cores-scaled tab ceiling that bounds a single crawl's pool (2/4/8 by CPU count), so single-crawl behaviour is unchanged while M parallel rendered crawls stay bounded out of the box. Renderer **instances** deliberately stay one-per-crawl — a renderer bakes per-crawl config into its Chrome allocator (UA, window size, custom JS snippets), so a shared instance cannot represent two configs; the Chrome *process* count is bounded by `speed.max_concurrent_crawls` (GL-18), while the expensive axis — concurrently rendering tabs — is bounded process-wide by the render pool. Pause/stop interrupts an in-flight render (renders run under the crawl context): the interrupted item is left pending — recording it raw-only would be permanent, since resume never re-renders a processed page — and a resume re-fetches and re-renders it (pinned by `TestPauseInterruptsInFlightRender`).
+
 ### 5.9 Project layer (competitor study) — an opt-in, removable overlay
 
 `internal/project` adds **Projects**: a *main domain plus its competitors*, for side-by-side benchmarking and per-competitor change-over-time. It is deliberately built as a **fully separable overlay** — like the desktop app (§1), a non-core extension that must never compromise the crawl engine. The contract (stated in the package `doc.go`, proven by the removal procedure below): the feature changes **no** crawl/store/compare/crawler logic, schema, or models. It owns its own database, reads everything else read-only through `store`'s public API, and reuses `internal/compare` unchanged. **Remove it** by deleting the package, its CLI/MCP/desktop registration lines (one `AddCommand`, the appended MCP `Tool` literals, the `ProjectApp` `Bind` entry, the frontend nav/router/`projectApi` additions), and `projects.db` — the rest of the product is byte-for-byte unchanged. No migrations to unwind.
@@ -662,8 +667,11 @@ plus optional live probes with each fetcher's real UA via `fetch.FetchWith`,
 classified against a control fetch to catch edge/WAF blocks; token-only
 entries are never probed; robots-ignoring fetchers carry an "only an edge
 block works" note; all findings Warning — blocking can be policy); *JS render
-diff* (one URL raw vs Chrome-rendered over `parse.Facts`, reusing the
-JavaScript-tab issue IDs + `js_dependent_content`); *llms.txt* (file-level
+diff* (one URL raw vs Chrome-rendered over `parse.Facts`; the full per-field
+diff lives in the report, while findings are three site-level IDs of their
+own — `js_dependent_content`, `js_dependent_links`,
+`js_changed_robots_directives` — because issue ownership (#75) is per ID and
+the per-page js_* checks are evaluate-owned); *llms.txt* (file-level
 rules live here, `analyze` delegates); *structured data* and *SERP snippet
 preview* (tool-only — crawls already measure these per page; serp is pure
 unless given a URL).
@@ -754,6 +762,13 @@ Definition of done per milestone: feature file(s) green, unit coverage ≥ 90% f
   checker (single-URL report over signals `parse` already extracts).
 - Spelling/grammar: candidate libs need evaluation; schema already reserves columns.
 - Distributed crawling: out of scope; single-process concurrency is the design point.
+  In-process **parallel multi-crawl** is that design point delivered (issue #78, 2026-07-02):
+  the core queue's dispatcher drains up to `speed.max_concurrent_crawls` jobs at once with
+  identical semantics on CLI (`projects crawl-all`, flag > config > 1), desktop, and MCP
+  (both read the knob from the default profile at start via `runner.ProcessWiring` — restart
+  to apply) under ONE shared process-wide limiter (global fetch cap, one finalize pass,
+  the Chrome render pool). Per-crawl control/status is crawl-id-addressed on every surface;
+  the default stays 1, keeping single-crawl behaviour unchanged.
 - Windows support: nothing platform-specific except Chrome discovery; CI matrix later.
 - **Settle thresholds are code constants, not config** (decided 2026-06-11): 500ms
   network-idle window, 1.5s wire-silence window, 2×500ms DOM-stability probes
@@ -1066,6 +1081,32 @@ pages by exactly these), SF's property-VALUE *type* checks ("address must be of
 type PostalAddress" — a different validation dimension), and standalone-`Offer`
 merchant depth.
 
+**2026-07-02 — finalize/analyze staleness trio (#75).** Three pre-existing
+replace-semantics bugs, fixed together test-first. (1) **Issue-row ownership is
+now a contract**: the catalogue marks the 31 analysis-phase checks
+(`issues.analysisOwned` → `AnalysisIDs()`/`EvaluatedIDs()`), and
+`store.SaveIssues(owned, occs)` replaces exactly the rows of the checks the
+caller re-evaluated (nil owned = authoritative full replace, used by full
+re-analysis). The `issues` command therefore refreshes the catalogue checks
+without wiping the stored redirect-chain/near-dup/hreflang/pagination/sitemap/
+llms.txt findings; `AddIssues` (append-only) is gone — `SaveAnalysis` scope-
+replaces the analysis-owned rows. Enforced by the ownership-partition meta-test
+(`internal/analyze/coverage_test.go`) and `TestIssuesCmdPreservesAnalysisIssues`.
+(2) **`SaveAnalysis` resets the five analysis-owned page columns** (`link_score`,
+`unique_inlinks`, `unique_outlinks`, `closest_similarity`, `near_dup_count`) to
+their schema defaults in the same transaction before applying the new result
+maps, so re-analysis with different knobs (near-dup off / threshold raised /
+link score off) can no longer leave a crawl mixing two runs' metrics
+(`TestReanalyzeClearsStaleScoreColumns`). (3) **PageRank edges exist only
+between node-set members** (internal ∧ crawled): a destination outside the set
+(robots-blocked, errored, over-limit, still queued) is dropped from the graph
+entirely — no rank share, no out-degree dilution — matching the self-loop rule,
+the external-dst gate, and the classic dangling-link removal; a source left
+with no node destinations takes the existing dangling out==0 rule. Non-crawled
+URLs can no longer hold rank, skew the v/max·100 scaling, or appear in
+`LinkScores` (`TestPageRank_NonCrawledInternalDstHoldsNoRank`); CSR and
+Facts.Links paths stay bit-identical (`TestPageRankCSRParity`).
+
 **2026-07-03 — site tools T1: `internal/sitecheck` + crawl-integrated
 robots/sitemap audits + the `bluesnake tools` CLI group (§5.10).** A new
 `internal/sitecheck` package implements site-level checks as reports plus a
@@ -1206,6 +1247,34 @@ fetches are not frontier items. Both views use the existing severity tokens
 and theme-aware badge components, so light/dark theming is inherited, not
 hand-rolled.
 
+**Same day — reconciling site checks with the memory-scaling + parallel-crawls
+mainline (the #69/#75/#83 family landed while this shipped).** Three
+contracts from that family required real redesign, not just conflict
+resolution. (1) **Issue ownership (#75)**: the 19 site-check finding IDs are
+now registered `analysisOwned` — they are re-derived by `analyze.Run` from
+stored reports, so `SaveAnalysis` owns their rows (unregistered they would
+hard-fail `SaveIssues`' owned-set check on every finalize). Consequence: the
+render diff **no longer reuses the per-page JavaScript-tab IDs** — those are
+evaluate-owned (rendered crawls emit them per page), and one ID cannot have
+two writers without each wiping the other's rows on its own re-run. The
+render-diff findings are now the three site-level signals of the original
+design: `js_dependent_content`, `js_dependent_links`,
+`js_changed_robots_directives` (canonical/noindex differing raw-vs-rendered);
+the full per-field diff stays in the report, which the tool UIs render
+anyway. (2) **GL-08**: the pass's out-of-band fetches (sitemap files, AI-bot
+probes, control fetch, render-diff page fetch) now take a global fetch slot —
+`sitecheck.Checker` fetches through a `Fetcher` interface and the crawl pass
+injects the crawler's capped fetcher (robots.txt keeps its documented
+serialized bypass); the seed-page render acquires a **render** slot via
+`sitecheck.WithRenderGate`, gating only the render because fetch and render
+slots must never be held together (the limiter's lock-order rule). Pinned by
+the pre-existing GL-08/REN-01 integration tests, which caught the bypass.
+(3) The frontier's exactly-once pin excludes the pass (its root probes are
+by design, like the resume fixtures); `crawl_overview`'s issue counts carry
+the site-check findings unchanged. Also: the tools CLI renderers gained
+in-process surface tests (`tools_cmds_test.go`) — the BDD features exercise
+them only through the built binary, which the coverage gate cannot see.
+
 **Implemented but scoped down (extension points exist):**
 - Issues catalogue: **164 = the full issues library computable on the current
   data model** (the no-new-infrastructure boundary, not an arbitrary stop).
@@ -1227,15 +1296,16 @@ hand-rolled.
   not the full official AMP validator rule set.
 - Sitemap orphan detection approximates "only discoverable via sitemap" as
   zero inlinks + sitemap-seeded.
-- Concurrency: goroutine-per-URL behind a semaphore + sink-mirrored frontier.
-  Correct and crash-safe, but RAM grows ~linearly with crawled pages and
-  **explosively with the discovered frontier** — one parked goroutine per
-  *admitted* URL, plus the full result set retained in memory. Measured peak
-  **~1.7–1.9 GB at only ~4,000 crawled pages** on a faceted e-commerce site
-  (frontier hit ~239k in 30 s), so it bites at *thousands*, not millions, of
-  URLs. Full investigation, root-cause sink list, and a test-first fix plan
-  (bounded worker pool + persistent SQLite frontier + stream-to-SQLite, sized
-  for the future parallel multi-site mode): **[docs/MEMORY-SCALING.md](MEMORY-SCALING.md)**.
+- Concurrency: FIXED — bounded worker pool over a persistent SQLite frontier.
+  The historical model (goroutine-per-URL + in-memory visited set + retained
+  result map) measured **~1.7–1.9 GB at only ~4,000 crawled pages** on a
+  faceted e-commerce site (frontier hit ~239k in 30 s). Shipped replacement:
+  N workers + one feeder over a bounded ready-buffer window; the frontier
+  lives in the crawl DB (`claimed`/`seq` columns), records stream-and-drop,
+  and finalize reads SQL/CSR. Per-crawl RAM is now flat on both the
+  crawled-page AND discovered-frontier axes (gated by `TestFrontierRAMSlopeFlat`).
+  Full investigation, architecture and phase history:
+  **[docs/MEMORY-SCALING.md](MEMORY-SCALING.md)**.
 
 **Not implemented (documented cuts):**
 - Spelling & grammar (planned cut, §1 non-goals).
@@ -1327,7 +1397,7 @@ uncertainty.
 | Shadow-DOM/iframe flattening (`rendering.flatten_*`) | Med | Med-High | Med | Web-component sites currently lose rendered text/links that SF sees |
 | Rich-result matrix breadth (G5 residual, narrowed again) | Low | Low | Low-Med | SoftwareApplication/Review/AggregateRating (2026-06-19), the full schema.org subtype hierarchy (264 types incl. all 150 LocalBusiness subtypes, 2026-06-19), AND nested integral-object validation (`offers.price`, `reviewRating.ratingValue`, parent-aware, single-count — 2026-06-21, SF-cross-checked, error parity EXACT in Product context) all landed; HowTo + deprecated/wrong-feature subtypes deliberately excluded. Residual: per-feature Offer profiles (Software-App `price`, Event recommended), merchant-listing RECOMMENDED breadth (Offer `itemCondition`/`availability`, Product `gtin`/`description`), SF property-VALUE *type* checks ("address must be PostalAddress"), standalone-`Offer` depth |
 | Cookie collection (`url_details.cookies`) | Med | Med | Low-Med | Whole SF report we lack; GDPR/consent audits use it. Needs a cookies table + rendered-mode capture |
-| Persistent-frontier worker pool (scale) | Indirect | High | Med-High | Gates large-site (e-commerce) crawls — and the future **parallel multi-site** mode. Goroutine-per-URL + in-memory visited-set/result map → **measured peak ~1.7–1.9 GB at only ~4k crawled pages** on a faceted site (frontier exploded to ~239k). This is **RAM** (distinct from on-disk stores). Full root-cause sink list, fix, and TDD plan: **[docs/MEMORY-SCALING.md](MEMORY-SCALING.md)** |
+| ~~Persistent-frontier worker pool (scale)~~ DONE | — | — | — | SHIPPED across PR #69 (worker pool, stream-and-drop, SQL/CSR finalize, store dedup, global limiter) + issue #77 (bounded ready-buffer + SQLite feeder: `frontier.claimed/seq`, single-producer claim batches). Per-crawl RAM is flat on the crawled-page axis AND the discovered-frontier axis — the ~1.7–1.9 GB @4k-pages faceted-site OOM class is closed, gated by `TestFrontierRAMSlopeFlat`. History + architecture: **[docs/MEMORY-SCALING.md](MEMORY-SCALING.md)** |
 | ~~Fragment self-edges (G28)~~ → rendered remainder folded into R9 | — | — | — | RE-VERIFIED 2026-06-21: the static-HTML gap is GONE — current BS matches SF exactly on every fragment-anchor pattern (empty/named/dup/`#`/svg-icon permalinks; SF page set = BS page set). The SF dedup-semantics probe this row asked for confirmed SF keeps distinct empty self-frag edges with the fragment stripped, exactly as BS does; the prior KeepFragments + R3/R10 work resolved it. The original "44 vs 18" was a rendered-DOM discovery effect (greptile/artisan emit `href="#…"` only after JS render) → tracked under R9, not a static link-extraction bug |
 | Schema.org vocabulary validation | Low-Med | Low | Med | SF's plain validation found zero issues across all 5 test domains — rich-results is what fires. Big build, small payoff |
 | Store-flag enforcement (§9.1) | Low | Low-Med | Low | DB size on big crawls; SF-visible counts already match |

@@ -17,9 +17,9 @@ type fakeBackend struct{ dir string }
 
 func (f *fakeBackend) StartCrawl(context.Context, StartRequest) (string, error) { return "", nil }
 func (f *fakeBackend) ResumeCrawl(string) (string, error)                       { return "", nil }
-func (f *fakeBackend) PauseCrawl() error                                        { return nil }
-func (f *fakeBackend) StopCrawl() error                                         { return nil }
-func (f *fakeBackend) Progress() *Progress                                      { return nil }
+func (f *fakeBackend) PauseCrawl(string) error                                  { return nil }
+func (f *fakeBackend) StopCrawl(string) error                                   { return nil }
+func (f *fakeBackend) Running() []Progress                                      { return nil }
 func (f *fakeBackend) StoreDir() string                                         { return f.dir }
 
 func projectServer(t *testing.T) (*Server, string) {

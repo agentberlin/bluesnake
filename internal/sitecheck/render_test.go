@@ -45,18 +45,22 @@ func TestDiffFactsAndFindings(t *testing.T) {
 		t.Errorf("word counts raw=%d rendered=%d", rep.RawWordCount, rep.RenderedWordCount)
 	}
 
+	// Findings are the three site-level signals with their own analysis-owned
+	// IDs; the per-field diffs above stay report-only (the per-page js_* IDs
+	// are evaluate-owned — see the ownership note on Findings).
 	ids := map[string]bool{}
 	for _, f := range rep.Findings() {
 		ids[f.IssueID] = true
 	}
 	for _, id := range []string{
-		"js_dependent_content", "js_contains_links", "js_title_updated",
-		"js_description_updated", "js_h1_updated", "js_canonical_mismatch",
-		"js_noindex_only_raw", "js_console_errors",
+		"js_dependent_content", "js_dependent_links", "js_changed_robots_directives",
 	} {
 		if !ids[id] {
 			t.Errorf("findings %v missing %s", ids, id)
 		}
+	}
+	if len(ids) != 3 {
+		t.Errorf("findings = %v, want exactly the three site-level signals", ids)
 	}
 }
 
@@ -111,7 +115,7 @@ func TestRenderDiffEndToEnd(t *testing.T) {
 	if !rep.TitleChanged || rep.RenderedTitle != "hydrated" {
 		t.Errorf("title diff = %+v", rep)
 	}
-	if !hasFinding(rep, "js_dependent_content") || !hasFinding(rep, "js_contains_links") {
+	if !hasFinding(rep, "js_dependent_content") || !hasFinding(rep, "js_dependent_links") {
 		t.Errorf("findings = %v", findingIDs(rep))
 	}
 }

@@ -142,6 +142,7 @@ type world struct {
 	// crawl steps
 	crawlOverride    []string
 	crawlResult      *crawler.Result
+	crawlPages       map[string]*crawler.PageRecord // finalized records, re-sourced from the store (stream-and-drop)
 	pathLimits       []config.PathLimit
 	customRobotsPath string
 	robotsContent    string

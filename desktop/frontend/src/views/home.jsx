@@ -5,7 +5,7 @@ import React, { useState } from "react";
 import { Icon, Btn, IconBtn, Search, SEV, Modal, BrandMark, CopyButton } from "../ui";
 import { urlShort } from "../api";
 
-export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDelete, storage, crawlBusyMsg }) {
+export function CrawlManager({ crawls, onOpen, onOpenSetup, onResume, onNew, onDelete, storage, crawlBusyMsg }) {
   const [q, setQ] = useState("");
   const [confirm, setConfirm] = useState(null);
   const resumable = crawls.filter((c) => c.status === "interrupted");
@@ -26,7 +26,6 @@ export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDel
         <span className="pill mono">{crawls.length}</span>
         <div style={{ flex: 1 }} />
         <Search value={q} onChange={setQ} placeholder="Filter crawls…" width={220} />
-        <Btn icon="git-compare" onClick={onCompare}>Compare</Btn>
         <Btn icon="plus" variant="primary" onClick={onNew} title={crawlBusyMsg}>New Crawl</Btn>
       </div>
 
@@ -101,6 +100,7 @@ export function CrawlManager({ crawls, onOpen, onResume, onCompare, onNew, onDel
                     ))}
                   </div>
                   <div style={{ display: "flex", justifyContent: "flex-end", gap: 2 }} onClick={(e) => e.stopPropagation()}>
+                    <IconBtn icon="settings-2" title="View the settings this crawl used" onClick={() => onOpenSetup(c)} />
                     {c.status === "interrupted"
                       ? <Btn size="sm" icon="play" variant="primary" onClick={() => onResume(c)} title={crawlBusyMsg}>Resume</Btn>
                       : <IconBtn icon="arrow-right" title="Open results" onClick={() => onOpen(c)} />}

@@ -8,13 +8,13 @@ import (
 	"github.com/agentberlin/bluesnake/internal/config"
 )
 
-// The Settings editor's curated field list (settings.jsx) promises "every key
-// is a verified dotted yaml path" — this test IS that verification. Each
-// tg/num/ch/txt/lst helper call names a config key; every one must resolve
-// through the config schema, so a renamed or mistyped key fails here instead
-// of rendering a dead field.
+// The shared config schema (config-schema.js, rendered by both Settings and
+// Crawl Setup) promises "every key is a verified dotted yaml path" — this
+// test IS that verification. Each tg/num/ch/txt/lst helper call names a
+// config key; every one must resolve through the config schema, so a renamed
+// or mistyped key fails here instead of rendering a dead field.
 func TestSettingsFieldKeysResolve(t *testing.T) {
-	src, err := os.ReadFile("frontend/src/views/settings.jsx")
+	src, err := os.ReadFile("frontend/src/views/config-schema.js")
 	if err != nil {
 		t.Fatal(err)
 	}
