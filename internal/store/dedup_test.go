@@ -217,12 +217,29 @@ func TestBloomDedupMatchesExactOracle(t *testing.T) {
 	}
 }
 
-// TestAdmittedItemsUnionForResume (FR-08 / #70 M3) pins that AdmittedItems returns
+// collectAdmitted drains EachAdmitted into a URL→depth map (last write wins) and
+// a URL→occurrence-count map, so the union/depth/disjointness assertions below
+// read as before while exercising the streaming API the resume path uses.
+func collectAdmitted(t *testing.T, c *Crawl) (depth map[string]int, count map[string]int) {
+	t.Helper()
+	depth = map[string]int{}
+	count = map[string]int{}
+	if err := c.EachAdmitted(func(url string, d int) error {
+		depth[url] = d
+		count[url]++
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return depth, count
+}
+
+// TestEachAdmittedUnionForResume (FR-08 / #70 M3) pins that EachAdmitted streams
 // every admitted URL — crawled pages plus pending frontier rows — each carrying
 // its admit-time depth. This is the input the frontier replays through its
 // per-bucket counters on resume so the per-depth/-subdomain/-path caps bind across
 // the interrupt boundary; a wrong depth here would mis-bucket the rehydration.
-func TestAdmittedItemsUnionForResume(t *testing.T) {
+func TestEachAdmittedUnionForResume(t *testing.T) {
 	dir := t.TempDir()
 	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
@@ -246,14 +263,7 @@ func TestAdmittedItemsUnionForResume(t *testing.T) {
 		}
 	}
 
-	items, err := c.AdmittedItems()
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := map[string]int{}
-	for _, it := range items {
-		got[it.URL] = it.Depth
-	}
+	got, _ := collectAdmitted(t, c)
 	want := map[string]int{
 		"https://ex.com/":  0,
 		"https://ex.com/a": 1,
@@ -261,35 +271,28 @@ func TestAdmittedItemsUnionForResume(t *testing.T) {
 		"https://ex.com/c": 2,
 	}
 	if len(got) != len(want) {
-		t.Fatalf("AdmittedItems returned %d urls, want %d: %v", len(got), len(want), got)
+		t.Fatalf("EachAdmitted streamed %d urls, want %d: %v", len(got), len(want), got)
 	}
 	for u, d := range want {
 		if got[u] != d {
-			t.Errorf("AdmittedItems[%s] depth = %d, want %d", u, got[u], d)
+			t.Errorf("EachAdmitted[%s] depth = %d, want %d", u, got[u], d)
 		}
 	}
 
 	// The stranded pages∩frontier pair (a crash between Page() and
-	// FrontierDone(), the EC-02 window) must be counted ONCE, not twice: the
+	// FrontierDone(), the EC-02 window) must be streamed ONCE, not twice: the
 	// two sets are NOT guaranteed disjoint, exactly there (#74 R7). Forge the
 	// pair with raw SQL — Admit correctly refuses to create it.
 	if _, err := c.db.Exec(
 		`INSERT INTO frontier(url, depth, redirect_hops, source) VALUES('https://ex.com/a', 1, 0, '')`); err != nil {
 		t.Fatal(err)
 	}
-	items, err = c.AdmittedItems()
-	if err != nil {
-		t.Fatal(err)
-	}
-	counts := map[string]int{}
-	for _, it := range items {
-		counts[it.URL]++
-	}
+	got, counts := collectAdmitted(t, c)
 	if counts["https://ex.com/a"] != 1 {
-		t.Errorf("stranded pages∩frontier URL counted %d times, want 1 — resume rehydration double-charges the bucket (R7)",
+		t.Errorf("stranded pages∩frontier URL streamed %d times, want 1 — resume rehydration double-charges the bucket (R7)",
 			counts["https://ex.com/a"])
 	}
-	if len(items) != len(want) {
-		t.Errorf("AdmittedItems returned %d rows with a stranded pair present, want %d", len(items), len(want))
+	if len(got) != len(want) {
+		t.Errorf("EachAdmitted streamed %d distinct rows with a stranded pair present, want %d", len(got), len(want))
 	}
 }

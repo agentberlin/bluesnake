@@ -1108,7 +1108,7 @@ func (c *Crawl) PendingFrontier() ([]frontier.Item, error) {
 // PurgeStrandedFrontier deletes frontier rows whose URL already has a pages row
 // — the pair a crash between Page() and FrontierDone() strands (the EC-02
 // window). PendingFrontier merely skips such rows, so without this purge they
-// accrete across resumes and double-count in AdmittedItems' counter rehydration
+// accrete across resumes and double-count in EachAdmitted's counter rehydration
 // (#74 N14/R7). Called by the resume-open path; returns how many rows it purged.
 func (c *Crawl) PurgeStrandedFrontier() (int, error) {
 	res, err := c.db.Exec(`DELETE FROM frontier
@@ -1120,40 +1120,47 @@ func (c *Crawl) PurgeStrandedFrontier() (int, error) {
 	return int(n), err
 }
 
-// AdmittedItems returns every URL the crawl has admitted, with its admit-time
-// depth — the union of crawled pages and pending frontier rows. The two sets
-// are NORMALLY disjoint (Admit refuses a URL that already has a pages row, and
-// FrontierDone drops a frontier row the moment its page is recorded) — but a
-// crash between Page() and FrontierDone() strands a pages∩frontier pair (the
-// EC-02 window), so the frontier arm carries the same NOT-EXISTS(pages) guard
-// as PendingFrontier: a stranded URL counts once, not twice (#74 R7). The
-// resume-open path also purges such rows (PurgeStrandedFrontier); the guard
-// here is defense in depth for DBs stranded by older binaries. Resume replays
-// these through the frontier's per-bucket counters (RehydrateCounters) so a
-// resumed crawl enforces MaxURLsPerDepth / per-subdomain / per-path caps
-// against the same running totals a straight crawl had, instead of granting a
-// fresh bucket budget per session (FR-08 / MEMORY-SCALING.md §5.1). A resume
-// only ever follows an interrupted crawl, whose depths are still admit-time
-// (the completed-crawl depth recompute never ran), so pages.depth is the
-// bucket each page was admitted into.
-func (c *Crawl) AdmittedItems() ([]frontier.Item, error) {
-	rows, err := c.db.Query(`SELECT url, COALESCE(depth, 0), 0, '' FROM pages
+// EachAdmitted streams every URL the crawl has admitted, with its admit-time
+// depth — the union of crawled pages and pending frontier rows — to fn, one row
+// at a time. The two sets are NORMALLY disjoint (Admit refuses a URL that
+// already has a pages row, and FrontierDone drops a frontier row the moment its
+// page is recorded) — but a crash between Page() and FrontierDone() strands a
+// pages∩frontier pair (the EC-02 window), so the frontier arm carries the same
+// NOT-EXISTS(pages) guard as PendingFrontier: a stranded URL is streamed once,
+// not twice (#74 R7). The resume-open path also purges such rows
+// (PurgeStrandedFrontier); the guard here is defense in depth for DBs stranded
+// by older binaries. Resume feeds this stream through the frontier's per-bucket
+// counters (BucketCounts) so a resumed crawl enforces MaxURLsPerDepth /
+// per-subdomain / per-path caps against the same running totals a straight
+// crawl had, instead of granting a fresh bucket budget per session (FR-08 /
+// MEMORY-SCALING.md §5.1). A resume only ever follows an interrupted crawl,
+// whose depths are still admit-time (the completed-crawl depth recompute never
+// ran), so pages.depth is the bucket each page was admitted into.
+//
+// It STREAMS rather than returning a slice: the admitted set is frontier-sized,
+// so materialising it would put a frontier-linear copy back in RAM on every
+// bucket-capped resume — exactly the term issue #77 removes. The caller
+// accumulates only the small per-bucket counts (perDepth/perSub/perPath).
+func (c *Crawl) EachAdmitted(fn func(url string, depth int) error) error {
+	rows, err := c.db.Query(`SELECT url, COALESCE(depth, 0) FROM pages
 		UNION ALL
-		SELECT url, depth, redirect_hops, source FROM frontier
+		SELECT url, depth FROM frontier
 		WHERE NOT EXISTS (SELECT 1 FROM pages WHERE pages.url = frontier.url)`)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
-	var items []frontier.Item
 	for rows.Next() {
-		var it frontier.Item
-		if err := rows.Scan(&it.URL, &it.Depth, &it.RedirectHops, &it.Source); err != nil {
-			return nil, err
+		var url string
+		var depth int
+		if err := rows.Scan(&url, &depth); err != nil {
+			return err
 		}
-		items = append(items, it)
+		if err := fn(url, depth); err != nil {
+			return err
+		}
 	}
-	return items, rows.Err()
+	return rows.Err()
 }
 
 // FetchedCount returns how many MaxURLs fetch slots the stored pages consumed:

@@ -1440,6 +1440,30 @@ param validation, base_config reporting), `cmd/setup_cli_test.go` (real
 two-crawl stickiness E2E, per-member crawl-all output + frozen configs, flag
 exclusions) and four `features/setup_sources.feature` scenarios.
 
+**2026-07-03 — bounded resume bucket-counters: #77's last frontier-linear term
+closed (MEMORY-SCALING §5.1/§5.2).** Issue #77 shipped the bounded frontier but
+left one named residual: resume's per-bucket counter rehydration materialised
+the whole admitted set (`pages ∪ pending-frontier`) into a `[]frontier.Item`
+whenever a per-bucket cap (`limits.max_urls_per_depth` / `max_per_subdomain` /
+`by_path`) was configured — a frontier-linear RAM spike on that one resume path.
+Now the admitted set is **streamed, not materialised**: `store.AdmittedItems`
+became `store.EachAdmitted(fn)` — a cursor over the same union (EC-02
+`NOT EXISTS(pages)` guard intact) — and the loader accumulates only the small
+per-bucket counts via the new `frontier.BucketCounts`, which mirrors `Admit`'s
+increment block exactly (host key = `urlutil.Host`, ByPath first-match-wins, so
+a SQL `GROUP BY` — which would mis-fold port/case/userinfo host variants, FR-17
+— is deliberately avoided). `frontier.RehydrateCounters([]Item)` split into the
+pure `BucketCounts` (counting) + `SetCounters` (install); `crawler.Resume`'s
+`Admitted []frontier.Item` field became `PerDepth`/`PerSub`/`PerPath` aggregate
+maps carried as plain data (preserving #74's resume-as-data seam). The fix rides
+the single resume-open path (`openForResume`), so it holds on CLI, MCP and
+desktop at once. Gated by `TestResumeBucketCounterRAMFlat` (loadResume retains
++0.0 MB across a 50k-row admitted delta; a detector arm materialising the
+pre-fix slice shows +6.4 MB, so the gate cannot go blind) and
+`TestPerSubRehydration_HostKeyMatchesUrlutilHost` (FR-17, previously
+documented-but-missing); behavioral cap-binding equivalence unchanged
+(`TestResume_NoOverAdmitPerBucket_ThroughRunner`).
+
 **Implemented but scoped down (extension points exist):**
 - Issues catalogue: **164 = the full issues library computable on the current
   data model** (the no-new-infrastructure boundary, not an arbitrary stop).

@@ -202,10 +202,17 @@ type Resume struct {
 	// MaxEdgeSeq continues the gated-edge sequence past the prior session, so
 	// MIN(seq) first-wins discovered_from stays stable across the resume.
 	MaxEdgeSeq int64
-	// Admitted replays the full admitted set through the frontier's per-bucket
-	// counters (FR-08). Loaded only when a bucket cap is configured
-	// (config.LimitsConfig.AnyBucketCap); empty otherwise.
-	Admitted []frontier.Item
+	// PerDepth/PerSub/PerPath carry the prior session(s)' per-bucket admission
+	// counts, so the per-depth / per-subdomain / per-path caps bind against those
+	// running totals instead of restarting each bucket at zero and over-admitting
+	// (FR-08). Computed by the loader with frontier.BucketCounts over the store's
+	// admitted stream — small aggregate maps, NOT the frontier-sized admitted set
+	// (issue #77). Populated only when a bucket cap is configured
+	// (config.LimitsConfig.AnyBucketCap); nil otherwise. PerPath is index-parallel
+	// to cfg.Limits.ByPath.
+	PerDepth map[int]int
+	PerSub   map[string]int
+	PerPath  []int
 }
 
 // WithResume preseeds the crawler from a stored crawl: processed URLs are
@@ -433,13 +440,14 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 	// Continue the gated-edge seq past the prior session so resume's new edges
 	// sort after session-1's: MIN(seq) first-wins discovered_from stays stable.
 	c.edgeSeq.Store(c.resume.MaxEdgeSeq)
-	// Rehydrate the per-bucket admission counters from the stored admitted set so
-	// this resumed session enforces per-depth / per-subdomain / per-path caps
-	// against the totals the earlier session(s) accrued, instead of restarting
-	// each bucket at zero and over-admitting (FR-08 / MEMORY-SCALING.md §5.1).
-	// The loader supplies Admitted only when such a cap is configured.
-	if len(c.resume.Admitted) > 0 {
-		c.frontier.RehydrateCounters(c.resume.Admitted)
+	// Rehydrate the per-bucket admission counters so this resumed session enforces
+	// per-depth / per-subdomain / per-path caps against the totals the earlier
+	// session(s) accrued, instead of restarting each bucket at zero and
+	// over-admitting (FR-08 / MEMORY-SCALING.md §5.1). The loader supplies these
+	// small aggregate maps — never the frontier-sized admitted set (#77) — only
+	// when such a cap is configured; all nil otherwise, and SetCounters no-ops.
+	if c.resume.PerDepth != nil || c.resume.PerSub != nil || c.resume.PerPath != nil {
+		c.frontier.SetCounters(c.resume.PerDepth, c.resume.PerSub, c.resume.PerPath)
 	}
 
 	// Bounded worker pool (MEMORY-SCALING.md §5.2/§5.3, issue #77): N persistent
