@@ -86,6 +86,32 @@ export function CrawlProgress({ crawlId, onOpenResults, onResume, headerExtra })
             </div>
           </div>
 
+          {/* site-wide checks: run out-of-band at crawl start (robots.txt,
+              sitemaps, AI-bot access), so they get a status line, not a bar
+              segment — they finish within seconds of a minutes-long crawl. */}
+          {s.siteChecksState && (
+            <div className="card" style={{ padding: "10px 16px", marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}>
+              <Icon name="wrench" size={14} style={{ color: "var(--accent)" }} />
+              <span style={{ fontSize: 12, fontWeight: 650 }}>Site-wide checks</span>
+              {s.siteChecksState === "running" ? (
+                <span style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, color: "var(--ink-3)" }}>
+                  <span className="statusdot" style={{ background: "var(--accent)", boxShadow: "0 0 0 3px var(--accent-soft)", animation: "pulse 1.4s infinite" }} />
+                  auditing robots.txt, sitemaps and AI-bot access…
+                </span>
+              ) : (
+                <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
+                  {s.siteChecksRan || 0} checks ran
+                </span>
+              )}
+              <div style={{ flex: 1 }} />
+              {s.siteChecksState === "done" && (
+                (s.siteChecksFindings || 0) > 0
+                  ? <span className="badge tint" style={{ "--c": "var(--sev-warn)" }}><Icon name="triangle-alert" size={11} />{s.siteChecksFindings} finding{s.siteChecksFindings === 1 ? "" : "s"}</span>
+                  : <span className="badge tint" style={{ "--c": "var(--sev-ok)" }}><Icon name="circle-check" size={11} />all clear</span>
+              )}
+            </div>
+          )}
+
           {/* stats */}
           <div className="card" style={{ display: "flex", padding: 0, overflow: "hidden", marginBottom: 16 }}>
             {stat("Queue", state !== "running" ? "0" : s.queue.toLocaleString(), state !== "running" ? "drained" : "URLs waiting")}

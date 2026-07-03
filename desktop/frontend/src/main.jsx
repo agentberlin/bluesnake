@@ -16,7 +16,7 @@ import { ResultsWorkspace } from "./views/results-shell";
 import { UrlDetail } from "./views/detail";
 import { SettingsView } from "./views/settings";
 import { ProjectsView } from "./views/projects";
-import { RobotsTester } from "./views/robots";
+import { ToolsView } from "./views/tools";
 import { QueueView } from "./views/queue";
 import { MCPControls } from "./mcp-controls";
 
@@ -52,6 +52,7 @@ function App() {
   const [storage, setStorage] = useState(null);
   const [settingsFocus, setSettingsFocus] = useState(null); // {section} -> open Settings on it
   const [settingsBack, setSettingsBack] = useState(null); // {view,label} -> show a "back" button in Settings
+  const [toolsLink, setToolsLink] = useState(null); // {tool, target} -> open the Tools hub on a tool (issue deep-link)
   const [platform, setPlatform] = useState(detectPlatform); // "windows" | "darwin" | "linux" — drives window-chrome layout
   const [showCliPrompt, setShowCliPrompt] = useState(false); // first-launch "install the CLI?" prompt (shown once)
   const [update, setUpdate] = useState(null); // UpdateStatus from the launch check
@@ -232,7 +233,7 @@ function App() {
     { id: "home", label: "Crawls", icon: "layout-grid", count: crawls.length },
     { id: "queue", label: "Queue", icon: "list-checks", count: pendingJobs || null },
     { id: "projects", label: "Projects", icon: "folder" },
-    { id: "robots", label: "robots.txt Tester", icon: "bot" },
+    { id: "tools", label: "Tools", icon: "wrench" },
     { id: "settings", label: "Settings & Profiles", icon: "sliders-horizontal" },
   ];
 
@@ -381,6 +382,7 @@ function App() {
             setIssueFilter={setIssueFilter}
             onOpenDetail={(url) => setDetail({ crawlId: activeCrawl.id, url })}
             onFilterByIssue={openDataset}
+            onOpenTool={(tool) => { setToolsLink({ tool, target: activeCrawl.seed }); setView("tools"); }}
             onResume={() => resumeCrawl(activeCrawl)}
             onRerun={() => rerunCrawl(activeCrawl)}
             crawlBusyMsg={crawlBusyMsg}
@@ -392,7 +394,7 @@ function App() {
           mode: "spider", url: "https://" + domain, listUrls: [], sitemapUrl: "",
           profile: "Default audit", threads: 5, rate: 2, maxDepth: -1, rendering: "text",
         })} />}
-        {view === "robots" && <RobotsTester />}
+        {view === "tools" && <ToolsView initial={toolsLink} onConsumedInitial={() => setToolsLink(null)} />}
       </div>
 
       {/* URL detail drawer */}

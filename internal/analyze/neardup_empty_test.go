@@ -32,7 +32,7 @@ func TestMinhashOfEmptyNeverMatches(t *testing.T) {
 		}
 	}
 
-	res := Run(pages, nil, nil, cfg)
+	res := Run(pages, nil, nil, nil, cfg)
 	if len(res.NearDups) != 0 {
 		t.Errorf("near-dup matched %d signature-less, text-less pages — the empty signature must never enter matching: %v",
 			len(res.NearDups), res.NearDups)

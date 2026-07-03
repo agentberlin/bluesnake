@@ -110,6 +110,8 @@ CREATE TABLE IF NOT EXISTS llmstxt(
   title TEXT, summary TEXT, malformed INT, content TEXT);
 CREATE TABLE IF NOT EXISTS llmstxt_links(
   src TEXT, url TEXT, section TEXT, anchor TEXT, PRIMARY KEY(src, url));
+CREATE TABLE IF NOT EXISTS site_checks(
+  kind TEXT, subject TEXT, report TEXT, checked_at INT, PRIMARY KEY(kind, subject));
 CREATE TABLE IF NOT EXISTS analysis(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS blobs(url TEXT, kind TEXT, path TEXT, PRIMARY KEY(url, kind));
 `
@@ -431,7 +433,9 @@ type migration struct {
 	apply   func(*sql.Tx) error
 }
 
-// crawlMigrations is the per-crawl-DB ladder. APPEND ONLY.
+// crawlMigrations is the per-crawl-DB ladder. APPEND ONLY. New TABLES need no
+// step here — the schema's CREATE IF NOT EXISTS runs on every open (that is
+// how llmstxt and site_checks arrived); the ladder is for ALTERs and rebuilds.
 var crawlMigrations = []migration{
 	{1, "pages.http_version", func(tx *sql.Tx) error { return addColumn(tx, "pages", "http_version TEXT") }},
 	{2, "pages.duplicate_of", func(tx *sql.Tx) error { return addColumn(tx, "pages", "duplicate_of TEXT") }},
@@ -1668,6 +1672,36 @@ func (c *Crawl) LlmsTxt() (*analyze.LlmsTxtData, error) {
 		data.Links = append(data.Links, l)
 	}
 	return data, lrows.Err()
+}
+
+// SiteCheck records one site-level check report (crawler sink extension).
+// INSERT OR REPLACE keyed on (kind, subject): a resumed crawl re-running the
+// site-check pass overwrites its own rows idempotently.
+func (c *Crawl) SiteCheck(rec crawler.SiteCheckRecord) error {
+	_, err := c.db.Exec(`INSERT OR REPLACE INTO site_checks(kind, subject, report, checked_at) VALUES(?,?,?,?)`,
+		rec.Kind, rec.Subject, string(rec.Report), time.Now().Unix())
+	return err
+}
+
+// SiteChecks reloads the stored site-level check reports for the analysis
+// phase. Returns an empty (non-nil) slice when the pass never ran.
+func (c *Crawl) SiteChecks() ([]analyze.SiteCheck, error) {
+	rows, err := c.db.Query(`SELECT kind, subject, report FROM site_checks`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	checks := []analyze.SiteCheck{}
+	for rows.Next() {
+		var sc analyze.SiteCheck
+		var report string
+		if err := rows.Scan(&sc.Kind, &sc.Subject, &report); err != nil {
+			return nil, err
+		}
+		sc.Report = []byte(report)
+		checks = append(checks, sc)
+	}
+	return checks, rows.Err()
 }
 
 // SitemapIndex returns page URL -> sitemaps listing it.

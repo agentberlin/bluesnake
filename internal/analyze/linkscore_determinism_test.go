@@ -49,7 +49,7 @@ func TestLinkScore_DeterministicAcrossRuns(t *testing.T) {
 	const runs = 60
 	for i := 0; i < runs; i++ {
 		pages, links := linkScoreFixture()
-		res := Run(pages, nil, nil, cfg, WithLinks(links))
+		res := Run(pages, nil, nil, nil, cfg, WithLinks(links))
 		if len(res.LinkScores) == 0 {
 			t.Fatal("no link scores produced")
 		}

@@ -183,6 +183,10 @@ func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
+	siteChecks, err := st.SiteChecks()
+	if err != nil {
+		return Outcome{}, err
+	}
 	analyzePages := lite
 	if cfg.Analysis.NearDuplicates && cfg.Content.NearDuplicates.Enabled && !minhashCoverageComplete(lite) {
 		// Near-duplicates need each page's minhash signature. When near-dup was
@@ -209,7 +213,7 @@ func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
-	results := analyze.Run(analyzePages, sitemaps, llmstxt, cfg, analyze.WithLinks(links))
+	results := analyze.Run(analyzePages, sitemaps, llmstxt, siteChecks, cfg, analyze.WithLinks(links))
 	if err := st.SaveAnalysis(results); err != nil {
 		return Outcome{}, err
 	}

@@ -304,16 +304,18 @@ func TestConfigCmds(t *testing.T) {
 	}
 }
 
+// The robots tester lives in the `tools` group (DESIGN.md §5.10); the old
+// top-level `robots test` command is retired (no-compat-debt, pinned by BDD).
 func TestRobotsAndVersionCmds(t *testing.T) {
 	dir := t.TempDir()
 	robotsPath := filepath.Join(dir, "robots.txt")
 	os.WriteFile(robotsPath, []byte("User-agent: *\nDisallow: /private\n"), 0o644)
-	out, code := runCmd(t, "robots", "test", "https://e.com/ok", "https://e.com/private/x", "--robots-file", robotsPath)
+	out, code := runCmd(t, "tools", "robots", "https://e.com/ok", "https://e.com/private/x", "--robots-file", robotsPath)
 	if code != 0 || !strings.Contains(out, "ALLOWED") || !strings.Contains(out, "BLOCKED") {
-		t.Errorf("robots test: exit %d, output:\n%s", code, out)
+		t.Errorf("tools robots: exit %d, output:\n%s", code, out)
 	}
-	if _, code := runCmd(t, "robots", "test", "https://e.com/"); code != 2 {
-		t.Errorf("robots test without file: exit %d, want 2", code)
+	if _, code := runCmd(t, "robots", "test", "https://e.com/"); code != 1 {
+		t.Errorf("retired robots command: exit %d, want 1 (unknown command)", code)
 	}
 	if out, code := runCmd(t, "version"); code != 0 || !strings.Contains(out, "bluesnake ") {
 		t.Errorf("version: exit %d, output:\n%s", code, out)

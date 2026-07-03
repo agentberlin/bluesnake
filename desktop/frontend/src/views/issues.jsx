@@ -2,11 +2,25 @@
    Issues browser — full catalogue grouped by category, severity encoding
    =========================================================================== */
 import React, { useEffect, useState } from "react";
-import { Icon, Seg, Search, Toggle, Empty, SevDot, SEV, PRIO } from "../ui";
+import { Icon, IconBtn, Seg, Search, Toggle, Empty, SevDot, SEV, PRIO } from "../ui";
 import { api } from "../api";
 import { prettyCat } from "./results-shell";
 
-export function IssuesBrowser({ crawlId, onFilterByIssue }) {
+/* Site-level check families map back to the standalone tool that re-tests
+   them — the fix-then-retest loop without re-crawling. Per-page-only families
+   (titles, structured data, …) deliberately get no link: the tools take one
+   site/URL, not a page list. */
+export function toolForIssue(id) {
+  if (id.startsWith("robots_txt_")) return "robots";
+  if (id.startsWith("ai_bot")) return "aibots";
+  if (id.startsWith("llms_")) return "llms";
+  if (id.startsWith("js_")) return "render";
+  if (["sitemap_missing", "sitemap_fetch_error", "sitemap_invalid_xml", "sitemap_empty",
+    "sitemap_over_50k", "sitemap_over_50mb", "sitemap_cross_host_urls", "sitemap_invalid_lastmod"].includes(id)) return "sitemap";
+  return null;
+}
+
+export function IssuesBrowser({ crawlId, onFilterByIssue, onOpenTool }) {
   const [sev, setSev] = useState("all");
   const [q, setQ] = useState("");
   const [showPassed, setShowPassed] = useState(false);
@@ -64,11 +78,15 @@ export function IssuesBrowser({ crawlId, onFilterByIssue }) {
               </div>
               {g.items.map((it) => {
                 const passed = it.count === 0;
+                const tool = onOpenTool && !passed ? toolForIssue(it.id) : null;
                 return (
                   <div key={it.id} className={passed ? "" : "datarow"} onClick={() => !passed && onFilterByIssue("internal", { id: it.id, name: it.name })}
-                    style={{ display: "grid", gridTemplateColumns: "22px minmax(0,1fr) 78px 58px 52px 18px", gap: 9, alignItems: "center", padding: "8px 16px", borderBottom: "1px solid var(--border-soft)", cursor: "default", opacity: passed ? 0.5 : 1 }}>
+                    style={{ display: "grid", gridTemplateColumns: "22px minmax(0,1fr) 24px 78px 58px 52px 18px", gap: 9, alignItems: "center", padding: "8px 16px", borderBottom: "1px solid var(--border-soft)", cursor: "default", opacity: passed ? 0.5 : 1 }}>
                     {passed ? <Icon name="check" size={14} style={{ color: "var(--sev-ok)" }} /> : <SevDot severity={it.severity} />}
                     <span style={{ fontSize: 12.5, fontWeight: passed ? 400 : 500, color: passed ? "var(--ink-3)" : "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={it.name}>{it.name}</span>
+                    {tool
+                      ? <span onClick={(e) => { e.stopPropagation(); onOpenTool(tool); }}><IconBtn icon="wrench" size={13} title="Re-test in Tools" /></span>
+                      : <span />}
                     <span style={{ fontSize: 11, fontWeight: 600, color: passed ? "var(--ink-faint)" : (SEV[it.severity] || SEV.ok).c }}>{passed ? "—" : (SEV[it.severity] || SEV.ok).label}</span>
                     <span style={{ fontSize: 11, color: "var(--ink-faint)" }}>{PRIO[it.priority] || it.priority}</span>
                     <span className="mono" style={{ fontSize: 12.5, fontWeight: 600, textAlign: "right", color: passed ? "var(--ink-faint)" : it.severity === "issue" ? "var(--sev-issue)" : "var(--ink-2)" }}>

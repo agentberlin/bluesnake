@@ -9,6 +9,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/export"
 	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/sitecheck"
 	"github.com/agentberlin/bluesnake/internal/sitemapgen"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -166,6 +167,21 @@ type Overview struct {
 	Warnings      int          `json:"warnings"`
 	Opportunities int          `json:"opportunities"`
 	TopIssues     []IssueEntry `json:"topIssues"`
+	// SiteHealth is the per-kind rollup of the crawl's site-level checks
+	// (DESIGN.md §5.10) — one entry per check that ran, positive summary
+	// included, so the overview can show the successes too, not just the
+	// findings. Empty when the pass didn't run (path crawl, disabled).
+	SiteHealth []SiteHealthEntry `json:"siteHealth,omitempty"`
+}
+
+// SiteHealthEntry is one strip chip: the check's one-line story plus its
+// derived finding count with the worst catalogue severity ("" = all clear).
+type SiteHealthEntry struct {
+	Kind     string `json:"kind"`
+	Label    string `json:"label"`
+	Summary  string `json:"summary"`
+	Findings int    `json:"findings"`
+	Severity string `json:"severity,omitempty"`
 }
 
 func (a *App) Overview(id string) (*Overview, error) {
@@ -254,7 +270,62 @@ func (a *App) Overview(id string) (*Overview, error) {
 	if seed := seedOf(pages); seed != "" {
 		o.Seed = seed
 	}
+	o.SiteHealth = a.siteHealth(id)
 	return o, nil
+}
+
+// healthKindOrder fixes the strip's display order (storage order is arbitrary).
+var healthKindOrder = map[string]int{
+	sitecheck.KindRobots: 0, sitecheck.KindSitemap: 1, sitecheck.KindAIBots: 2,
+	sitecheck.KindRenderDiff: 3, "llms_txt": 4,
+}
+
+// siteHealth rolls the crawl's stored site-check reports (plus the llms.txt
+// audit, which predates the site_checks table and has its own storage) into
+// the overview strip. Best-effort: an unreadable store or a report from
+// another version yields fewer chips, never an error — the strip is a summary
+// of what ran, not a gate.
+func (a *App) siteHealth(id string) []SiteHealthEntry {
+	st, err := store.OpenCrawl(a.storeDir, id)
+	if err != nil {
+		return nil
+	}
+	defer st.Close()
+
+	var out []SiteHealthEntry
+	if checks, err := st.SiteChecks(); err == nil {
+		for _, sc := range checks {
+			if h, ok := sitecheck.Health(sc.Kind, sc.Report); ok {
+				out = append(out, decorateHealth(h))
+			}
+		}
+	}
+	if d, err := st.LlmsTxt(); err == nil && len(d.Files) > 0 {
+		rep := &sitecheck.LlmsReport{}
+		for _, f := range d.Files {
+			rep.Files = append(rep.Files, sitecheck.LlmsFile{
+				URL: f.URL, Kind: f.Kind, Status: f.Status, Found: f.Found,
+				Title: f.Title, Summary: f.Summary, Malformed: f.Malformed,
+			})
+		}
+		out = append(out, decorateHealth(sitecheck.LlmsHealth(rep)))
+	}
+	sort.SliceStable(out, func(i, j int) bool { return healthKindOrder[out[i].Kind] < healthKindOrder[out[j].Kind] })
+	return out
+}
+
+// decorateHealth attaches the finding count and the worst catalogue severity.
+func decorateHealth(h sitecheck.HealthEntry) SiteHealthEntry {
+	e := SiteHealthEntry{Kind: h.Kind, Label: h.Label, Summary: h.Summary, Findings: len(h.Findings)}
+	rank := map[issues.Severity]int{issues.Issue: 0, issues.Warning: 1, issues.Opportunity: 2}
+	best := len(rank)
+	for _, f := range h.Findings {
+		if def, ok := issues.Lookup(f.IssueID); ok && rank[def.Severity] < best {
+			best = rank[def.Severity]
+			e.Severity = string(def.Severity)
+		}
+	}
+	return e
 }
 
 // discoveryPath walks discovered_from edges back to the seed (seed first,

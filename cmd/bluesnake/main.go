@@ -8,7 +8,6 @@ import (
 	"os"
 
 	"github.com/agentberlin/bluesnake/internal/config"
-	"github.com/agentberlin/bluesnake/internal/robots"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/agentberlin/bluesnake/internal/version"
 	"github.com/spf13/cobra"
@@ -58,48 +57,9 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newSitemapCmd())
 	root.AddCommand(newServeCmd())
 	root.AddCommand(newMCPCmd())
-	root.AddCommand(newRobotsCmd())
+	root.AddCommand(newToolsCmd())
 	root.AddCommand(newVersionCmd())
 	return root
-}
-
-func newRobotsCmd() *cobra.Command {
-	robotsCmd := &cobra.Command{
-		Use:   "robots",
-		Short: "Robots.txt tools",
-	}
-
-	var robotsFile, userAgent string
-	testCmd := &cobra.Command{
-		Use:   "test <url>...",
-		Short: "Test URLs against a robots.txt file (Google REP semantics)",
-		Args:  cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if robotsFile == "" {
-				return exitErr{2, errors.New("--robots-file is required (live fetching arrives with the crawler)")}
-			}
-			data, err := os.ReadFile(robotsFile)
-			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
-				return exitErr{2, err}
-			}
-			f := robots.Parse(data)
-			for _, u := range args {
-				v := f.Verdict(userAgent, u)
-				if v.Allowed {
-					fmt.Fprintf(cmd.OutOrStdout(), "ALLOWED  %s\n", u)
-				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "BLOCKED  %s  (line %d: %s)\n", u, v.Rule.Line, v.Rule.Raw)
-				}
-			}
-			return nil
-		},
-	}
-	testCmd.Flags().StringVar(&robotsFile, "robots-file", "", "robots.txt file to test against")
-	testCmd.Flags().StringVar(&userAgent, "robots-user-agent", "bluesnake", "robots user-agent token")
-
-	robotsCmd.AddCommand(testCmd)
-	return robotsCmd
 }
 
 // appVersion is the single canonical version (see internal/version).

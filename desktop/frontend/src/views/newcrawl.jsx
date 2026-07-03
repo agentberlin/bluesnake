@@ -17,6 +17,7 @@ export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCr
   const [threads, setThreads] = useState(5);
   const [ups, setUps] = useState(5); // matches the 5-thread default so the rate cap isn't the bottleneck; 0 = unlimited
   const [rendering, setRendering] = useState("text");
+  const [siteChecks, setSiteChecks] = useState("auto");
   const [err, setErr] = useState("");
   const [starting, setStarting] = useState(false);
 
@@ -49,6 +50,7 @@ export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCr
         rate: ups,
         maxDepth: depth === "" ? -1 : Math.max(0, parseInt(depth, 10) || 0),
         rendering,
+        siteChecks,
       });
     } catch (e) {
       setErr(String(e && e.message ? e.message : e));
@@ -145,6 +147,15 @@ export function NewCrawl({ onStart, onOpenSettings, crawlBusyMsg, onViewActiveCr
               </Setup>
               <Setup label="Threads" hint="Parallel downloads">
                 <Stepper value={threads} min={1} max={50} onChange={setThreads} />
+              </Setup>
+              <Setup label="Site checks" hint={{
+                auto: "robots.txt, sitemaps and AI-bot access are audited when this is a full-domain crawl.",
+                all: "Every check runs — including the JS render diff (needs Chrome) — even on partial crawls.",
+                off: "No site-wide checks for this crawl.",
+              }[siteChecks]}>
+                <Seg value={siteChecks} onChange={setSiteChecks} options={[
+                  { value: "auto", label: "Auto" }, { value: "all", label: "All" }, { value: "off", label: "Off" },
+                ]} />
               </Setup>
             </div>
             {/* politeness — surfaced, not buried */}

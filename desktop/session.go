@@ -47,6 +47,11 @@ type ProgressSnapshot struct {
 	ElapsedSec int        `json:"elapsedSec"`
 	Threads    int        `json:"threads"`
 	Feed       []FeedItem `json:"feed"`
+	// Site-check pass status: "" when the pass is not part of this crawl,
+	// else "running" | "done" with live report/finding counts.
+	SiteChecksState    string `json:"siteChecksState,omitempty"`
+	SiteChecksRan      int    `json:"siteChecksRan,omitempty"`
+	SiteChecksFindings int    `json:"siteChecksFindings,omitempty"`
 }
 
 // DoneEvent is the payload of the "crawl:done" event.
@@ -197,6 +202,8 @@ func (o *uiObserver) build(snap runner.Snapshot, state string) ProgressSnapshot 
 		S2xx: snap.S2xx, S3xx: snap.S3xx, S4xx: snap.S4xx, S5xx: snap.S5xx,
 		Blocked: snap.Blocked, NoResp: snap.NoResponse, Indexable: snap.Indexable,
 		Rate: snap.RatePerSec, ElapsedSec: snap.ElapsedSec, Threads: snap.Threads,
-		Feed: feed,
+		Feed:            feed,
+		SiteChecksState: snap.SiteChecksState, SiteChecksRan: snap.SiteChecksRan,
+		SiteChecksFindings: snap.SiteChecksFindings,
 	}
 }

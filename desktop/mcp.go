@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/mcp"
 	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/runner"
@@ -244,6 +245,8 @@ type desktopBackend struct {
 }
 
 func (b *desktopBackend) StoreDir() string { return b.app.storeDir }
+
+func (b *desktopBackend) ProcessLimiter() *limiter.Limiter { return b.app.processLimiter() }
 
 func (b *desktopBackend) StartCrawl(ctx context.Context, req mcp.StartRequest) (string, error) {
 	a := b.app

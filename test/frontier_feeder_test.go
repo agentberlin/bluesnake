@@ -238,6 +238,10 @@ func TestEveryURLFetchedExactlyOnce(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.Speed.MaxThreads = 8
+	// The site-check pass probes the root out-of-band by design (AI-bot live
+	// probes: one "/" fetch per fetcher UA + a control) — exclude it so the
+	// counter pins only the frontier's exactly-once contract.
+	cfg.SiteChecks.Enabled = "never"
 	straightCrawlRunner(t, t.TempDir(), srv.URL+"/", cfg)
 
 	mu.Lock()

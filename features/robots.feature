@@ -51,13 +51,13 @@ Feature: Robots.txt handling
       """
     Then "https://ex.com/anything" is allowed for robots user-agent "somebot"
 
-  Scenario: robots tester subcommand
+  Scenario: robots tester subcommand (re-homed under bluesnake tools)
     Given a robots.txt file:
       """
       User-agent: *
       Disallow: /private/
       """
-    When I run "bluesnake robots test --robots-file <robotsfile> --robots-user-agent somebot https://ex.com/private/x https://ex.com/ok"
+    When I run "bluesnake tools robots --robots-file <robotsfile> --robots-user-agent somebot https://ex.com/private/x https://ex.com/ok"
     Then the exit code is 0
     And the output contains "BLOCKED  https://ex.com/private/x"
     And the output contains "Disallow: /private/"
@@ -91,12 +91,15 @@ Feature: Robots.txt handling
     And the page "/private/x" was not requested
     And the crawl page "/ok" has crawl state "crawled"
 
-  Scenario: Ignore mode never fetches robots.txt
+  Scenario: Ignore mode never fetches robots.txt for gating
     Given the test server serves the background robots.txt
     And a site page "/" linking to "/private/x"
     And a site page "/private/x" linking to ""
     And the crawl config override "http.robots_user_agent=somebot"
     And the crawl config override "robots.mode=ignore"
+    # the site-check audit fetches the file for reporting even in ignore mode
+    # (pinned in the crawler unit tests); disable it to isolate the policy
+    And the crawl config override "site_checks.enabled=never"
     When I crawl the site
     Then the page "/robots.txt" was not requested
     And the crawl page "/private/x" has status code 200

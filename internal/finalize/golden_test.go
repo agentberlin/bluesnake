@@ -83,8 +83,8 @@ func TestPageRankCSRParity(t *testing.T) {
 	cfg := config.Default()
 	sm, _ := st.SitemapIndex()
 	lt, _ := st.LlmsTxt()
-	ram := analyze.Run(pages, sm, lt, cfg)                           // Facts.Links
-	csr := analyze.Run(pages, sm, lt, cfg, analyze.WithLinks(links)) // CSR over links table
+	ram := analyze.Run(pages, sm, lt, nil, cfg)                           // Facts.Links
+	csr := analyze.Run(pages, sm, lt, nil, cfg, analyze.WithLinks(links)) // CSR over links table
 
 	for url, want := range ram.LinkScores {
 		if csr.LinkScores[url] != want {

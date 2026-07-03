@@ -23,8 +23,9 @@ import (
 // the scalar fields at record() time; Facts (minus the freed ContentText) are
 // shared, which is what the depth/inlinks replay needs (Facts.Links survive).
 type capSink struct {
-	mu    sync.Mutex
-	pages map[string]*PageRecord
+	mu         sync.Mutex
+	pages      map[string]*PageRecord
+	siteChecks []SiteCheckRecord
 }
 
 func newCapSink() *capSink { return &capSink{pages: map[string]*PageRecord{}} }
@@ -37,6 +38,21 @@ func (s *capSink) Page(rec *PageRecord) error {
 	return nil
 }
 func (s *capSink) FrontierDone(string) error { return nil }
+
+// SiteCheck captures the pass's streamed reports — the store sink's optional
+// extension shape, since the Result carries only counters.
+func (s *capSink) SiteCheck(rec SiteCheckRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.siteChecks = append(s.siteChecks, rec)
+	return nil
+}
+
+func (s *capSink) siteCheckRecs() []SiteCheckRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]SiteCheckRecord(nil), s.siteChecks...)
+}
 
 func (s *capSink) snapshot() map[string]*PageRecord {
 	s.mu.Lock()
@@ -60,15 +76,21 @@ func runCap(t *testing.T, c *Crawler, sink pageSnapshotter, seeds ...string) *cr
 	if err != nil {
 		t.Fatal(err)
 	}
-	return capFinalize(c, sink.snapshot(), res, seeds...)
+	ct := capFinalize(c, sink.snapshot(), res, seeds...)
+	if scs, ok := sink.(interface{ siteCheckRecs() []SiteCheckRecord }); ok {
+		ct.SiteChecks = scs.siteCheckRecs()
+	}
+	return ct
 }
 
 // crawlT bundles a captured crawl's records with the result counts, mirroring
-// the old *Result shape so test assertions stay readable.
+// the old *Result shape so test assertions stay readable. SiteChecks are the
+// records the sink saw (like Pages — the Result carries only counters).
 type crawlT struct {
 	Pages       map[string]*PageRecord
 	Crawled     int
 	Total       int
+	SiteChecks  []SiteCheckRecord
 	Interrupted bool
 	Duration    time.Duration
 }
