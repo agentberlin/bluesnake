@@ -236,3 +236,16 @@ func crawlStatusIn(t *testing.T, dir, id string) string {
 	}
 	return ""
 }
+
+// processLimiter hands the tool surfaces (ToolsApp, embedded MCP run_tool) the
+// same limiter the parallel crawls run under; nil single-crawl (P17 fallback).
+func TestProcessLimiterWiring(t *testing.T) {
+	single := testApp(t)
+	if single.processLimiter() != nil {
+		t.Error("single-crawl wiring: processLimiter should be nil")
+	}
+	par, _ := newParallelApp(t)
+	if par.processLimiter() == nil {
+		t.Error("parallel wiring: processLimiter should be the shared limiter")
+	}
+}

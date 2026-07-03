@@ -221,6 +221,10 @@ func TestInterruptAndResume(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 	cfg.Speed.MaxThreads = 2
+	// This test pins the crawl fetch discipline across interrupt+resume; the
+	// site-check pass re-probes the root out-of-band by design (per-bot UA
+	// probes, re-run idempotently each session), so keep it out.
+	cfg.SiteChecks.Enabled = "never"
 
 	// phase 1: crawl, interrupted after ~15 pages
 	st, err := CreateCrawl(dir, []string{srv.URL + "/"}, "spider", cfg)

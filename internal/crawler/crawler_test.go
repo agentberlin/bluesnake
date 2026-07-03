@@ -71,7 +71,9 @@ func crawl(t *testing.T, s *site, mutate func(*config.Config)) *crawlT {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return capFinalize(c, sink.snapshot(), res, seed)
+	ct := capFinalize(c, sink.snapshot(), res, seed)
+	ct.SiteChecks = sink.siteCheckRecs()
+	return ct
 }
 
 func (s *site) page(res *crawlT, path string) *PageRecord {
@@ -139,13 +141,44 @@ func TestRobotsIgnoreMode(t *testing.T) {
 		"/private/x":  "<p>secret</p>",
 		"/robots.txt": "User-agent: *\nDisallow: /private/\n",
 	})
-	res := crawl(t, s, func(c *config.Config) { c.Robots.Mode = "ignore" })
+	res := crawl(t, s, func(c *config.Config) {
+		c.Robots.Mode = "ignore"
+		// isolate the policy pin: the site-check audit (tested separately in
+		// TestSiteCheckAuditInIgnoreMode) is allowed its own single fetch
+		c.SiteChecks.Enabled = "never"
+	})
 
 	if s.hitCount("/robots.txt") != 0 {
 		t.Error("ignore mode must not fetch robots.txt")
 	}
 	if rec := s.page(res, "/private/x"); rec == nil || rec.StatusCode != 200 {
 		t.Errorf("private page = %+v", rec)
+	}
+}
+
+// With the site checks on, robots.mode: ignore still audits the file (the
+// audit reads it; it never gates the crawl) — exactly one fetch, and the
+// rules are still not obeyed.
+func TestSiteCheckAuditInIgnoreMode(t *testing.T) {
+	s := newSite(t, map[string]string{
+		"/":           link("/private/x"),
+		"/private/x":  "<p>secret</p>",
+		"/robots.txt": "User-agent: *\nDisallow: /private/\nSitemap: /sm.xml\n",
+	})
+	res := crawl(t, s, func(c *config.Config) { c.Robots.Mode = "ignore" })
+
+	if got := s.hitCount("/robots.txt"); got != 1 {
+		t.Errorf("robots.txt fetched %d times, want exactly 1 (the audit's)", got)
+	}
+	if rec := s.page(res, "/private/x"); rec == nil || rec.StatusCode != 200 {
+		t.Errorf("private page = %+v — the audit must not re-enable gating", rec)
+	}
+	kinds := map[string]bool{}
+	for _, rec := range res.SiteChecks {
+		kinds[rec.Kind] = true
+	}
+	if !kinds["robots"] {
+		t.Errorf("site checks = %+v, want a robots report", res.SiteChecks)
 	}
 }
 

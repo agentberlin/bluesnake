@@ -38,7 +38,7 @@ func prGraph(t *testing.T, adj map[string][]string, extra ...string) map[string]
 	for _, u := range extra { // isolated / non-linked pages
 		ensure(u)
 	}
-	return Run(pages, nil, nil, cfg, WithLinks(links)).LinkScores
+	return Run(pages, nil, nil, nil, cfg, WithLinks(links)).LinkScores
 }
 
 func TestPageRank_DegenerateGraphs(t *testing.T) {
@@ -46,7 +46,7 @@ func TestPageRank_DegenerateGraphs(t *testing.T) {
 		// No internal/crawled nodes -> early return, no scores.
 		cfg := config.Default()
 		cfg.Analysis.LinkScore = true
-		got := Run(map[string]*crawler.PageRecord{}, nil, nil, cfg).LinkScores
+		got := Run(map[string]*crawler.PageRecord{}, nil, nil, nil, cfg).LinkScores
 		if len(got) != 0 {
 			t.Errorf("empty graph produced scores: %v", got)
 		}
@@ -111,7 +111,7 @@ func TestPageRank_NodeSetFromPagesPredicate(t *testing.T) {
 		{Src: "/a", Dst: "/b", Type: string(parse.Hyperlink)},
 		{Src: "/a", Dst: "http://x", Type: string(parse.Hyperlink)}, // external endpoint
 	}
-	got := Run(pages, nil, nil, cfg, WithLinks(links)).LinkScores
+	got := Run(pages, nil, nil, nil, cfg, WithLinks(links)).LinkScores
 
 	if _, ok := got["/lonely"]; !ok {
 		t.Error("an isolated internal crawled page must still be a scored node (pages predicate, not link endpoints)")
@@ -160,8 +160,8 @@ func TestPageRank_NonCrawledInternalDstHoldsNoRank(t *testing.T) {
 	}
 
 	for name, scores := range map[string]map[string]float64{
-		"facts": Run(mkPages(), nil, nil, cfg).LinkScores,
-		"csr":   Run(mkPages(), nil, nil, cfg, WithLinks(links)).LinkScores,
+		"facts": Run(mkPages(), nil, nil, nil, cfg).LinkScores,
+		"csr":   Run(mkPages(), nil, nil, nil, cfg, WithLinks(links)).LinkScores,
 	} {
 		if _, ok := scores[ghost]; ok {
 			t.Errorf("%s: non-crawled internal target %s holds rank (score %v) — it is not a node", name, ghost, scores[ghost])

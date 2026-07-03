@@ -2,13 +2,9 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -17,8 +13,8 @@ import (
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/finalize"
 	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/queue"
-	"github.com/agentberlin/bluesnake/internal/robots"
 	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -42,6 +38,7 @@ type App struct {
 	disp   *queue.Dispatcher
 	obs    *uiObserver
 	queueW int
+	lim    *limiter.Limiter // process-wide caps when queueW > 1; nil ⇒ single-crawl wiring
 
 	cacheMu    sync.Mutex
 	pagesCache map[string]map[string]*crawler.PageRecord // crawlID -> pages
@@ -139,6 +136,7 @@ func (a *App) ensureQueue() {
 		runtime.LogWarningf(a.ctx, "queue: default profile unreadable, running single-crawl: %v", err)
 	}
 	a.queueW = w
+	a.lim = lim
 	a.obs = &uiObserver{app: a, emit: func(event string, data ...interface{}) {
 		runtime.EventsEmit(a.ctx, event, data...)
 	}}
@@ -148,6 +146,18 @@ func (a *App) ensureQueue() {
 	}
 	a.exec = runner.New(a.storeDir, a.obs, opts...)
 	a.disp = queue.New(queue.NewSQLiteStore(a.storeDir), a.exec, queue.WithConcurrency(w))
+}
+
+// processLimiter exposes the process-wide limiter to the interactive tool
+// surfaces (the Tools hub, the embedded MCP server's run_tool), so tool-run
+// fetches and renders share the same ceilings as the crawls they run beside
+// (GL-08/REN-01). nil under single-crawl wiring — no process caps, matching
+// the executor's P17 fallback.
+func (a *App) processLimiter() *limiter.Limiter {
+	a.ensureQueue()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lim
 }
 
 func (a *App) invalidate(id string) {
@@ -243,6 +253,12 @@ type StartRequest struct {
 	Rate       float64  `json:"rate"`     // URLs/sec, 0 = unlimited
 	MaxDepth   int      `json:"maxDepth"` // -1 = unlimited
 	Rendering  string   `json:"rendering"`
+	// SiteChecks is the form's site-wide-checks selector. Like every other
+	// quick-config field it is absolute — the choice is frozen into the crawl
+	// regardless of the profile: "auto" (gate on full-domain crawls), "all"
+	// (force everything on, render diff included), "off" (never). "" = no
+	// override (non-form callers: welcome shortcut, projects crawl-all).
+	SiteChecks string `json:"siteChecks"`
 }
 
 // toSpec translates the desktop's start form into the neutral queue job spec:
@@ -260,6 +276,19 @@ func (req StartRequest) toSpec() queue.JobSpec {
 	}
 	if req.Rendering != "" {
 		cfg["rendering.mode"] = req.Rendering
+	}
+	switch req.SiteChecks {
+	case "":
+		// no override — the profile's site_checks config decides
+	case "all":
+		cfg["site_checks.enabled"] = "always"
+		cfg["site_checks.render_diff"] = true
+	case "off":
+		cfg["site_checks.enabled"] = "never"
+	default:
+		// "auto", or any raw value — config validation rejects unknown enums
+		// at enqueue time, exactly like a mistyped rendering mode.
+		cfg["site_checks.enabled"] = req.SiteChecks
 	}
 	spec := queue.JobSpec{Mode: req.Mode, Profile: req.Profile, Config: cfg}
 	if req.Mode == "list" {
@@ -447,55 +476,6 @@ func (a *App) CancelJob(id string) error {
 func (a *App) ClearJob(id string) error {
 	a.ensureQueue()
 	return store.DeleteJob(a.storeDir, id)
-}
-
-// ---------------------------------------------------------------------------
-// robots tester
-
-type RobotsVerdict struct {
-	URL     string `json:"url"`
-	Allowed bool   `json:"allowed"`
-	Line    int    `json:"line"`
-	Rule    string `json:"rule"`
-}
-
-func (a *App) TestRobots(robotsTxt, token string, urls []string) []RobotsVerdict {
-	f := robots.Parse([]byte(robotsTxt))
-	out := make([]RobotsVerdict, 0, len(urls))
-	for _, u := range urls {
-		u = strings.TrimSpace(u)
-		if u == "" {
-			continue
-		}
-		v := f.Verdict(token, u)
-		rv := RobotsVerdict{URL: u, Allowed: v.Allowed}
-		if v.Rule != nil {
-			rv.Line = v.Rule.Line
-			rv.Rule = v.Rule.Raw
-		}
-		out = append(out, rv)
-	}
-	return out
-}
-
-// FetchRobots downloads the live robots.txt for the host of the given URL.
-func (a *App) FetchRobots(site string) (string, error) {
-	u, err := url.Parse(site)
-	if err != nil || u.Host == "" {
-		return "", fmt.Errorf("enter a full URL, e.g. https://example.com")
-	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(u.Scheme + "://" + u.Host + "/robots.txt")
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("robots.txt returned HTTP %d", resp.StatusCode)
-	}
-	buf := make([]byte, 512*1024)
-	n, _ := resp.Body.Read(buf)
-	return string(buf[:n]), nil
 }
 
 // ---------------------------------------------------------------------------

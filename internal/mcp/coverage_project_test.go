@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
@@ -21,6 +22,7 @@ func (f *fakeBackend) PauseCrawl(string) error                                  
 func (f *fakeBackend) StopCrawl(string) error                                   { return nil }
 func (f *fakeBackend) Running() []Progress                                      { return nil }
 func (f *fakeBackend) StoreDir() string                                         { return f.dir }
+func (f *fakeBackend) ProcessLimiter() *limiter.Limiter                         { return nil }
 
 func projectServer(t *testing.T) (*Server, string) {
 	t.Helper()

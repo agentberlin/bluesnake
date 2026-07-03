@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/runner"
 )
@@ -25,6 +26,7 @@ type Runner struct {
 	exec      *runner.Executor
 	disp      *queue.Dispatcher
 	maxCrawls int
+	lim       *limiter.Limiter // the shared process limiter when parallel; nil single-crawl
 
 	startMu sync.Mutex // serializes the capacity check against racing starts
 }
@@ -37,6 +39,7 @@ func NewRunner(storeDir string) *Runner {
 	if err == nil {
 		r.maxCrawls = w
 	}
+	r.lim = lim
 	var opts []runner.Option
 	if lim != nil {
 		opts = append(opts, runner.WithLimiter(lim))
@@ -48,6 +51,8 @@ func NewRunner(storeDir string) *Runner {
 }
 
 func (r *Runner) StoreDir() string { return r.storeDir }
+
+func (r *Runner) ProcessLimiter() *limiter.Limiter { return r.lim }
 
 // mcp.Backend -------------------------------------------------------------
 

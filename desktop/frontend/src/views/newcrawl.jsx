@@ -10,7 +10,7 @@ import { api, DEFAULT_PROFILE, profileLabel } from "../api";
    dialog reuses it, keeping both journeys identical. */
 export function defaultCrawlSetup() {
   // ups matches the 5-thread default so the rate cap isn't the bottleneck; 0 = unlimited
-  return { profile: DEFAULT_PROFILE, depth: "", threads: 5, ups: 5, rendering: "text" };
+  return { profile: DEFAULT_PROFILE, depth: "", threads: 5, ups: 5, rendering: "text", siteChecks: "auto" };
 }
 
 /* Map the setup card's state to the backend StartRequest knobs. */
@@ -21,6 +21,7 @@ export function setupToRequest(s) {
     rate: s.ups,
     maxDepth: s.depth === "" ? -1 : Math.max(0, parseInt(s.depth, 10) || 0),
     rendering: s.rendering,
+    siteChecks: s.siteChecks,
   };
 }
 
@@ -175,6 +176,15 @@ export function CrawlSetupCard({ profiles, value, onChange, style, hint }) {
         </Setup>
         <Setup label="Threads" hint="Parallel downloads">
           <Stepper value={value.threads} min={1} max={50} onChange={(v) => set({ threads: v })} />
+        </Setup>
+        <Setup label="Site checks" hint={{
+          auto: "robots.txt, sitemaps and AI-bot access are audited when this is a full-domain crawl.",
+          all: "Every check runs — including the JS render diff (needs Chrome) — even on partial crawls.",
+          off: "No site-wide checks for this crawl.",
+        }[value.siteChecks]}>
+          <Seg value={value.siteChecks} onChange={(v) => set({ siteChecks: v })} options={[
+            { value: "auto", label: "Auto" }, { value: "all", label: "All" }, { value: "off", label: "Off" },
+          ]} />
         </Setup>
       </div>
       {/* politeness — surfaced, not buried */}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/runner"
 )
@@ -76,6 +77,12 @@ type Backend interface {
 	StopCrawl(crawlID string) error
 	Running() []Progress // live snapshots of every in-flight crawl, oldest first; empty when idle
 	StoreDir() string
+	// ProcessLimiter is the backend's process-wide concurrency limiter, shared
+	// with every crawl it runs (runner.ProcessWiring): run_tool fetches and
+	// renders take slots from it so interactive tool runs count against the
+	// same ceilings (GL-08/REN-01). nil under single-crawl wiring — no process
+	// caps, matching the executor's P17 fallback.
+	ProcessLimiter() *limiter.Limiter
 }
 
 // StartViaQueue enforces the MCP start contract over a crawl-queue dispatcher,

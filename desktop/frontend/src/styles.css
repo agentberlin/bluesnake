@@ -89,6 +89,7 @@
   --sev-warn:  oklch(0.72 0.135 70);
   --sev-opp:   oklch(0.60 0.115 245);
   --sev-ok:    oklch(0.60 0.13 150);
+  --serp-link: #1a0dab; /* Google result-title blue, per theme */
 }
 [data-theme="dark"]{
   --s-2xx: oklch(0.72 0.15 152);
@@ -100,6 +101,7 @@
   --sev-warn:  oklch(0.80 0.14 75);
   --sev-opp:   oklch(0.72 0.13 248);
   --sev-ok:    oklch(0.72 0.15 152);
+  --serp-link: #8ab4f8; /* Google's dark-results link blue */
 }
 
 *{ box-sizing: border-box; }

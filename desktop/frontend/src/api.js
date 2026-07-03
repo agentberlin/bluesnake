@@ -46,8 +46,6 @@ export const api = {
   generateSitemap: (id) => call("GenerateSitemap", id),
   reanalyze: (id) => call("Reanalyze", id),
 
-  testRobots: (robotsTxt, token, urls) => call("TestRobots", robotsTxt, token, urls),
-  fetchRobots: (site) => call("FetchRobots", site),
   compareCrawls: (prevId, currId) => call("CompareCrawls", prevId, currId),
 
   listProfiles: () => call("ListProfiles"),
@@ -102,6 +100,23 @@ export const projectApi = {
   comparison: (id, includeOptional) => pcall("ProjectComparison", id, includeOptional),
   diff: (id, domain) => pcall("ProjectDiff", id, domain),
   crawlAll: (id, req) => pcall("CrawlAll", id, req),
+};
+
+/* Standalone Tools hub. Bound as a SEPARATE Go struct (window.go.main.ToolsApp,
+   the ProjectApp pattern) over internal/sitecheck: one generic run() drives
+   every tester, args validated against the registry. Runs are throwaway —
+   nothing is persisted. */
+function toolsBackend() {
+  if (!window.go || !window.go.main || !window.go.main.ToolsApp) {
+    throw new Error("tools backend not available — run inside the Wails app (wails dev)");
+  }
+  return window.go.main.ToolsApp;
+}
+export const toolsApi = {
+  list: () => toolsBackend().ListTools(),
+  /* run("robots", "https://ex.com", {urls: [...]}) → {report, findings} */
+  run: (name, target, args) =>
+    toolsBackend().RunTool(name, target || "", args ? JSON.stringify(args) : "").then(JSON.parse),
 };
 
 /* Open a URL in the user's default browser (Wails runtime), falling back to a

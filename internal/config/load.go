@@ -135,6 +135,16 @@ func (c *Config) Validate() error {
 
 	oneOf("mode", c.Mode, "spider", "list")
 	oneOf("robots.mode", c.Robots.Mode, "respect", "ignore", "ignore-report")
+	oneOf("site_checks.enabled", c.SiteChecks.Enabled, "auto", "always", "never")
+	for i, b := range c.SiteChecks.AIBots.Bots {
+		if b.Name == "" {
+			bad("site_checks.ai_bots.bots[%d]: name is required", i)
+		}
+		if b.Purpose != "" {
+			oneOf(fmt.Sprintf("site_checks.ai_bots.bots[%d].purpose", i), b.Purpose,
+				"training", "search", "user_action")
+		}
+	}
 	oneOf("rendering.mode", c.Rendering.Mode, "text", "javascript")
 	oneOf("rendering.wait_strategy", c.Rendering.WaitStrategy, "adaptive", "fixed")
 	oneOf("advanced.cookie_storage", c.Advanced.CookieStorage, "session", "persistent", "none")

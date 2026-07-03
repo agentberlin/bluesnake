@@ -39,6 +39,15 @@ func Default() *Config {
 			FetchFull:   true,
 			CrawlLinked: true,
 		},
+		SiteChecks: SiteChecksConfig{
+			Enabled: "auto",
+			Robots:  true,
+			Sitemap: true,
+			AIBots: AIBotsChecksConfig{
+				Check:     true,
+				LiveProbe: true,
+			},
+		},
 		Extraction: ExtractionConfig{
 			PageDetails: PageDetailsConfig{
 				Titles: true, MetaDescriptions: true, MetaKeywords: true,

@@ -561,9 +561,14 @@ func (w *world) secondServerNotRequested(path string) error {
 // wellKnownSiteFile reports whether a path is a site-level well-known file
 // fetched out-of-band for every crawl (robots.txt, llms.txt) — never a crawled
 // "page", so it's excluded from page-request counts.
+// wellKnownSiteFile lists the site-level files bluesnake retrieves
+// out-of-band (robots policy, llms.txt audit, the site-check pass's sitemap
+// discovery probes). They are not crawled pages, and idempotent passes may
+// legitimately re-fetch them per session, so page counts and the
+// double-fetch guard skip them.
 func wellKnownSiteFile(path string) bool {
 	switch path {
-	case "/robots.txt", "/llms.txt", "/llms-full.txt":
+	case "/robots.txt", "/llms.txt", "/llms-full.txt", "/sitemap.xml", "/sitemap_index.xml":
 		return true
 	}
 	return false

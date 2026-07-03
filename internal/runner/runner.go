@@ -43,6 +43,11 @@ type Snapshot struct {
 	RatePerSec float64
 	ElapsedSec int
 	Threads    int
+	// Site-check pass status (DESIGN.md §5.10): state "" when the pass is not
+	// part of this crawl, else "running"/"done" with live report/finding counts.
+	SiteChecksState    string
+	SiteChecksRan      int
+	SiteChecksFindings int
 }
 
 // Outcome is the terminal result handed to Observer.OnDone. The analysis fields
@@ -553,7 +558,7 @@ func (r *run) snapshot() Snapshot {
 	if len(r.seeds) > 0 {
 		seed = r.seeds[0]
 	}
-	return Snapshot{
+	snap := Snapshot{
 		CrawlID: r.st.ID, Seed: seed,
 		Total: r.total, Discovered: r.discovered, Queue: queueLen,
 		S2xx: r.s2, S3xx: r.s3, S4xx: r.s4, S5xx: r.s5,
@@ -562,6 +567,10 @@ func (r *run) snapshot() Snapshot {
 		ElapsedSec: int(time.Since(r.started).Seconds()),
 		Threads:    r.threads,
 	}
+	if r.c != nil {
+		snap.SiteChecksState, snap.SiteChecksRan, snap.SiteChecksFindings = r.c.SiteCheckProgress()
+	}
+	return snap
 }
 
 func (r *run) onPage(rec *crawler.PageRecord) {
