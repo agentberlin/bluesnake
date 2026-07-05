@@ -841,11 +841,22 @@ Definition of done per milestone: feature file(s) green, unit coverage ≥ 90% f
 - Distributed crawling: out of scope; single-process concurrency is the design point.
   In-process **parallel multi-crawl** is that design point delivered (issue #78, 2026-07-02):
   the core queue's dispatcher drains up to `speed.max_concurrent_crawls` jobs at once with
-  identical semantics on CLI (`projects crawl-all`, flag > config > 1), desktop, and MCP
-  (both read the knob from the default profile at start via `runner.ProcessWiring` — restart
-  to apply) under ONE shared process-wide limiter (global fetch cap, one finalize pass,
-  the Chrome render pool). Per-crawl control/status is crawl-id-addressed on every surface;
-  the default stays 1, keeping single-crawl behaviour unchanged.
+  identical semantics on CLI (`projects crawl-all`, config > 1), desktop, and MCP, under
+  ONE shared process-wide limiter (global fetch cap, one finalize pass, the Chrome render
+  pool). Per-crawl control/status is crawl-id-addressed on every surface; the default
+  stays 1, keeping single-crawl behaviour unchanged.
+  **The width is live** (2026-07-05): `queue.Dispatcher.SetConcurrency` retargets W at
+  runtime — raising spawns drain loops so already-queued jobs start immediately, lowering
+  retires loops between jobs (a running crawl is never interrupted). The desktop applies
+  it on every profile save (`refreshQueueWidth`), the MCP servers re-read it at every
+  start (`liveMaxCrawls` / the desktop backend's refresh), so no surface needs a restart;
+  `ProcessWiring` therefore returns the shared limiter unconditionally (its caps are all
+  width-independent) — the executor's per-crawl P17 fallback now serves only the CLI's
+  fixed-width one-shot commands. The user-facing concurrency model is two knobs:
+  `speed.max_threads` ("Threads per site") × `speed.max_concurrent_crawls` ("Parallel
+  crawls"); `speed.max_global_threads` is an advanced YAML-only safety valve, hidden from
+  the settings UI, and `projects crawl-all --parallel` was removed (the config knob is the
+  single control).
 - Windows support: nothing platform-specific except Chrome discovery; CI matrix later.
 - **Settle thresholds are code constants, not config** (decided 2026-06-11): 500ms
   network-idle window, 1.5s wire-silence window, 2×500ms DOM-stability probes

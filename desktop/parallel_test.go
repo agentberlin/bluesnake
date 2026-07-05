@@ -137,8 +137,8 @@ func TestDesktopParallelCrawlsEventsDoNotCross(t *testing.T) {
 	srvB := slowBrokenSite(t, "b")
 	a, log := newParallelApp(t)
 
-	if a.queueW != 2 {
-		t.Fatalf("queueW = %d, want 2 (speed.max_concurrent_crawls from the default profile)", a.queueW)
+	if w := a.disp.Concurrency(); w != 2 {
+		t.Fatalf("queue width = %d, want 2 (speed.max_concurrent_crawls from the default profile)", w)
 	}
 
 	for _, u := range []string{srvA.URL, srvB.URL} {
@@ -222,6 +222,47 @@ func startReqForTest(url string) mcp.StartRequest {
 	return mcp.StartRequest{URL: url, Config: map[string]any{"speed.max_threads": 1}}
 }
 
+// TestDesktopLiveWidthOnProfileSave pins the live-W contract on the desktop:
+// raising speed.max_concurrent_crawls in the settings (SetConfigValues →
+// refreshQueueWidth → SetConcurrency) applies to the running queue
+// immediately — a job already queued behind the width-1 head starts without
+// an app restart.
+func TestDesktopLiveWidthOnProfileSave(t *testing.T) {
+	srvA := slowBrokenSite(t, "a")
+	srvB := slowBrokenSite(t, "b")
+	dir := t.TempDir()
+	profiles := filepath.Join(dir, "profiles")
+	if err := os.MkdirAll(profiles, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profiles, "default-audit.yaml"),
+		[]byte("speed:\n  max_concurrent_crawls: 1\n  max_threads: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := NewApp()
+	a.storeDir = dir
+	a.ensureQueue()
+	log := &eventLog{}
+	a.obs.emit = log.emit
+	if err := a.disp.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.disp.Shutdown)
+
+	for _, u := range []string{srvA.URL, srvB.URL} {
+		if _, err := a.StartCrawl(StartRequest{Mode: "spider", URL: u + "/", Threads: 1, MaxDepth: -1}); err != nil {
+			t.Fatalf("StartCrawl(%s): %v", u, err)
+		}
+	}
+	waitCond(t, func() bool { return len(a.RunningProgress()) == 1 }, "head crawl running under width 1")
+
+	if err := a.SetConfigValues("", map[string]string{"speed.max_concurrent_crawls": "2"}); err != nil {
+		t.Fatal(err)
+	}
+	waitCond(t, func() bool { return len(a.RunningProgress()) == 2 },
+		"queued crawl starting after the live width raise (no restart)")
+}
+
 // crawlStatusIn reads a crawl's stored registry status.
 func crawlStatusIn(t *testing.T, dir, id string) string {
 	t.Helper()
@@ -238,11 +279,13 @@ func crawlStatusIn(t *testing.T, dir, id string) string {
 }
 
 // processLimiter hands the tool surfaces (ToolsApp, embedded MCP run_tool) the
-// same limiter the parallel crawls run under; nil single-crawl (P17 fallback).
+// same limiter the crawls run under — present regardless of the width, because
+// the width is live (a profile save can raise it at any time) so the P17
+// single-crawl fallback can never be relied on here.
 func TestProcessLimiterWiring(t *testing.T) {
 	single := testApp(t)
-	if single.processLimiter() != nil {
-		t.Error("single-crawl wiring: processLimiter should be nil")
+	if single.processLimiter() == nil {
+		t.Error("width-1 wiring: processLimiter should still be the shared limiter (the width is live)")
 	}
 	par, _ := newParallelApp(t)
 	if par.processLimiter() == nil {

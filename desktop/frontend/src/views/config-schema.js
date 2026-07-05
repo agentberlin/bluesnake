@@ -100,10 +100,11 @@ export const SECTIONS = [
     tg("url_rewriting.lowercase", "Lowercase all URLs", null, true),
   ]},
   { id: "speed", label: "Speed", icon: "zap", fields: [
-    num("speed.max_threads", "Max threads", "Parallel downloads per crawl."),
+    num("speed.max_threads", "Threads per site", "Parallel downloads within one crawl."),
     num("speed.max_urls_per_sec", "Max URLs per second", "Politeness throttle. 0 = unlimited.", "URL/s"),
-    num("speed.max_global_threads", "Max global threads", "Total concurrent fetches across all running crawls. 0 = unlimited."),
-    num("speed.max_concurrent_crawls", "Max concurrent crawls", "How many crawls run in parallel — applies to this app (and its MCP server) after a restart, and to the CLI. Each parallel crawl adds its own memory footprint. 0/1 = one at a time."),
+    // speed.max_global_threads is deliberately not surfaced: an advanced
+    // YAML-only safety valve (total fetches across all crawls; 0 = unlimited).
+    num("speed.max_concurrent_crawls", "Parallel crawls", "How many sites crawl at once — applies immediately, even to jobs already waiting in the queue (lowering it never interrupts a running crawl). Each parallel crawl adds its own memory footprint. 0/1 = one at a time."),
   ]},
   { id: "http", label: "HTTP & Identity", icon: "fingerprint", fields: [
     txt("http.user_agent", "User-agent"),

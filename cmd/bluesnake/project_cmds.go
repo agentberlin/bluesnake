@@ -257,14 +257,13 @@ func newProjectCmd() *cobra.Command {
 	}
 
 	var (
-		parallel        int
 		crawlAllConfig  string
 		crawlAllProfile string
 		crawlAllSetup   string
 	)
 	crawlAllCmd := &cobra.Command{
 		Use:   "crawl-all <project-id>",
-		Short: "Crawl every member domain of the project (up to --parallel at once)",
+		Short: "Crawl every member domain of the project (up to speed.max_concurrent_crawls at once)",
 		Long: "Crawl every member domain of the project. By default each member crawls with its own\n" +
 			"site's last-crawl setup (app settings when never crawled) — the per-site mode (#88).\n" +
 			"--profile, --config, or --setup app|defaults override that with ONE shared setup for\n" +
@@ -344,12 +343,12 @@ func newProjectCmd() *cobra.Command {
 				j.yaml = string(data)
 				jobs = append(jobs, j)
 			}
-			// Parallelism comes from --parallel when set, else the
-			// max_concurrent_crawls knob of the shared config — or, in per-site
-			// mode, of the app settings, matching how the desktop and MCP read
-			// their process wiring from the default profile (M2). The same
-			// config drives the ONE process-wide limiter: per-member configs
-			// can't each set process caps.
+			// Parallelism is the speed.max_concurrent_crawls knob of the shared
+			// config — or, in per-site mode, of the app settings — the ONE
+			// parallel-crawl control every surface reads (M2); there is no
+			// per-invocation override, by design. The same config drives the
+			// ONE process-wide limiter: per-member configs can't each set
+			// process caps.
 			wiring := shared
 			if wiring == nil {
 				if wiring, err = runner.LoadProfile(storeDir, ""); err != nil {
@@ -357,9 +356,7 @@ func newProjectCmd() *cobra.Command {
 				}
 			}
 			cfg := wiring
-			if !cmd.Flags().Changed("parallel") && cfg.Speed.MaxConcurrentCrawls > 0 {
-				parallel = cfg.Speed.MaxConcurrentCrawls
-			}
+			parallel := cfg.Speed.MaxConcurrentCrawls
 			if parallel < 1 {
 				parallel = 1
 			}
@@ -409,7 +406,6 @@ func newProjectCmd() *cobra.Command {
 		},
 	}
 
-	crawlAllCmd.Flags().IntVar(&parallel, "parallel", 1, "member crawls to run at once (default: speed.max_concurrent_crawls)")
 	crawlAllCmd.Flags().StringVar(&crawlAllConfig, "config", "", "config file (YAML) applied to every member crawl (override-all)")
 	crawlAllCmd.Flags().StringVar(&crawlAllProfile, "profile", "", "named config profile applied to every member crawl (override-all; see 'bluesnake config profiles')")
 	crawlAllCmd.Flags().StringVar(&crawlAllSetup, "setup", "last", "last: each member's own last-crawl setup (default); app|defaults: one shared setup for every member")

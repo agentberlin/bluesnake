@@ -2,7 +2,8 @@ package runner
 
 // #74 R9: the REAL parallel crawl-all composition — queue.Dispatcher (W drain
 // loops) + runner.Executor + queue.MemStore + one shared limiter — run
-// end-to-end, exactly as `projects crawl-all --parallel` wires it. The pieces
+// end-to-end, exactly as `projects crawl-all` wires it (W from
+// speed.max_concurrent_crawls). The pieces
 // were each unit-tested; this pins the composition under -race (the runner
 // package is in RACE_PKGS): both member crawls complete, each claimed exactly
 // once, and the SUM of in-flight page fetches across the parallel crawls never

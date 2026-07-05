@@ -133,7 +133,7 @@ func newCrawlCmd() *cobra.Command {
 	cmd.Flags().StringVar(&setup, "setup", "last", "base setup: last (the site's last-crawl setup), app (app settings), defaults (built-ins)")
 	cmd.Flags().StringVar(&storeDir, "store-dir", defaultStoreDir(), "crawl storage directory")
 	cmd.Flags().StringArrayVar(&sets, "set", nil, "dotted-path config override (key.path=value), repeatable")
-	cmd.Flags().IntVar(&threads, "threads", 0, "max concurrent threads (speed.max_threads)")
+	cmd.Flags().IntVar(&threads, "threads", 0, "threads for this site's crawl (speed.max_threads)")
 	cmd.Flags().IntVar(&depth, "depth", 0, "max crawl depth (limits.max_depth)")
 	cmd.Flags().Float64Var(&rate, "rate", 0, "max URLs per second (speed.max_urls_per_sec)")
 	cmd.Flags().IntVar(&maxURLs, "max-urls", 0, "max URLs to crawl (limits.max_urls)")

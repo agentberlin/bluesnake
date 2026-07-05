@@ -337,20 +337,26 @@ type URLRewritingConfig struct {
 }
 
 type SpeedConfig struct {
+	// MaxThreads is the per-site knob ("Threads per site"): parallel download
+	// workers within one crawl.
 	MaxThreads    int     `yaml:"max_threads"`
 	MaxURLsPerSec float64 `yaml:"max_urls_per_sec"` // 0 = unlimited
 	// MaxGlobalThreads caps total concurrent fetches across ALL running crawls
-	// in this process (parallel multi-crawl). 0 = unlimited — a single crawl then
-	// behaves exactly as before, bounded only by MaxThreads (MEMORY-SCALING.md §5.6).
+	// in this process. 0 = unlimited — each crawl is then bounded only by its
+	// own MaxThreads (MEMORY-SCALING.md §5.6). An advanced YAML-only safety
+	// valve: deliberately not surfaced in the desktop settings — the
+	// user-facing concurrency model is MaxThreads × MaxConcurrentCrawls.
 	MaxGlobalThreads int `yaml:"max_global_threads"`
-	// MaxConcurrentCrawls caps how many crawls the dispatcher runs in parallel
-	// (each with its own worker pool/DB/buffers — a distinct overhead axis from
-	// the fetch cap, GL-18). 0/1 = one crawl at a time, the default. Identical
-	// semantics on every surface: the CLI's `projects crawl-all` resolves
-	// flag > config > 1 at command start; the desktop app and the MCP server
-	// read the default profile at start (restart to apply). Sizing guidance:
-	// each parallel crawl carries its own fixed overhead and frontier RAM, so
-	// budget roughly MaxConcurrentCrawls × a single crawl's footprint.
+	// MaxConcurrentCrawls is the "Parallel crawls" knob: how many crawls the
+	// dispatcher runs at once (each with its own worker pool/DB/buffers — a
+	// distinct overhead axis from the fetch cap, GL-18). 0/1 = one crawl at a
+	// time, the default. Identical semantics on every surface, and LIVE — the
+	// desktop applies it on every profile save (queue.Dispatcher.SetConcurrency;
+	// raising starts queued jobs immediately, lowering never interrupts a
+	// running crawl), the MCP server re-reads it at every start, and the CLI's
+	// `projects crawl-all` resolves config > 1 at command start. Sizing
+	// guidance: each parallel crawl carries its own fixed overhead and frontier
+	// RAM, so budget roughly MaxConcurrentCrawls × a single crawl's footprint.
 	MaxConcurrentCrawls int `yaml:"max_concurrent_crawls"`
 }
 

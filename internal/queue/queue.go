@@ -7,7 +7,8 @@
 // MCP server back it with an in-memory store and drain it in-process.
 //
 // The dispatcher runs up to speed.max_concurrent_crawls jobs at once
-// (WithConcurrency; default 1) with identical semantics on every surface. The
+// (WithConcurrency; default 1; retargetable live via SetConcurrency) with
+// identical semantics on every surface. The
 // claim step is atomic on both stores so W drain loops never double-claim, and
 // per-crawl control — PauseCrawl/StopCrawl/CurrentAll — is addressed by crawl
 // id, so one of several parallel crawls can be paused, stopped or inspected
