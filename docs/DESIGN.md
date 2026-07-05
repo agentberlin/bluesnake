@@ -421,10 +421,10 @@ Issue definitions (name, severity, priority, description, trigger doc) live in c
 
 Crawl DBs and the registry DB are durable artifacts that outlive the binary, so the schema is **versioned, not patched ad hoc**. Each database carries its revision in SQLite's built-in `user_version` header slot (zero-cost to read, durable in the file header). On open, `store` runs the `CREATE TABLE IF NOT EXISTS` of the **latest** shape and then calls a single generic upgrader (`upgrade`):
 
-- A **fresh** database (no tables yet → this open created it) is stamped straight to the top of its ladder; the migration steps never run.
+- A **fresh** database (no tables yet → this open created it) is stamped straight to the top of its ladder — `max(floor, highest step)`, so an empty/fully-retired ladder still stamps the current revision, not v0; the migration steps never run.
 - An **existing** database runs only the ladder steps whose version is above its stored revision, each applied in a transaction that bumps `user_version` atomically (a crash mid-step rolls back to the prior revision). The common case — already current — is one pragma read.
 
-Migrations are an **append-only ladder** (`crawlMigrations`, `registryMigrations`): each step has a *stable* version number (never renumbered or reordered) and an idempotent `apply` func. Adding a schema change = append one step. The two `min*Version` floors are the removal lever (below).
+Migrations are an **append-only ladder** (`crawlMigrations`, `registryMigrations`): each step has a *stable* version number (never renumbered or reordered) and an idempotent `apply` func. Adding a schema change = append one step. The two `min*Version` floors are the removal lever (below). Both ladders are **currently empty**: every step was retired once all installs reached the top (crawl v5, registry v2), so the floors now sit at those tops and the next schema change appends just above (v6 / v3), reusing the retained `addColumn`/`columnExists` helpers.
 
 > **Retiring a migration.** Stable version numbers + a floor are what make old step code *safely deletable* — without a durable revision marker you can never prove a DB on disk doesn't still need an old step. To drop support for ancient databases and delete their migration code:
 > 1. Pick the new floor **F** — the oldest revision you still want to open.
