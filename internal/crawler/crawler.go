@@ -955,10 +955,16 @@ func (c *Crawler) handleContent(ctx context.Context, it frontier.Item, scopeClas
 	return discoveries, true
 }
 
-// Close releases the renderer (JS rendering mode).
+// Close releases the crawl's held resources: the renderer (JS rendering
+// mode) and the fetch client's idle keep-alive connections — without the
+// latter, every finished crawl pins its pooled connections' goroutines and
+// sockets until the peer closes them (fetch.CloseIdleConnections).
 func (c *Crawler) Close() {
 	if c.renderer != nil {
 		c.renderer.Close()
+	}
+	if c.client != nil {
+		c.client.CloseIdleConnections()
 	}
 }
 

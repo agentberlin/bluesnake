@@ -643,6 +643,42 @@ Design points:
   reproducibility is an explicit opt-in: `--setup defaults` (or
   `--config`/`--profile`) pins the base for CI.
 
+### 5.12 Crawl queue & parallel width
+
+Every surface starts crawls the same way: a job enqueued into the core crawl
+queue (`internal/queue`), drained by a single dispatcher through the shared
+executor — the interface never dictates how a crawl runs. The desktop backs
+the queue with the registry DB (jobs survive restarts, a crash reconciles a
+running job to interrupted with its partial crawl resumable); the CLI and
+the standalone MCP server drain an in-memory store in-process.
+
+Concurrency is **two user-facing knobs**: `speed.max_threads` ("Threads per
+site" — parallel downloads within one crawl) × `speed.max_concurrent_crawls`
+("Parallel crawls" — how many sites crawl at once). They bound different
+resource axes: threads bound network concurrency, while each parallel crawl
+carries its own fixed overhead (worker pool, SQLite handles, buffers,
+frontier RAM), so the crawl count is the memory-axis bound. The width is
+**live**: `Dispatcher.SetConcurrency` retargets it at any time — raising
+spawns drain loops so already-queued jobs start immediately; lowering
+retires loops between jobs, never interrupting a running crawl. The desktop
+applies the knob on every profile save, the MCP servers re-read it at every
+start, and `projects crawl-all` resolves it at command start — no restart
+anywhere, and deliberately no per-invocation override (one knob, one
+meaning, every surface).
+
+Because the width can rise at any time, every dispatcher-owning surface runs
+under ONE process-wide limiter built at startup (`runner.ProcessWiring`,
+returned unconditionally): the global fetch cap (`speed.max_global_threads`
+— an advanced YAML-only safety valve, hidden from the settings UI; 0 = each
+crawl bounded only by its own threads), one finalize pass at a time, and the
+Chrome render pool (§5.8). All its caps are width-independent, so one
+limiter stays valid across retargets; the executor's per-crawl fallback
+limiter is sound only where the width is fixed at one — the CLI's one-shot
+`crawl`/`list` commands. Capacity semantics differ by surface on purpose: an
+MCP start beyond the current width is rejected naming the running crawls
+(an agent's crawl is never silently queued behind other work), while the
+desktop enqueues and shows the wait in its queue view.
+
 ---
 
 ## 6. Testing strategy (BDD)

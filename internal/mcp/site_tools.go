@@ -56,6 +56,9 @@ func (s *Server) runSiteTool(ctx context.Context, raw json.RawMessage) (string, 
 	if err != nil {
 		return "", err
 	}
+	// Per-run client on a long-lived server: drop its keep-alive pool when the
+	// run ends, or every tool run leaks its idle connections' goroutines.
+	defer client.CloseIdleConnections()
 	// The backend's process limiter makes tool-run fetches/renders count
 	// against the same ceilings as the crawls running beside them.
 	chk := sitecheck.New(cfg, client, sitecheck.WithLimiter(s.backend.ProcessLimiter()))

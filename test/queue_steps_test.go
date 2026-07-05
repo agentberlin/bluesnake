@@ -19,6 +19,7 @@ func (w *world) registerQueueSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a fixture page "([^"]*)" and a fixture page "([^"]*)"$`, w.twoFixturePages)
 	sc.Step(`^spider crawls of "([^"]*)" and "([^"]*)" are queued$`, w.queueTwoCrawls)
 	sc.Step(`^spider crawls of "([^"]*)" and "([^"]*)" are queued on a parallel queue of (\d+)$`, w.queueTwoCrawlsParallel)
+	sc.Step(`^the parallel width is raised to (\d+) while the first crawl runs$`, w.raiseWidthMidDrain)
 	sc.Step(`^the crawls ran concurrently$`, w.crawlsRanConcurrently)
 	sc.Step(`^the queue is drained$`, w.drainQueue)
 	sc.Step(`^both crawls complete in the registry$`, w.bothCrawlsComplete)
@@ -109,6 +110,32 @@ func (w *world) queueTwoCrawlsParallel(a, b string, parallel int) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// raiseWidthMidDrain starts the queue at its queued width, waits for the
+// first crawl to begin, then retargets the dispatcher live — the same
+// SetConcurrency call every profile-save/start path drives. The fixture pages'
+// held responses (queueTwoCrawlsParallel) keep the first crawl running long
+// enough that the raised width must overlap the second crawl onto it.
+func (w *world) raiseWidthMidDrain(n int) error {
+	if err := w.queueDisp.Start(context.Background()); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		w.queueObs.mu.Lock()
+		started := len(w.queueObs.startSeeds)
+		w.queueObs.mu.Unlock()
+		if started >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("first crawl did not start within 10s")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	w.queueDisp.SetConcurrency(n)
 	return nil
 }
 

@@ -13,31 +13,32 @@ import (
 // Runner is the CLI/standalone-MCP Backend, routed through the core queue
 // wiring: an in-memory queue drained by the shared dispatcher/executor (so the
 // interface doesn't dictate how a crawl runs). It runs up to
-// speed.max_concurrent_crawls crawls at once — the knob is read from the
-// default profile at NewRunner (restart the server to apply), the same base
-// config start_crawl uses, with ONE shared process-wide limiter injected when
-// parallel (H1/P17). A start beyond that capacity is rejected (the historical
+// speed.max_concurrent_crawls crawls at once — the knob is re-read from the
+// default profile at every start (liveMaxCrawls), so a profile edit while the
+// server runs applies to the next start_crawl, no restart. ONE shared
+// process-wide limiter is injected regardless of the width (H1/P17 — the
+// width is live, so the executor's single-crawl fallback can't be relied on).
+// A start beyond the current capacity is rejected (the historical
 // one-crawl-at-a-time contract, generalised to W slots) rather than silently
 // queued. The start handshake is per job: enqueue, then await THAT job's crawl
 // id via the job store — with several starts in flight a shared "started"
 // signal could not associate a crawl with its caller (#78).
 type Runner struct {
-	storeDir  string
-	exec      *runner.Executor
-	disp      *queue.Dispatcher
-	maxCrawls int
-	lim       *limiter.Limiter // the shared process limiter when parallel; nil single-crawl
+	storeDir string
+	exec     *runner.Executor
+	disp     *queue.Dispatcher
+	lim      *limiter.Limiter // the shared process limiter every crawl runs under
 
 	startMu sync.Mutex // serializes the capacity check against racing starts
 }
 
 func NewRunner(storeDir string) *Runner {
-	r := &Runner{storeDir: storeDir, maxCrawls: 1}
+	r := &Runner{storeDir: storeDir}
 	// An unreadable default profile fails safe to single-crawl here; the same
 	// profile is what the first start_crawl loads, so the error surfaces there.
 	w, lim, err := runner.ProcessWiring(storeDir)
-	if err == nil {
-		r.maxCrawls = w
+	if err != nil {
+		w = 1
 	}
 	r.lim = lim
 	var opts []runner.Option
@@ -45,9 +46,26 @@ func NewRunner(storeDir string) *Runner {
 		opts = append(opts, runner.WithLimiter(lim))
 	}
 	r.exec = runner.New(storeDir, nil, opts...)
-	r.disp = queue.New(queue.NewMemStore(), r.exec, queue.WithConcurrency(r.maxCrawls))
+	r.disp = queue.New(queue.NewMemStore(), r.exec, queue.WithConcurrency(w))
 	_ = r.disp.Start(context.Background())
 	return r
+}
+
+// liveMaxCrawls re-reads speed.max_concurrent_crawls from the default profile,
+// retargets the dispatcher (SetConcurrency — raising applies immediately,
+// lowering never interrupts a running crawl), and returns the width the
+// capacity check should enforce. An unreadable profile keeps the current width.
+func (r *Runner) liveMaxCrawls() int {
+	cfg, err := runner.LoadProfile(r.storeDir, "")
+	if err != nil {
+		return r.disp.Concurrency()
+	}
+	w := cfg.Speed.MaxConcurrentCrawls
+	if w < 1 {
+		w = 1
+	}
+	r.disp.SetConcurrency(w)
+	return w
 }
 
 func (r *Runner) StoreDir() string { return r.storeDir }
@@ -63,12 +81,12 @@ func (r *Runner) StartCrawl(ctx context.Context, req StartRequest) (string, erro
 	if err != nil {
 		return "", err
 	}
-	return StartViaQueue(ctx, r.disp, r.maxCrawls, &r.startMu, spec, req.Label())
+	return StartViaQueue(ctx, r.disp, r.liveMaxCrawls(), &r.startMu, spec, req.Label())
 }
 
 func (r *Runner) ResumeCrawl(id string) (string, error) {
-	return StartViaQueue(context.Background(), r.disp, r.maxCrawls, &r.startMu,
-		queue.JobSpec{ResumeID: id}, "resume "+id)
+	return StartViaQueue(context.Background(), r.disp, r.liveMaxCrawls(),
+		&r.startMu, queue.JobSpec{ResumeID: id}, "resume "+id)
 }
 
 func (r *Runner) PauseCrawl(crawlID string) error {

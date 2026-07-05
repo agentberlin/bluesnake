@@ -21,11 +21,14 @@ var claimRetryDelay = 500 * time.Millisecond
 // ClaimNext (so W loops never double-claim), runs it through the Executor to
 // completion, records the outcome, then claims the next. Enqueue wakes a loop; a
 // loop that claims a job wakes another (wake-the-next), so a burst of jobs
-// spreads across idle loops instead of draining serially.
+// spreads across idle loops instead of draining serially. W is live:
+// SetConcurrency retargets it at any time without a restart — raising spawns
+// loops immediately, lowering retires loops as their current job ends.
 type Dispatcher struct {
 	store       Store
 	exec        Executor
-	concurrency int
+	concurrency int // target W; live loops converge on it (mu)
+	liveLoops   int // drain loops currently alive (mu)
 
 	wakeCh chan struct{}
 	stopCh chan struct{}
@@ -33,6 +36,7 @@ type Dispatcher struct {
 	mu       sync.Mutex
 	started  bool
 	stopping bool
+	startCtx context.Context         // Start's ctx, reused by loops SetConcurrency spawns later
 	inflight map[string]*inFlightJob // jobID -> running job
 	// pendingCancel latches a Cancel that lands in the claim→register gap —
 	// the job's store row already says running but runJob has not yet
@@ -77,6 +81,7 @@ type Option func(*Dispatcher)
 // WithConcurrency caps how many crawls run in parallel (clamped to >= 1). A
 // shared limiter on the Executor still bounds total fetches across them, so the
 // per-crawl fixed overhead — not the fetch concurrency — is what this bounds.
+// SetConcurrency retargets the same cap after construction, live.
 func WithConcurrency(n int) Option {
 	return func(d *Dispatcher) {
 		if n < 1 {
@@ -109,7 +114,9 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 		return nil
 	}
 	d.started = true
+	d.startCtx = ctx
 	n := d.concurrency
+	d.liveLoops = n
 	d.mu.Unlock()
 
 	d.wg.Add(n)
@@ -117,6 +124,39 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 		go d.loop(ctx)
 	}
 	return nil
+}
+
+// SetConcurrency retargets how many crawls may run at once, live — no restart.
+// Raising it spawns drain loops immediately, so already-queued jobs start
+// without waiting for a running crawl to finish. Lowering it never interrupts
+// a running crawl: excess loops retire as their current job ends (idle loops
+// retire at once). Callable at any time; before Start it just replaces the
+// WithConcurrency value.
+func (d *Dispatcher) SetConcurrency(n int) {
+	if n < 1 {
+		n = 1
+	}
+	d.mu.Lock()
+	d.concurrency = n
+	delta := n - d.liveLoops
+	if d.started && !d.stopping && delta > 0 {
+		d.liveLoops = n
+		d.wg.Add(delta)
+		for i := 0; i < delta; i++ {
+			go d.loop(d.startCtx)
+		}
+	}
+	d.mu.Unlock()
+	if delta < 0 {
+		d.wake() // nudge an idle loop to notice the lower target and retire
+	}
+}
+
+// Concurrency reports the current target for how many crawls run at once.
+func (d *Dispatcher) Concurrency() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.concurrency
 }
 
 // Enqueue adds a job and wakes a loop.
@@ -310,6 +350,20 @@ func (d *Dispatcher) wake() {
 func (d *Dispatcher) loop(ctx context.Context) {
 	defer d.wg.Done()
 	for {
+		// Retire when SetConcurrency lowered the target below the live loop
+		// count — checked between jobs, so shrinking never interrupts a running
+		// crawl. The re-wake hands any pending wake this loop would have
+		// consumed to a surviving loop, so a job enqueued mid-retirement can't
+		// strand; retiring loops chain the same wake until a survivor keeps it.
+		d.mu.Lock()
+		if d.liveLoops > d.concurrency {
+			d.liveLoops--
+			d.mu.Unlock()
+			d.wake()
+			return
+		}
+		d.mu.Unlock()
+
 		select {
 		case <-d.stopCh:
 			return

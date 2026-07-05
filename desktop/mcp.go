@@ -258,15 +258,19 @@ func (b *desktopBackend) StartCrawl(ctx context.Context, req mcp.StartRequest) (
 		return "", err
 	}
 	// the observer emits crawl:started when the dispatcher begins the crawl, so
-	// the UI jumps to the live view just like a hand-started crawl
-	return mcp.StartViaQueue(ctx, a.disp, a.queueW, &b.startMu, spec, req.Label())
+	// the UI jumps to the live view just like a hand-started crawl. The width
+	// is re-read here so a profile edited outside the app (CLI, a text editor)
+	// is honored at the next start, like the standalone Runner.
+	a.refreshQueueWidth()
+	return mcp.StartViaQueue(ctx, a.disp, a.disp.Concurrency(), &b.startMu, spec, req.Label())
 }
 
 func (b *desktopBackend) ResumeCrawl(id string) (string, error) {
 	a := b.app
 	a.ensureQueue()
 	a.invalidate(id)
-	return mcp.StartViaQueue(context.Background(), a.disp, a.queueW, &b.startMu,
+	a.refreshQueueWidth()
+	return mcp.StartViaQueue(context.Background(), a.disp, a.disp.Concurrency(), &b.startMu,
 		queue.JobSpec{ResumeID: id}, "resume "+id)
 }
 

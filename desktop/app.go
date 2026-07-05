@@ -30,15 +30,15 @@ type App struct {
 
 	// The crawl queue: every start (hand-driven or MCP-driven) enqueues a job;
 	// the single dispatcher drains it through the executor, running up to
-	// queueW crawls at once (speed.max_concurrent_crawls from the default
-	// profile, read at construction — restart to apply; default 1). The queue
-	// is persisted in the registry DB, so it survives restarts.
-	mu     sync.Mutex
-	exec   *runner.Executor
-	disp   *queue.Dispatcher
-	obs    *uiObserver
-	queueW int
-	lim    *limiter.Limiter // process-wide caps when queueW > 1; nil ⇒ single-crawl wiring
+	// speed.max_concurrent_crawls crawls at once (default 1). The width is
+	// live: every profile save re-reads the knob and retargets the dispatcher
+	// (refreshQueueWidth → SetConcurrency), no restart. The queue is persisted
+	// in the registry DB, so it survives restarts.
+	mu   sync.Mutex
+	exec *runner.Executor
+	disp *queue.Dispatcher
+	obs  *uiObserver
+	lim  *limiter.Limiter // the shared process-wide caps every crawl runs under
 
 	cacheMu    sync.Mutex
 	pagesCache map[string]map[string]*crawler.PageRecord // crawlID -> pages
@@ -72,7 +72,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ensureQueue()
 	// Drain the persistent queue: this reconciles any job left running by a
 	// previous crash (-> interrupted, the partial crawl stays resumable) and
-	// then runs queued jobs, up to queueW at a time. A Start failure (registry error
+	// then runs queued jobs, up to the live width at a time. A Start failure (registry error
 	// during reconcile) leaves the dispatcher retryable; swallowing it meant
 	// jobs were accepted forever and never drained, silently (#74 N4) — so
 	// surface it and retry with backoff until the registry recovers.
@@ -123,19 +123,18 @@ func (a *App) ensureQueue() {
 	if a.disp != nil {
 		return
 	}
-	// speed.max_concurrent_crawls (default profile, read once here — restart to
-	// apply, as the Settings copy says) drives how many crawls the dispatcher
-	// runs at once. When parallel, ONE shared limiter bounds total fetches /
-	// finalize passes / Chrome renders across all of them (H1/P17); with the
-	// default of 1 the limiter is nil and the executor's per-crawl fallback
-	// keeps today's single-crawl behaviour byte-identical. An unreadable
-	// default profile fails safe to single-crawl — the same profile backs every
-	// start job, so the real error surfaces on the first crawl start.
+	// speed.max_concurrent_crawls (default profile) drives how many crawls the
+	// dispatcher runs at once; the width is live — refreshQueueWidth retargets
+	// it on every profile save, no restart. ONE shared limiter (returned by
+	// ProcessWiring even at width 1, since the width can rise at any time)
+	// bounds total fetches / finalize passes / Chrome renders across all
+	// crawls (H1/P17). An unreadable default profile fails safe to
+	// single-crawl — the same profile backs every start job, so the real error
+	// surfaces on the first crawl start.
 	w, lim, err := runner.ProcessWiring(a.storeDir)
 	if err != nil && a.ctx != nil {
 		runtime.LogWarningf(a.ctx, "queue: default profile unreadable, running single-crawl: %v", err)
 	}
-	a.queueW = w
 	a.lim = lim
 	a.obs = &uiObserver{app: a, emit: func(event string, data ...interface{}) {
 		runtime.EventsEmit(a.ctx, event, data...)
@@ -148,11 +147,36 @@ func (a *App) ensureQueue() {
 	a.disp = queue.New(queue.NewSQLiteStore(a.storeDir), a.exec, queue.WithConcurrency(w))
 }
 
+// refreshQueueWidth re-reads speed.max_concurrent_crawls from the default
+// profile and retargets the dispatcher live (SetConcurrency) — called after
+// every profile save, so a settings change applies immediately: raising the
+// knob starts already-queued jobs without a restart, lowering it never
+// interrupts a running crawl (the width converges as crawls finish). The
+// other process caps (max_global_threads, the Chrome render pool) live in
+// the limiter built at construction and still take a restart.
+func (a *App) refreshQueueWidth() {
+	a.mu.Lock()
+	disp := a.disp
+	a.mu.Unlock()
+	if disp == nil {
+		return // queue not built yet; ensureQueue reads the knob itself
+	}
+	cfg, err := runner.LoadProfile(a.storeDir, "")
+	if err != nil {
+		return // unreadable profile: keep the current width; a start surfaces the error
+	}
+	w := cfg.Speed.MaxConcurrentCrawls
+	if w < 1 {
+		w = 1
+	}
+	disp.SetConcurrency(w)
+}
+
 // processLimiter exposes the process-wide limiter to the interactive tool
 // surfaces (the Tools hub, the embedded MCP server's run_tool), so tool-run
 // fetches and renders share the same ceilings as the crawls they run beside
-// (GL-08/REN-01). nil under single-crawl wiring — no process caps, matching
-// the executor's P17 fallback.
+// (GL-08/REN-01). nil only when the default profile was unreadable at
+// construction (fail-safe single-crawl wiring).
 func (a *App) processLimiter() *limiter.Limiter {
 	a.ensureQueue()
 	a.mu.Lock()

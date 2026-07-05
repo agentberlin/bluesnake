@@ -18,6 +18,7 @@ func FetchSitemapURLs(ctx context.Context, cfg *config.Config, sitemapURL string
 	if err != nil {
 		return nil, err
 	}
+	defer client.CloseIdleConnections() // transient client: don't pin its conns past the walk
 	opts := urlutil.Options{KeepFragments: cfg.Advanced.CrawlFragments}
 	var urls []string
 	seen := map[string]bool{}

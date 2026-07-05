@@ -181,15 +181,52 @@ func TestRunnerParallelGlobalCapProcessWide(t *testing.T) {
 	}
 }
 
+// TestRunnerLiveWidthPickedUpWithoutRestart pins the live-W contract: the
+// Runner re-reads speed.max_concurrent_crawls at every start, so raising the
+// knob in the default profile lifts the capacity rejection on the very next
+// start_crawl — no server restart.
+func TestRunnerLiveWidthPickedUpWithoutRestart(t *testing.T) {
+	srvA, srvB := slowSites(t)
+	dir := t.TempDir() // no profile: width 1
+	r := NewRunner(dir)
+	t.Cleanup(r.Shutdown)
+
+	idA, err := r.StartCrawl(context.Background(), StartRequest{
+		URL: srvA.URL + "/", Config: map[string]any{"speed.max_threads": 1},
+	})
+	if err != nil {
+		t.Fatalf("first StartCrawl: %v", err)
+	}
+	if _, err := r.StartCrawl(context.Background(), StartRequest{
+		URL: srvB.URL + "/", Config: map[string]any{"speed.max_threads": 1},
+	}); err == nil || !strings.Contains(err.Error(), idA) {
+		t.Fatalf("second StartCrawl under width 1 = %v, want a capacity rejection naming %s", err, idA)
+	}
+
+	// Raise the knob on disk — the next start must see width 2 and go through.
+	writeDefaultProfile(t, dir, "speed:\n  max_concurrent_crawls: 2\n")
+	idB, err := r.StartCrawl(context.Background(), StartRequest{
+		URL: srvB.URL + "/", Config: map[string]any{"speed.max_threads": 1},
+	})
+	if err != nil {
+		t.Fatalf("StartCrawl after raising the knob = %v, want it accepted live (no restart)", err)
+	}
+	if idB == "" || idB == idA {
+		t.Fatalf("second crawl id = %q, want a distinct live crawl beside %s", idB, idA)
+	}
+	waitFor(t, func() bool { return len(r.Running()) == 2 }, "both crawls running after the live raise")
+}
+
 // ProcessLimiter hands run_tool the same limiter the crawls run under —
-// present exactly when the wiring is parallel (nil single-crawl = P17
-// fallback, no process caps).
+// present regardless of the width, because the width is live (SetConcurrency
+// can raise it at any time) so the P17 single-crawl fallback can never be
+// relied on by a dispatcher-owning surface.
 func TestRunnerProcessLimiterWiring(t *testing.T) {
 	single := t.TempDir()
 	r := NewRunner(single)
 	t.Cleanup(r.Shutdown)
-	if r.ProcessLimiter() != nil {
-		t.Error("single-crawl wiring: ProcessLimiter should be nil")
+	if r.ProcessLimiter() == nil {
+		t.Error("width-1 wiring: ProcessLimiter should still be the shared limiter (the width is live)")
 	}
 
 	par := t.TempDir()

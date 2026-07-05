@@ -207,7 +207,11 @@ func (a *App) SetConfigValues(profile string, vals map[string]string) error {
 		return err
 	}
 	header := "# " + name + "\n"
-	return os.WriteFile(a.profilePath(name), append([]byte(header), data...), 0o644)
+	if err := os.WriteFile(a.profilePath(name), append([]byte(header), data...), 0o644); err != nil {
+		return err
+	}
+	a.refreshQueueWidth() // a changed max_concurrent_crawls applies live, no restart
+	return nil
 }
 
 // GetProfileYAML / SaveProfileYAML power the raw "advanced" editor.
@@ -238,7 +242,11 @@ func (a *App) SaveProfileYAML(profile, content string) error {
 	if name == "" {
 		name = defaultProfile
 	}
-	return os.WriteFile(a.profilePath(name), []byte(content), 0o644)
+	if err := os.WriteFile(a.profilePath(name), []byte(content), 0o644); err != nil {
+		return err
+	}
+	a.refreshQueueWidth() // a changed max_concurrent_crawls applies live, no restart
+	return nil
 }
 
 // StorageInfo reports the store path and size for the sidebar footer.

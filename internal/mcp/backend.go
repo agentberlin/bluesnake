@@ -84,10 +84,11 @@ type Progress struct {
 // Backend is the crawl-control surface the tools run against. The CLI uses
 // Runner; the desktop app adapts its crawl queue so MCP-started crawls appear
 // live in the UI. Up to speed.max_concurrent_crawls crawls run per backend
-// (from the default profile, read at construction; default 1); a start beyond
-// that capacity is rejected rather than silently queued. Control is addressed
-// by crawl id — the tool layer resolves an omitted id against Running() and
-// errors when it is ambiguous.
+// (from the default profile, re-read at every start — a profile edit applies
+// to the next start, no restart; default 1); a start beyond that capacity is
+// rejected rather than silently queued. Control is addressed by crawl id —
+// the tool layer resolves an omitted id against Running() and errors when it
+// is ambiguous.
 type Backend interface {
 	StartCrawl(ctx context.Context, req StartRequest) (string, error)
 	ResumeCrawl(id string) (string, error)
@@ -98,8 +99,8 @@ type Backend interface {
 	// ProcessLimiter is the backend's process-wide concurrency limiter, shared
 	// with every crawl it runs (runner.ProcessWiring): run_tool fetches and
 	// renders take slots from it so interactive tool runs count against the
-	// same ceilings (GL-08/REN-01). nil under single-crawl wiring — no process
-	// caps, matching the executor's P17 fallback.
+	// same ceilings (GL-08/REN-01). nil only when the default profile was
+	// unreadable at construction (fail-safe single-crawl wiring).
 	ProcessLimiter() *limiter.Limiter
 }
 
@@ -137,7 +138,7 @@ func capacityError(cur []queue.Job, maxCrawls int) error {
 	if maxCrawls == 1 {
 		return fmt.Errorf("a crawl is already running (crawl %s) — pause_crawl or stop_crawl first", ids[0])
 	}
-	return fmt.Errorf("all %d crawl slots are busy (running: %s) — pause_crawl or stop_crawl one first, or raise speed.max_concurrent_crawls in the default profile (applies after a restart)",
+	return fmt.Errorf("all %d crawl slots are busy (running: %s) — pause_crawl or stop_crawl one first, or raise speed.max_concurrent_crawls in the default profile (applies to the next start, no restart)",
 		maxCrawls, strings.Join(ids, ", "))
 }
 
