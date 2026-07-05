@@ -92,11 +92,11 @@ CREATE INDEX IF NOT EXISTS edges_src ON edges(src);
 -- by Enqueue, claimed back in (depth, seq) batches by the crawl's feeder, and
 -- deleted by FrontierDone. seq is the monotonic admission order that makes the
 -- feeder's pull deterministic (never rowid — deletes would reorder it).
--- (frontier_claim, the feeder's (claimed, depth, seq) index, is created in
--- openCrawlDB AFTER the migration ladder: on a pre-v5 DB this schema runs
--- before the ladder adds the columns the index needs.)
+-- frontier_claim indexes the feeder's (claimed, depth, seq) scan; the columns are
+-- part of this base shape, so the index rides the DDL directly.
 CREATE TABLE IF NOT EXISTS frontier(url TEXT PRIMARY KEY, depth INT, redirect_hops INT, source TEXT,
   claimed INT NOT NULL DEFAULT 0, seq INTEGER);
+CREATE INDEX IF NOT EXISTS frontier_claim ON frontier(claimed, depth, seq);
 -- content_hash is the on-disk authority for the raw-body identical-content
 -- short-circuit (R8): hash -> the first (canonical) URL that claimed it. It bounds
 -- the formerly-unbounded in-RAM seenContent map (MEMORY-SCALING.md §5.4 / #70 M4),
@@ -365,10 +365,10 @@ func CrawlDBPath(dir, id string) (string, error) {
 // this returns.
 //
 // Known (accepted) crash window: a crash between the schema DDL below and the
-// upgrade() version stamp leaves a latest-shape DB stamped v0, so the next open
-// runs the forward-migration ladder over it and marks it `pre_edges`. That is
-// practically harmless — such a crawl has no seeds meta yet either, so any
-// resume attempt dies on errNoSeed before the pre-edges refusal even matters.
+// upgrade() version stamp leaves a latest-shape DB stamped v0. The next open
+// finds it below the schema floor (minCrawlVersion) and refuses it with a
+// re-crawl message. That is practically harmless — such a crawl has no seeds
+// meta yet either, so it could never resume; the operator re-creates it.
 func openCrawlDB(dir, id string, bloomCap int) (*Crawl, error) {
 	path := crawlPath(dir, id)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -389,14 +389,6 @@ func openCrawlDB(dir, id string, bloomCap int) (*Crawl, error) {
 		return nil, err
 	}
 	if err := upgrade(db, crawlMigrations, minCrawlVersion, fresh); err != nil {
-		db.Close()
-		return nil, err
-	}
-	// The feeder's claim index references columns the v5 migration adds, so it
-	// cannot ride crawlSchema (which runs before the ladder on a pre-v5 DB).
-	// Creating it here — after the ladder — covers fresh, migrated and current
-	// DBs with one idempotent statement.
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS frontier_claim ON frontier(claimed, depth, seq)`); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -433,77 +425,30 @@ type migration struct {
 	apply   func(*sql.Tx) error
 }
 
-// crawlMigrations is the per-crawl-DB ladder. APPEND ONLY. New TABLES need no
-// step here — the schema's CREATE IF NOT EXISTS runs on every open (that is
-// how llmstxt and site_checks arrived); the ladder is for ALTERs and rebuilds.
-var crawlMigrations = []migration{
-	{1, "pages.http_version", func(tx *sql.Tx) error { return addColumn(tx, "pages", "http_version TEXT") }},
-	{2, "pages.duplicate_of", func(tx *sql.Tx) error { return addColumn(tx, "pages", "duplicate_of TEXT") }},
-	{3, "issues.detail_in_pk", migrateIssuesDetailPK},
-	{4, "pages.minhash+pre_edges", migrateMinhashMarkPreEdges},
-	{5, "frontier.claimed+seq", migrateFrontierClaimedSeq},
-}
+// crawlMigrations is the per-crawl-DB ladder. APPEND ONLY, never renumber. New
+// TABLES need no step — the schema's CREATE IF NOT EXISTS runs on every open (that
+// is how llmstxt and site_checks arrived); the ladder is for ALTERs and rebuilds
+// of existing tables. It is currently EMPTY: every step through v5 was retired
+// once all installs had reached v5 (DESIGN.md §5.3 "Retiring a migration"), and
+// the minCrawlVersion floor below refuses anything older. Append the next schema
+// change as {6, …}; its apply func can reuse addColumn/columnExists as before.
+var crawlMigrations = []migration{}
 
-// migrateFrontierClaimedSeq adds the bounded-frontier queue columns (issue #77,
-// MEMORY-SCALING.md §5.2): claimed marks rows handed to the in-RAM ready-buffer
-// and seq pins the deterministic (depth, seq) pull order. These are QUEUE
-// metadata, not analytical data, so — unlike the additive-nullable §0.3 columns
-// that stay NULL until re-crawl — surviving pending rows are backfilled:
-// seq=rowid (their true insertion order; the table only ever grew, so live
-// rowids are admission-ordered) and claimed=0 (immediately claimable). An
-// interrupted pre-v5 crawl therefore resumes with a deterministic pull order
-// instead of NULL-first arbitrariness.
-func migrateFrontierClaimedSeq(tx *sql.Tx) error {
-	if err := addColumn(tx, "frontier", "claimed INT NOT NULL DEFAULT 0"); err != nil {
-		return err
-	}
-	if err := addColumn(tx, "frontier", "seq INTEGER"); err != nil {
-		return err
-	}
-	_, err := tx.Exec(`UPDATE frontier SET seq = rowid`)
-	return err
-	// (The (claimed, depth, seq) index is created by openCrawlDB after the
-	// ladder — one site covers fresh, migrated and current DBs alike.)
-}
-
-// migrateMinhashMarkPreEdges adds the nullable near-dup minhash column and marks
-// the database as predating the gated `edges` table. The edges table arrived in
-// the same change as this v4 column, so any DB that REACHES this migration step —
-// i.e. any DB stamped below v4 — was crawled before edges existed: its discovery
-// graph lives only in the legacy `links` table and its `edges` table is empty. A
-// v4+ (edges-era) DB never runs this step, and a fresh DB is stamped straight to
-// the top without running any step, so the marker lands on exactly the pre-edges
-// DBs. The SQL finalize derives inlinks / first-wins discovered_from SOLELY from
-// edges, so RESUMING a pre-edges crawl to completion would overwrite both with
-// empty/partial values (the edges authority is empty). The durable `pre_edges`
-// meta marker — which survives the user_version bump, unlike the version itself —
-// lets the resume path refuse such a crawl loudly (re-crawl) instead of silently
-// corrupting it. Reading/querying a completed pre-edges crawl stays fully
-// supported: the additive column still rides the ladder (reconciled §0.3).
-func migrateMinhashMarkPreEdges(tx *sql.Tx) error {
-	if err := addColumn(tx, "pages", "minhash BLOB"); err != nil {
-		return err
-	}
-	_, err := tx.Exec(`INSERT OR REPLACE INTO meta(key, value) VALUES('pre_edges', '1')`)
-	return err
-}
-
-// registryMigrations is the ladder for the single shared registry DB. APPEND ONLY.
-var registryMigrations = []migration{
-	{1, "crawls.total", func(tx *sql.Tx) error { return addColumn(tx, "crawls", "total INT DEFAULT 0") }},
-	// The legacy free-text per-crawl "project" label was retired when the
-	// first-class project layer (internal/project) landed; drop it from existing
-	// registries so it lingers nowhere.
-	{2, "crawls.drop_project", dropCrawlsProject},
-}
+// registryMigrations is the ladder for the single shared registry DB. Same
+// append-only contract; retired through v2, so append the next step as {3, …}.
+var registryMigrations = []migration{}
 
 // minCrawlVersion / minRegistryVersion are the oldest revisions we still carry
-// steps for: 0 = accept and migrate everything (nothing retired yet). Raising a
-// floor to F (and deleting every step with version <= F) makes DBs below F fail
-// with a clear re-crawl message instead of running an incomplete ladder.
+// steps for — the schema floor. They sit at the top of each (now-empty) ladder
+// because every step at or below was retired: a non-fresh DB below the floor is
+// refused with a clear re-crawl message (upgrade) rather than served a schema no
+// surviving step can still repair. The floor doubles as the fresh-DB / append
+// baseline — a fresh DB is stamped here and the next migration appends just above
+// (see upgrade). Dropping a schema era is done by RAISING a floor, never by
+// deleting a live step and leaving the floor behind it.
 const (
-	minCrawlVersion    = 0
-	minRegistryVersion = 0
+	minCrawlVersion    = 5
+	minRegistryVersion = 2
 )
 
 // ladderTop is the latest revision a ladder migrates to (its highest version).
@@ -517,12 +462,15 @@ func ladderTop(ladder []migration) int {
 	return top
 }
 
-// upgrade brings db to the top of ladder via user_version. A fresh DB (CREATE
-// just built the latest shape) is stamped straight to the top; an existing DB
-// runs the steps above its stored revision. A non-fresh DB below minVersion is
-// refused so a ladder with retired steps never half-migrates old data.
+// upgrade brings db to the top of ladder via user_version. The top is
+// max(minVersion, ladderTop): a fully-retired (empty) ladder still stamps fresh
+// DBs to the floor — the current schema revision — instead of v0, so the
+// append-only contract survives a full retirement. A fresh DB (CREATE just built
+// the latest shape) is stamped straight to the top; an existing DB runs the steps
+// above its stored revision. A non-fresh DB below minVersion is refused so a
+// ladder with retired steps never half-migrates old data.
 func upgrade(db *sql.DB, ladder []migration, minVersion int, fresh bool) error {
-	target := ladderTop(ladder)
+	target := max(minVersion, ladderTop(ladder))
 	if fresh {
 		return setUserVersion(db, target)
 	}
@@ -571,27 +519,18 @@ func setUserVersion(db *sql.DB, v int) error {
 	return err
 }
 
-// addColumn applies an ADD COLUMN that tolerates the column already existing:
-// DBs created before user_version tracking may already carry it (from the old
-// best-effort ALTERs) while still reporting a stored revision of 0.
+// addColumn and columnExists are the migration helper toolkit. The ladders above
+// are currently empty (all steps retired), but the next ALTER/rebuild step will
+// use these the same way the retired steps did, so they stay.
+//
+// addColumn applies an ADD COLUMN that tolerates the column already existing, so a
+// re-run — or a DB that already carries it — is a no-op rather than an error.
 func addColumn(tx *sql.Tx, table, colDef string) error {
 	if _, err := tx.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s`, table, colDef)); err != nil &&
 		!strings.Contains(err.Error(), "duplicate column name") {
 		return err
 	}
 	return nil
-}
-
-// dropCrawlsProject removes the retired legacy "project" column from an existing
-// registry. Idempotent: a DB already without it (fresh, or migrated) is a no-op,
-// so re-running the ladder never fails.
-func dropCrawlsProject(tx *sql.Tx) error {
-	has, err := columnExists(tx, "crawls", "project")
-	if err != nil || !has {
-		return err
-	}
-	_, err = tx.Exec(`ALTER TABLE crawls DROP COLUMN project`)
-	return err
 }
 
 // columnExists reports whether table has a column named col. table is an in-code
@@ -624,55 +563,10 @@ func isFreshDB(db *sql.DB) (bool, error) {
 	return n == 0, err
 }
 
-// migrateIssuesDetailPK rebuilds an issues table created with the legacy
-// (url, issue) primary key to (url, issue, detail). The old key collapsed every
-// occurrence of one issue id on a page to its last detail (an INSERT OR REPLACE
-// over the same key); the new key keeps each distinct occurrence — e.g. one row
-// per missing required structured-data property. SQLite can't ALTER a primary
-// key, so the rebuild copies into a fresh table and swaps it in. applyStep wraps
-// this in a transaction; the detail-in-PK guard keeps it idempotent regardless.
-func migrateIssuesDetailPK(tx *sql.Tx) error {
-	inPK, err := detailInIssuesPK(tx)
-	if err != nil || inPK {
-		return err // already on the (url, issue, detail) key
-	}
-	_, err = tx.Exec(`
-		CREATE TABLE issues_migrate(url TEXT, issue TEXT, detail TEXT, PRIMARY KEY(url, issue, detail));
-		INSERT OR IGNORE INTO issues_migrate(url, issue, detail) SELECT url, issue, detail FROM issues;
-		DROP TABLE issues;
-		ALTER TABLE issues_migrate RENAME TO issues;`)
-	return err
-}
-
 // queryer is the read surface shared by *sql.DB and *sql.Tx, so schema
-// inspection works inside or outside a transaction.
+// inspection works inside or outside a transaction (columnExists uses it).
 type queryer interface {
 	Query(query string, args ...any) (*sql.Rows, error)
-}
-
-// detailInIssuesPK reports whether the issues table's primary key already
-// includes the detail column (the post-fix shape). It reads the actual key from
-// the schema rather than string-matching the DDL, so it is robust to formatting.
-// PRAGMA table_info's pk column is the 1-based position of a column within the
-// primary key, 0 when the column is not part of it.
-func detailInIssuesPK(q queryer) (bool, error) {
-	rows, err := q.Query(`PRAGMA table_info(issues)`)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid, notnull, pk int
-		var name, typ string
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return false, err
-		}
-		if name == "detail" && pk > 0 {
-			return true, nil
-		}
-	}
-	return false, rows.Err()
 }
 
 func (c *Crawl) Close() error {
@@ -1061,14 +955,15 @@ func (c *Crawl) FirstWithContent(hash, url string, claim bool) (canonical string
 
 // --- resume support ---
 
-// PreEdges reports whether this crawl predates the gated `edges` table (set by
-// the v4 forward-migration, migrateMinhashMarkPreEdges). Such a crawl's discovery
-// graph lives only in the legacy `links` table; the SQL finalize derives
-// inlinks/discovered_from solely from the empty `edges` table, so resuming it to
-// completion would corrupt both. The resume path consults this to refuse loudly.
-// Reading/querying a completed pre-edges crawl is unaffected. The marker is
-// durable (a meta row), so it survives the version bump the forward-migration
-// performs — a later resume attempt still sees it.
+// PreEdges reports whether this crawl predates the gated `edges` table. Such a
+// crawl's discovery graph lives only in the legacy `links` table; the SQL finalize
+// derives inlinks/discovered_from solely from the empty `edges` table, so resuming
+// it to completion would corrupt both. The resume path consults this to refuse
+// loudly. The durable `pre_edges` meta marker was written by the now-retired v4
+// forward-migration; no current code sets it, but it persists on any DB that was
+// migrated up under an older binary. Such a DB sits at the schema floor (≥ v5) and
+// still opens, so the marker — and this refusal — stays live. Reading/querying a
+// completed pre-edges crawl is unaffected.
 func (c *Crawl) PreEdges() (bool, error) {
 	var v string
 	switch err := c.db.QueryRow(`SELECT value FROM meta WHERE key = 'pre_edges'`).Scan(&v); err {

@@ -477,130 +477,10 @@ func TestIssueMultiDetailPreserved(t *testing.T) {
 	}
 }
 
-// TestIssuesDetailPKMigration pins that a crawl DB created with the old
-// (url, issue) primary key is rebuilt to (url, issue, detail) on open, without
-// losing rows — and that the rebuilt table then accepts multiple distinct
-// details for one (url, issue).
-func TestIssuesDetailPKMigration(t *testing.T) {
-	dir := t.TempDir()
-	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := c.ID
-
-	// Reconstruct a pre-versioning crawl DB: drop the new table and recreate it
-	// with the legacy single-detail primary key plus one existing row, and reset
-	// user_version to 0 so the open path sees it as an un-stamped old database and
-	// runs the migration ladder.
-	if _, err := c.db.Exec(`DROP TABLE issues;
-		CREATE TABLE issues(url TEXT, issue TEXT, detail TEXT, PRIMARY KEY(url, issue));
-		INSERT INTO issues(url, issue, detail)
-			VALUES('https://ex.com/', 'structured_validation_error', 'Recipe: missing required property name');
-		PRAGMA user_version = 0;`); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	// Reopening runs the migration.
-	c2, err := OpenCrawl(dir, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c2.Close()
-
-	urls, err := c2.IssueURLs("structured_validation_error")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(urls) != 1 || urls[0] != "https://ex.com/" {
-		t.Fatalf("existing row lost in migration: %v", urls)
-	}
-
-	// the rebuilt PK now accepts a SECOND distinct detail for the same (url, issue)
-	if err := c2.SaveIssues([]string{"structured_validation_error"}, []issues.Occurrence{
-		{URL: "https://ex.com/", IssueID: "structured_validation_error", Detail: "Recipe: missing required property name"},
-		{URL: "https://ex.com/", IssueID: "structured_validation_error", Detail: "Recipe: missing required property image"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	var n int
-	c2.db.QueryRow(`SELECT COUNT(*) FROM issues WHERE issue = 'structured_validation_error'`).Scan(&n)
-	if n != 2 {
-		t.Errorf("after migration, distinct details for one (url, issue) = %d, want 2", n)
-	}
-	if counts, _ := c2.IssueCounts(); counts["structured_validation_error"] != 1 {
-		t.Errorf("affected-URL count after migration = %d, want 1", counts["structured_validation_error"])
-	}
-	// the migrated DB is now stamped to the current revision, so a later open
-	// skips the ladder entirely.
-	var ver int
-	c2.db.QueryRow(`PRAGMA user_version`).Scan(&ver)
-	if want := ladderTop(crawlMigrations); ver != want {
-		t.Errorf("user_version after migration = %d, want %d", ver, want)
-	}
-}
-
-// TestMinhashColumnForwardMigration is the L4 guard (#70 L4 / #71 Group 6): a
-// pre-minhash crawl DB (v3, no pages.minhash column) forward-migrates to v4 on
-// open — the additive nullable column is added by the migration ladder, the
-// existing rows survive (the column reads NULL), and the DB stamps to the ladder
-// top. This pins the reconciled §0.3 decision: an additive nullable column rides
-// the ladder (no backfill, openable) rather than refusing the old DB.
-func TestMinhashColumnForwardMigration(t *testing.T) {
-	dir := t.TempDir()
-	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := c.ID
-	if err := c.Page(&crawler.PageRecord{URL: "https://ex.com/", Scope: "internal", State: crawler.StateCrawled, StatusCode: 200}); err != nil {
-		t.Fatal(err)
-	}
-	// Reconstruct a pre-minhash crawl DB: drop the minhash column and stamp the
-	// stored revision back to v3 (the version before the column was introduced).
-	if _, err := c.db.Exec(`ALTER TABLE pages DROP COLUMN minhash;
-		PRAGMA user_version = 3;`); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	// Reopening runs the v4 additive-column migration.
-	c2, err := OpenCrawl(dir, id)
-	if err != nil {
-		t.Fatalf("opening a v3 DB should forward-migrate, not fail: %v", err)
-	}
-	defer c2.Close()
-
-	has, err := columnExists(c2.db, "pages", "minhash")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !has {
-		t.Fatal("pages.minhash column missing after forward-migration from v3")
-	}
-	// The pre-existing row survives; the new column reads NULL (no backfill).
-	var minhash []byte
-	if err := c2.db.QueryRow(`SELECT minhash FROM pages WHERE url = 'https://ex.com/'`).Scan(&minhash); err != nil {
-		t.Fatalf("row lost or column unqueryable after migration: %v", err)
-	}
-	if minhash != nil {
-		t.Errorf("migrated column backfilled a value (%v); an additive column must stay NULL", minhash)
-	}
-	var ver int
-	c2.db.QueryRow(`PRAGMA user_version`).Scan(&ver)
-	if want := ladderTop(crawlMigrations); ver != want {
-		t.Errorf("user_version after migration = %d, want %d", ver, want)
-	}
-}
-
 // TestFreshDBSchemaVersion pins that newly created databases are stamped to the
-// top of their ladder, so a later raised floor can tell a fresh DB (current)
-// from a genuinely old un-stamped one (revision 0).
+// current schema revision — max(floor, ladderTop) — so the fresh-DB / append
+// baseline survives a full ladder retirement (empty ladder must still stamp the
+// floor, not v0) and a raised floor can tell a fresh DB from a genuinely old one.
 func TestFreshDBSchemaVersion(t *testing.T) {
 	dir := t.TempDir()
 	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
@@ -610,7 +490,7 @@ func TestFreshDBSchemaVersion(t *testing.T) {
 	defer c.Close()
 	var v int
 	c.db.QueryRow(`PRAGMA user_version`).Scan(&v)
-	if want := ladderTop(crawlMigrations); v != want {
+	if want := max(minCrawlVersion, ladderTop(crawlMigrations)); v != want {
 		t.Errorf("fresh crawl DB user_version = %d, want %d", v, want)
 	}
 
@@ -621,7 +501,7 @@ func TestFreshDBSchemaVersion(t *testing.T) {
 	defer reg.Close()
 	var rv int
 	reg.QueryRow(`PRAGMA user_version`).Scan(&rv)
-	if want := ladderTop(registryMigrations); rv != want {
+	if want := max(minRegistryVersion, ladderTop(registryMigrations)); rv != want {
 		t.Errorf("registry DB user_version = %d, want %d", rv, want)
 	}
 }
@@ -1152,44 +1032,3 @@ func TestLoadPagesLiteAndStreamContentText(t *testing.T) {
 // gated-edges path (store.SaveInlinksFromEdges), covered by edges_sql_test.go's
 // TestEdgesAndDepthSQLMethods and TestRedirectPageEdgePersisted — the in-RAM
 // aggregate writer (SaveInlinkSources) it replaced is gone.
-
-// TestDropProjectMigration proves the registry ladder removes the retired
-// legacy "project" column from a pre-existing registry while preserving rows.
-func TestDropProjectMigration(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "registry.db")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Build an OLD-shape registry (crawls carries the legacy project column),
-	// stamped at v1 so it is treated as an existing DB that must run step 2.
-	if _, err := db.Exec(`
-		CREATE TABLE crawls(id TEXT PRIMARY KEY, project TEXT, seed TEXT, mode TEXT, status TEXT,
-			started INT, finished INT, crawled INT DEFAULT 0, total INT DEFAULT 0);
-		CREATE TABLE brands(host TEXT PRIMARY KEY, logo BLOB, logo_type TEXT, fetched INT);
-		PRAGMA user_version = 1;
-		INSERT INTO crawls(id, project, seed, mode, status, started)
-			VALUES('c1','legacy-label','https://ex.com/','spider','completed', 100);`); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-
-	reg, err := registryDB(dir) // runs the ladder
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reg.Close()
-
-	if has, err := columnExists(reg, "crawls", "project"); err != nil || has {
-		t.Fatalf("project column still present after migration (has=%v err=%v)", has, err)
-	}
-	var seed string
-	if err := reg.QueryRow(`SELECT seed FROM crawls WHERE id='c1'`).Scan(&seed); err != nil || seed != "https://ex.com/" {
-		t.Fatalf("row lost in migration: seed=%q err=%v", seed, err)
-	}
-	var v int
-	if err := reg.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil || v != ladderTop(registryMigrations) {
-		t.Errorf("user_version = %d (err=%v), want %d", v, err, ladderTop(registryMigrations))
-	}
-}

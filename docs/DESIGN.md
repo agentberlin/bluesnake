@@ -560,10 +560,10 @@ Issue definitions (name, severity, priority, description, trigger doc) live in c
 
 Crawl DBs and the registry DB are durable artifacts that outlive the binary, so the schema is **versioned, not patched ad hoc**. Each database carries its revision in SQLite's built-in `user_version` header slot (zero-cost to read, durable in the file header). On open, `store` runs the `CREATE TABLE IF NOT EXISTS` of the **latest** shape and then calls a single generic upgrader (`upgrade`):
 
-- A **fresh** database (no tables yet → this open created it) is stamped straight to the top of its ladder; the migration steps never run.
+- A **fresh** database (no tables yet → this open created it) is stamped straight to the top of its ladder — `max(floor, highest step)`, so an empty/fully-retired ladder still stamps the current revision, not v0; the migration steps never run.
 - An **existing** database runs only the ladder steps whose version is above its stored revision, each applied in a transaction that bumps `user_version` atomically (a crash mid-step rolls back to the prior revision). The common case — already current — is one pragma read.
 
-Migrations are an **append-only ladder** (`crawlMigrations`, `registryMigrations`): each step has a *stable* version number (never renumbered or reordered) and an idempotent `apply` func. Adding a schema change = append one step. The two `min*Version` floors are the removal lever (below).
+Migrations are an **append-only ladder** (`crawlMigrations`, `registryMigrations`): each step has a *stable* version number (never renumbered or reordered) and an idempotent `apply` func. Adding a schema change = append one step. The two `min*Version` floors are the removal lever (below). Both ladders are **currently empty**: every step was retired once all installs reached the top (crawl v5, registry v2), so the floors now sit at those tops and the next schema change appends just above (v6 / v3), reusing the retained `addColumn`/`columnExists` helpers.
 
 > **Retiring a migration.** Stable version numbers + a floor are what make old step code *safely deletable* — without a durable revision marker you can never prove a DB on disk doesn't still need an old step. To drop support for ancient databases and delete their migration code:
 > 1. Pick the new floor **F** — the oldest revision you still want to open.
@@ -860,23 +860,24 @@ Definition of done per milestone: feature file(s) green, unit coverage ≥ 90% f
   wrongly beyond this, the next precision upgrade is a `MutationObserver` injected at
   document start ("ms since last DOM mutation") instead of polling node counts.
 
-- **Schema-floor refusal handling is deferred until a floor is actually raised**
-  (decided 2026-06-19). The migration ladder's `min*Version` floors are `0`, so
-  `upgrade()`'s "schema vN predates the minimum supported vF" error (§5.3) cannot
-  fire yet; building surface handling for an error that can't occur would be
-  speculative and untestable. When we first raise a floor, three things land
-  together with it: (1) make the refusal a **typed sentinel** (e.g.
-  `store.ErrSchemaTooOld`) so surfaces detect it with `errors.Is` instead of
-  string-matching; (2) decide whether the **read-only open paths** that currently
-  skip migrations (`mcp.openCrawlRO` → `query`/`issue_summary`, and
-  `serve.open()`) should check `user_version` and refuse a sub-floor DB, or keep
-  serving best-effort reads — today they'd silently query an unsupported schema;
-  (3) give the **desktop** a real "this crawl predates this version — re-crawl or
-  remove it" affordance, and let **serve** return that specific message (it
-  currently masks every open error as a generic 404 by design). On the **CLI** and
-  the MCP **`resume_crawl`** path the error already propagates verbatim, so those
-  need nothing. Until then the floors stay at `0` (migrate everything) and the
-  refusal branch is pinned only by `store.TestUpgradeLadder`.
+- **Schema-floor refusal *surface* handling is still deferred, even though the
+  floors are now raised** (floors raised 2026-07-05 when the ladders were fully
+  retired; surface decision first taken 2026-06-19). The `min*Version` floors now
+  sit at the current tops (crawl `5`, registry `2`), so `upgrade()`'s "schema vN
+  predates the minimum supported vF" error (§5.3) *can* fire — but only for a DB
+  below the floor, and **no such DB exists in the field**: all installs reached the
+  top before the steps were retired, so the refusal stays inert in practice. On the
+  **CLI** and the MCP **`resume_crawl`** path the error already propagates verbatim.
+  Three polish items remain unbuilt, to land only if a sub-floor DB ever actually
+  surfaces: (1) make the refusal a **typed sentinel** (e.g. `store.ErrSchemaTooOld`)
+  so surfaces detect it with `errors.Is` instead of string-matching; (2) decide
+  whether the **read-only open paths** that skip migrations (`mcp.openCrawlRO` →
+  `query`/`issue_summary`, and `serve.open()`) should check `user_version` and
+  refuse a sub-floor DB, or keep serving best-effort reads — today they'd silently
+  query an unsupported schema; (3) give the **desktop** a real "this crawl predates
+  this version — re-crawl or remove it" affordance, and let **serve** return that
+  specific message (it currently masks every open error as a generic 404 by design).
+  The refusal branch is pinned by `store.TestUpgradeLadder`.
 
 Resolved (2026-06-11): `serve` subcommand shipped (`internal/serve`, read-only JSON API
 over the export layer); `rendering.wait_strategy: adaptive | fixed` shipped (§5.8).
@@ -1463,6 +1464,28 @@ pre-fix slice shows +6.4 MB, so the gate cannot go blind) and
 `TestPerSubRehydration_HostKeyMatchesUrlutilHost` (FR-17, previously
 documented-but-missing); behavioral cap-binding equivalence unchanged
 (`TestResume_NoOverAdmitPerBucket_ThroughRunner`).
+
+**2026-07-05 — migration ladders retired (all installs current).** Every
+concrete migration step was deleted now that all installs have reached the top
+of each ladder, following the §5.3 "Retiring a migration" procedure to its
+end-state: `crawlMigrations`/`registryMigrations` are now **empty** slices, the
+`min*Version` floors are raised to the old tops (crawl `5`, registry `2`), and
+the four step funcs (`migrateIssuesDetailPK`, `migrateMinhashMarkPreEdges`,
+`migrateFrontierClaimedSeq`, `dropCrawlsProject`) plus the private
+`detailInIssuesPK` helper are gone. The generic machinery is untouched (the
+`migration` struct, `upgrade`/`applyStep`/`setUserVersion`/`ladderTop`/
+`isFreshDB`, and the `addColumn`/`columnExists`/`queryer` helper toolkit) so the
+next schema change appends as `{6, …}`/`{3, …}` exactly as before. Two mechanical
+consequences: `upgrade`'s target became `max(minVersion, ladderTop)` so an empty
+ladder still stamps fresh DBs to the floor (the current revision) rather than
+`v0`; and the `frontier_claim` index — previously created after the v5 step
+because the columns arrived with it — now rides `crawlSchema` directly (the
+columns are unconditionally in the base shape). The `pre_edges` marker/refusal
+(§5.3, runner resume) stays: no live code now *sets* it, but a DB migrated up
+under an older binary still carries it at ≥ v5 and must still be refused on
+resume. Raising the floors makes sub-floor DBs refused at open rather than
+served a schema no surviving step can repair; that refusal is inert in the field
+(no install is below the floor) — the §8 surface-polish items stay deferred.
 
 **Implemented but scoped down (extension points exist):**
 - Issues catalogue: **164 = the full issues library computable on the current
