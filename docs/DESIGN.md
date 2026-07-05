@@ -2,7 +2,7 @@
 
 A modern, headless, CLI-first website crawler and SEO auditor in Go. Functional parity target: Screaming Frog SEO Spider's crawling/auditing core — **without** the UI and **without** third-party API integrations (GA4, GSC, PageSpeed/Lighthouse, link indexes, AI providers), and **without** opaque binary config files: everything is plain-text config + flags.
 
-Status: living document — **all milestones M0–M14 implemented** (2026-06-10); **§8/§9 backlog cleared** (2026-06-11): SERP pixel widths, ISO-registry hreflang validation, LSH near-dup banding, `rendering.wait_strategy`, custom JS snippets via CDP, WARC archiving, the `serve` JSON API, crawl-path report, HTTP version capture, a 164-check catalogue (second tranche 2026-06-12, §9), and the catalogue-coverage meta-test. Remaining deliberate cuts are listed in §9. The feature inventories this design is derived from live in `docs/research/`:
+Status: living design document — it describes the product's intended shape and the standard every change is held to. It is **not** a changelog: what shipped and when lives in git history and PRs, and future/backlog work lives in the issue tracker. The feature inventories this design is derived from live in `docs/research/`:
 - [01-crawl-configuration.md](research/01-crawl-configuration.md) — every SF config option
 - [02-data-model-and-checks.md](research/02-data-model-and-checks.md) — per-URL data, tabs/filters, 300+ issues, crawl analysis, link model, reports
 - [03-operations-cli-storage.md](research/03-operations-cli-storage.md) — storage modes, resume, modes, CLI, comparison
@@ -39,7 +39,7 @@ ad-hoc, patch-it-and-move-on fixes.** This bar governs every engine change
    deliberately diverge and record why.
 
 3. **Read the history first — and suspect past fixes.** Before touching anything,
-   read the implementation-status deltas (§9 / §9.1) and the parity comparison
+   read the git history and the parity comparison
    decision log kept with the SF-comparison harness (every divergence ever ruled
    on, *including the ones we chose not to fix*). A new symptom is often a side
    effect of a previous best-guess fix; knowing the history is how we catch "the
@@ -65,8 +65,7 @@ ad-hoc, patch-it-and-move-on fixes.** This bar governs every engine change
 
 Parity gaps themselves are discovered through the SF-comparison harness, whose
 loop is *compare → rank → triage → **log every decision** (including won't-fix) →
-record the domain*, so the same divergence is never investigated twice; §9.2
-mirrors the current backlog distilled from that log.
+record the domain*, so the same divergence is never investigated twice.
 
 ---
 
@@ -156,212 +155,74 @@ Crawl UX (headless but informative): single-line progress (crawled/queued/errors
 
 ---
 
-## 4. Configuration schema (YAML)
+## 4. Configuration
 
-One file = one crawl profile. Everything has a default; an empty file is a valid config. Full schema (abridged here; the canonical commented version is whatever `bluesnake config init` emits — generated from the schema, never hand-maintained):
+Config is one YAML file = one crawl profile; every key has a default, so an empty
+file is a valid config. The authoritative, fully-commented reference is whatever
+`bluesnake config init` emits — generated from the schema, never hand-maintained.
+Rather than reproduce the full schema here (it would only drift), this section
+describes the shape. The top-level groups:
 
-```yaml
-mode: spider            # spider | list  (set implicitly by CLI subcommand)
-
-scope:
-  crawl_all_subdomains: false
-  crawl_outside_start_folder: false
-  check_links_outside_start_folder: true
-  follow_internal_nofollow: false
-  follow_external_nofollow: false
-  crawl_invalid_links: false
-  cdns: []              # domains (optionally domain/path) treated as internal
-  include: []           # RE2 partial-match patterns vs URL-encoded address
-  exclude: []
-
-resources:              # store/crawl pairs (SF Spider > Crawl); off by default,
-  images:        {store: false, crawl: false}   # matching our house SF profile
-  media:         {store: false, crawl: false}
-  css:           {store: false, crawl: false}
-  javascript:    {store: false, crawl: false}
-  swf:           {store: false, crawl: false}
-links:
-  internal:      {store: true,  crawl: true}
-  external:      {store: false, crawl: false}   # house SF profile: externals not checked
-  canonicals:    {store: true,  crawl: false}   # recorded but not fetched (house SF profile)
-  pagination:    {store: false, crawl: false}
-  hreflang:      {store: true,  crawl: false}
-  amp:           {store: false, crawl: false}
-  meta_refresh:  {store: true,  crawl: true}
-  iframes:       {store: true,  crawl: true}
-  mobile_alternate: {store: false, crawl: false}
-  uncrawlable:   {store: false}
-
-sitemaps:
-  crawl_linked: true             # house SF profile: sitemaps crawled,
-  auto_discover_via_robots: true # discovered via robots.txt Sitemap: lines
-  urls: []
-
-llms_txt:                        # /llms.txt audit (llmstxt.org); site-level file
-  check: true                    # fetch & structurally validate /llms.txt per host
-  fetch_full: true               # also fetch /llms-full.txt
-  crawl_linked: true             # admit the curated links into the frontier
-                                 # (analysis.llms_txt gates the link cross-check)
-
-site_checks:                     # crawl-integrated site-level audits (§5.10)
-  enabled: auto                  # auto (full-domain crawls only) | always | never
-  robots: true                   # robots.txt file-level audit
-  sitemap: true                  # sitemap discovery + per-file validation
-  ai_bots:
-    check: true                  # robots.txt verdicts for the AI-bot registry
-    live_probe: true             # probe the site root with each fetcher bot's UA
-    bots: []                     # registry extensions/overrides
-    skip: []                     # registry bot names to exclude
-  render_diff: false             # seed-page JS-vs-raw diff (needs Chrome; off —
-                                 # a different cost class than the HTTP checks)
-
-extraction:
-  page_details: {titles: true, meta_descriptions: true, meta_keywords: true,
-                 h1: true, h2: true, indexability: true, word_count: true,
-                 readability: true, text_to_code_ratio: true, hash: true,
-                 page_size: true, forms: true}
-  url_details:  {response_time: true, last_modified: true, http_headers: true, cookies: false}
-  directives:   {meta_robots: true, x_robots_tag: true}
-  structured_data: {jsonld: false, microdata: false, rdfa: false,
-                    schema_org_validation: false, google_rich_results_validation: false,
-                    case_sensitive: false}
-  store_html: false
-  store_rendered_html: false
-  store_warc: false      # archive every fetched response as WARC/1.1 (any status, incl. redirects/errors)
-  pdf: {store: false, extract_properties: false, extract_link_text: false}
-
-limits:
-  max_urls: 5000000
-  max_depth: -1          # -1 = unlimited
-  max_urls_per_depth: -1
-  max_folder_depth: -1
-  max_query_strings: -1
-  max_per_subdomain: -1
-  max_redirects: 5
-  max_url_length: 10000
-  max_links_per_page: 10000
-  max_page_size_kb: 51200
-  by_path: []            # [{pattern: "/blog/", max: 100}]
-
-rendering:
-  mode: text             # text | javascript   (old AJAX scheme intentionally dropped: deprecated by Google 2018)
-  wait_strategy: adaptive # adaptive (settle detection) | fixed (load event + full AJAX sleep; compare-stable)
-  ajax_timeout_sec: 5
-  window: googlebot-desktop   # preset or {width: , height: }
-  screenshots: false
-  js_error_reporting: false
-  flatten_shadow_dom: true
-  flatten_iframes: true
-  chrome_path: ""        # auto-detect
-  max_global_renders: 0  # concurrent Chrome renders across ALL running crawls;
-                         # 0 = auto (cores-scaled 2/4/8 — the per-crawl tab ceiling,
-                         # so a single crawl never notices it); see §5.8
-
-advanced:
-  cookie_storage: session        # session | persistent | none
-  ignore_non_indexable_for_issues: false
-  ignore_paginated_for_duplicates: false
-  always_follow_redirects: false
-  always_follow_canonicals: false
-  respect_noindex: false
-  respect_canonical: false
-  respect_next_prev: false
-  respect_hsts: true
-  respect_self_referencing_meta_refresh: true
-  extract_srcset: false
-  crawl_fragments: false
-  html_validation: false
-  assume_pages_are_html: false
-  response_timeout_sec: 20
-  retry_5xx: 0                   # number of retries
-  percent_encoding: upper        # upper | lower
-
-thresholds:                      # SF "Preferences"
-  title:        {min_chars: 30, max_chars: 60, min_px: 200, max_px: 561}
-  description:  {min_chars: 70, max_chars: 155, min_px: 400, max_px: 985}
-  url_max_chars: 115
-  h1_max_chars: 70
-  h2_max_chars: 70
-  image_alt_max_chars: 100
-  image_max_kb: 100
-  low_content_words: 200
-  high_crawl_depth: 4
-  high_internal_outlinks: 1000
-  high_external_outlinks: 100
-  non_descriptive_anchors: ["click here", "click", "here", "read more", "more", "learn more", "go", "this page", "start", "right here"]
-  soft_404_patterns: ["page not found", "404", "not be found"]
-
-content:
-  area: {include_elements: [], include_classes: [], include_ids: [],
-         exclude_elements: [nav, footer], exclude_classes: [], exclude_ids: []}
-  near_duplicates: {enabled: false, threshold: 90, indexable_only: true}
-
-robots:
-  mode: respect          # respect | ignore | ignore-report
-  show_blocked_internal: true
-  show_blocked_external: false
-  custom: []             # [{host: "example.com", file: "./custom-robots.txt"}]
-
-url_rewriting:
-  remove_params: []      # ["utm_source", "sessionid"]
-  regex_replace: []      # [{pattern: "", replace: ""}]
-  lowercase: false
-
-speed:
-  max_threads: 5
-  max_urls_per_sec: 0    # 0 = unlimited
-
-http:
-  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 12_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15"  # house SF profile UA
-  robots_user_agent: "bluesnake"
-  version: ""            # "" = negotiate (prefer HTTP/2) | "1.1" force HTTP/1.1 | "2"
-  browser_headers: true  # send SF's default request profile: Accept text/html + Cache-Control/Pragma no-cache
-  headers: {}            # name: value (override the browser defaults above; e.g. add Accept-Language)
-  proxy: ""              # http://user:pass@host:port
-  trusted_cert_dirs: []
-  auth:
-    basic: []            # [{url_prefix: "", username: "", password: "", password_env: ""}]
-    cookies: []          # [{name: , value: , domain: }]  (forms-auth replacement: bring your own session cookie)
-
-custom_search: []        # [{name:, mode: contains|not_contains, pattern:, regex: false, scope: html|text|element:<sel>}]
-custom_extraction: []    # [{name:, type: xpath|css|regex, expression:, attribute:, return: text|html|inner_html|function}]
-custom_js: []            # [{name:, type: extraction|action, file: snippet.js, timeout_sec: 5, content_types: [text/html]}]
-
-link_positions:          # ordered; first match wins; substring match on link XPath/element chain
-  - {name: head,    match: "/head/"}   # SF's decoded default search terms: the trailing
-  - {name: nav,     match: "nav"}      # slash keeps <header> links out of the head bucket,
-  - {name: header,  match: "header"}   # and the bare terms also match class names once
-  - {name: sidebar, match: "aside"}    # element paths carry attribute qualifiers
-  - {name: footer,  match: "footer"}
-  - {name: content, match: "/"}
-store_link_paths: true
-
-list_mode:               # only used by `bluesnake list`
-  respect_robots: false  # SF: list mode ignores robots by default
-  crawl_depth: 0
-
-analysis:
-  auto: true             # run crawl analysis at end of crawl
-  link_score: true
-  redirect_chains: true
-  near_duplicates: true
-  pagination: true
-  hreflang: true
-  canonicals: true
-  links: true
-  sitemaps: true
-  llms_txt: true         # cross-check /llms.txt curated links against the crawl
-
-storage:
-  dir: ~/.bluesnake       # crawl DBs live here, one SQLite file per crawl
-  retention_days: 0      # 0 = keep forever
-compare:
-  change_detection: [titles, descriptions, h1, word_count, crawl_depth, links, structured_data, content]
-  content_change_threshold: 10
-  url_mapping: []        # [{pattern: "^https://staging\\.", replace: "https://www."}]
-```
+- `mode` — spider | list (set implicitly by the CLI subcommand).
+- `scope` — subdomain/folder boundaries, nofollow handling, CDNs treated as
+  internal, include/exclude (RE2, matched against the URL-encoded address).
+- `resources` / `links` — per-type `{store, crawl}` pairs (images, media, css,
+  js, canonicals, hreflang, iframes, meta-refresh, …); defaults mirror our house
+  SF profile (externals not checked, canonicals recorded but not fetched).
+- `sitemaps` — crawl linked sitemaps, auto-discover via robots.txt, explicit URLs.
+- `llms_txt` — /llms.txt + /llms-full.txt audit and curated-link admission (§5.6).
+- `site_checks` — crawl-integrated site-level audits: robots, sitemap, AI-bot
+  access, render diff (§5.10). All on by default except `render_diff`.
+- `extraction` — per-URL data toggles, structured-data formats, and
+  HTML/rendered/WARC/PDF storage. (Extraction is always full here — see the
+  no-ops note below.)
+- `limits` — max urls/depth/folder-depth/query-strings/redirects/URL-length/
+  page-size, plus per-path and per-subdomain caps.
+- `rendering` — text | javascript, wait strategy, AJAX timeout, window preset,
+  screenshots, shadow-DOM/iframe flattening, global render slots (§5.8). The old
+  AJAX-crawling scheme is deliberately dropped (deprecated by Google 2018).
+- `advanced` — cookie storage, the `respect_*` directive knobs, HSTS, percent-
+  encoding, retries, timeouts.
+- `thresholds` — the SF "Preferences" numbers (title/description char + pixel
+  bounds, low-content, high-depth, non-descriptive anchors, soft-404 patterns).
+- `content` — content-area include/exclude selectors, near-duplicate settings.
+- `robots` — respect | ignore | ignore-report, blocked-URL reporting, custom
+  per-host robots files.
+- `url_rewriting` — remove params, regex replace, lowercase.
+- `speed` — max threads, max URLs/sec.
+- `http` — user agent, robots UA, HTTP version, browser headers, custom headers,
+  proxy, and basic/cookie auth (a supplied session cookie is the forms-auth
+  replacement).
+- `custom_search` / `custom_extraction` / `custom_js` — user-defined matchers,
+  xpath/css/regex extraction, and CDP JS snippets.
+- `link_positions` — ordered element-path → position-bucket rules.
+- `list_mode` — robots + depth behaviour for `bluesnake list`.
+- `analysis` — which post-crawl analyzers run (§5.6).
+- `storage` / `compare` — store dir + retention; change-detection fields and URL
+  mapping for `bluesnake compare`.
 
 Validation: unknown keys are errors (with a "did you mean" suggestion); every regex is compile-checked at load; `config validate` runs the same code path.
+
+#### Known no-ops (config parsed but not yet consumed)
+
+Some keys validate but currently change nothing; they are listed so the schema
+doesn't silently lie (the YAML stays valid for forward-compat):
+
+- **Extraction toggles are inert by design.** bluesnake extracts the full
+  per-URL dataset in one parse pass, so `extraction.page_details.*`,
+  `extraction.url_details.*` and `extraction.directives.*` never gate anything
+  (`url_details.cookies` is additionally not collected yet — no cookies table).
+- **Reserved for unbuilt features:** `extraction.pdf.*`,
+  `extraction.structured_data.{google_rich_results_validation,case_sensitive}`,
+  `rendering.flatten_iframes`, the `rendering.window` preset name (explicit
+  width/height are honoured), `advanced.html_validation`, `http.trusted_cert_dirs`.
+- **Resource/link `store` flags are unenforced** — every parsed edge is stored
+  regardless; the `crawl` half of each pair *is* enforced.
+- **Not yet wired:** `advanced.{respect_noindex,respect_canonical,respect_next_prev}`,
+  `analysis.canonicals` (piggybacks on redirect-chain analysis), `storage.dir`
+  (the path comes from `--store-dir`/the app default) and `storage.retention_days`
+  (no pruning; when it lands it will be an explicit `bluesnake crawls prune`,
+  never auto-delete-on-startup).
 
 ---
 
@@ -606,14 +467,14 @@ Each analyzer reads SQLite, writes back columns/tables; all are idempotent and r
 
 `chromedp` pool (size = min(threads, cores-scaled cap: 2/4/8 tabs); per-page: navigate, wait until the page **settles**, snapshot rendered DOM, optional screenshot, console log capture, custom JS execution (action snippets then extraction snippets). Parse pipeline runs twice (raw + rendered) and diffs element sets → JavaScript tab data (`origin` on link edges, `*_rendered` facts). Resource blocking by robots reported as Blocked Resource.
 
-**Shadow-DOM flattening** (`rendering.flatten_shadow_dom`, default on — R9b): `OuterHTML` does not serialize shadow roots, so links/headings/structured-data inside Web-Components shadow trees would be invisible. When on, the rendered snapshot is produced by a synchronous pass (right before serialization, after any screenshot) that moves each shadow host's children up into the host as light DOM and returns native `outerHTML`; nested roots are flattened a level per pass. Open roots are reached via `element.shadowRoot`; **closed** roots are reached via a document-start `attachShadow` shim that stashes them (mode left unchanged). The flattened HTML feeds the same `parse` + `structured` pipeline, so shadow links surface as `origin=rendered` — matching Screaming Frog, which pierces both open and closed shadow DOM. Residual: closed *declarative* shadow DOM (parser-created, no `attachShadow` call) is unreachable. (`rendering.flatten_iframes` remains unbuilt — see §10.)
+**Shadow-DOM flattening** (`rendering.flatten_shadow_dom`, default on): `OuterHTML` does not serialize shadow roots, so links/headings/structured-data inside Web-Components shadow trees would be invisible. When on, the rendered snapshot is produced by a synchronous pass (right before serialization, after any screenshot) that moves each shadow host's children up into the host as light DOM and returns native `outerHTML`; nested roots are flattened a level per pass. Open roots are reached via `element.shadowRoot`; **closed** roots are reached via a document-start `attachShadow` shim that stashes them (mode left unchanged). The flattened HTML feeds the same `parse` + `structured` pipeline, so shadow links surface as `origin=rendered` — matching Screaming Frog, which pierces both open and closed shadow DOM. Residual: closed *declarative* shadow DOM (parser-created, no `attachShadow` call) is unreachable. (`rendering.flatten_iframes` remains unbuilt.)
 
 **Settle detection** (`internal/render`): navigation does **not** wait for the browser `load` event (background media can hold it open for many seconds after the DOM is done); the anchor is `DOMContentLoaded`. After DCL, a page is settled when any of:
 1. the countable network is fully idle for 500ms — media, websockets, EventSource, ping/beacon, prefetch and `blob:`/`data:` requests are excluded from the in-flight set (they routinely stay open forever);
 2. the DOM node count holds steady across two 500ms probes with no script/stylesheet/XHR/fetch in flight (absorbs third-party widgets and analytics that chatter indefinitely);
 3. the wire is completely silent for 1.5s (only permanently-open requests remain).
 
-**None of those three fire while the page still has DOM work scheduled on an in-window timer** (R9a): a shim injected at document-start (`addScriptToEvaluateOnNewDocument`) wraps `setTimeout`/`clearTimeout` and exposes a live count of pending one-shot timers in `window.__bsPendingTimers`, which the settle loop reads each tick. Network-idle is otherwise the wrong sole signal for SPAs that inject content via `setTimeout` with no accompanying request — the wire goes quiet ~500ms after DCL, long before a `setTimeout(…, 1500)` fires (Screaming Frog catches these because it dwells its full AJAX timeout). The count is deliberately narrow so the latency lands only where waiting is correct: `setInterval` is never counted, a one-shot whose delay exceeds the cap is never counted (can't fire in-window), and a timer re-armed from inside another timer's callback is never counted (a self-rescheduling animation/poll loop would otherwise dwell to the cap — only its first top-level schedule counts). Residual deferred work the shim does not wait for (bounded, never a hang): string-code timers (`setTimeout("…", d)`, CSP-gated) and DOM injected via `requestAnimationFrame`/microtask/promise.
+**None of those three fire while the page still has DOM work scheduled on an in-window timer**: a shim injected at document-start (`addScriptToEvaluateOnNewDocument`) wraps `setTimeout`/`clearTimeout` and exposes a live count of pending one-shot timers in `window.__bsPendingTimers`, which the settle loop reads each tick. Network-idle is otherwise the wrong sole signal for SPAs that inject content via `setTimeout` with no accompanying request — the wire goes quiet ~500ms after DCL, long before a `setTimeout(…, 1500)` fires (Screaming Frog catches these because it dwells its full AJAX timeout). The count is deliberately narrow so the latency lands only where waiting is correct: `setInterval` is never counted, a one-shot whose delay exceeds the cap is never counted (can't fire in-window), and a timer re-armed from inside another timer's callback is never counted (a self-rescheduling animation/poll loop would otherwise dwell to the cap — only its first top-level schedule counts). Residual deferred work the shim does not wait for (bounded, never a hang): string-code timers (`setTimeout("…", d)`, CSP-gated) and DOM injected via `requestAnimationFrame`/microtask/promise.
 
 `rendering.ajax_timeout_sec` is the **hard cap** on the settle phase after DCL (not a fixed sleep) and bounds the timer wait too; `advanced.response_timeout_sec` caps the wait for DCL itself. Worst case therefore equals the old fixed-wait behaviour. Regression tests cover early settle, permanently-open streams/iframes, beacon chatter, in-window timer injection, and re-arming timer loops.
 
@@ -621,7 +482,7 @@ Each analyzer reads SQLite, writes back columns/tables; all are idempotent and r
 
 **Custom JavaScript snippets** (`custom_js`): snippet files load at renderer construction (a missing file is a config error naming the snippet). After the page settles, `action` snippets run first (results discarded — they exist to mutate the page), then `extraction` snippets; values are stored in `custom_results` with kind `js` (JS strings verbatim, anything else compact JSON, `error: …` when a snippet throws). Each snippet is bounded by its `timeout_sec` (default 5); a `content_types` list restricts which pages a snippet's results are stored for.
 
-**Global render slots** (`rendering.max_global_renders` — REN-01/#76): a render re-fetches the page plus every subresource inside a Chrome tab (~100-300MB each), so renders are a first-class bounded resource under the process-wide limiter (`internal/limiter`), in a slot pool **separate** from the fetch cap — a render is not a fetch: different weight, different resource axis. A worker holds a render slot only for the Chrome round-trip (released the moment `Render` returns, panic-safe, mirroring the fetch-slot pattern) and never holds a fetch slot at the same time — nested acquires across M crawls would starve or deadlock the pools against each other. `0` (the default) resolves via `render.GlobalRenderCap` to the same cores-scaled tab ceiling that bounds a single crawl's pool (2/4/8 by CPU count), so single-crawl behaviour is unchanged while M parallel rendered crawls stay bounded out of the box. Renderer **instances** deliberately stay one-per-crawl — a renderer bakes per-crawl config into its Chrome allocator (UA, window size, custom JS snippets), so a shared instance cannot represent two configs; the Chrome *process* count is bounded by `speed.max_concurrent_crawls` (GL-18), while the expensive axis — concurrently rendering tabs — is bounded process-wide by the render pool. Pause/stop interrupts an in-flight render (renders run under the crawl context): the interrupted item is left pending — recording it raw-only would be permanent, since resume never re-renders a processed page — and a resume re-fetches and re-renders it (pinned by `TestPauseInterruptsInFlightRender`).
+**Global render slots** (`rendering.max_global_renders`): a render re-fetches the page plus every subresource inside a Chrome tab (~100-300MB each), so renders are a first-class bounded resource under the process-wide limiter (`internal/limiter`), in a slot pool **separate** from the fetch cap — a render is not a fetch: different weight, different resource axis. A worker holds a render slot only for the Chrome round-trip (released the moment `Render` returns, panic-safe, mirroring the fetch-slot pattern) and never holds a fetch slot at the same time — nested acquires across M crawls would starve or deadlock the pools against each other. `0` (the default) resolves via `render.GlobalRenderCap` to the same cores-scaled tab ceiling that bounds a single crawl's pool (2/4/8 by CPU count), so single-crawl behaviour is unchanged while M parallel rendered crawls stay bounded out of the box. Renderer **instances** deliberately stay one-per-crawl — a renderer bakes per-crawl config into its Chrome allocator (UA, window size, custom JS snippets), so a shared instance cannot represent two configs; the Chrome *process* count is bounded by `speed.max_concurrent_crawls`, while the expensive axis — concurrently rendering tabs — is bounded process-wide by the render pool. Pause/stop interrupts an in-flight render (renders run under the crawl context): the interrupted item is left pending — recording it raw-only would be permanent, since resume never re-renders a processed page — and a resume re-fetches and re-renders it.
 
 ### 5.9 Project layer (competitor study) — an opt-in, removable overlay
 
@@ -633,8 +494,8 @@ Design decisions:
 - **Exact site identity, no folding.** A site key is the literal lowercased `host[:port]` of the seed. `example.com`, `www.example.com`, `a.example.com` and `example.com:8080` are **distinct** sites by design (it reuses none of the engine's `www`-stripping host derivers — it has its own `SiteKey`).
 - **Associated vs comparable.** Every same-host crawl is *associated* and shown under the site; only a **finished, full-site spider crawl of the root that is not scope-narrowed** (`scope.include` empty) is *comparable* and feeds the numbers. Path crawls, list audits, running, and narrowed crawls are surfaced greyed-out with a reason — visible, but excluded from the math.
 - **Dual-mode comparison.** Per-competitor *over time* reuses the pairwise `compare` engine verbatim (same domain ⇒ meaningful URL/issue deltas). *Cross-competitor* is a new read-only **metric scorecard** (`scorecard.go`): site size, indexable rate, status-code mix, issue counts by severity, link score, near-dups (+ optional avg word count / Flesch / schema.org coverage via SQLite JSON functions). Cross-domain URL comparison is **not** offered — disjoint URL sets make it degenerate. All metrics are single-pass SQL aggregates over each crawl DB; `LoadPages` is never used (it would reintroduce the per-crawl memory blow-up).
-- **Per-site setups belong to the domain, not the project (#88); fairness is surfaced, not enforced.** A site remembers the setup its last crawl ran with (§5.11 — derived from the crawl registry at enqueue; *nothing* is stored in the project layer, which this feature leaves byte-for-byte untouched). "Crawl all" therefore defaults to **each site's saved setup** (per-member resolution shown in the dialog via `CrawlAllPlan`) with **"one setup for every site"** as the explicit override mode — the shared setup card (base picker + touched-only quick knobs, site-checks selector included), each job's effective config frozen at enqueue like any other crawl. A member's Crawl button opens New Crawl prefilled with the site, where the site's last setup is preselected by §5.11's default. When competitors' latest crawls used materially different settings (rendering, depth, robots), the scorecard shows per-site config badges and a divergence banner — worded to acknowledge the divergence may be deliberate per-site setup — and the strict-fairness remedy is "Crawl all" with one shared setup.
-- **Out of scope:** a scheduler. On-demand crawling of a project's sites is the building block a future scheduler would drive (§8).
+- **Per-site setups belong to the domain, not the project; fairness is surfaced, not enforced.** A site remembers the setup its last crawl ran with (§5.11 — derived from the crawl registry at enqueue; *nothing* is stored in the project layer, which this feature leaves byte-for-byte untouched). "Crawl all" therefore defaults to **each site's saved setup** (per-member resolution shown in the dialog via `CrawlAllPlan`) with **"one setup for every site"** as the explicit override mode — the shared setup card (base picker + touched-only quick knobs, site-checks selector included), each job's effective config frozen at enqueue like any other crawl. A member's Crawl button opens New Crawl prefilled with the site, where the site's last setup is preselected by §5.11's default. When competitors' latest crawls used materially different settings (rendering, depth, robots), the scorecard shows per-site config badges and a divergence banner — worded to acknowledge the divergence may be deliberate per-site setup — and the strict-fairness remedy is "Crawl all" with one shared setup.
+- **Out of scope:** a scheduler. On-demand crawling of a project's sites is the building block a future scheduler would drive.
 
 Surfaces (engine-first, all three per §0): the CLI `bluesnake projects` subtree; five MCP tools (`list_projects`, `create_project`, `add_competitor`, `remove_competitor`, `project_comparison`); and a desktop **Projects** view (Overview + Comparison) bound through a *separate* `ProjectApp` Wails struct so the core `App` binding (and its generated `App.js`) stay untouched.
 
@@ -645,7 +506,7 @@ every surface: **standalone tools** (interactive testers a user points at any
 URL — throwaway by design, results returned to the caller and never
 persisted) and the **crawl-integrated site-check pass** (the same checks run
 automatically at crawl start, reports persisted, findings emitted as ordinary
-catalogue issues). The llms.txt integration (§9, 2026-06-17) is the
+catalogue issues). The llms.txt integration (§5.6) is the
 architectural template for the crawl half: out-of-band fetch at crawl start,
 own table, issues derived in analyze, idempotent on resume.
 
@@ -674,7 +535,7 @@ block works" note; all findings Warning — blocking can be policy); *JS render
 diff* (one URL raw vs Chrome-rendered over `parse.Facts`; the full per-field
 diff lives in the report, while findings are three site-level IDs of their
 own — `js_dependent_content`, `js_dependent_links`,
-`js_changed_robots_directives` — because issue ownership (#75) is per ID and
+`js_changed_robots_directives` — because issue ownership is per ID and
 the per-page js_* checks are evaluate-owned); *llms.txt* (file-level
 rules live here, `analyze` delegates); *structured data* and *SERP snippet
 preview* (tool-only — crawls already measure these per page; serp is pure
@@ -697,7 +558,7 @@ on except `render_diff` (launches headless Chrome — a different cost class;
 the desktop New Crawl form's "run all checks" toggle and
 `site_checks.render_diff: true` opt in).
 
-**Slot discipline (GL-08/REN-01).** `sitecheck.WithLimiter` injects the
+**Slot discipline.** `sitecheck.WithLimiter` injects the
 process-wide `limiter.Limiter` into the Checker, which itself brackets every
 check fetch with a global fetch slot and the render diff's Chrome render with
 a render slot — never both at once (the limiter's lock-order rule: the raw
@@ -706,8 +567,7 @@ every surface: the crawl pass injects the crawler's limiter; the desktop
 Tools hub and MCP `run_tool` inject their `runner.ProcessWiring` limiter
 (exposed as `mcp.Backend.ProcessLimiter`), so interactive tool runs count
 against the same ceilings as the crawls they run beside; CLI `tools`
-one-shots inject nothing — nothing runs beside them (the P17 single-crawl
-fallback, applied to a no-crawl process). robots.txt keeps its documented
+one-shots inject nothing — nothing runs beside them. robots.txt keeps its documented
 serialized bypass via the robots manager's raw client.
 
 **Surfaces** (engine-first per §0): CLI `bluesnake tools` — one command
@@ -724,7 +584,7 @@ The registry (`sitecheck.Tools()`) is the single catalogue all three
 enumerate — adding a tool = one check + one registry entry + one desktop
 sub-view.
 
-### 5.11 Crawl setup sources — a site remembers its setup (#88)
+### 5.11 Crawl setup sources — a site remembers its setup
 
 Every crawl start resolves its **base config** from one of three sources, on
 every surface:
@@ -735,11 +595,11 @@ every surface:
    effective config into its own DB at `CreateCrawl` — so per-site config
    divergence needs **no storage anywhere**: no per-member profile columns,
    no site→config table. Deleting a crawl forgets that setup; profile edits
-   and deletes can never dangle (the original #88 sketch's
+   and deletes can never dangle (the original per-profile sketch's
    deleted-profile problem dissolves). Falls back to the app settings for a
    never-crawled site.
 2. **App settings** — the saved default profile (built-in defaults when none
-   is saved): `runner.LoadProfile("")`, the pre-#88 no-profile semantics.
+   is saved): `runner.LoadProfile("")`, the prior no-profile semantics.
 3. **A named profile** (or, CLI-only, a config file / the pinned built-in
    defaults).
 
@@ -777,8 +637,7 @@ Design points:
   also answers the "same domain from New Crawl directly" question: the setup
   belongs to the domain, so *every* start of that site preselects it,
   project page or not.
-- **The CLI's bare-run stance is revisited** (supersedes the 2026-07-03
-  config-UX delta's item 2): a bare `bluesnake crawl` now resolves last →
+- **The CLI's bare-run stance:** a bare `bluesnake crawl` resolves last →
   app settings → built-ins, like every other surface, and always prints the
   source it resolved. Since the default is history-dependent either way,
   reproducibility is an explicit opt-in: `--setup defaults` (or
@@ -803,794 +662,3 @@ Design points:
 - Coverage gate: `make cover` fails when **aggregate** statement coverage across `internal/...` drops below **90%** (the `render` package's Chrome-dependent paths are build-tagged `chrome` and excluded from the default measured set). 90% is the project standard — new code lands with tests that keep the gate green, and meaningful behavioral/integration tests are strongly preferred over line-touching filler (the few statements left uncovered are deliberately the hard-to-reach I/O fault-injection branches, not feature logic). New modules should aim to clear 90% on their own so the aggregate has headroom.
 - `@chrome`-tagged features are excluded from the default acceptance run; on a machine with Chrome run them with `BLUESNAKE_FEATURE_TAGS="@chrome" go test ./test/`. Chrome-dependent Go tests skip themselves when no Chrome is found.
 
----
-
-## 7. Milestones (test-first, module by module)
-
-| # | Milestone | Modules | Acceptance feature files |
-|---|---|---|---|
-| M0 | Scaffold + config | `config`, `cmd` skeleton | `config.feature` |
-| M1 | URL handling | `urlutil` | `url_normalization.feature`, `include_exclude.feature`, `url_rewriting.feature` |
-| M2 | Robots | `robots` | `robots.feature` (incl. tester subcommand) |
-| M3 | Fetching | `fetch` | `fetch.feature` (timeouts, retries, HSTS, auth, headers, redirects-as-data) |
-| M4 | Parsing | `parse`, `indexability` | `parse_elements.feature`, `links.feature`, `indexability.feature`, `security.feature` |
-| M5 | Crawl engine | `frontier`, `crawler` | `spider_crawl.feature`, `limits.feature`, `speed.feature` |
-| M6 | Storage + resume | `store` | `storage.feature`, `pause_resume.feature`, `crawls_management.feature` |
-| M7 | Issues engine | `issues` | `issues_*.feature` (per tab group) |
-| M8 | Analysis | `analyze` | `analysis_linkscore.feature`, `chains.feature`, `near_duplicates.feature`, `hreflang.feature`, `sitemaps_analysis.feature` |
-| M9 | Exports/reports/sitemap | `export`, `report`, `sitemapgen`, `serpwidth` | `export.feature`, `reports.feature`, `sitemap_generation.feature` |
-| M10 | List mode + compare | `compare`, list mode in `crawler` | `list_mode.feature`, `compare.feature` |
-| M11 | Custom search/extraction | `extract` | `custom_search.feature`, `custom_extraction.feature` |
-| M12 | Structured data | `structured` | `structured_data.feature` |
-| M13 | Rendering (Chrome) | `render`, custom JS | `rendering.feature` (build-tagged) |
-| M14 | Long tail | AMP validation, HTML validation tab, archive/WARC, accessibility (axe via CDP) | respective features |
-
-Definition of done per milestone: feature file(s) green, unit coverage ≥ 90% for the module (the project standard; the aggregate gate in §6 enforces it across `internal/...`), `go vet`/`staticcheck` clean, design doc updated if reality diverged.
-
----
-
-## 8. Open questions / future
-- **More site tools** (the §5.10 family is live; each of these is ~pure
-  composition of existing internals — one check + one registry entry + one
-  desktop sub-view, per demand): indexability inspector (one URL through the
-  real pipeline → the §5.4 verdict with reason), redirect-chain tracer (live
-  follow with the analyze phase's chain semantics), UA compare / cloaking
-  checker (generalizes the AI-bot probe to arbitrary UAs), security headers
-  checker (single-URL report over signals `parse` already extracts).
-- Spelling/grammar: candidate libs need evaluation; schema already reserves columns.
-- Distributed crawling: out of scope; single-process concurrency is the design point.
-  In-process **parallel multi-crawl** is that design point delivered (issue #78, 2026-07-02):
-  the core queue's dispatcher drains up to `speed.max_concurrent_crawls` jobs at once with
-  identical semantics on CLI (`projects crawl-all`, flag > config > 1), desktop, and MCP
-  (both read the knob from the default profile at start via `runner.ProcessWiring` — restart
-  to apply) under ONE shared process-wide limiter (global fetch cap, one finalize pass,
-  the Chrome render pool). Per-crawl control/status is crawl-id-addressed on every surface;
-  the default stays 1, keeping single-crawl behaviour unchanged.
-- Windows support: nothing platform-specific except Chrome discovery; CI matrix later.
-- **Settle thresholds are code constants, not config** (decided 2026-06-11): 500ms
-  network-idle window, 1.5s wire-silence window, 2×500ms DOM-stability probes
-  (`internal/render`) stay fixed — `rendering.wait_strategy: fixed` is the escape hatch
-  when adaptive settling misbehaves, so per-threshold knobs would add config surface
-  without a use case. (2026-06-25 — R9a: adaptive now *also* gates those three signals
-  on a document-start shim's in-window `setTimeout` count, so it waits for timer-injected
-  DOM that network-idle alone would miss; still no new config knob — the count is bounded
-  by `ajax_timeout_sec` and the existing `wait_strategy: fixed` remains the escape hatch.
-  This is the targeted form of the `MutationObserver` upgrade noted below, scoped to the
-  scheduled-timer case rather than general mutation tracking.) If pages ever settle
-  wrongly beyond this, the next precision upgrade is a `MutationObserver` injected at
-  document start ("ms since last DOM mutation") instead of polling node counts.
-
-- **Schema-floor refusal handling is deferred until a floor is actually raised**
-  (decided 2026-06-19). The migration ladder's `min*Version` floors are `0`, so
-  `upgrade()`'s "schema vN predates the minimum supported vF" error (§5.3) cannot
-  fire yet; building surface handling for an error that can't occur would be
-  speculative and untestable. When we first raise a floor, three things land
-  together with it: (1) make the refusal a **typed sentinel** (e.g.
-  `store.ErrSchemaTooOld`) so surfaces detect it with `errors.Is` instead of
-  string-matching; (2) decide whether the **read-only open paths** that currently
-  skip migrations (`mcp.openCrawlRO` → `query`/`issue_summary`, and
-  `serve.open()`) should check `user_version` and refuse a sub-floor DB, or keep
-  serving best-effort reads — today they'd silently query an unsupported schema;
-  (3) give the **desktop** a real "this crawl predates this version — re-crawl or
-  remove it" affordance, and let **serve** return that specific message (it
-  currently masks every open error as a generic 404 by design). On the **CLI** and
-  the MCP **`resume_crawl`** path the error already propagates verbatim, so those
-  need nothing. Until then the floors stay at `0` (migrate everything) and the
-  refusal branch is pinned only by `store.TestUpgradeLadder`.
-
-Resolved (2026-06-11): `serve` subcommand shipped (`internal/serve`, read-only JSON API
-over the export layer); `rendering.wait_strategy: adaptive | fixed` shipped (§5.8).
-
-## 9. Implementation status & deltas (2026-06-11)
-
-All milestones M0–M14 are implemented, and the previously-tracked gaps have
-landed: `internal/serpwidth` (bundled Arial metrics; title/description Over/
-Below X Pixels checks + pixel_width export columns), hreflang validation
-against the embedded ISO 639-1 / 3166-1 registries (`internal/isocodes`),
-LSH banding in front of the exact near-duplicate verification (band width
-adapts to the threshold; exact-equivalent at the default 90%), custom
-JavaScript snippets executed via CDP (action → extraction ordering, results
-in `custom_results` kind `js`), WARC/1.1 archiving with an own writer
-(`internal/warc`, `extraction.store_warc`), the `serve` JSON API, the
-`crawl_paths` report (per-URL discovery path, also in the desktop URL
-drawer), per-page HTTP protocol version capture (stored, exported, shown in
-the UI), and a catalogue of **164 checks** whose fixture coverage is enforced
-by a meta-test (§6).
-
-**2026-06-12 — second catalogue tranche (+27 → 164).** Completed the
-issues-library entries for the directives, pagination, hreflang and links
-tabs that are computable on existing data, plus internal-search URLs,
-canonical fragment/invalid-attribute, CSS/JS resource >2MB, sitemap >50k,
-JS-updated description, the Missing Alt Attribute vs Alt Text split, and Alt
-Text in h1. Carried by three new parse facts: `Link.NoAltAttr`,
-`Facts.H1AltText`, `Facts.CanonicalInvalidAttrs`.
-
-**2026-06-17 — tokenization parity (word count / sentences / Flesch, was the
-§9.2 #1 backlog row).** Reverse-engineered Screaming Frog v24.1's content
-tokenization against ~100 controlled probe pages (crawled with SF headless) and
-rebuilt it grounded in correct behaviour. The content text is now extracted as
-**logical-line blocks** (`internal/parse.extractBlocks`) and the readability
-metrics from a pure stats module (`internal/parse/readability.go`,
-`computeStats`/`blockSentences`), replacing the old single-pass walker and the
-guessed `floor(chars/85)` sentence heuristic. Fixes, each pinned by a probe
-measured against SF (`content_parity_test.go`, `readability_test.go`):
-table cells (`<td>/<th>`) separate words but the **row** (`<tr>`) is the
-sentence/line; **list markers are rendered text** — `<ul>`→`•` (a word), `<ol>`→
-`N.` (a number word **and** a terminating period), attached to the item's first
-line even through wrapped block children, nested per level, `<dl>` none;
-**sentence segmentation** = greedy ≤80-char run packing **plus** a split at every
-`.!?` terminator (including mid-word, e.g. `3.14`), deduplicated against run
-boundaries; literal newlines in text collapse to a word break, **except inside
-`<pre>`** where a newline is a line/sentence boundary (HTML-correct). Word/
-sentence parity is exact on **95/101 probes**; on a real 400-page site word-count
-exact-match rose 42%→79%. The *readability-bucket* half of R5/G7 did **not**
-materially improve, though (Flesch median |diff| only 2.66→2.40; bucket agreement
-~flat at 89%→86%): with word and sentence counts now matching, the residual Flesch
-error is dominated by the **syllable-estimation heuristic**, tracked as its own
-§9.2 row and the R5/G7 readability-half FIX-LATER. The six residual
-probes are documented SF artifacts or separate gaps (see §9.2): SF's `<main>`-
-present content-area heuristic, SF counting a `<pre>` ASCII-art symbol line and a
-bare `<hr>` as words, an SF off-by-one when a terminator lands exactly on the
-80-char run edge, and Flesch divergence from the **syllable-estimation
-heuristic** on vocabulary-dense pages (identical word+sentence counts, different
-syllables) — the last is the main remaining readability-bucket limiter and needs
-a pronunciation dictionary. The §9.2 backlog row is retired; these residuals are
-tracked as their own rows.
-
-**2026-06-17 — llms.txt as a first-class audit (+8 checks, new `llms_txt`
-tab).** A new `internal/llmstxt` parser/validator and an `llms_txt:` config
-block (`check`/`fetch_full`/`crawl_linked`, plus `analysis.llms_txt`). The seed
-host's `/llms.txt` (and `/llms-full.txt`) is fetched out-of-band at crawl start
-like robots.txt (re-fetched on resume, idempotent), structurally validated, and
-stored in the `llmstxt` table; its curated links are recorded in `llmstxt_links`
-(provenance independent of the link graph) and admitted to the frontier through
-the normal discovery chain — internal links crawled, external links gated by the
-external-crawl flag — unless `crawl_linked` is off. The analyze phase emits the
-file-level checks (`llms_txt_missing`, `llms_txt_invalid_format`,
-`llms_txt_missing_summary`, `llms_txt_malformed_link_list`,
-`llms_full_txt_missing`) and the curated-link checks resolved against the crawl
-graph (`llms_txt_broken_link`, `llms_txt_link_non_indexable`,
-`llms_txt_link_unverified` — the last for links the crawl never reached). All
-surface automatically through `bluesnake issues`, `crawl_overview`, the serve
-`/issues` endpoint and the MCP `issue_summary`/`query` tools. (A bounded
-out-of-band probe of unreached curated links, a dedicated report/export, and a
-`bluesnake llms test` CLI are deliberate follow-ups, not yet built.)
-
-**2026-06-19 — compare `content` + `structured_data` change detectors wired.**
-`compare.change_detection` shipped with both entries enabled by default but
-silently dropped them (`compare.content_change_threshold` was unread) — the
-product advertised detectors it didn't run. `internal/compare.changeDetection`
-now evaluates both. **Content** compares the two crawls' content-area text with
-the *same* minhash similarity as near-duplicate analysis (new exported
-`analyze.ContentSimilarity`, single source of truth) and reports a change only
-when the content moved by more than `content_change_threshold` percent (SF's
-">N% similarity change"); a footer/nav-only edit changes the body hash but not
-the content area, so it is not reported, and an identical body short-circuits
-the comparison. **Structured data** compares the unique, sorted schema.org type
-set (SF's "Structured Data Unique Types"). Both flow through every surface that
-reads `compare.Result.Changes` (CLI `bluesnake compare`, CSV/JSON/xlsx export,
-the desktop comparison view) with no new config or UI. Pinned by
-`internal/compare` unit tests, an `analyze.ContentSimilarity` test, and two
-`features/compare.feature` scenarios. Retires the §9.1 "two dead
-change-detection values" note and the §9.2 "Compare detectors" backlog row.
-
-**2026-06-19 — rich-result matrix breadth: SoftwareApplication / Review /
-AggregateRating (G5-matrix, partial).** The curated `internal/structured`
-requirements table grew from 12 to 15 schema.org types, grounded in Google's
-current rich-results docs (the "ground in correct behaviour, not the reference
-tool" §0 anchor) rather than copied from SF: **SoftwareApplication** (+ the
-`WebApplication` / `MobileApplication` subtypes Google validates identically —
-matched on the leaf `@type`), **Review**, and **AggregateRating**. Two real
-Google requirement shapes the old AND-only `required` list couldn't express are
-now modelled: an `anyOf` group ("at least one of", e.g. AggregateRating needs
-`ratingCount` **or** `reviewCount`; a Software App needs `aggregateRating` **or**
-`review`) emits a single error when no member is present, and Review is
-`trigger`-gated on `reviewRating` so a rating-less or nested review is not a
-snippet candidate — the nesting-dependent `itemReviewed` is deliberately dropped
-to avoid reproducing the R6 Organization-logo over-warning regression. **HowTo
-is deliberately excluded**: Google deprecated HowTo rich results in Sep 2023, so
-validating it would chase a stale feature. No new issue IDs (occurrences reuse
-`structured_validation_error` / `_warning`), so every surface — `bluesnake
-issues`, `crawl_overview`, the serve `/issues` endpoint, the MCP tools and the
-desktop UI — picks them up unchanged, and the catalogue-coverage meta-test is
-unaffected. Pinned by `internal/structured` table-driven tests (per-type
-required/recommended/anyOf, the subtype aliases, the trigger gate, and an
-explicit nested-rating no-over-warn guard). **Still open** (the row stays in
-§9.2, narrowed): standalone `Offer` / merchant-listing depth, the LocalBusiness
-subtype hierarchy (`Restaurant` et al., needs a schema.org IS-A map), nested
-property checks (`offers.price`, `reviewRating.ratingValue` — the engine checks
-top-level presence only), and the SF cross-check on trigger.dev / vellum.ai /
-braintrust.dev / zenskar.com to verify counts and tune the error/warning split
-(the established R6-style verification, which needs the Screaming Frog harness).
-
-**2026-06-19 — schema.org subtype-hierarchy resolution (G5-matrix, the
-LocalBusiness-subtree increment).** The previous note matched only literal
-curated `@type`s, so `Restaurant`/`Hospital`/`TechArticle`/`Festival` got zero
-validation. bluesnake now embeds the **objective schema.org IS-A graph**
-(`internal/structured/schemaorg_hierarchy.txt`, 945 edges, generated
-deterministically from schema.org's published types CSV by a checked-in
-`go:generate` tool — `gen_hierarchy.go` — with **no LLM in the data path**) and
-resolves any seen type to its **most-specific curated ancestor**
-(`internal/structured/hierarchy.go`). `requirements` stays the single source of
-truth (no per-subtype aliases); resolution is computed against it at load time.
-**264 schema.org types now validate** (up from ~15): 150 LocalBusiness subtypes
-(Restaurant, Bakery, Attorney, …), plus the Event (26), Organization (logo-gated,
-safe), Article (recommended-only, safe), Product and Review subtrees. Design
-points, each grounded and pinned: a directly-curated type keeps its own rules
-(short-circuit, never falls through to a parent); the only incomparable tie in
-the whole vocabulary is `ReviewNewsArticle`; per-node resolution collapses
-redundant supertype roots so `["NewsArticle","Article"]` and
-`["LocalBusiness","Organization"]` validate once, while `["VideoGame",
-"SoftwareApplication"]` still validates as the explicit app co-type. **Validation
-is scoped to the page's PRIMARY entity** — top-level / `@graph`-member JSON-LD
-nodes and top-level microdata items — and nested reference stubs (a `Store` as
-`offers.seller`, a `Restaurant` as `publisher`/`author`) record their types but
-are **not** validated, matching how Google scopes a feature's required props and
-avoiding an R6-class "missing address" false error (caught by an adversarial
-review). JSON-LD `@type` is normalized through `shortType` (full-URL/prefixed),
-and `data.Types` now records short forms (parity with SF and microdata).
-**Grounded exclusions** (subtype routed to a different/retired Google feature, so
-inheriting the parent over-flags): the Vehicle subtree ↛ Product (Vehicle-listing
-deprecated 2025-06), `VideoGame`/`OperatingSystem`/`RuntimePlatform` ↛
-SoftwareApplication, `ClaimReview`/`MediaReview`/`EmployerReview` ↛ Review (Fact
-Check / media-authenticity / Employer features), `EmployerAggregateRating` ↛
-AggregateRating, the `UserInteraction` telemetry family ↛ Event,
-`ReviewNewsArticle` ↛ Review. Grounded and adversarially reviewed by two
-background workflows (Google-feature semantics + over-warning/correctness/
-cross-surface review); the sole confirmed blocker (nested-entity over-warning)
-and a microdata multi-`itemtype` major were fixed before this note. Still open:
-standalone `Offer`/merchant-listing depth, nested-property checks
-(`offers.price`), and the SF count cross-check (needs the Screaming Frog harness).
-A separate pre-existing limitation surfaced by the multi-property rules — the
-`issues` table stored one detail per `(url, issue)`, so multiple missing-property
-details collapsed to the last — **is fixed by the `(url, issue, detail)` key in
-the next note**, so each missing property now persists as its own occurrence.
-
-**2026-06-19 — issues store keeps every distinct occurrence.** The `issues`
-table keyed on `(url, issue)`, so a page that triggered one check several times
-with different details kept only the **last** detail (the write path is
-`INSERT OR REPLACE`). Systemic across any multi-detail check; most visible after
-the schema.org rich-result work above, where one page commonly emits several
-`structured_validation_error`/`_warning` rows (one per missing required
-property). The primary key is now `(url, issue, detail)`, so each distinct
-occurrence is its own row while exact duplicates still collapse — which preserves
-the `INSERT OR REPLACE` idempotency that re-analysis depends on (`finalize.Analyze`
-clears via `SaveIssues` then re-adds, so no stale rows accumulate). A natural key
-beats an autoincrement id here precisely for that idempotency. Affected-URL
-tallies are unchanged: the count paths now use `COUNT(DISTINCT url)`
-(`store.IssueCounts`/`IssueURLs`, the MCP `issue_summary` query), so the headline
-numbers across CLI/serve/MCP/desktop stay per-URL while exports and the issues
-table now list all details. Existing crawl DBs migrate on open
-(a transactional `issues` table rebuild, detected via `PRAGMA table_info`,
-idempotent) — required so re-analysing an old crawl doesn't keep collapsing on
-the very path meant to fix it. Pinned, mutation-verified, by
-`store.TestIssueMultiDetailPreserved`/`TestIssuesDetailPKMigration`,
-`export.TestIssuesExportListsEveryDetail` (driven through the real
-`issues.Evaluate` structured-validation path), and
-`mcp.TestIssueSummaryCountsDistinctURLs`.
-
-**2026-06-19 — schema versioning via `user_version` (migrations are now a
-retirable ladder).** Folded the store's previously ad-hoc migrations (the two
-`pages` `ADD COLUMN`s, the registry `crawls.total` column, and the issues-PK
-rebuild above) into a single versioned mechanism in `internal/store`. Every
-crawl/registry DB now records its revision in SQLite's `user_version`; `open`
-CREATEs the latest shape then runs a generic `upgrade()` that stamps fresh DBs to
-the top and runs only the above-revision steps on existing ones, each in a
-`user_version`-bumping transaction. Migrations are an append-only ladder of
-stably-numbered, idempotent steps; the per-ladder `min*Version` floor is the
-removal lever — raising it (and deleting the sub-floor steps, never renumbering
-the rest) makes too-old DBs fail to open with a clear re-crawl message instead of
-half-migrating, so retired migration code is *safely* deletable. This is the
-durable-revision marker the old detect-or-tolerate ALTERs lacked, which is why
-they could never be removed. The §5.3 "Schema versioning & migrations" box
-documents the mechanism and the retirement procedure. Pinned, mutation-verified,
-by `store.TestUpgradeLadder` (stepwise apply, idempotent re-open, floor refusal,
-fresh stamp) and `store.TestFreshDBSchemaVersion`.
-
-**2026-06-21 — `advanced.ignore_paginated_for_duplicates` wired (was a §9.1
-"behavioural flags not yet wired" row).** Screaming Frog's "Ignore Paginated URLs
-for Duplicate Filters" now takes effect instead of parsing to a no-op. A URL is
-"paginated" iff it declares a `rel="prev"` link (HTML or HTTP `Link` header) —
-i.e. it is page 2+ of a sequence; page 1 carries only `rel="next"` and is
-unaffected. That single rule lives in one place, `parse.Facts.IsPaginated()`, and
-gates both duplicate-detection sites: the per-aggregate duplicate filters in
-`issues.duplicates()` (`title_duplicate`, `description_duplicate`,
-`h1_duplicate`, `h2_duplicate`, `content_exact_duplicate`) and the near-duplicate
-candidate set in `analyze.nearDuplicates()` (`content_near_duplicate`) — matching
-SF's documented filter list (Page Titles, Meta Description, H1, H2, Content
-Exact/Near Duplicates). Excluded pages are neither flagged nor offered as a match
-target, so a continuation page no longer makes page 1 (or its siblings) look
-duplicated. Grounded in the rel=next/prev pagination signal (no longer a Google
-indexing signal, but still SF's declared-pagination marker), not just an
-output-match. **Default off, so default crawls are unchanged**; it flows through
-every surface that reads the issues table / near-dup occurrences (CLI `bluesnake
-issues`, `crawl_overview`, serve `/issues`, MCP `issue_summary`/`query`, desktop)
-with no per-surface code, and the MCP knob catalogue now describes it rather than
-flagging it "not yet wired". Pinned by
-`issues.TestIgnorePaginatedForDuplicates` (off-vs-on across all five duplicate
-filters, asserting page 1 stays in the filters) and
-`analyze.TestIgnorePaginatedForNearDuplicates`.
-
-**2026-06-21 — nested integral-object validation (G5-matrix, the `offers.price` /
-`reviewRating.ratingValue` half).** bluesnake validated only a page's PRIMARY
-entity, so an `Offer` with no price or a `reviewRating` with no `ratingValue`
-slipped past silently (0 Rich-Result errors on otherwise-valid e-commerce
-markup). The validator now recurses into a curated whitelist of INTEGRAL
-sub-entities — `internal/structured.integralProps` (offers→Offer,
-review/reviews→Review, reviewRating→Rating, aggregateRating→AggregateRating) —
-and validates each against its own Google-required props, while every other
-nested object (a `Store` as `offers.seller`, an `Organization` as
-`publisher`/`author`, and their whole subtrees) stays a recorded-but-unvalidated
-reference stub, preserving the R6 over-warn guard (the recursion is gated on the
-node itself being validated, so a stub's nested rating is not validated either).
-Three new `requirements` rows, grounded in Google's rich-results docs and
-cross-checked against SF v24.1 controlled probes: `Offer` (price **and**
-priceCurrency required, each an `anyOf` with `priceSpecification`),
-`AggregateOffer` (a price RANGE keyed on `lowPrice`, not `price`, so it gets its
-own rule and a valid range-offer isn't false-flagged), and `Rating`
-(ratingValue). The schema.org IS-A `EmployerAggregateRating` (the Employer-Rating
-feature) is excluded from the new `Rating` root in `hierarchy.go`, mirroring its
-existing AggregateRating exclusion — else suppressing its AggregateRating edge
-would let it fall back to `Rating[ratingValue]` and re-introduce the very false
-error the exclusion prevents. **Parent-aware, to avoid an R6-class over-warn:**
-Offer price/priceCurrency are required ONLY under a Product parent
-(`offerStrictParents`) — probes proved Google's Offer requirements are
-*per-feature*: an Event offer (a ticket `url` is enough) treats price/currency as
-WARNINGS, and a Software-App offer requires price but NOT priceCurrency, so
-validating those with the Product rule would over-error. Per the experiment
-owner's decision the counting model is **single-count per page**: where SF
-duplicates the SAME finding across two Google features (Product Snippet +
-Merchant Listing — e.g. a missing price shows SF 2 / BS 1) bluesnake reports it
-once on purpose (one finding per real problem). No new issue IDs (reuses
-`structured_validation_error`/`_warning`), so CLI/serve/MCP/desktop pick it up
-unchanged via the shared `internal/structured` path — JSON-LD and microdata
-both. SF-cross-checked on probe pages: per-page Rich-Result **error** parity is
-now EXACT on every Product-context page with ZERO over-errors (before the change
-bluesnake reported 0 errors on all of them). Pinned by `internal/structured`
-tests (`TestNestedOfferRequiredProperties`, `TestNestedRatingRequiredRatingValue`,
-`TestNestedAggregateOfferNotMisvalidated`, `TestNestedOfferParentAware`,
-`TestNestedReferenceStubNotValidated`, `TestMicrodataNestedOffer`). **Still open**
-(the §9.2 row stays, narrowed again): per-feature Offer profiles (the Software-App
-`price` error and Event recommended warnings bluesnake now scopes out), the
-merchant-listing RECOMMENDED breadth (Offer `itemCondition`/`availability`,
-Product `gtin`/`description` — bluesnake under-warns vs SF on Product-with-offers
-pages by exactly these), SF's property-VALUE *type* checks ("address must be of
-type PostalAddress" — a different validation dimension), and standalone-`Offer`
-merchant depth.
-
-**2026-07-02 — finalize/analyze staleness trio (#75).** Three pre-existing
-replace-semantics bugs, fixed together test-first. (1) **Issue-row ownership is
-now a contract**: the catalogue marks the 31 analysis-phase checks
-(`issues.analysisOwned` → `AnalysisIDs()`/`EvaluatedIDs()`), and
-`store.SaveIssues(owned, occs)` replaces exactly the rows of the checks the
-caller re-evaluated (nil owned = authoritative full replace, used by full
-re-analysis). The `issues` command therefore refreshes the catalogue checks
-without wiping the stored redirect-chain/near-dup/hreflang/pagination/sitemap/
-llms.txt findings; `AddIssues` (append-only) is gone — `SaveAnalysis` scope-
-replaces the analysis-owned rows. Enforced by the ownership-partition meta-test
-(`internal/analyze/coverage_test.go`) and `TestIssuesCmdPreservesAnalysisIssues`.
-(2) **`SaveAnalysis` resets the five analysis-owned page columns** (`link_score`,
-`unique_inlinks`, `unique_outlinks`, `closest_similarity`, `near_dup_count`) to
-their schema defaults in the same transaction before applying the new result
-maps, so re-analysis with different knobs (near-dup off / threshold raised /
-link score off) can no longer leave a crawl mixing two runs' metrics
-(`TestReanalyzeClearsStaleScoreColumns`). (3) **PageRank edges exist only
-between node-set members** (internal ∧ crawled): a destination outside the set
-(robots-blocked, errored, over-limit, still queued) is dropped from the graph
-entirely — no rank share, no out-degree dilution — matching the self-loop rule,
-the external-dst gate, and the classic dangling-link removal; a source left
-with no node destinations takes the existing dangling out==0 rule. Non-crawled
-URLs can no longer hold rank, skew the v/max·100 scaling, or appear in
-`LinkScores` (`TestPageRank_NonCrawledInternalDstHoldsNoRank`); CSR and
-Facts.Links paths stay bit-identical (`TestPageRankCSRParity`).
-
-**2026-07-03 — site tools T1: `internal/sitecheck` + crawl-integrated
-robots/sitemap audits + the `bluesnake tools` CLI group (§5.10).** A new
-`internal/sitecheck` package implements site-level checks as reports plus a
-single findings derivation shared by every consumer: the standalone testers
-(throwaway, never persisted) and the crawl-integrated site-check pass. The
-pass runs in one background goroutine at crawl start for **full-domain
-audits** (`site_checks.enabled: auto` = root-seeded spider crawl with empty
-`scope.include`; `always`/`never` override), stores reports in a new
-`site_checks (kind, subject, report JSON)` table (INSERT OR REPLACE — resume
-re-runs idempotently), and the analyze phase re-derives findings from stored
-reports via `sitecheck.DecodeFindings` (re-analysis never refetches). +13
-catalogue checks: robots.txt file-level (`robots_txt_missing` /
-`_server_error` / `_blocks_all` / `_invalid_lines` / `_too_large` /
-`_no_sitemap` — grounded in RFC 9309 + Google's fetch semantics: 4xx = missing,
-5xx/unreachable = whole-site risk, >5 redirect hops = 404, 500 KiB processing
-cap) and XML-sitemap file-level (`sitemap_missing` / `_fetch_error` /
-`_invalid_xml` / `_over_50mb` — previously deferred for uncaptured response
-sizes, now measured directly, gzip-aware — / `_cross_host_urls` /
-`_invalid_lastmod` / `_empty`, plus the existing `sitemap_over_50k` now also
-fired file-level). Correctness points, each pinned: **one robots.txt fetch
-per crawl** — `robotsMgr` retains the raw retrieval (shared
-`sitecheck.FetchRobots`) and the audit reuses it; `robots.mode: ignore` still
-audits the file (the audit reads, never gates — exactly one fetch, rules still
-ignored); custom robots overrides skip the live audit entirely and feed the
-override's `Sitemap:` directives to sitemap discovery; cross-host sitemap
-entries are exempt from the finding when the sitemap is robots-declared
-(sitemaps.org cross-submission); `robots.Parse` now reports skipped malformed
-lines (`File.Ignored`) without changing parse behaviour. CLI: the `tools`
-command group (registry-driven `tools list`, `tools robots` — re-homed from
-the removed `robots test`, now with live fetch — and `tools sitemap`).
-Pinned by `internal/sitecheck` (94%+ coverage), gating/pass/single-fetch
-crawler tests, store round-trip tests, the catalogue-coverage meta-test, and
-`features/site_checks.feature` + `features/tools.feature`.
-
-**Same day, T2 — the AI-bot access tester.** An embedded AI-crawler registry
-(`sitecheck.DefaultBots`, data not code: 16 entries with operator, purpose
-training|search|user_action, robots token, probe UA, operator-documented
-robots behaviour, doc URL; config-extendable via `site_checks.ai_bots.bots` /
-`.skip`) drives two audit layers: robots.txt verdicts per bot (zero extra
-requests — the crawl pass reuses its single robots fetch, custom overrides
-feed their own file) and, with `site_checks.ai_bots.live_probe` (default on),
-one fetch of the site root per fetcher bot with that bot's User-Agent via the
-new `fetch.FetchWith` per-request override, classified against a control
-fetch — edge/WAF blocks robots.txt testing can never see, attributed only
-when the control succeeds. Registry nuances encoded rather than hand-waved:
-token-only entries (Google-Extended, Applebot-Extended) are never probed;
-robots-ignoring fetchers (Perplexity-User, meta-externalfetcher, Bytespider)
-carry an "only an edge block is effective" note on their robots findings; the
-UA-spoofing caveat travels inside every report. +3 catalogue checks, Warning
-severity throughout (blocking AI bots can be deliberate policy —
-the audit's job is visibility): `ai_bot_blocked_robots` (one occurrence per
-bot), `ai_bots_all_blocked_robots` (headline over training+search crawlers
-only — user-action fetchers say nothing about crawl posture),
-`ai_bot_blocked_live`. CLI: `bluesnake tools aibots <site> [--live]
-[--skip]`. The interrupt/resume fetch-discipline pins (store test + BDD
-fixture) explicitly exclude the pass — its per-session re-probing is by
-design and pinned separately.
-
-**Same day, T3 + T5 — render diff, llms tool, MCP surface.** `tools render`
-diffs one URL raw vs Chrome-rendered (pure diff core over two `parse.Facts`,
-unit-tested without Chrome + a self-skipping real-Chrome e2e); findings reuse
-the JavaScript-tab catalogue IDs rendered crawls emit, plus one new
-`js_dependent_content` (raw text < half the rendered text). Crawl-integrated
-as a seed-page check for text-mode crawls, but `site_checks.render_diff`
-defaults **OFF** — a deliberate deviation from the original proposal:
-unlike the other checks it launches headless Chrome on every crawl. `tools
-llms` ships the standalone half of the llms.txt audit (the §9 2026-06-17
-follow-up); its file-level rules moved into
-`sitecheck.LlmsReport.Findings()` and `analyze.llmsTxt` now delegates there —
-one derivation, so the tool and the crawl cannot disagree (curated-link
-cross-checks stay in analyze; they need the crawl graph). MCP gains exactly
-two functions regardless of tool count: `list_tools` (the registry with arg
-schemas) and `run_tool` (strict per-tool args — unknown keys error with a
-self-correction hint), returning report+findings JSON; `get_database_schema`
-now documents the `site_checks` table.
-
-**Same day, T4 + T6 — structured/SERP tools, the desktop Tools hub, and the
-"run all checks" crawl toggle (completing the family; §5.10 is now the design
-of record — the interim docs/SITE-TOOLS.md was folded in and deleted).**
-`tools structured` fetches one URL and validates its schema.org markup with
-the crawler's own rich-results engine — extraction is forced on for the tool
-regardless of the `extraction.structured_data` config (those keys budget
-per-page crawl cost; running the tool is consent) — reusing the existing
-`structured_*` catalogue IDs; `tools serp` measures a title/description pair
-at Google's SERP font metrics (`internal/serpwidth`) against the
-`thresholds.*` limits, computes the pixel-accurate truncation preview, and
-optionally fetches a live page's actual texts (explicit args override —
-the live-editing loop); findings mirror `internal/issues`' per-page emission
-(same IDs, same details). Both are tool-only: no crawl half, no new kinds.
-The generic dispatcher moved into the engine as `sitecheck.RunTool(ctx, name,
-target, argsJSON)` — MCP `run_tool` and the new desktop binding are now thin
-wrappers over one dispatch, and `RobotsReport` carries the audited body
-(capped at Google's 500 KiB read) so a report is self-contained. Desktop: the
-`robots` nav entry became **Tools** — a hub page carded from the registry
-with seven sub-views; bindings live on a separate `ToolsApp` struct
-(`ListTools` + `RunTool`, findings decorated with catalogue
-severities/names), replacing `App.TestRobots`/`App.FetchRobots` outright —
-the robots editor now runs verdicts *and* the file-level audit through the
-same engine as everything else (inline-body runs; "Load live" uses the 5-hop
-REP fetch). Site-check issue rows in the crawl issues view deep-link to the
-matching tool prefilled with the crawl's seed. The New Crawl form gained a
-three-way **Site checks** selector — Auto / All / Off — that is *absolute*
-like every other quick-config field on the form (the choice is frozen into
-the crawl regardless of the profile; a one-way "force on" toggle was
-rejected for breaking that contract): Auto ⇒ `site_checks.enabled=auto`,
-All ⇒ `enabled=always` + `render_diff=true` (the render diff even on a
-text-only crawl, per product decision), Off ⇒ `enabled=never`; non-form
-entry points (the welcome shortcut; originally also projects crawl-all,
-which since the 2026-07-03 config-UX delta shares the setup card and sends
-the selector like New Crawl) send no override and defer to the profile, and
-a mistyped value is rejected by config validation at enqueue exactly like a
-bad rendering mode. The desktop Settings editor
-gained the missing curated **Site Checks** section (all seven `site_checks.*`
-keys plus the `llms_txt.*` trio, which had shipped 2026-06-17 without a
-section — same gap, same fix). Pinned by sitecheck/MCP/desktop unit tests
-(dispatcher, serp truncation fitting under max_px, structured config-
-independence, toggle→override mapping) and `tools structured`/`tools serp`
-BDD scenarios; frontend builds clean.
-
-**Same day — surfacing the pass: the overview "Site health" strip and the
-live-progress status line.** The pass had been invisible while running and
-its *successes* unreported (findings landed as ordinary issues; passing
-checks were only visible behind the issues view's "show passed" toggle). Two
-additions, both rolled up **by check kind, not issue ID** — kinds grow one
-per tool family, so the real estate stays one row no matter how many
-catalogue checks exist. (1) `Overview.SiteHealth`: one chip per stored
-report — positive summary straight from the report ("HTTP 200 · 1.5 KB · 4
-rules · 2 sitemap directives", "14/16 crawlers allowed · live-probed") via
-the new engine-level `sitecheck.Health` / `LlmsHealth` rollup (the llms.txt
-audit, which predates the `site_checks` table, joins the strip from its own
-storage), badged with the finding count at the family's worst catalogue
-severity, green "passed" otherwise; unknown/undecodable kinds degrade to no
-chip. (2) The crawler now exposes `SiteCheckProgress()` (state/reports/
-findings, fed by the pass as it stores each report) → `runner.Snapshot` →
-the desktop's `crawl:progress` payload, rendered as one slim status line in
-the live view ("auditing robots.txt, sitemaps and AI-bot access…" → "N
-checks ran · all clear / M findings") — a status line, not a bar segment,
-because the pass finishes within seconds of a minutes-long crawl and its
-fetches are not frontier items. Both views use the existing severity tokens
-and theme-aware badge components, so light/dark theming is inherited, not
-hand-rolled.
-
-**Same day — reconciling site checks with the memory-scaling + parallel-crawls
-mainline (the #69/#75/#83 family landed while this shipped).** Three
-contracts from that family required real redesign, not just conflict
-resolution. (1) **Issue ownership (#75)**: the 19 site-check finding IDs are
-now registered `analysisOwned` — they are re-derived by `analyze.Run` from
-stored reports, so `SaveAnalysis` owns their rows (unregistered they would
-hard-fail `SaveIssues`' owned-set check on every finalize). Consequence: the
-render diff **no longer reuses the per-page JavaScript-tab IDs** — those are
-evaluate-owned (rendered crawls emit them per page), and one ID cannot have
-two writers without each wiping the other's rows on its own re-run. The
-render-diff findings are now the three site-level signals of the original
-design: `js_dependent_content`, `js_dependent_links`,
-`js_changed_robots_directives` (canonical/noindex differing raw-vs-rendered);
-the full per-field diff stays in the report, which the tool UIs render
-anyway. (2) **GL-08**: the pass's out-of-band fetches (sitemap files, AI-bot
-probes, control fetch, render-diff page fetch) now take a global fetch slot —
-`sitecheck.Checker` fetches through a `Fetcher` interface and the crawl pass
-injects the crawler's capped fetcher (robots.txt keeps its documented
-serialized bypass); the seed-page render acquires a **render** slot via
-`sitecheck.WithRenderGate`, gating only the render because fetch and render
-slots must never be held together (the limiter's lock-order rule). Pinned by
-the pre-existing GL-08/REN-01 integration tests, which caught the bypass.
-(3) The frontier's exactly-once pin excludes the pass (its root probes are
-by design, like the resume fixtures); `crawl_overview`'s issue counts carry
-the site-check findings unchanged. Also: the tools CLI renderers gained
-in-process surface tests (`tools_cmds_test.go`) — the BDD features exercise
-them only through the built binary, which the coverage gate cannot see.
-
-**Same day — architecture review pass against the merged mainline.** The
-merge-day GL-08 fix was localized (a `cappedFetcher` + `WithRenderGate`
-closure in the crawler, tool surfaces uncapped); the review replaced it with
-the §5.10 slot-discipline design: `sitecheck.WithLimiter` puts fetch/render
-slot bracketing inside the Checker itself, the desktop Tools hub and MCP
-`run_tool` now inject the process limiter (new `mcp.Backend.ProcessLimiter`;
-previously an interactive render tool run could launch Chrome outside REN-01
-on a parallel-crawl process), and CLI one-shots stay uncapped by design.
-Pinned by `sitecheck/limiter_test.go` (cap-1 pool across a multi-fetch check
-proves release; saturated pools degrade to error reports without touching
-the network) plus wiring tests on both dispatcher surfaces. Two smaller
-drifts fixed: `Result.SiteChecks` dropped (reports were retained on the
-Result for tests only — finalize and the desktop read the store; the Result
-stays counters-only per §5.4, with `SiteCheckProgress` keeping its counts),
-and the SERP mock's hardcoded Google light-blue became the `--serp-link`
-token with a dark-theme value.
-
-**2026-07-03 — config UX: freeze-at-enqueue, CLI profile read/use, "App
-settings", and the project crawl setup journey.** Four related contracts.
-(1) **Config freezes at enqueue, not dispatch.** `runner.FreezeSpec` (which
-replaced `ValidateSpec` — validation is now a side effect of freezing)
-resolves profile + dotted overrides into `JobSpec.ConfigYAML` on every
-enqueue path, so a queued job runs the exact config the user saw when they
-queued it — a profile edit changes future enqueues, never jobs already
-waiting (the crawl still freezes its own copy into the crawl DB at start,
-unchanged). The desktop gained a single enqueue funnel (`App.EnqueueCrawl`:
-start, resume, re-run, and the project layer all pass through it); both MCP
-backends freeze in `StartCrawl`; the CLI already shipped frozen YAML. The
-executor's `BuildConfig` arm remains only for legacy persisted queue rows.
-Pinned by `internal/runner/freeze_test.go` (edit-profile-after-freeze
-immunity, pass-through arms, list-mode baking). (2) **CLI reads and uses
-profiles** — parity with MCP's read-only surface, per §3: `config profiles`,
-`config show --profile`, `--profile` on `crawl`/`list`/`projects crawl-all`
-(exclusive with `--config`; `--set`/shorthands win on top; exit 2 on bad
-combinations). A bare CLI run still uses built-in defaults, NOT the default
-profile — deliberate, so CI/scripted crawls don't silently inherit desktop
-state. (3) **The default profile is presented as "App settings"** in the
-desktop UI (`DEFAULT_PROFILE`/`profileLabel` in the frontend bridge):
-settings open on the app settings with save-as-profile (snapshot) and
-delete-profile affordances; named profiles read as explicit snapshots.
-Presentation only — internally it stays the `Default audit` profile every
-surface already defaults to. (4) **Project crawls run the New Crawl
-journey** (§5.9 updated): "Crawl all" opens a dialog reusing the extracted
-`CrawlSetupCard` and applies one shared setup to every member
-(`ProjectApp.CrawlAll(projectID, StartRequest)`); a member's Crawl button
-opens New Crawl prefilled instead of starting immediately. Per-member saved
-setups are designed in issue #88, out of scope here. Pinned by
-`profiles_cli_test.go`, the extended `project_crawlall_test.go`
-(shared-setup + frozen-at-enqueue assertions), and the existing
-desktop/MCP validation tests migrated to FreezeSpec.
-
-**2026-07-03 — crawl setup sources: a site remembers its setup (#88, new
-§5.11).** Per-site crawl config landed as *domain-keyed stickiness*, not the
-per-member profile columns the issue first sketched (superseded by the issue's
-final design comment): a new crawl's default base is the frozen config of the
-site's most recent spider crawl — derived at enqueue from the registry + that
-crawl's own DB, **zero new storage**, `internal/project` byte-for-byte
-untouched. `queue.JobSpec.ConfigSource` (`""|"last"`) resolves through the
-single new `runner.ResolveBase` path (used by `FreezeSpec` and every preview
-surface; `runner.FindLastSetup` does the lookup — exact `host[:port]` match,
-spider-only, newest-first via a deterministic `ListCrawls` rowid tiebreak,
-loud error on an unreadable crawl). Surfaces: desktop New Crawl gains the
-"Last crawl setup — <date>" picker option (auto-selected when the typed site
-has history) with **touched-only quick knobs** initialized from
-`App.SetupPreview` (untouched knobs send no-override sentinels — also fixing
-the latent card-defaults-stomp-the-profile gap); "Crawl all" defaults to each
-site's saved setup (`ProjectApp.CrawlAllPlan` previews the per-member
-resolution; batch specs freeze atomically before any enqueue) with "one setup
-for every site" as the override mode; CLI `crawl --setup last|app|defaults`
-(bare runs now resolve last → app settings → built-ins and print their
-source — revisiting the config-UX delta's bare-CLI stance, with `--setup
-defaults` as the pinned CI base) and `projects crawl-all` per-member default
-with `--profile`/`--config`/`--setup app|defaults` as override-all; MCP
-`start_crawl` gains `setup` (`last` default for spider | `app_settings`,
-exclusive with `profile`) and reports the resolved `base_config`. Divergence
-banner copy on both scorecard surfaces now distinguishes deliberate per-site
-setups from accidental inconsistency. Pinned by
-`runner/lastsetup_test.go` (site matching, newest-wins, list-skip,
-unreadable-crawl error, freeze/fallback/validation, provenance),
-`desktop/setup_source_test.go` (untouched-knob sentinels, SetupPreview
-provenance+knob mapping, per-site CrawlAll freezing, CrawlAllPlan),
-`mcp/setup_source_test.go` (setup mapping incl. the list-mode non-default,
-param validation, base_config reporting), `cmd/setup_cli_test.go` (real
-two-crawl stickiness E2E, per-member crawl-all output + frozen configs, flag
-exclusions) and four `features/setup_sources.feature` scenarios.
-
-**2026-07-03 — bounded resume bucket-counters: #77's last frontier-linear term
-closed (MEMORY-SCALING §5.1/§5.2).** Issue #77 shipped the bounded frontier but
-left one named residual: resume's per-bucket counter rehydration materialised
-the whole admitted set (`pages ∪ pending-frontier`) into a `[]frontier.Item`
-whenever a per-bucket cap (`limits.max_urls_per_depth` / `max_per_subdomain` /
-`by_path`) was configured — a frontier-linear RAM spike on that one resume path.
-Now the admitted set is **streamed, not materialised**: `store.AdmittedItems`
-became `store.EachAdmitted(fn)` — a cursor over the same union (EC-02
-`NOT EXISTS(pages)` guard intact) — and the loader accumulates only the small
-per-bucket counts via the new `frontier.BucketCounts`, which mirrors `Admit`'s
-increment block exactly (host key = `urlutil.Host`, ByPath first-match-wins, so
-a SQL `GROUP BY` — which would mis-fold port/case/userinfo host variants, FR-17
-— is deliberately avoided). `frontier.RehydrateCounters([]Item)` split into the
-pure `BucketCounts` (counting) + `SetCounters` (install); `crawler.Resume`'s
-`Admitted []frontier.Item` field became `PerDepth`/`PerSub`/`PerPath` aggregate
-maps carried as plain data (preserving #74's resume-as-data seam). The fix rides
-the single resume-open path (`openForResume`), so it holds on CLI, MCP and
-desktop at once. Gated by `TestResumeBucketCounterRAMFlat` (loadResume retains
-+0.0 MB across a 50k-row admitted delta; a detector arm materialising the
-pre-fix slice shows +6.4 MB, so the gate cannot go blind) and
-`TestPerSubRehydration_HostKeyMatchesUrlutilHost` (FR-17, previously
-documented-but-missing); behavioral cap-binding equivalence unchanged
-(`TestResume_NoOverAdmitPerBucket_ThroughRunner`).
-
-**Implemented but scoped down (extension points exist):**
-- Issues catalogue: **164 = the full issues library computable on the current
-  data model** (the no-new-infrastructure boundary, not an arbitrary stop).
-  The gap to SF's ~300 is not flat: ~92 are accessibility (axe — own row
-  §9.2), the rest spelling (cut), AMP-validator and integration checks; strip
-  those and the priority-classified non-a11y ceiling is ~200. The remaining
-  ~36 each cross an infra boundary, deferred per check: rendering-mode JS
-  filters (new `JSDiff` fields + Chrome), Bad Content Type (body sniffing),
-  Broken Bookmark (fragment edges — G28, probe SF first), HTTP Refresh
-  redirect type, sitemap >50MB (response sizes uncaptured), Background/
-  Incorrectly-Sized Images (render+analysis), High Carbon Rating. Catalogue
-  is a data table; the coverage meta-test forces a fixture per entry.
-- Structured data validation: curated Google rich-results requirement table
-  (data-driven, `internal/structured.requirements`; ~18 curated roots incl. the
-  nested Offer/AggregateOffer/Rating sub-entities, resolving 264 schema.org types
-  via the embedded IS-A graph, with parent-aware nested-object validation); full
-  Schema.org vocabulary validation not shipped.
-- AMP: structural checks (canonical/viewport/charset/amp-script/reciprocity),
-  not the full official AMP validator rule set.
-- Sitemap orphan detection approximates "only discoverable via sitemap" as
-  zero inlinks + sitemap-seeded.
-- Concurrency: FIXED — bounded worker pool over a persistent SQLite frontier.
-  The historical model (goroutine-per-URL + in-memory visited set + retained
-  result map) measured **~1.7–1.9 GB at only ~4,000 crawled pages** on a
-  faceted e-commerce site (frontier hit ~239k in 30 s). Shipped replacement:
-  N workers + one feeder over a bounded ready-buffer window; the frontier
-  lives in the crawl DB (`claimed`/`seq` columns), records stream-and-drop,
-  and finalize reads SQL/CSR. Per-crawl RAM is now flat on both the
-  crawled-page AND discovered-frontier axes (gated by `TestFrontierRAMSlopeFlat`).
-  Full investigation, architecture and phase history:
-  **[docs/MEMORY-SCALING.md](MEMORY-SCALING.md)**.
-
-**Not implemented (documented cuts):**
-- Spelling & grammar (planned cut, §1 non-goals).
-- Accessibility (axe-core) — needs an axe bundle injected via CDP.
-- Old AJAX crawling scheme (deliberately dropped — deprecated by Google).
-- SERP mode's interactive snippet editor, segments, visualisations, built-in
-  scheduling (cron + CLI; pixel-width *measurement* is in, per §1).
-- Forms-based auth recorder (bring-your-own session cookie supported).
-
-### 9.1 Known config no-ops (2026-06-11 audit)
-
-A full audit of every config field found a set that is parsed, defaulted and
-validated but **not yet consumed** — flipping them changes nothing. They are
-listed here so the schema doesn't silently lie; the misleading ones that were
-surfaced in the desktop Settings UI have been removed from it (the YAML keys
-remain valid for forward-compat). Wiring them is tracked future work.
-
-**Extraction is always full (these toggles are inert by design here).** Unlike
-Screaming Frog — which uses per-field switches to save memory — bluesnake
-extracts the entire per-URL dataset in one cheap parse pass, so these never
-gate anything: `extraction.page_details.*` (titles, meta_descriptions,
-meta_keywords, h1, h2, indexability, word_count, readability,
-text_to_code_ratio, hash, page_size, forms), `extraction.url_details.*`
-(response_time, last_modified, http_headers, cookies),
-`extraction.directives.{meta_robots,x_robots_tag}`. (Note: `cookies` is also
-not *collected* yet — there is no cookies table.)
-
-**Reserved for unbuilt features:** `extraction.pdf.*` (no PDF parsing),
-`extraction.structured_data.{google_rich_results_validation,case_sensitive}`
-(the curated rich-results check ignores both flags),
-`rendering.flatten_iframes` (chromedp `OuterHTML` doesn't inline iframe
-documents), `rendering.window` (the preset name is ignored;
-`window_width`/`window_height` are honoured), `advanced.html_validation` (the
-Validation-tab checks always run regardless), `http.trusted_cert_dirs` (no
-custom CA pool is built — only the documented insecure-TLS test hook exists).
-
-**Resource/link `store` flags are unenforced.** `resources.{images,media,css,
-javascript,swf}.store` and `links.{internal,external,canonicals,pagination,
-hreflang,amp,meta_refresh,iframes,mobile_alternate}.store` are read by
-`crawler.typeFlags` but the caller uses only the `crawl` half; every parsed
-edge is stored regardless. (The `crawl` flags *are* enforced — discovery is
-correctly gated.)
-
-**Behavioural flags not yet wired:** `advanced.respect_noindex`,
-`advanced.respect_canonical`, `advanced.respect_next_prev`, and
-`analysis.canonicals` (canonical-chain analysis currently piggybacks on
-`analysis.redirect_chains`).
-
-**Storage knobs not yet wired:** `storage.dir` (the store path comes from
-`--store-dir` or the app default, not this field) and `storage.retention_days`
-(no pruning exists). When retention lands it will be an explicit
-`bluesnake crawls prune` command (+ a desktop action), never an automatic
-delete-on-startup.
-
-**`limits.max_urls` on resume — cumulative, with one residual (2026-06-17):**
-the crawl-total budget is a per-session fetch counter (`crawler.fetched`); a
-resumed session now seeds it from the already-recorded pages
-(`len(resumeProcessed)`), so a paused-then-resumed crawl honours the same total
-budget as a straight crawl instead of being granted a fresh `max_urls` each
-session (which previously let it fetch well past the cap). **TODO (minor):** the
-seed counts *every* recorded page including robots-blocked ones, whereas the
-live counter only increments for URLs that pass the robots gate — so a resumed
-crawl that actually hits `max_urls` while having robots-blocked pages may fetch
-a handful fewer than a straight crawl. Exact parity needs seeding from the
-non-robots-blocked page count (`COUNT(*) WHERE state != 'blocked_robots'`),
-threaded through the resume call sites. Negligible at the default cap (5M).
-
-### 9.2 Backlog prioritization matrix (2026-06-12)
-
-Pending items ranked after the 5-domain Screaming Frog comparison
-(`~/crawl_comparison_experiment/runs/2026-06-12-yc5/{GAPLOG,FINDINGS}.md` —
-G-numbers below refer to its gap log). Columns: **parity gain** = how much
-closer to SF's actual output/behavior, **real-world use** = whether a working
-SEO would feel it, **risk** = regression blast radius + implementation
-uncertainty.
-
-<!-- MAINTENANCE: when an item ships, REMOVE its row from this table and
-     record the change in §9 (and §9.1 if it wires up a config no-op). -->
-
-| Item | Parity gain | Real-world use | Risk | Notes |
-|---|---|---|---|---|
-| Readability syllable precision (Flesch/buckets) | Low-Med | Med | Med | Residual of the 2026-06-17 tokenization fix: word & sentence counts now match SF, but the vowel-group syllable heuristic diverges on vocabulary-dense pages (identical words+sentences, Flesch off by enough to flip a readability bucket). The remaining readability-bucket gap. A pronunciation dictionary (CMUdict-style, embedded) is the real fix; large and overlaps the cut spelling/dictionary work |
-| Content-area `<main>`/sectioning heuristic | Low-Med | Low-Med | Med | When a page has `<main>`, SF appears to drop some sibling sectioning content (`<header>`/`<aside>`) from the content area; bluesnake counts all non-nav/footer text. Surfaced as probe `d02`. Needs a dedicated content-area probe sweep before changing extraction |
-| `<pre>` ASCII-art symbol word counting | Low | Near-zero | Low | Inside `<pre>`, SF counts box-drawing/symbol lines as fewer "words" than bluesnake (probe `pre03`). Newlines-as-lines already match; only pure-symbol token counting differs. Niche (ascii diagrams); quirky SF rule |
-| Issues catalogue 164 → ~300 (residual tail) | Med | Med | Low-Med | 27 checks shipped 2026-06-12 (directives/pagination/hreflang/links complete for native data, §9). What remains needs new infrastructure per check — rendering-mode JS filters, Bad Content Type sniffing, Broken Bookmark (G28-entangled), HTTP Refresh header, sitemap >50MB — or is a11y/spelling/AMP-validator work tracked in its own rows |
-| `respect_noindex/canonical/next_prev` wiring | Med | High | Med | Real SF workflow knobs ("crawl as Google indexes"). Today they parse and silently do nothing. Defaults off, so no default-behavior risk |
-| SF-style elem paths `[n]`/`[@class]` (G10) | High | Med | Med | Kills ~12k cosmetic path diffs/site and unlocks SF's class-driven Navigation position matches. Exact qualifier rules need probes (SF emits [n] only for same-tag siblings, sometimes [@class] instead) |
-| Accessibility (axe via CDP) | Med | High | Med | Most-requested real-world audit type; SF ships it. Needs Chrome + axe bundle injection. More "useful" than "parity" |
-| Shadow-DOM/iframe flattening (`rendering.flatten_*`) | Med | Med-High | Med | Web-component sites currently lose rendered text/links that SF sees |
-| Rich-result matrix breadth (G5 residual, narrowed again) | Low | Low | Low-Med | SoftwareApplication/Review/AggregateRating (2026-06-19), the full schema.org subtype hierarchy (264 types incl. all 150 LocalBusiness subtypes, 2026-06-19), AND nested integral-object validation (`offers.price`, `reviewRating.ratingValue`, parent-aware, single-count — 2026-06-21, SF-cross-checked, error parity EXACT in Product context) all landed; HowTo + deprecated/wrong-feature subtypes deliberately excluded. Residual: per-feature Offer profiles (Software-App `price`, Event recommended), merchant-listing RECOMMENDED breadth (Offer `itemCondition`/`availability`, Product `gtin`/`description`), SF property-VALUE *type* checks ("address must be PostalAddress"), standalone-`Offer` depth |
-| Cookie collection (`url_details.cookies`) | Med | Med | Low-Med | Whole SF report we lack; GDPR/consent audits use it. Needs a cookies table + rendered-mode capture |
-| ~~Persistent-frontier worker pool (scale)~~ DONE | — | — | — | SHIPPED across PR #69 (worker pool, stream-and-drop, SQL/CSR finalize, store dedup, global limiter) + issue #77 (bounded ready-buffer + SQLite feeder: `frontier.claimed/seq`, single-producer claim batches). Per-crawl RAM is flat on the crawled-page axis AND the discovered-frontier axis — the ~1.7–1.9 GB @4k-pages faceted-site OOM class is closed, gated by `TestFrontierRAMSlopeFlat`. History + architecture: **[docs/MEMORY-SCALING.md](MEMORY-SCALING.md)** |
-| ~~Fragment self-edges (G28)~~ → rendered remainder folded into R9 | — | — | — | RE-VERIFIED 2026-06-21: the static-HTML gap is GONE — current BS matches SF exactly on every fragment-anchor pattern (empty/named/dup/`#`/svg-icon permalinks; SF page set = BS page set). The SF dedup-semantics probe this row asked for confirmed SF keeps distinct empty self-frag edges with the fragment stripped, exactly as BS does; the prior KeepFragments + R3/R10 work resolved it. The original "44 vs 18" was a rendered-DOM discovery effect (greptile/artisan emit `href="#…"` only after JS render) → tracked under R9, not a static link-extraction bug |
-| Schema.org vocabulary validation | Low-Med | Low | Med | SF's plain validation found zero issues across all 5 test domains — rich-results is what fires. Big build, small payoff |
-| Store-flag enforcement (§9.1) | Low | Low-Med | Low | DB size on big crawls; SF-visible counts already match |
-| PDF extraction (`extraction.pdf.*`) | Low-Med | Low | Med | Niche (gov/edu/docs sites). New parser dependency |
-| AMP full validator | Low | Near-zero | Med | AMP is effectively dead. Skip unless a user asks |
-| Spelling & grammar | Med | Low | High | Visible SF tab but noisy and rarely enabled; stays cut (§1 non-goals) |
-| Orphan-detection exactness, retention/prune, cert dirs, window presets | Low | Low | Low | Housekeeping tier |
