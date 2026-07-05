@@ -46,6 +46,9 @@ func (t *ToolsApp) RunTool(name, target, argsJSON string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Per-run client in the long-lived app: drop its keep-alive pool when the
+	// run ends, or every tool run leaks its idle connections' goroutines.
+	defer client.CloseIdleConnections()
 	chk := sitecheck.New(cfg, client, sitecheck.WithLimiter(t.app.processLimiter()))
 	rep, err := chk.RunTool(context.Background(), name, target, json.RawMessage(argsJSON))
 	if err != nil {

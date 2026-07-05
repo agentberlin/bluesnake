@@ -122,6 +122,15 @@ func New(cfg *config.Config, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
+// CloseIdleConnections drops the client's pooled keep-alive connections,
+// releasing their read/write-loop goroutines and sockets. The transport sets
+// no IdleConnTimeout, so without this an idle connection is pinned until the
+// PEER closes it — for a keep-alive-forever server, indefinitely: a per-owner
+// goroutine/socket leak in long-lived multi-crawl processes. Call it when the
+// client's owner is done fetching (a finished crawl, a completed tool run);
+// the client stays usable — a later request simply dials fresh.
+func (c *Client) CloseIdleConnections() { c.transport.CloseIdleConnections() }
+
 // Override customizes a single request without touching the configured
 // profile — the AI-bot live probes fetch as each bot's User-Agent
 // (DESIGN.md §5.10). Zero value = the configured behaviour.
