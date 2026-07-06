@@ -349,14 +349,17 @@ type SpeedConfig struct {
 	MaxGlobalThreads int `yaml:"max_global_threads"`
 	// MaxConcurrentCrawls is the "Parallel crawls" knob: how many crawls the
 	// dispatcher runs at once (each with its own worker pool/DB/buffers — a
-	// distinct overhead axis from the fetch cap, GL-18). 0/1 = one crawl at a
-	// time, the default. Identical semantics on every surface, and LIVE — the
-	// desktop applies it on every profile save (queue.Dispatcher.SetConcurrency;
-	// raising starts queued jobs immediately, lowering never interrupts a
-	// running crawl), the MCP server re-reads it at every start, and the CLI's
-	// `projects crawl-all` resolves config > 1 at command start. Sizing
-	// guidance: each parallel crawl carries its own fixed overhead and frontier
-	// RAM, so budget roughly MaxConcurrentCrawls × a single crawl's footprint.
+	// distinct overhead axis from the fetch cap, GL-18). 0 = UNLIMITED, the
+	// default: every queued crawl runs immediately, nothing waits — matching
+	// the "0 = unlimited" convention of the other speed knobs. Set n >= 1 to
+	// bound it (1 = one crawl at a time). Identical semantics on every
+	// surface, and LIVE — the desktop applies it on every profile save
+	// (queue.Dispatcher.SetConcurrency; raising starts queued jobs
+	// immediately, lowering never interrupts a running crawl), the MCP server
+	// re-reads it at every start, and the CLI's `projects crawl-all` resolves
+	// it at command start. Sizing guidance: each parallel crawl carries its
+	// own fixed overhead and frontier RAM, so a bound of n costs roughly
+	// n × a single crawl's footprint; unlimited costs that per queued site.
 	MaxConcurrentCrawls int `yaml:"max_concurrent_crawls"`
 }
 

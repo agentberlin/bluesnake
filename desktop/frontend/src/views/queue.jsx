@@ -1,7 +1,7 @@
 /* ===========================================================================
    Queue — the persistent crawl queue. Every start enqueues a job; the single
-   dispatcher runs them up to the parallel limit at a time
-   (speed.max_concurrent_crawls, default 1). Rows live-refresh on
+   dispatcher runs them speed.max_concurrent_crawls at a time (0 = unlimited,
+   the default: everything runs at once). Rows live-refresh on
    crawl:started / crawl:done (see main.jsx).
    =========================================================================== */
 import React from "react";

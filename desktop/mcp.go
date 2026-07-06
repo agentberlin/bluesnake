@@ -234,10 +234,11 @@ func (a *App) persistMCP(st MCPStatus) {
 // desktopBackend adapts the App's crawl queue to mcp.Backend, so an LLM-started
 // crawl streams into the UI exactly like a hand-started one. It shares the
 // standalone MCP Runner's start contract (mcp.StartViaQueue): up to the app's
-// queue concurrency crawls run at once, a start beyond that capacity is
-// rejected (never silently queued behind hand-started work), and the crawl id
-// is returned once the dispatcher has begun the crawl. Control is addressed by
-// crawl id, so an agent can pause one of several parallel crawls.
+// queue concurrency crawls run at once (0 = unlimited, the default — every
+// start admitted), a start beyond a bounded capacity is rejected (never
+// silently queued behind hand-started work), and the crawl id is returned once
+// the dispatcher has begun the crawl. Control is addressed by crawl id, so an
+// agent can pause one of several parallel crawls.
 
 type desktopBackend struct {
 	app     *App

@@ -181,13 +181,42 @@ func TestRunnerParallelGlobalCapProcessWide(t *testing.T) {
 	}
 }
 
+// TestRunnerUnlimitedDefaultAdmitsEveryStart pins the default contract: with
+// no profile at all, speed.max_concurrent_crawls resolves to 0 = unlimited, so
+// a second start_crawl beside a live crawl is ADMITTED and runs concurrently —
+// no capacity rejection exists to hit.
+func TestRunnerUnlimitedDefaultAdmitsEveryStart(t *testing.T) {
+	srvA, srvB := slowSites(t)
+	dir := t.TempDir() // no profile: 0 = unlimited, the default
+	r := NewRunner(dir)
+	t.Cleanup(r.Shutdown)
+
+	idA, err := r.StartCrawl(context.Background(), StartRequest{
+		URL: srvA.URL + "/", Config: map[string]any{"speed.max_threads": 1},
+	})
+	if err != nil {
+		t.Fatalf("first StartCrawl: %v", err)
+	}
+	idB, err := r.StartCrawl(context.Background(), StartRequest{
+		URL: srvB.URL + "/", Config: map[string]any{"speed.max_threads": 1},
+	})
+	if err != nil {
+		t.Fatalf("second StartCrawl under the unlimited default = %v, want it admitted", err)
+	}
+	if idB == "" || idB == idA {
+		t.Fatalf("second crawl id = %q, want a distinct live crawl beside %s", idB, idA)
+	}
+	waitFor(t, func() bool { return len(r.Running()) == 2 }, "both crawls running under the unlimited default")
+}
+
 // TestRunnerLiveWidthPickedUpWithoutRestart pins the live-W contract: the
 // Runner re-reads speed.max_concurrent_crawls at every start, so raising the
 // knob in the default profile lifts the capacity rejection on the very next
 // start_crawl — no server restart.
 func TestRunnerLiveWidthPickedUpWithoutRestart(t *testing.T) {
 	srvA, srvB := slowSites(t)
-	dir := t.TempDir() // no profile: width 1
+	dir := t.TempDir()
+	writeDefaultProfile(t, dir, "speed:\n  max_concurrent_crawls: 1\n")
 	r := NewRunner(dir)
 	t.Cleanup(r.Shutdown)
 

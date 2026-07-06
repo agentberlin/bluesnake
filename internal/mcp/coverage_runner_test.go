@@ -164,12 +164,14 @@ func TestRunnerStartCrawlEndToEnd(t *testing.T) {
 
 // TestRunnerLiveControl exercises the live-crawl control surface in one crawl:
 // Running reports a live snapshot, a second StartCrawl is rejected while every
-// crawl slot is taken (maxCrawls=1 by default), and StopCrawl winds the crawl
-// down. This keeps the count of real crawls low while covering Running, the
-// capacity guard, and the addressed stop.
+// crawl slot is taken (max_concurrent_crawls pinned to 1 — the default is
+// unlimited, which never rejects), and StopCrawl winds the crawl down. This
+// keeps the count of real crawls low while covering Running, the capacity
+// guard, and the addressed stop.
 func TestRunnerLiveControl(t *testing.T) {
 	srv := slowSite(t)
 	dir := t.TempDir()
+	writeDefaultProfile(t, dir, "speed:\n  max_concurrent_crawls: 1\n")
 	r := NewRunner(dir)
 	t.Cleanup(r.Shutdown)
 

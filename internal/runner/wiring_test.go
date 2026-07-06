@@ -25,18 +25,18 @@ func writeDefaultProfile(t *testing.T, storeDir, yaml string) {
 // width is live (SetConcurrency), so these surfaces can never lean on the
 // executor's single-crawl fallback (P17).
 func TestProcessWiring(t *testing.T) {
-	t.Run("no profile defaults to width 1 with limiter", func(t *testing.T) {
+	t.Run("no profile defaults to width 0 (unlimited) with limiter", func(t *testing.T) {
 		w, lim, err := ProcessWiring(t.TempDir())
-		if err != nil || w != 1 || lim == nil {
-			t.Fatalf("ProcessWiring(empty) = (%d, %v, %v), want (1, limiter, nil) — W is live, the limiter must exist even at 1", w, lim, err)
+		if err != nil || w != 0 || lim == nil {
+			t.Fatalf("ProcessWiring(empty) = (%d, %v, %v), want (0 = unlimited, limiter, nil) — the limiter must exist at any width", w, lim, err)
 		}
 	})
-	t.Run("knob unset keeps width 1 with limiter", func(t *testing.T) {
+	t.Run("knob unset means unlimited with limiter", func(t *testing.T) {
 		dir := t.TempDir()
 		writeDefaultProfile(t, dir, "speed:\n  max_threads: 3\n")
 		w, lim, err := ProcessWiring(dir)
-		if err != nil || w != 1 || lim == nil {
-			t.Fatalf("ProcessWiring(knob unset) = (%d, %v, %v), want (1, limiter, nil)", w, lim, err)
+		if err != nil || w != 0 || lim == nil {
+			t.Fatalf("ProcessWiring(knob unset) = (%d, %v, %v), want (0 = unlimited, limiter, nil)", w, lim, err)
 		}
 	})
 	t.Run("knob drives width and shared limiter", func(t *testing.T) {
