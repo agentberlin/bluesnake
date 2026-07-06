@@ -471,14 +471,9 @@ function UpdatePrompt({ status, onClose }) {
 
   return <Modal icon="arrow-up-circle" title={`Update available — v${status.latest}`} onClose={onClose}
     body={<div>
-      <div style={{ marginBottom: status.notes ? 10 : 0 }}>
+      <div style={{ marginBottom: crawlRunning ? 10 : 0 }}>
         You’re on <span className="mono">v{status.current}</span>. Update to <span className="mono">v{status.latest}</span>? bluesnake will download, verify, install, and restart itself.
       </div>
-      {status.notes && (
-        <div style={{ maxHeight: 150, overflowY: "auto", fontSize: 11.5, lineHeight: 1.55, color: "var(--ink-2)", background: "var(--surface-2)", border: "1px solid var(--border-soft)", borderRadius: 8, padding: "9px 11px", whiteSpace: "pre-wrap" }}>
-          {status.notes}
-        </div>
-      )}
       {crawlRunning && (
         <div className="hint" style={{ marginTop: 10, color: "var(--sev-warn)", display: "flex", alignItems: "center", gap: 6 }}>
           <Icon name="triangle-alert" size={13} />A crawl is running — it will be paused and can be resumed after the restart.

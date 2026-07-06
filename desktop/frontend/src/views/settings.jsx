@@ -579,15 +579,6 @@ function UpdatesPanel({ onToast }) {
         )}
       </div>
 
-      {canUpdate && st.notes && (
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8 }}>What’s new in v{st.latest}</div>
-          <div style={{ maxHeight: 220, overflowY: "auto", fontSize: 11.5, lineHeight: 1.6, color: "var(--ink-2)", background: "var(--sidebar)", border: "1px solid var(--border-soft)", borderRadius: 8, padding: "10px 12px", whiteSpace: "pre-wrap" }}>
-            {st.notes}
-          </div>
-        </div>
-      )}
-
       <div style={{ display: "flex", gap: 16, padding: "13px 0", borderBottom: "1px solid var(--border-soft)", alignItems: "center" }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 12.5, fontWeight: 600 }}>Check automatically on launch</div>
