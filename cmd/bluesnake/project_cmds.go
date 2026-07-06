@@ -263,7 +263,7 @@ func newProjectCmd() *cobra.Command {
 	)
 	crawlAllCmd := &cobra.Command{
 		Use:   "crawl-all <project-id>",
-		Short: "Crawl every member domain of the project (up to speed.max_concurrent_crawls at once)",
+		Short: "Crawl every member domain of the project (speed.max_concurrent_crawls at once; 0 = all in parallel)",
 		Long: "Crawl every member domain of the project. By default each member crawls with its own\n" +
 			"site's last-crawl setup (app settings when never crawled) — the per-site mode (#88).\n" +
 			"--profile, --config, or --setup app|defaults override that with ONE shared setup for\n" +
@@ -357,11 +357,12 @@ func newProjectCmd() *cobra.Command {
 			}
 			cfg := wiring
 			parallel := cfg.Speed.MaxConcurrentCrawls
-			if parallel < 1 {
-				parallel = 1
+			if parallel < 0 {
+				parallel = 0 // <= 0 = unlimited, the limiter convention
 			}
-			// In-process drain: the dispatcher runs up to `parallel` member crawls at
-			// once through the shared executor, with ONE process-wide limiter bounding
+			// In-process drain: the dispatcher runs `parallel` member crawls at once
+			// (0 = every member in parallel, the default)
+			// through the shared executor, with ONE process-wide limiter bounding
 			// total concurrent fetches across them. The global cap is the user's
 			// speed.max_global_threads knob (0 = unlimited) — NOT parallel × per-crawl
 			// threads, which equals the sum of the per-crawl maxima and so could never

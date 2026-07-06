@@ -104,7 +104,7 @@ export const SECTIONS = [
     num("speed.max_urls_per_sec", "Max URLs per second", "Politeness throttle. 0 = unlimited.", "URL/s"),
     // speed.max_global_threads is deliberately not surfaced: an advanced
     // YAML-only safety valve (total fetches across all crawls; 0 = unlimited).
-    num("speed.max_concurrent_crawls", "Parallel crawls", "How many sites crawl at once — applies immediately, even to jobs already waiting in the queue (lowering it never interrupts a running crawl). Each parallel crawl adds its own memory footprint. 0/1 = one at a time."),
+    num("speed.max_concurrent_crawls", "Parallel crawls", "How many sites crawl at once — applies immediately, even to jobs already waiting in the queue (lowering it never interrupts a running crawl). 0 = unlimited: every queued crawl starts right away. Each parallel crawl adds its own memory footprint, so set a number to bound it (1 = one at a time)."),
   ]},
   { id: "http", label: "HTTP & Identity", icon: "fingerprint", fields: [
     txt("http.user_agent", "User-agent"),

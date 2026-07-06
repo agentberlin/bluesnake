@@ -36,8 +36,8 @@ func NewProjectApp(app *App) *ProjectApp {
 // absolute overrides. Nothing is stored per member: the setup belongs to the
 // domain, resolved (and frozen — EnqueueCrawl → runner.FreezeSpec) at
 // enqueue like any other crawl. Returns how many jobs it queued. The crawls
-// drain through the app's single dispatcher (up to
-// speed.max_concurrent_crawls at a time), interleaved with any hand-started
+// drain through the app's single dispatcher (speed.max_concurrent_crawls at a
+// time; 0 = all in parallel), interleaved with any hand-started
 // crawls. A standalone crawl of a member domain already auto-joins the
 // project, so this is just "(re)crawl everything in this project now".
 func (a *ProjectApp) CrawlAll(projectID string, req StartRequest) (int, error) {

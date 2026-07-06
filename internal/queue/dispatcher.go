@@ -17,18 +17,23 @@ import (
 var claimRetryDelay = 500 * time.Millisecond
 
 // Dispatcher is the crawl consumer. It runs up to `concurrency` crawls at once
-// (default 1): each of W drain loops claims the oldest queued job via the atomic
-// ClaimNext (so W loops never double-claim), runs it through the Executor to
-// completion, records the outcome, then claims the next. Enqueue wakes a loop; a
-// loop that claims a job wakes another (wake-the-next), so a burst of jobs
-// spreads across idle loops instead of draining serially. W is live:
-// SetConcurrency retargets it at any time without a restart — raising spawns
-// loops immediately, lowering retires loops as their current job ends.
+// (default 1; 0 = unlimited): each of W drain loops claims the oldest queued
+// job via the atomic ClaimNext (so W loops never double-claim), runs it through
+// the Executor to completion, records the outcome, then claims the next.
+// Enqueue wakes a loop; a loop that claims a job wakes another (wake-the-next),
+// so a burst of jobs spreads across idle loops instead of draining serially.
+// Unlimited mode grows instead of capping: a loop that claims a job spawns its
+// replacement first, so a free drainer always exists and every queued job
+// starts immediately; idle loops converge back down to a single parked
+// drainer. W is live: SetConcurrency retargets it at any time without a
+// restart — raising spawns loops immediately, lowering retires loops as their
+// current job ends.
 type Dispatcher struct {
 	store       Store
 	exec        Executor
-	concurrency int // target W; live loops converge on it (mu)
+	concurrency int // target W; 0 = unlimited; live loops converge on it (mu)
 	liveLoops   int // drain loops currently alive (mu)
+	busyLoops   int // loops currently running a job (mu) — liveLoops-busyLoops = parked drainers
 
 	wakeCh chan struct{}
 	stopCh chan struct{}
@@ -78,14 +83,16 @@ func New(s Store, e Executor, opts ...Option) *Dispatcher {
 // Option configures a Dispatcher.
 type Option func(*Dispatcher)
 
-// WithConcurrency caps how many crawls run in parallel (clamped to >= 1). A
+// WithConcurrency sets how many crawls run in parallel: n >= 1 caps the width
+// at n; 0 (and below, matching the limiter's <=0 convention) means UNLIMITED —
+// every queued job starts immediately, each crawl on its own drain loop. A
 // shared limiter on the Executor still bounds total fetches across them, so the
 // per-crawl fixed overhead — not the fetch concurrency — is what this bounds.
-// SetConcurrency retargets the same cap after construction, live.
+// SetConcurrency retargets the same value after construction, live.
 func WithConcurrency(n int) Option {
 	return func(d *Dispatcher) {
-		if n < 1 {
-			n = 1
+		if n < 0 {
+			n = 0
 		}
 		d.concurrency = n
 	}
@@ -116,6 +123,11 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	d.started = true
 	d.startCtx = ctx
 	n := d.concurrency
+	if n == 0 {
+		// Unlimited: one parked drainer is enough — its first claim spawns a
+		// replacement, so a startup backlog cascades fully into flight.
+		n = 1
+	}
 	d.liveLoops = n
 	d.mu.Unlock()
 
@@ -127,32 +139,45 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 }
 
 // SetConcurrency retargets how many crawls may run at once, live — no restart.
-// Raising it spawns drain loops immediately, so already-queued jobs start
-// without waiting for a running crawl to finish. Lowering it never interrupts
-// a running crawl: excess loops retire as their current job ends (idle loops
-// retire at once). Callable at any time; before Start it just replaces the
-// WithConcurrency value.
+// 0 = unlimited. Raising (or going unlimited) spawns drain loops immediately,
+// so already-queued jobs start without waiting for a running crawl to finish.
+// Lowering it never interrupts a running crawl: excess loops retire as their
+// current job ends (idle loops retire at once). Callable at any time; before
+// Start it just replaces the WithConcurrency value.
 func (d *Dispatcher) SetConcurrency(n int) {
-	if n < 1 {
-		n = 1
+	if n < 0 {
+		n = 0
 	}
 	d.mu.Lock()
 	d.concurrency = n
-	delta := n - d.liveLoops
-	if d.started && !d.stopping && delta > 0 {
-		d.liveLoops = n
-		d.wg.Add(delta)
-		for i := 0; i < delta; i++ {
+	spawn := 0
+	if d.started && !d.stopping {
+		if n == 0 {
+			// Unlimited: ensure a free drainer exists — one is enough, its
+			// first claim spawns a replacement so the whole backlog cascades
+			// into flight. Skip when an idle loop is already parked.
+			if idle := d.liveLoops - d.busyLoops; idle < 1 {
+				spawn = 1
+			}
+		} else if delta := n - d.liveLoops; delta > 0 {
+			spawn = delta
+		}
+	}
+	if spawn > 0 {
+		d.liveLoops += spawn
+		d.wg.Add(spawn)
+		for i := 0; i < spawn; i++ {
 			go d.loop(d.startCtx)
 		}
 	}
 	d.mu.Unlock()
-	if delta < 0 {
-		d.wake() // nudge an idle loop to notice the lower target and retire
-	}
+	// Nudge a parked loop: on lowering it notices the smaller target and
+	// retires; on other transitions a spurious wake is a harmless no-op.
+	d.wake()
 }
 
-// Concurrency reports the current target for how many crawls run at once.
+// Concurrency reports the current target for how many crawls run at once
+// (0 = unlimited).
 func (d *Dispatcher) Concurrency() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -355,8 +380,10 @@ func (d *Dispatcher) loop(ctx context.Context) {
 		// crawl. The re-wake hands any pending wake this loop would have
 		// consumed to a surviving loop, so a job enqueued mid-retirement can't
 		// strand; retiring loops chain the same wake until a survivor keeps it.
+		// Unlimited (0) never retires here — its pool converges in the
+		// empty-queue branch below instead.
 		d.mu.Lock()
-		if d.liveLoops > d.concurrency {
+		if d.concurrency > 0 && d.liveLoops > d.concurrency {
 			d.liveLoops--
 			d.mu.Unlock()
 			d.wake()
@@ -387,6 +414,19 @@ func (d *Dispatcher) loop(ctx context.Context) {
 			continue
 		}
 		if job == nil {
+			// Unlimited mode grows a loop per claimed job; this is the reverse
+			// edge — with the queue empty, surplus idle loops retire until one
+			// parked drainer remains beside the running crawls (liveLoops -
+			// busyLoops is the idle count). The re-wake chains the convergence
+			// (and hands off any pending wake) exactly like the bounded retire.
+			d.mu.Lock()
+			if d.concurrency == 0 && d.liveLoops-d.busyLoops > 1 {
+				d.liveLoops--
+				d.mu.Unlock()
+				d.wake()
+				return
+			}
+			d.mu.Unlock()
 			// nothing to do — wait for a wake/stop
 			select {
 			case <-d.wakeCh:
@@ -409,8 +449,27 @@ func (d *Dispatcher) loop(ctx context.Context) {
 			return
 		default:
 		}
+		// Unlimited: this loop goes busy for the whole crawl — mark it busy and
+		// spawn its replacement in the same critical section, so a free drainer
+		// always exists and a queued job never waits behind a running crawl.
+		// (busyLoops, not the inflight map, is the busy count: a job registers
+		// in-flight only inside runJob, and that gap would let the fresh
+		// replacement mistake itself for surplus and retire. Bounded mode never
+		// spawns here; its width is exactly the W loops Start/SetConcurrency
+		// created.)
+		d.mu.Lock()
+		d.busyLoops++
+		if d.concurrency == 0 && !d.stopping {
+			d.liveLoops++
+			d.wg.Add(1)
+			go d.loop(ctx)
+		}
+		d.mu.Unlock()
 		d.wake() // wake-the-next: another idle loop can grab the next queued job
 		d.runJob(ctx, job)
+		d.mu.Lock()
+		d.busyLoops--
+		d.mu.Unlock()
 	}
 }
 

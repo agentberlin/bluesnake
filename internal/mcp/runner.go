@@ -13,12 +13,12 @@ import (
 // Runner is the CLI/standalone-MCP Backend, routed through the core queue
 // wiring: an in-memory queue drained by the shared dispatcher/executor (so the
 // interface doesn't dictate how a crawl runs). It runs up to
-// speed.max_concurrent_crawls crawls at once — the knob is re-read from the
-// default profile at every start (liveMaxCrawls), so a profile edit while the
-// server runs applies to the next start_crawl, no restart. ONE shared
-// process-wide limiter is injected regardless of the width (H1/P17 — the
-// width is live, so the executor's single-crawl fallback can't be relied on).
-// A start beyond the current capacity is rejected (the historical
+// speed.max_concurrent_crawls crawls at once (0 = unlimited, the default) —
+// the knob is re-read from the default profile at every start (liveMaxCrawls),
+// so a profile edit while the server runs applies to the next start_crawl, no
+// restart. ONE shared process-wide limiter is injected regardless of the width
+// (H1/P17 — the width is live, so the executor's single-crawl fallback can't
+// be relied on). A start beyond a bounded capacity is rejected (the historical
 // one-crawl-at-a-time contract, generalised to W slots) rather than silently
 // queued. The start handshake is per job: enqueue, then await THAT job's crawl
 // id via the job store — with several starts in flight a shared "started"
@@ -54,15 +54,16 @@ func NewRunner(storeDir string) *Runner {
 // liveMaxCrawls re-reads speed.max_concurrent_crawls from the default profile,
 // retargets the dispatcher (SetConcurrency — raising applies immediately,
 // lowering never interrupts a running crawl), and returns the width the
-// capacity check should enforce. An unreadable profile keeps the current width.
+// capacity check should enforce (0 = unlimited: never reject). An unreadable
+// profile keeps the current width.
 func (r *Runner) liveMaxCrawls() int {
 	cfg, err := runner.LoadProfile(r.storeDir, "")
 	if err != nil {
 		return r.disp.Concurrency()
 	}
 	w := cfg.Speed.MaxConcurrentCrawls
-	if w < 1 {
-		w = 1
+	if w < 0 {
+		w = 0 // <= 0 = unlimited, the limiter convention
 	}
 	r.disp.SetConcurrency(w)
 	return w

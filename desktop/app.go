@@ -29,8 +29,9 @@ type App struct {
 	upd      *updateManager // self-update checker / installer
 
 	// The crawl queue: every start (hand-driven or MCP-driven) enqueues a job;
-	// the single dispatcher drains it through the executor, running up to
-	// speed.max_concurrent_crawls crawls at once (default 1). The width is
+	// the single dispatcher drains it through the executor, running
+	// speed.max_concurrent_crawls crawls at once (0 = unlimited, the default).
+	// The width is
 	// live: every profile save re-reads the knob and retargets the dispatcher
 	// (refreshQueueWidth → SetConcurrency), no restart. The queue is persisted
 	// in the registry DB, so it survives restarts.
@@ -124,8 +125,9 @@ func (a *App) ensureQueue() {
 		return
 	}
 	// speed.max_concurrent_crawls (default profile) drives how many crawls the
-	// dispatcher runs at once; the width is live — refreshQueueWidth retargets
-	// it on every profile save, no restart. ONE shared limiter (returned by
+	// dispatcher runs at once (0 = unlimited, the default); the width is live —
+	// refreshQueueWidth retargets it on every profile save, no restart. ONE
+	// shared limiter (returned by
 	// ProcessWiring even at width 1, since the width can rise at any time)
 	// bounds total fetches / finalize passes / Chrome renders across all
 	// crawls (H1/P17). An unreadable default profile fails safe to
@@ -166,8 +168,8 @@ func (a *App) refreshQueueWidth() {
 		return // unreadable profile: keep the current width; a start surfaces the error
 	}
 	w := cfg.Speed.MaxConcurrentCrawls
-	if w < 1 {
-		w = 1
+	if w < 0 {
+		w = 0 // <= 0 = unlimited, the limiter convention
 	}
 	disp.SetConcurrency(w)
 }

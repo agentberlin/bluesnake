@@ -657,9 +657,17 @@ site" — parallel downloads within one crawl) × `speed.max_concurrent_crawls`
 ("Parallel crawls" — how many sites crawl at once). They bound different
 resource axes: threads bound network concurrency, while each parallel crawl
 carries its own fixed overhead (worker pool, SQLite handles, buffers,
-frontier RAM), so the crawl count is the memory-axis bound. The width is
+frontier RAM), so the crawl count is the memory-axis bound. **0 = unlimited
+and is the default** — every queued crawl starts immediately, nothing ever
+waits; it matches the `<= 0` = unlimited convention of the other process
+caps (`internal/limiter`), and a user who wants the memory-axis bound sets
+n ≥ 1 (1 = one crawl at a time). Unlimited is a growth mode, not a giant
+fixed pool: a drain loop that claims a job spawns its replacement first
+(there is always a parked spare drainer), and idle loops converge back to
+one when the queue empties. The width is
 **live**: `Dispatcher.SetConcurrency` retargets it at any time — raising
-spawns drain loops so already-queued jobs start immediately; lowering
+(or going unlimited) spawns drain loops so already-queued jobs start
+immediately; lowering
 retires loops between jobs, never interrupting a running crawl. The desktop
 applies the knob on every profile save, the MCP servers re-read it at every
 start, and `projects crawl-all` resolves it at command start — no restart
@@ -675,9 +683,10 @@ Chrome render pool (§5.8). All its caps are width-independent, so one
 limiter stays valid across retargets; the executor's per-crawl fallback
 limiter is sound only where the width is fixed at one — the CLI's one-shot
 `crawl`/`list` commands. Capacity semantics differ by surface on purpose: an
-MCP start beyond the current width is rejected naming the running crawls
-(an agent's crawl is never silently queued behind other work), while the
-desktop enqueues and shows the wait in its queue view.
+MCP start beyond a bounded width is rejected naming the running crawls
+(an agent's crawl is never silently queued behind other work; at the
+unlimited default there is no capacity to exhaust, so every start is
+admitted), while the desktop enqueues and shows the wait in its queue view.
 
 ---
 

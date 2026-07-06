@@ -253,7 +253,8 @@ function App() {
     ? (hostOf(activeCrawl.seed) || (liveCrawl ? hostOf(liveCrawl.seed) : "crawling…"))
     : (liveCrawl ? hostOf(liveCrawl.seed) : "no crawl");
 
-  // Crawls drain through the queue, up to speed.max_concurrent_crawls at once
+  // Crawls drain through the queue, speed.max_concurrent_crawls at once
+  // (0 = unlimited, the default)
   // (see app.go). While anything is live we keep the "start" affordances enabled
   // but explain that a new crawl either runs alongside or queues behind the
   // running ones. liveCrawlIds tracks the actually-live sessions and each id

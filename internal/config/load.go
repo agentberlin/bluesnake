@@ -161,7 +161,7 @@ func (c *Config) Validate() error {
 		bad("speed.max_global_threads: must be >= 0 (0 = unlimited), got %d", c.Speed.MaxGlobalThreads)
 	}
 	if c.Speed.MaxConcurrentCrawls < 0 {
-		bad("speed.max_concurrent_crawls: must be >= 0 (0/1 = one crawl at a time), got %d", c.Speed.MaxConcurrentCrawls)
+		bad("speed.max_concurrent_crawls: must be >= 0 (0 = unlimited, the default; 1 = one crawl at a time), got %d", c.Speed.MaxConcurrentCrawls)
 	}
 	if c.Limits.MaxURLs < 1 {
 		bad("limits.max_urls: must be >= 1, got %d", c.Limits.MaxURLs)

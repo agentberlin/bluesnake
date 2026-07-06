@@ -148,8 +148,8 @@ func (s *Server) buildTools() []Tool {
 				"its configuration; pass setup \"app_settings\" or a `profile` to override. " +
 				"Any knob from list_config_options can be overridden per-crawl via `config` (overrides apply on top of the base). " +
 				"Poll crawl_status to watch progress. Crawls run in parallel up to speed.max_concurrent_crawls " +
-				"(re-read from the default profile at every start, default 1 — raising it applies to the next start, no restart); " +
-				"a start beyond that capacity is rejected — pause or stop a running crawl first.",
+				"(re-read from the default profile at every start — no restart; 0 = unlimited, the default: every start runs immediately); " +
+				"when a bound is set, a start beyond it is rejected — pause or stop a running crawl first.",
 			InputSchema: schema(map[string]any{
 				"url":         strProp("Seed URL for spider mode, including http:// or https://."),
 				"mode":        map[string]any{"type": "string", "enum": []string{"spider", "list"}, "description": "spider (default) follows links from url; list audits a fixed URL set."},

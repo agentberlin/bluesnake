@@ -181,13 +181,13 @@ func TestSetConcurrencyLowerThenRaise(t *testing.T) {
 }
 
 // TestSetConcurrencyBeforeStart: before Start it replaces the WithConcurrency
-// value (clamped to >= 1), and Start spawns that many loops.
+// value (negatives clamp to 0 = unlimited), and Start spawns that many loops.
 func TestSetConcurrencyBeforeStart(t *testing.T) {
 	exec := newFakeExec()
 	d := New(NewMemStore(), exec)
-	d.SetConcurrency(0) // clamps to 1
-	if got := d.Concurrency(); got != 1 {
-		t.Fatalf("Concurrency after SetConcurrency(0) = %d, want 1 (clamped)", got)
+	d.SetConcurrency(-1) // clamps to 0 = unlimited
+	if got := d.Concurrency(); got != 0 {
+		t.Fatalf("Concurrency after SetConcurrency(-1) = %d, want 0 (unlimited)", got)
 	}
 	d.SetConcurrency(2)
 	for _, u := range []string{"a", "b"} {

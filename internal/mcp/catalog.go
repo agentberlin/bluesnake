@@ -205,7 +205,7 @@ var descriptions = map[string]string{
 	"speed.max_threads":           "Threads per site: parallel download workers within one crawl.",
 	"speed.max_urls_per_sec":      "Politeness throttle across all workers. 0 = unlimited.",
 	"speed.max_global_threads":    "Advanced safety valve, normally left unset: cap on total concurrent fetches across ALL running crawls in this process. 0 = unlimited (each crawl bounded only by its own max_threads).",
-	"speed.max_concurrent_crawls": "Parallel crawls: how many sites crawl at once — identical semantics on every surface (this server, the desktop app, CLI 'projects crawl-all'). 0/1 = one at a time. Live: re-read from the default profile at every start (and applied immediately by the desktop settings) — no restart. Sizing: each parallel crawl adds its own fixed overhead (SQLite handles, buffers, Bloom filter) and frontier RAM, so budget roughly this many times a single crawl's footprint.",
+	"speed.max_concurrent_crawls": "Parallel crawls: how many sites crawl at once — identical semantics on every surface (this server, the desktop app, CLI 'projects crawl-all'). 0 = unlimited (the default): every start is admitted and runs immediately; n >= 1 bounds it (1 = one at a time). Live: re-read from the default profile at every start (and applied immediately by the desktop settings) — no restart. Sizing: each parallel crawl adds its own fixed overhead (SQLite handles, buffers, Bloom filter) and frontier RAM, so a bound of n costs roughly n times a single crawl's footprint.",
 
 	"http.user_agent":        "HTTP User-Agent header sent with every request.",
 	"http.robots_user_agent": "Token used when matching robots.txt rules.",
