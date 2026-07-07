@@ -85,9 +85,10 @@ func register(t *testing.T, addr string) map[string]string {
 	return m
 }
 
-// startClient wires a tunnel.Client to the server, forwarding to localAddr, and
-// blocks until it reports online.
-func startClient(t *testing.T, serverAddr, localAddr string, reg map[string]string) *tunnel.Identity {
+// startClient wires a tunnel.Client to the server, forwarding to localAddr,
+// blocks until it reports online, and returns the identity plus a stop func
+// that simulates the user quitting the app.
+func startClient(t *testing.T, serverAddr, localAddr string, reg map[string]string) (*tunnel.Identity, func()) {
 	t.Helper()
 	id := &tunnel.Identity{
 		TunnelID:      reg["tunnel_id"],
@@ -119,7 +120,7 @@ func startClient(t *testing.T, serverAddr, localAddr string, reg map[string]stri
 	case <-time.After(8 * time.Second):
 		t.Fatal("tunnel client did not come online")
 	}
-	return id
+	return id, cancel
 }
 
 func TestEndToEndProxy(t *testing.T) {
@@ -140,7 +141,7 @@ func TestEndToEndProxy(t *testing.T) {
 	localAddr := strings.TrimPrefix(local.URL, "http://")
 
 	reg := register(t, addr)
-	id := startClient(t, addr, localAddr, reg)
+	id, _ := startClient(t, addr, localAddr, reg)
 
 	// Public request through the tunnel, retried past the registration window.
 	resp, body := postThroughTunnel(t, clientTo(addr), id.MCPURL(), `{"jsonrpc":"2.0","method":"ping"}`)
@@ -188,6 +189,126 @@ func postThroughTunnel(t *testing.T, cl *http.Client, url, body string) (*http.R
 			continue
 		}
 		return resp, b
+	}
+}
+
+// TestEndToEndOfflineStub drives the full offline-stub lifecycle over the
+// real wire: register → app connects (probe snapshots its tools) → app quits
+// → the same public URL keeps answering MCP, with tool calls returning
+// isError results instead of transport failures.
+func TestEndToEndOfflineStub(t *testing.T) {
+	addr, st := startServer(t)
+
+	// Minimal but faithful local MCP server: initialize/tools/list for the
+	// probe, tools/call to prove live proxying.
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		var result string
+		switch req.Method {
+		case "initialize":
+			result = `{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"bluesnake","version":"3.3.3"},"instructions":"live instructions"}`
+		case "tools/list":
+			result = `{"tools":[{"name":"start_crawl","description":"d","inputSchema":{"type":"object"}}]}`
+		case "tools/call":
+			result = `{"content":[{"type":"text","text":"live result"}],"isError":false}`
+		default:
+			result = `{}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"jsonrpc":"2.0","id":`+string(req.ID)+`,"result":`+result+`}`)
+	}))
+	defer local.Close()
+
+	reg := register(t, addr)
+	id, stopApp := startClient(t, addr, strings.TrimPrefix(local.URL, "http://"), reg)
+	cl := clientTo(addr)
+
+	// Live: tools/call proxies to the local server.
+	resp, body := postThroughTunnel(t, cl, id.MCPURL(), `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"start_crawl"}}`)
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "live result") {
+		t.Fatalf("live tools/call = %d %s", resp.StatusCode, body)
+	}
+
+	// Wait for the connect-time probe to persist its snapshot before the
+	// app goes away.
+	waitUntil(t, 8*time.Second, "snapshot persisted", func() bool {
+		tn, err := st.GetByID(context.Background(), reg["tunnel_id"])
+		return err == nil && len(tn.MCPSnapshot) > 0
+	})
+
+	// The user quits the app.
+	stopApp()
+
+	// The same URL keeps answering: poll until the gateway notices the drop
+	// and the stub takes over (tools/call flips from proxied to isError).
+	var stubBody string
+	waitUntil(t, 8*time.Second, "stub takeover", func() bool {
+		resp, err := cl.Post(id.MCPURL(), "application/json",
+			strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"start_crawl"}}`))
+		if err != nil {
+			return false
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		stubBody = string(b)
+		return resp.StatusCode == 200 && strings.Contains(stubBody, `"isError":true`)
+	})
+	if !strings.Contains(stubBody, "not running") || !strings.Contains(stubBody, "start_crawl") {
+		t.Errorf("offline tools/call message = %s", stubBody)
+	}
+
+	// initialize still succeeds and reflects the snapshotted identity.
+	resp, body = postJSON(t, cl, id.MCPURL(), `{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`)
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "3.3.3") || !strings.Contains(string(body), "OFFLINE") {
+		t.Errorf("offline initialize = %d %s", resp.StatusCode, body)
+	}
+
+	// tools/list serves the snapshotted tools.
+	resp, body = postJSON(t, cl, id.MCPURL(), `{"jsonrpc":"2.0","id":4,"method":"tools/list"}`)
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "start_crawl") {
+		t.Errorf("offline tools/list = %d %s", resp.StatusCode, body)
+	}
+
+	// Notifications are accepted silently; GET mirrors the real server's 405.
+	resp, _ = postJSON(t, cl, id.MCPURL(), `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("offline notification status = %d, want 202", resp.StatusCode)
+	}
+	getResp, err := cl.Get(id.MCPURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	getResp.Body.Close()
+	if getResp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("offline GET status = %d, want 405", getResp.StatusCode)
+	}
+}
+
+// postJSON is a single POST without the tunnel-window retry loop.
+func postJSON(t *testing.T, cl *http.Client, url, body string) (*http.Response, []byte) {
+	t.Helper()
+	resp, err := cl.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp, b
+}
+
+// waitUntil polls cond until it holds or the deadline passes.
+func waitUntil(t *testing.T, d time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

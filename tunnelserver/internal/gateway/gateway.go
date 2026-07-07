@@ -8,8 +8,11 @@
 //     it down the tunnel with response buffering disabled (so MCP streaming
 //     works).
 //
-// The public path never reads the database: everything it needs is in the
-// in-memory registry, populated at connect time.
+// The public path for LIVE tunnels never reads the database: everything it
+// needs is in the in-memory registry, populated at connect time. The one
+// exception is the offline path (offline.go): a subdomain with no session
+// needs a store verdict to decide between the MCP stub and a 502 — cached,
+// rate-limited, and never on the proxying hot path.
 package gateway
 
 import (
@@ -49,13 +52,15 @@ const (
 
 // Gateway ties the registry and store to the data-plane behavior.
 type Gateway struct {
-	reg          *registry.Registry
-	st           store.Store
-	baseDomain   string // e.g. "t.snake.blue"; sessions bind <id>.<baseDomain>
-	log          *slog.Logger
-	now          func() time.Time
-	connLimiter  *ratelimit.Limiter
-	handshakeSem chan struct{}
+	reg            *registry.Registry
+	st             store.Store
+	baseDomain     string // e.g. "t.snake.blue"; sessions bind <id>.<baseDomain>
+	log            *slog.Logger
+	now            func() time.Time
+	connLimiter    *ratelimit.Limiter
+	handshakeSem   chan struct{}
+	offline        *offlineGate
+	offlineLimiter *ratelimit.Limiter
 }
 
 // New constructs a Gateway. baseDomain is the zone tunnels live under.
@@ -64,13 +69,15 @@ func New(reg *registry.Registry, st store.Store, baseDomain string, log *slog.Lo
 		log = slog.Default()
 	}
 	return &Gateway{
-		reg:          reg,
-		st:           st,
-		baseDomain:   strings.ToLower(strings.Trim(baseDomain, ".")),
-		log:          log,
-		now:          time.Now,
-		connLimiter:  ratelimit.New(float64(connectPerIPPerMin)/60, connectPerIPBurst),
-		handshakeSem: make(chan struct{}, maxConcurrentHandshakes),
+		reg:            reg,
+		st:             st,
+		baseDomain:     strings.ToLower(strings.Trim(baseDomain, ".")),
+		log:            log,
+		now:            time.Now,
+		connLimiter:    ratelimit.New(float64(connectPerIPPerMin)/60, connectPerIPBurst),
+		handshakeSem:   make(chan struct{}, maxConcurrentHandshakes),
+		offline:        newOfflineGate(time.Now),
+		offlineLimiter: ratelimit.New(float64(offlinePerIPPerMin)/60, offlinePerIPBurst),
 	}
 }
 
@@ -152,6 +159,9 @@ func (g *Gateway) HandleConn(conn net.Conn) {
 		defer cancel()
 		_ = g.st.MarkConnected(ctx, tn.ID)
 	}()
+	// Snapshot the local server's initialize/tools-list down the fresh
+	// tunnel so the offline stub can answer faithfully once the app closes.
+	go g.snapshotSession(sess)
 
 	g.log.Info("tunnel connected", "tunnel_id", tn.ID, "host", host)
 	<-ysess.CloseChan()
@@ -223,9 +233,9 @@ func (g *Gateway) PublicHandler() http.Handler {
 		}
 		sess := g.reg.Get(label)
 		if sess == nil {
-			// No live tunnel for this subdomain (offline, or never existed —
-			// indistinguishable on purpose). Friendly, fixed message.
-			writeOffline(w)
+			// No live tunnel for this subdomain. Registered tunnels get the
+			// offline MCP stub (see offline.go); unknown ones the fixed 502.
+			g.serveOffline(w, r, label)
 			return
 		}
 

@@ -21,8 +21,9 @@ type tunnelRow struct {
 	ConnectSecretHash []byte `gorm:"column:connect_secret_hash;not null"`
 	CreatedAt         time.Time
 	LastConnectedAt   *time.Time
-	ConnectCount      int64 `gorm:"column:connect_count;not null;default:0"`
-	Revoked           bool  `gorm:"column:revoked;not null;default:false"`
+	ConnectCount      int64  `gorm:"column:connect_count;not null;default:0"`
+	Revoked           bool   `gorm:"column:revoked;not null;default:false"`
+	MCPSnapshot       []byte `gorm:"column:mcp_snapshot"`
 }
 
 // TableName pins the table name regardless of struct naming.
@@ -78,7 +79,7 @@ func (g *Gorm) GetByID(ctx context.Context, id string) (*Tunnel, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Tunnel{ID: row.ID, ConnectSecretHash: row.ConnectSecretHash, Revoked: row.Revoked}, nil
+	return &Tunnel{ID: row.ID, ConnectSecretHash: row.ConnectSecretHash, Revoked: row.Revoked, MCPSnapshot: row.MCPSnapshot}, nil
 }
 
 func (g *Gorm) MarkConnected(ctx context.Context, id string) error {
@@ -88,6 +89,12 @@ func (g *Gorm) MarkConnected(ctx context.Context, id string) error {
 			"last_connected_at": gorm.Expr("now()"),
 			"connect_count":     gorm.Expr("connect_count + 1"),
 		}).Error
+}
+
+func (g *Gorm) SaveMCPSnapshot(ctx context.Context, id string, snapshot []byte) error {
+	return g.db.WithContext(ctx).Model(&tunnelRow{}).
+		Where("id = ?", id).
+		Update("mcp_snapshot", snapshot).Error
 }
 
 func (g *Gorm) Close() {
