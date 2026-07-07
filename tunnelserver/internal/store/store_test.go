@@ -101,6 +101,44 @@ func TestMemStoreLifecycle(t *testing.T) {
 	}
 }
 
+func TestValidID(t *testing.T) {
+	if id, _ := NewID(); !ValidID(id) {
+		t.Errorf("ValidID rejects NewID output %q", id)
+	}
+	for _, bad := range []string{"", "short", "abc123def4567", "ABC123DEF456", "abc123def45-", "abc123def45."} {
+		if ValidID(bad) {
+			t.Errorf("ValidID(%q) = true, want false", bad)
+		}
+	}
+}
+
+func TestMemStoreMCPSnapshot(t *testing.T) {
+	ctx := context.Background()
+	m := NewMem()
+	tn := &Tunnel{ID: "abc123def456", ConnectSecretHash: Hash("cs")}
+	_ = m.Create(ctx, tn)
+
+	if err := m.SaveMCPSnapshot(ctx, "nope", []byte("x")); err != ErrNotFound {
+		t.Errorf("snapshot for missing id = %v, want ErrNotFound", err)
+	}
+	if err := m.SaveMCPSnapshot(ctx, tn.ID, []byte(`{"instructions":"hi"}`)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.GetByID(ctx, tn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.MCPSnapshot) != `{"instructions":"hi"}` {
+		t.Errorf("snapshot round-trip = %q", got.MCPSnapshot)
+	}
+	// The returned copy must be detached from store state.
+	got.MCPSnapshot[0] = 'X'
+	again, _ := m.GetByID(ctx, tn.ID)
+	if string(again.MCPSnapshot) != `{"instructions":"hi"}` {
+		t.Error("mutating returned snapshot corrupted store state")
+	}
+}
+
 func TestMemStoreGetReturnsCopy(t *testing.T) {
 	ctx := context.Background()
 	m := NewMem()

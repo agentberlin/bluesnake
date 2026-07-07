@@ -93,6 +93,40 @@ was considered and dropped); see phase 2 for the path to real per-request auth.
 > token, not a user-chosen password. There is nothing to brute-force; a fast
 > keyed hash with a constant-time compare is the correct tool.
 
+## Offline behavior — the MCP stub
+
+Users only run the app when they need it, but MCP clients (claude.ai
+connectors, Claude Code) treat a transport failure during `initialize` /
+`tools/list` as "connector broken" and force a manual re-enable that fixes
+nothing. So a **registered** tunnel with no live session does not 502 on
+`/mcp`; the gateway answers it from `tunnelserver/internal/mcpstub`:
+
+- `initialize`, `ping`, `notifications/*` succeed exactly like the real
+  server (same transport contract: POST-only JSON-RPC, `application/json`,
+  202 for notifications, 405 for GET/DELETE). `initialize` replays the
+  server identity captured at last connect and appends an "instance is
+  currently OFFLINE" note to the instructions.
+- `tools/list` serves a **snapshot** of the real tool list. Right after a
+  tunnel authenticates, the gateway probes one `initialize` + `tools/list`
+  down the fresh session and persists the result (`tunnels.mcp_snapshot`),
+  so it survives tunnelserver restarts. No snapshot yet → empty list.
+- `tools/call` returns HTTP 200 with an `isError: true` tool result telling
+  the model the app is not running and how the user fixes it (open the app;
+  the tunnel reconnects itself). This is the MCP-native way to surface an
+  execution error the model should read and relay — a 5xx would instead
+  mark the whole connector dead.
+
+The local MCP server is stateless (no session ids), so stub↔real handover is
+seamless in both directions: a client that initialized against the stub can
+call tools the moment the app reconnects, and vice versa.
+
+The offline path is the only place the public data plane touches the
+database, and it is triple-guarded: labels that can't be tunnel ids are
+rejected outright, verdicts+snapshots are cached (60 s TTL, bounded size),
+and cache misses are per-IP rate-limited. Store outage or rate-limited miss
+degrades to the old 502. Unknown and **revoked** ids keep the fixed 502 —
+revocation now takes effect on the offline path within one cache TTL.
+
 ## Security model (phase 1)
 
 What's defended:
@@ -102,9 +136,12 @@ What's defended:
   cost the same (no timing oracle on id existence).
 - **URL guessing** — subdomains are 12-char base36 ids (≈ 62 bits, 36¹² ≈
   4.7·10¹⁸), which is what gates access to a live tunnel in phase 1. Online
-  brute force is infeasible (each guess is an HTTPS request) and there is no
-  enumeration endpoint. Note this is below a 128-bit bar and is the *only* gate
-  on the public endpoint — see the entropy note above and phase 2.
+  brute force is infeasible (each guess is an HTTPS request). Note this is
+  below a 128-bit bar and is the *only* gate on the public endpoint — see the
+  entropy note above and phase 2. (Since the offline MCP stub, a probe *can*
+  distinguish a registered-but-offline id from an unregistered one — a
+  deliberate trade accepted because the keyspace makes enumeration moot; the
+  lookups behind it are cached and per-IP rate-limited.)
 - **DNS rebinding** — the gateway rewrites `Host` to the local server's address
   and strips `Origin` before forwarding, satisfying the local MCP server's
   localhost-only Host/Origin guard.
@@ -202,7 +239,9 @@ public.tunnels(
   created_at          timestamptz,
   last_connected_at   timestamptz,
   connect_count       bigint not null default 0,
-  revoked             boolean not null default false
+  revoked             boolean not null default false,
+  mcp_snapshot        bytea               -- offline-stub snapshot (serverInfo,
+                                          -- instructions, tools/list result)
 )
 ```
 
@@ -323,7 +362,9 @@ Carried over from phase 1, roughly in priority order:
 3. **Identity / subdomain recovery.** Today losing `tunnel.json` means a new
    subdomain. Needs an account or a recovery secret to re-claim an id.
 4. **Idle-id reaper.** Reclaim subdomains (and DB rows) for installs that never
-   reconnect, so the namespace and table don't grow without bound.
+   reconnect, so the namespace and table don't grow without bound. More relevant
+   since the offline MCP stub: a registered id now answers `/mcp` healthily
+   forever, even years after the user uninstalled the app.
 5. **Abuse hardening.** Proof-of-work or a light challenge on `/v1/register` if
    the rate limits prove insufficient; per-tunnel request metering.
 6. **Operational maturity.** Multi-VPS scale-out (shared session routing),

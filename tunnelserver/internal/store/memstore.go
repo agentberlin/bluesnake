@@ -51,6 +51,7 @@ func cloneTunnel(t *Tunnel) *Tunnel {
 		ID:                t.ID,
 		ConnectSecretHash: append([]byte(nil), t.ConnectSecretHash...),
 		Revoked:           t.Revoked,
+		MCPSnapshot:       append([]byte(nil), t.MCPSnapshot...),
 	}
 }
 
@@ -62,6 +63,17 @@ func (m *Mem) MarkConnected(_ context.Context, id string) error {
 	}
 	m.conns[id]++
 	m.lastAt[id] = time.Now()
+	return nil
+}
+
+func (m *Mem) SaveMCPSnapshot(_ context.Context, id string, snapshot []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tunnels[id]
+	if !ok {
+		return ErrNotFound
+	}
+	t.MCPSnapshot = append([]byte(nil), snapshot...)
 	return nil
 }
 

@@ -21,6 +21,10 @@ type Tunnel struct {
 	ID                string
 	ConnectSecretHash []byte // sha256 of the tunnel-auth secret
 	Revoked           bool
+	// MCPSnapshot is the serialized mcpstub.Snapshot captured from the local
+	// server at last connect, served by the offline /mcp stub. Nil until the
+	// tunnel has connected once since the feature shipped.
+	MCPSnapshot []byte
 }
 
 var (
@@ -40,6 +44,10 @@ type Store interface {
 	// MarkConnected records a successful tunnel connect (best-effort
 	// telemetry). Implementations may ignore ErrNotFound.
 	MarkConnected(ctx context.Context, id string) error
+	// SaveMCPSnapshot stores the offline-stub snapshot for a tunnel,
+	// replacing any previous one (best-effort: a failure only degrades the
+	// offline tools/list, never the data plane).
+	SaveMCPSnapshot(ctx context.Context, id string, snapshot []byte) error
 	// Close releases resources.
 	Close()
 }
@@ -97,6 +105,22 @@ func NewID() (string, error) {
 		}
 	}
 	return string(out), nil
+}
+
+// ValidID reports whether s has the exact shape NewID produces. The offline
+// data path uses it to refuse store lookups for subdomain labels that cannot
+// possibly be tunnel ids.
+func ValidID(s string) bool {
+	if len(s) != 12 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // NewSecret returns a 32-byte base64url connect secret (tunnel auth).
