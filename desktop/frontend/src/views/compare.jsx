@@ -381,7 +381,7 @@ function IssueMovement({ deltas }) {
                 {(d.prev_count || 0).toLocaleString()} → {(d.curr_count || 0).toLocaleString()}
               </span>
               <span className="mono" style={{ fontSize: 12, fontWeight: 650, textAlign: "right", color: net > 0 ? "var(--s-4xx)" : net < 0 ? "var(--sev-ok)" : "var(--ink-faint)" }}>
-                {net > 0 ? `+${net}` : net === 0 ? "±0" : net}
+                {net > 0 ? `+${net.toLocaleString()}` : net === 0 ? "±0" : net.toLocaleString()}
               </span>
             </div>
             {isOpen && <IssueBuckets d={d} />}

@@ -15,6 +15,14 @@ const fmtDate = (v) => {
   return isNaN(d) ? "—" : d.toISOString().slice(0, 10);
 };
 const ageDays = (unix) => (unix ? Math.floor((Date.now() - unix * 1000) / 86400000) : null);
+// compact big numbers so tight card columns never overflow: 56,339 → "56.3k";
+// exact values live in the tooltip
+const fmtCompact = (n) => {
+  const a = Math.abs(n), trim = (s) => s.replace(/\.0$/, "");
+  if (a >= 1e6) return trim((n / 1e6).toFixed(1)) + "M";
+  if (a >= 1e4) return trim((n / 1e3).toFixed(1)) + "k";
+  return n.toLocaleString();
+};
 
 export function ProjectsView({ onCrawlSite }) {
   const [projects, setProjects] = useState([]);
@@ -518,9 +526,11 @@ function Comparison({ project, onCrawlSite }) {
 function PulseCard({ site, pulse, onDetails, onCrawl }) {
   const isMain = site.role === "main";
   const data = pulse && pulse.data;
-  const chip = (label, value, color, sign) => (
-    <span key={label} className="badge tint" style={{ "--c": color }} title={label}>
-      <span className="mono" style={{ fontWeight: 650 }}>{sign && value > 0 ? "+" : ""}{value.toLocaleString()}</span> {label}
+  // direction lives in the label + tint, never in a sign: "8,895 pages
+  // removed", not "-8,895 pages gone"
+  const chip = (label, value, color) => (
+    <span key={label} className="badge tint" style={{ "--c": color }}>
+      <span className="mono" style={{ fontWeight: 650 }}>{value.toLocaleString()}</span> {label}
     </span>
   );
 
@@ -535,23 +545,22 @@ function PulseCard({ site, pulse, onDetails, onCrawl }) {
     body = <PulseNote icon="history" text="Only one comparable crawl — crawl again to start tracking changes.">{onCrawl && <Btn size="sm" icon="radar" onClick={onCrawl}>Crawl</Btn>}</PulseNote>;
   } else {
     const pagesNet = data.pages_curr - data.pages_prev;
-    const issuesNet = data.issues_appeared - data.issues_resolved;
     const quiet = !data.new_pages && !data.removed_pages && !data.status_flips && !data.indexability_flips && !data.element_changes && !data.issues_appeared && !data.issues_resolved;
     body = (
       <>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
           {quiet && <span className="badge tint" style={{ "--c": "var(--sev-ok)" }}><Icon name="circle-check" size={11} />no changes between the runs</span>}
-          {data.new_pages > 0 && chip("pages added", data.new_pages, "var(--sev-ok)", true)}
-          {data.removed_pages > 0 && chip("pages gone", -data.removed_pages, "var(--s-4xx)")}
-          {data.issues_appeared > 0 && chip("issues appeared", data.issues_appeared, "var(--s-4xx)", true)}
-          {data.issues_resolved > 0 && chip("issues fixed", -data.issues_resolved, "var(--sev-ok)")}
+          {data.new_pages > 0 && chip("pages added", data.new_pages, "var(--sev-ok)")}
+          {data.removed_pages > 0 && chip("pages removed", data.removed_pages, "var(--s-4xx)")}
+          {data.issues_appeared > 0 && chip("issues appeared", data.issues_appeared, "var(--s-4xx)")}
+          {data.issues_resolved > 0 && chip("issues resolved", data.issues_resolved, "var(--sev-ok)")}
           {data.status_flips > 0 && chip("status flips", data.status_flips, "var(--s-5xx)")}
           {data.indexability_flips > 0 && chip("indexability flips", data.indexability_flips, "var(--s-3xx)")}
           {data.element_changes > 0 && chip("content edits", data.element_changes, "var(--sev-warn)")}
         </div>
 
         {(data.trend || []).length >= 2 && (
-          <div style={{ display: "flex", gap: 18, marginTop: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12, marginTop: 12 }}>
             <SparkStat label="URLs" points={(data.trend || []).map((t) => t.urls)} color="var(--accent)" />
             <SparkStat label="Issues" points={(data.trend || []).map((t) => t.issues)} color="var(--sev-issue)" invert />
             <SparkStat label="Warnings" points={(data.trend || []).map((t) => t.warnings)} color="var(--sev-warn)" invert />
@@ -564,17 +573,16 @@ function PulseCard({ site, pulse, onDetails, onCrawl }) {
               <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11.5 }}>
                 <SevDot severity={m.severity} />
                 <span style={{ flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: "var(--ink-2)" }}>{m.name}</span>
-                <span className="mono" style={{ fontWeight: 650, color: m.net > 0 ? "var(--s-4xx)" : "var(--sev-ok)" }}>{m.net > 0 ? "+" : ""}{m.net}</span>
+                <span className="mono" style={{ fontWeight: 650, color: m.net > 0 ? "var(--s-4xx)" : "var(--sev-ok)" }}>{m.net > 0 ? "+" : ""}{m.net.toLocaleString()}</span>
               </div>
             ))}
           </div>
         )}
 
-        <div style={{ display: "flex", alignItems: "center", marginTop: 12 }}>
-          <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "4px 8px", marginTop: 12 }}>
+          <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-faint)", whiteSpace: "nowrap" }}>
             {(data.pages_prev || 0).toLocaleString()} → {(data.pages_curr || 0).toLocaleString()} pages
-            {pagesNet !== 0 && <span style={{ color: pagesNet > 0 ? "var(--sev-ok)" : "var(--s-4xx)" }}> ({pagesNet > 0 ? "+" : ""}{pagesNet})</span>}
-            {issuesNet !== 0 && <span> · issues net <span style={{ color: issuesNet > 0 ? "var(--s-4xx)" : "var(--sev-ok)" }}>{issuesNet > 0 ? "+" : ""}{issuesNet}</span></span>}
+            {pagesNet !== 0 && <span style={{ color: pagesNet > 0 ? "var(--sev-ok)" : "var(--s-4xx)" }}> ({pagesNet > 0 ? "+" : ""}{pagesNet.toLocaleString()})</span>}
           </span>
           <div style={{ flex: 1 }} />
           <Btn size="sm" variant="ghost" icon="arrow-right" onClick={onDetails}>Full diff</Btn>
@@ -610,18 +618,22 @@ function PulseNote({ icon, text, color, spin, children }) {
   );
 }
 
-/* ---- sparkline over the comparable-crawl history ------------------------- */
+/* ---- sparkline over the comparable-crawl history -------------------------
+   Lives three-up in a ~100px grid column, so everything is overflow-safe:
+   label on its own line, compact value + net below it, spark stretched to the
+   column. The exact series is the tooltip. */
 function SparkStat({ label, points, color, invert }) {
   const first = points[0], last = points[points.length - 1];
   const net = last - first;
   // invert: a falling line is good (issues, warnings)
   const netColor = net === 0 ? "var(--ink-faint)" : (invert ? net < 0 : net > 0) ? "var(--sev-ok)" : "var(--s-4xx)";
+  const series = points.map((p) => p.toLocaleString()).join(" → ");
   return (
-    <div style={{ minWidth: 0 }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-        <span style={{ fontSize: 10.5, fontWeight: 600, color: "var(--ink-faint)", textTransform: "uppercase", letterSpacing: ".04em" }}>{label}</span>
-        <span className="mono" style={{ fontSize: 11.5, fontWeight: 650 }}>{last.toLocaleString()}</span>
-        {net !== 0 && <span className="mono" style={{ fontSize: 10, color: netColor }}>{net > 0 ? "+" : ""}{net.toLocaleString()}</span>}
+    <div style={{ minWidth: 0 }} title={`${label} across the last ${points.length} comparable crawls: ${series}`}>
+      <div style={{ fontSize: 9.5, fontWeight: 600, color: "var(--ink-faint)", textTransform: "uppercase", letterSpacing: ".05em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 5, whiteSpace: "nowrap", overflow: "hidden", marginTop: 1 }}>
+        <span className="mono" style={{ fontSize: 12, fontWeight: 650 }}>{fmtCompact(last)}</span>
+        {net !== 0 && <span className="mono" style={{ fontSize: 10, color: netColor }}>{net > 0 ? "+" : ""}{fmtCompact(net)}</span>}
       </div>
       <Spark points={points} color={color} />
     </div>
@@ -632,13 +644,15 @@ function Spark({ points, color, w = 96, h = 24 }) {
   if (!points || points.length < 2) return null;
   const min = Math.min(...points), max = Math.max(...points);
   const span = max - min || 1;
-  const step = w / (points.length - 1);
+  const step = (w - 6) / (points.length - 1);
+  const x = (i) => 3 + i * step;
   const y = (v) => h - 3 - ((v - min) / span) * (h - 6);
-  const pts = points.map((v, i) => `${(i * step).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const pts = points.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
   return (
-    <svg width={w} height={h} style={{ display: "block", marginTop: 3 }} aria-hidden>
-      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" opacity="0.85" />
-      <circle cx={w} cy={y(points[points.length - 1])} r="2.2" fill={color} />
+    <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h} preserveAspectRatio="none"
+      style={{ display: "block", marginTop: 4 }} aria-hidden>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" strokeLinecap="round" opacity="0.85" />
+      <circle cx={x(points.length - 1)} cy={y(points[points.length - 1])} r="2.2" fill={color} />
     </svg>
   );
 }
