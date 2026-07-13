@@ -37,14 +37,29 @@ type Change struct {
 	Current  string `json:"current"`
 }
 
+// StateChange is a page present in both crawls whose HTTP status code or
+// indexability changed. Unlike element changes it is not gated by
+// compare.change_detection — a page going 200→404 or indexable→noindex is
+// core to what a re-crawl diff means, so it is always computed.
+type StateChange struct {
+	URL              string `json:"url"`
+	PrevStatus       int    `json:"prev_status"`
+	CurrStatus       int    `json:"curr_status"`
+	PrevIndexable    bool   `json:"prev_indexable"`
+	CurrIndexable    bool   `json:"curr_indexable"`
+	PrevIndexability string `json:"prev_indexability,omitempty"`
+	CurrIndexability string `json:"curr_indexability,omitempty"`
+}
+
 // Result is the full comparison.
 type Result struct {
-	PagesPrevious int      `json:"pages_previous"`
-	PagesCurrent  int      `json:"pages_current"`
-	NewPages      []string `json:"new_pages,omitempty"`
-	MissingPages  []string `json:"missing_pages,omitempty"`
-	Deltas        []Delta  `json:"issue_deltas,omitempty"`
-	Changes       []Change `json:"changes,omitempty"`
+	PagesPrevious int           `json:"pages_previous"`
+	PagesCurrent  int           `json:"pages_current"`
+	NewPages      []string      `json:"new_pages,omitempty"`
+	MissingPages  []string      `json:"missing_pages,omitempty"`
+	Deltas        []Delta       `json:"issue_deltas,omitempty"`
+	Changes       []Change      `json:"changes,omitempty"`
+	StateChanges  []StateChange `json:"state_changes,omitempty"`
 }
 
 // Input bundles one crawl's data.
@@ -56,7 +71,7 @@ type Input struct {
 // Run compares previous vs current. URL mapping regexes from the config are
 // applied to *previous* URLs so renamed structures align.
 func Run(prev, curr Input, cfg *config.Config) (*Result, error) {
-	mapURL, err := buildMapper(cfg.Compare.URLMapping)
+	mapURL, err := NewURLMapper(cfg.Compare.URLMapping)
 	if err != nil {
 		return nil, err
 	}
@@ -139,10 +154,40 @@ func Run(prev, curr Input, cfg *config.Config) (*Result, error) {
 	}
 
 	res.Changes = changeDetection(prevPages, curr.Pages, cfg)
+	res.StateChanges = stateChanges(prevPages, curr.Pages)
 	return res, nil
 }
 
-func buildMapper(mappings []config.URLMapping) (func(string) string, error) {
+// stateChanges reports pages in both crawls whose status code or indexability
+// moved. Always on (see StateChange).
+func stateChanges(prev, curr map[string]*crawler.PageRecord) []StateChange {
+	urls := make([]string, 0, len(curr))
+	for u := range curr {
+		urls = append(urls, u)
+	}
+	sort.Strings(urls)
+	var out []StateChange
+	for _, url := range urls {
+		p, ok := prev[url]
+		if !ok {
+			continue
+		}
+		c := curr[url]
+		if p.StatusCode == c.StatusCode && p.Indexable == c.Indexable {
+			continue
+		}
+		out = append(out, StateChange{URL: url,
+			PrevStatus: p.StatusCode, CurrStatus: c.StatusCode,
+			PrevIndexable: p.Indexable, CurrIndexable: c.Indexable,
+			PrevIndexability: p.IndexabilityStatus, CurrIndexability: c.IndexabilityStatus})
+	}
+	return out
+}
+
+// NewURLMapper compiles the compare.url_mapping rules into the previous-URL
+// rewrite function Run applies; exported so callers enriching a Result (the
+// desktop payload) can align their own previous-crawl lookups the same way.
+func NewURLMapper(mappings []config.URLMapping) (func(string) string, error) {
 	type rule struct {
 		re      *regexp.Regexp
 		replace string

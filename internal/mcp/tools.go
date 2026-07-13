@@ -42,6 +42,10 @@ func intProp(desc string) map[string]any {
 	return map[string]any{"type": "integer", "description": desc}
 }
 
+func boolProp(desc string) map[string]any {
+	return map[string]any{"type": "boolean", "description": desc}
+}
+
 func decodeArgs(raw json.RawMessage, into any) error {
 	if len(raw) == 0 {
 		return nil
@@ -426,6 +430,8 @@ func (s *Server) buildTools() []Tool {
 			},
 		},
 	}
+	// Pairwise crawl comparison (shared cached report); see compare_tools.go.
+	tools = append(tools, s.compareTools()...)
 	// Standalone site testers (list_tools/run_tool); see site_tools.go.
 	tools = append(tools, s.siteTools()...)
 	// Project tools are an additive, removable layer; see project_tools.go.

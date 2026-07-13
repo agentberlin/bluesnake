@@ -3,7 +3,10 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 
+	"github.com/agentberlin/bluesnake/internal/compare"
 	"github.com/agentberlin/bluesnake/internal/project"
 )
 
@@ -109,6 +112,75 @@ func (s *Server) projectTools() []Tool {
 					return "", err
 				}
 				return "ok", nil
+			},
+		},
+		{
+			Name: "project_diff",
+			Description: "Over-time diff for one project member: compares the domain's two latest COMPARABLE crawls (finished full-site spider crawls of the root — " +
+				"stricter than compare_crawls' \"two most recent completed\") and returns the same enriched report: pages added/removed, status & indexability flips, " +
+				"element changes, per-issue movement. Cached per crawl pair. ok=false when the site has fewer than two comparable crawls.",
+			InputSchema: schema(map[string]any{
+				"project_id": strProp("Project id (see list_projects)."),
+				"domain":     strProp("Member domain (host[:port] or URL)."),
+				"max_list":   intProp("Cap every URL list in the response. Default 100, max 2000; counts are always exact."),
+				"force":      boolProp("Recompute even when a cached comparison exists."),
+			}, "project_id", "domain"),
+			handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+				var a struct {
+					ProjectID string `json:"project_id"`
+					Domain    string `json:"domain"`
+					MaxList   int    `json:"max_list"`
+					Force     bool   `json:"force"`
+				}
+				if err := decodeArgs(raw, &a); err != nil {
+					return "", err
+				}
+				st, err := open()
+				if err != nil {
+					return "", err
+				}
+				defer st.Close()
+				key, err := project.SiteKey(a.Domain)
+				if err != nil {
+					return "", err
+				}
+				members, err := st.Members(a.ProjectID)
+				if err != nil {
+					return "", err
+				}
+				known := make([]string, 0, len(members))
+				member := false
+				for _, m := range members {
+					known = append(known, m.Domain)
+					if m.Domain == key {
+						member = true
+					}
+				}
+				if !member {
+					return "", fmt.Errorf("%q is not a member of project %s (members: %s)", key, a.ProjectID, strings.Join(known, ", "))
+				}
+				prevID, currID, ok, err := st.ComparePair(key)
+				if err != nil {
+					return "", err
+				}
+				if !ok {
+					return jsonText(map[string]any{
+						"ok":     false,
+						"domain": key,
+						"note":   "This site has fewer than two comparable crawls (finished full-site spider crawls of the root). Crawl it again to start a history.",
+					})
+				}
+				rep, err := compare.CachedReport(s.backend.StoreDir(), prevID, currID, a.Force, nil)
+				if err != nil {
+					return "", err
+				}
+				trimReport(rep, maxList(a.MaxList))
+				return jsonText(struct {
+					OK     bool   `json:"ok"`
+					Domain string `json:"domain"`
+					*compare.Report
+					Note string `json:"note"`
+				}{true, key, rep, compareNote})
 			},
 		},
 		{

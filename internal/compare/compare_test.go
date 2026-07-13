@@ -328,6 +328,54 @@ func TestStructuredDataChangeDetection(t *testing.T) {
 	}
 }
 
+// stateRec builds an internal page with the given response status and
+// indexability verdict (no Facts — state changes must not depend on them).
+func stateRec(url string, status int, indexable bool, why string) *crawler.PageRecord {
+	return &crawler.PageRecord{URL: url, Scope: "internal", State: crawler.StateCrawled,
+		StatusCode: status, Indexable: indexable, IndexabilityStatus: why}
+}
+
+func TestStateChanges(t *testing.T) {
+	prev := Input{Pages: pagesOf(
+		stateRec("https://ex.com/dead", 200, true, ""),
+		stateRec("https://ex.com/hidden", 200, true, ""),
+		stateRec("https://ex.com/same", 200, true, ""),
+		stateRec("https://ex.com/gone", 200, true, ""),
+	)}
+	curr := Input{Pages: pagesOf(
+		stateRec("https://ex.com/dead", 404, false, "Client Error"),
+		stateRec("https://ex.com/hidden", 200, false, "noindex"),
+		stateRec("https://ex.com/same", 200, true, ""),
+		stateRec("https://ex.com/fresh", 200, true, ""),
+	)}
+	r, err := Run(prev, curr, config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// only pages in BOTH crawls with a moved status or indexability, sorted
+	if len(r.StateChanges) != 2 {
+		t.Fatalf("StateChanges = %+v, want /dead and /hidden", r.StateChanges)
+	}
+	dead := r.StateChanges[0]
+	if dead.URL != "https://ex.com/dead" || dead.PrevStatus != 200 || dead.CurrStatus != 404 ||
+		!dead.PrevIndexable || dead.CurrIndexable || dead.CurrIndexability != "Client Error" {
+		t.Errorf("dead = %+v", dead)
+	}
+	hidden := r.StateChanges[1]
+	if hidden.URL != "https://ex.com/hidden" || hidden.PrevStatus != 200 || hidden.CurrStatus != 200 ||
+		!hidden.PrevIndexable || hidden.CurrIndexable || hidden.CurrIndexability != "noindex" {
+		t.Errorf("hidden = %+v", hidden)
+	}
+
+	// state changes are not an element: disabling all change detection keeps them
+	cfg := config.Default()
+	cfg.Compare.ChangeDetection = nil
+	r, _ = Run(prev, curr, cfg)
+	if len(r.StateChanges) != 2 {
+		t.Errorf("StateChanges gated by change_detection: %+v", r.StateChanges)
+	}
+}
+
 func TestURLMapping(t *testing.T) {
 	prev := Input{Pages: pagesOf(rec("https://staging.ex.com/a", "Same"))}
 	curr := Input{Pages: pagesOf(rec("https://www.ex.com/a", "Same"))}
