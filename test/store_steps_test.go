@@ -36,6 +36,7 @@ func (w *world) registerStoreSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a URL list file containing "([^"]*)" and "([^"]*)"$`, w.urlListFile)
 	sc.Step(`^the site page "([^"]*)" changes to body "([^"]*)"$`, w.sitePageChanges)
 	sc.Step(`^the site page "([^"]*)" changes to body:$`, w.sitePageChangesDoc)
+	sc.Step(`^the site page "([^"]*)" changes to status (\d+)$`, w.sitePageChangesStatus)
 }
 
 func (w *world) urlListFile(a, b string) error {
@@ -56,6 +57,14 @@ func (w *world) sitePageChanges(path, body string) error {
 
 func (w *world) sitePageChangesDoc(path string, doc *godog.DocString) error {
 	return w.sitePageChanges(path, doc.Content)
+}
+
+func (w *world) sitePageChangesStatus(path string, status int) error {
+	r := w.route(path)
+	r.status = status
+	// remember the crawl that ran before the mutation
+	w.firstCrawlID = w.latestCrawlID()
+	return nil
 }
 
 func (w *world) outputNotContainsLiteral(substr string) error {

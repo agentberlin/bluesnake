@@ -272,9 +272,10 @@ internal/isocodes/       embedded ISO 639-1 + ISO 3166-1 registries (hreflang va
 internal/warc/           minimal WARC/1.1 writer (extraction.store_warc archives)
 internal/serve/          read-only localhost JSON API over stored crawls
 internal/mcp/            MCP server (hand-rolled JSON-RPC 2.0 over the streamable-HTTP transport):
-                         12 core tools (+5 from the removable project layer, §5.9) — crawl control (start/status/pause/resume/stop), config
+                         13 core tools (+2 site testers §5.10, +6 from the removable project layer
+                         §5.9) — crawl control (start/status/pause/resume/stop), config
                          introspection (knob catalogue via reflection over the schema, profiles),
-                         and read-only SQL over the per-crawl SQLite DBs. Crawl control runs
+                         crawl comparison (§5.7), and read-only SQL over the per-crawl SQLite DBs. Crawl control runs
                          against a Backend interface: the CLI uses the built-in Runner; the
                          desktop app adapts its session manager so agent-started crawls stream
                          live into the UI (Settings ▸ MCP Server toggle, persisted in desktop.json)
@@ -318,7 +319,7 @@ docs/
 
 ### 5.3 Storage schema (SQLite, one DB file per crawl)
 
-`~/.bluesnake/crawls/<crawl-id>.db`, plus a tiny registry DB `~/.bluesnake/registry.db` (crawl id, seed, mode, started/finished, status, and two URL counts: `crawled` = fetched and `total` = encountered — Screaming Frog's "URLs Crawled" vs "URLs Encountered" split, where encountered also covers robots-blocked/errored URLs). `total` is the headline count shown across the CLI, desktop and MCP (`crawled` is reported alongside as the fetched subset); crawls finished before `total` existed are backfilled lazily from a `COUNT(*)` over `pages`. Crawl ID = `<yyyymmdd-hhmmss>-<short-rand>`.
+`~/.bluesnake/crawls/<crawl-id>.db`, plus a tiny registry DB `~/.bluesnake/registry.db` (crawl id, seed, mode, started/finished, status, and two URL counts: `crawled` = fetched and `total` = encountered — Screaming Frog's "URLs Crawled" vs "URLs Encountered" split, where encountered also covers robots-blocked/errored URLs; the registry also carries the persistent crawl queue's `jobs` table (§5.12) and the `comparisons` cache (§5.7)). `total` is the headline count shown across the CLI, desktop and MCP (`crawled` is reported alongside as the fetched subset); crawls finished before `total` existed are backfilled lazily from a `COUNT(*)` over `pages`. Crawl ID = `<yyyymmdd-hhmmss>-<short-rand>`.
 
 ```sql
 -- meta
@@ -499,7 +500,7 @@ Design decisions:
 - **Per-site setups belong to the domain, not the project; fairness is surfaced, not enforced.** A site remembers the setup its last crawl ran with (§5.11 — derived from the crawl registry at enqueue; *nothing* is stored in the project layer, which this feature leaves byte-for-byte untouched). "Crawl all" therefore defaults to **each site's saved setup** (per-member resolution shown in the dialog via `CrawlAllPlan`) with **"one setup for every site"** as the explicit override mode — the shared setup card (base picker + touched-only quick knobs, site-checks selector included), each job's effective config frozen at enqueue like any other crawl. A member's Crawl button opens New Crawl prefilled with the site, where the site's last setup is preselected by §5.11's default. When competitors' latest crawls used materially different settings (rendering, depth, robots), the scorecard shows per-site config badges and a divergence banner — worded to acknowledge the divergence may be deliberate per-site setup — and the strict-fairness remedy is "Crawl all" with one shared setup.
 - **Out of scope:** a scheduler. On-demand crawling of a project's sites is the building block a future scheduler would drive.
 
-Surfaces (engine-first, all three per §0): the CLI `bluesnake projects` subtree; five MCP tools (`list_projects`, `create_project`, `add_competitor`, `remove_competitor`, `project_comparison`); and a desktop **Projects** view (Overview + Comparison) bound through a *separate* `ProjectApp` Wails struct so the core `App` binding (and its generated `App.js`) stay untouched.
+Surfaces (engine-first, all three per §0): the CLI `bluesnake projects` subtree; six MCP tools (`list_projects`, `create_project`, `add_competitor`, `remove_competitor`, `project_comparison`, `project_diff`); and a desktop **Projects** view (Overview + Comparison) bound through a *separate* `ProjectApp` Wails struct so the core `App` binding (and its generated `App.js`) stay untouched.
 
 ### 5.10 Site tools & site checks — one engine, three surfaces
 
