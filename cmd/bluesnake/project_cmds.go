@@ -252,6 +252,15 @@ func newProjectCmd() *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "  %s: +%d added, -%d resolved\n",
 					d.IssueID, len(d.Added)+len(d.New), len(d.Removed)+len(d.Missing))
 			}
+			for _, sc := range res.StateChanges {
+				if sc.PrevStatus != sc.CurrStatus {
+					fmt.Fprintf(cmd.OutOrStdout(), "  status %s: %d → %d\n", sc.URL, sc.PrevStatus, sc.CurrStatus)
+				}
+				if sc.PrevIndexable != sc.CurrIndexable {
+					fmt.Fprintf(cmd.OutOrStdout(), "  indexability %s: %s → %s\n",
+						sc.URL, indexLabel(sc.PrevIndexable, sc.PrevIndexability), indexLabel(sc.CurrIndexable, sc.CurrIndexability))
+				}
+			}
 			return nil
 		},
 	}

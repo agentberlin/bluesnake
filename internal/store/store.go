@@ -248,7 +248,11 @@ func registryDB(dir string) (*sql.DB, error) {
 			id TEXT PRIMARY KEY, status TEXT NOT NULL, position INTEGER NOT NULL,
 			source TEXT NOT NULL, project_id TEXT, label TEXT, request TEXT NOT NULL,
 			crawl_id TEXT, error TEXT, enqueued INTEGER NOT NULL, started INTEGER, finished INTEGER);
-		CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, position);`)
+		CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, position);
+		CREATE TABLE IF NOT EXISTS comparisons(
+			prev_id TEXT NOT NULL, curr_id TEXT NOT NULL,
+			created INT NOT NULL, payload TEXT NOT NULL,
+			PRIMARY KEY(prev_id, curr_id));`)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -1777,6 +1781,10 @@ func DeleteCrawl(dir, id string) error {
 	}
 	defer reg.Close()
 	if _, err := reg.Exec(`DELETE FROM crawls WHERE id = ?`, id); err != nil {
+		return err
+	}
+	// cached comparisons diff this crawl's content — they die with it
+	if _, err := reg.Exec(`DELETE FROM comparisons WHERE prev_id = ? OR curr_id = ?`, id, id); err != nil {
 		return err
 	}
 	for _, suffix := range []string{"", "-wal", "-shm"} {

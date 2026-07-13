@@ -46,7 +46,9 @@ export const api = {
   generateSitemap: (id) => call("GenerateSitemap", id),
   reanalyze: (id) => call("Reanalyze", id),
 
-  compareCrawls: (prevId, currId) => call("CompareCrawls", prevId, currId),
+  // cache-first: a previously computed pair returns instantly; force recomputes
+  compareCrawls: (prevId, currId, force) => call("CompareCrawls", prevId, currId, !!force),
+  deleteComparison: (prevId, currId) => call("DeleteComparison", prevId, currId),
 
   listProfiles: () => call("ListProfiles"),
   // resolves a setup source (last / app settings / profile) to its quick-knob
@@ -101,7 +103,9 @@ export const projectApi = {
   removeCompetitor: (id, domain) => pcall("RemoveCompetitor", id, domain),
   sites: (id) => pcall("ProjectSites", id),
   comparison: (id, includeOptional) => pcall("ProjectComparison", id, includeOptional),
-  diff: (id, domain) => pcall("ProjectDiff", id, domain),
+  // per-member "since last crawl" delta + history trend; the delta rides the
+  // same comparison cache as the crawl Compare tab
+  memberPulse: (id, domain) => pcall("MemberPulse", id, domain),
   crawlAll: (id, req) => pcall("CrawlAll", id, req),
   crawlAllPlan: (id) => pcall("CrawlAllPlan", id), // per-member setup resolution for the dialog
 };

@@ -107,10 +107,12 @@ func TestToolsList(t *testing.T) {
 		"list_config_options", "list_profiles", "get_profile_config",
 		"start_crawl", "crawl_status", "pause_crawl", "resume_crawl", "stop_crawl",
 		"list_crawls", "get_database_schema", "query", "issue_summary",
+		// pairwise crawl comparison (compare_tools.go)
+		"compare_crawls",
 		// standalone site testers (site_tools.go)
 		"list_tools", "run_tool",
 		// opt-in project layer (project_tools.go) — additive, removable
-		"list_projects", "create_project", "add_competitor", "remove_competitor", "project_comparison",
+		"list_projects", "create_project", "add_competitor", "remove_competitor", "project_comparison", "project_diff",
 	}
 	for _, n := range want {
 		if !names[n] {

@@ -4,9 +4,10 @@
    stored against a crawl. This whole view is removable with the feature.
    =========================================================================== */
 import React, { useEffect, useMemo, useState } from "react";
-import { Icon, Btn, IconBtn, BrandMark, Empty, Modal, Seg, Toggle, CopyButton } from "../ui";
+import { Icon, Btn, IconBtn, BrandMark, Empty, Modal, Seg, Toggle, CopyButton, StatusBar, SevDot } from "../ui";
 import { api, projectApi, hostOf, DEFAULT_PROFILE } from "../api";
 import { CrawlSetupCard, defaultCrawlSetup, setupToRequest, useBaseKnobs } from "./newcrawl";
+import { CompareResult } from "./compare";
 
 const fmtDate = (v) => {
   if (!v) return "—";
@@ -127,7 +128,7 @@ function ProjectDetail({ project, onBack, onCrawlSite, onDeleted, onRenamed }) {
       </div>
       {tab === "overview"
         ? <Overview project={project} onCrawlSite={onCrawlSite} />
-        : <Comparison project={project} />}
+        : <Comparison project={project} onCrawlSite={onCrawlSite} />}
       {crawlAllOpen && <CrawlAllModal project={project} onClose={() => setCrawlAllOpen(false)} />}
       {confirmDel && <Modal icon="trash-2" danger title="Delete project?" onClose={() => setConfirmDel(false)}
         body={<>This removes the project <b>{project.name}</b> and its competitor list. Your crawls are not deleted.</>}
@@ -327,12 +328,13 @@ function configBadges(r) {
   return out;
 }
 
-function Comparison({ project }) {
+function Comparison({ project, onCrawlSite }) {
   const [card, setCard] = useState(null);
   const [busy, setBusy] = useState(true);
   const [optional, setOptional] = useState(false);
   const [err, setErr] = useState("");
   const [diff, setDiff] = useState(null); // { domain }
+  const [pulses, setPulses] = useState({}); // domain -> {loading} | {data} | {err}
 
   useEffect(() => {
     setBusy(true); setErr("");
@@ -341,12 +343,64 @@ function Comparison({ project }) {
       .catch((e) => { setErr(String(e)); setBusy(false); });
   }, [project.id, optional]);
 
+  // Load every member's "since last crawl" pulse as soon as the scorecard is
+  // up — sequentially, so a many-site project diffs one pair at a time. Each
+  // pulse rides the comparison cache, so only never-compared pairs cost time.
+  const okDomains = useMemo(
+    () => ((card && card.sites) || []).filter((s) => s.status === "ok").map((s) => s.domain),
+    [card],
+  );
+  const domainsKey = okDomains.join("|");
+  useEffect(() => {
+    if (!domainsKey) return;
+    let alive = true;
+    setPulses(Object.fromEntries(okDomains.map((d) => [d, { loading: true }])));
+    (async () => {
+      for (const domain of okDomains) {
+        try {
+          const data = await projectApi.memberPulse(project.id, domain);
+          if (!alive) return;
+          setPulses((m) => ({ ...m, [domain]: { data } }));
+        } catch (e) {
+          if (!alive) return;
+          setPulses((m) => ({ ...m, [domain]: { err: String(e) } }));
+        }
+      }
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id, domainsKey]);
+
   const main = useMemo(() => (card && card.sites || []).find((s) => s.role === "main" && s.status === "ok"), [card]);
   const freshness = useMemo(() => {
     const ts = (card && card.sites || []).filter((s) => s.status === "ok").map((s) => s.started);
     if (ts.length < 2) return 0;
     return Math.round((Math.max(...ts) - Math.min(...ts)) / 86400);
   }, [card]);
+
+  // best value per scorecard column among scored sites (only where "better"
+  // is unambiguous); null when sites tie, so nothing is highlighted
+  const best = useMemo(() => {
+    const ok = ((card && card.sites) || []).filter((s) => s.status === "ok");
+    if (ok.length < 2) return {};
+    const pick = (get, high) => {
+      const vals = ok.map(get);
+      const lo = Math.min(...vals), hi = Math.max(...vals);
+      if (lo === hi) return null;
+      return high ? hi : lo;
+    };
+    return {
+      idx: pick((s) => Math.round((s.indexable_rate || 0) * 100), true),
+      err: pick((s) => s.errors || 0, false),
+      warn: pick((s) => s.warnings || 0, false),
+      opp: pick((s) => s.opportunities || 0, false),
+      link: pick((s) => Math.round(s.avg_link_score || 0), true),
+      words: pick((s) => Math.round(s.avg_word_count || 0), true),
+      schema: pick((s) => Math.round((s.schema_coverage || 0) * 100), true),
+    };
+  }, [card]);
+  const win = (key, v) => best[key] != null && v === best[key]
+    ? { color: "var(--sev-ok)", fontWeight: 700 } : {};
 
   if (busy) return <div className="scroll" style={{ padding: 30, color: "var(--ink-faint)", fontSize: 13 }}>Computing scorecard…</div>;
   if (err) return <div className="scroll" style={{ padding: 30, color: "var(--s-4xx)", fontSize: 13 }}>{err}</div>;
@@ -392,6 +446,7 @@ function Comparison({ project }) {
                 <th style={th}>Site</th>
                 <th style={th}>When</th>
                 <th style={thR}>URLs</th>
+                <th style={{ ...th, minWidth: 90 }}>Responses</th>
                 <th style={thR}>Index%</th>
                 <th style={thR}>Err</th>
                 <th style={thR}>Warn</th>
@@ -409,25 +464,30 @@ function Comparison({ project }) {
                   return (
                     <tr key={s.domain} className="copyhost" style={{ borderTop: "1px solid var(--border-soft)", background: isMain ? "var(--surface-2)" : undefined }}>
                       <td style={td}><SiteCell s={s} isMain={isMain} /></td>
-                      <td style={td} colSpan={optional ? 10 : 8}>
+                      <td style={td} colSpan={optional ? 11 : 9}>
                         <span style={{ color: "var(--ink-faint)", fontStyle: "italic" }}>no comparable crawl — crawl this site</span>
                       </td>
                     </tr>
                   );
                 }
+                const b = s.status_buckets || {};
+                const mix = { "2xx": b[2] || 0, "3xx": b[3] || 0, "4xx": b[4] || 0, "5xx": b[5] || 0 };
                 return (
                   <tr key={s.domain} className="copyhost" style={{ borderTop: "1px solid var(--border-soft)", background: isMain ? "var(--surface-2)" : undefined, cursor: "pointer" }}
                     onClick={() => setDiff({ domain: s.domain })} title="Click for over-time changes">
                     <td style={td}><SiteCell s={s} isMain={isMain} /></td>
                     <td style={{ ...td, color: "var(--ink-2)" }}>{fmtDate(s.started)}<span style={{ color: "var(--ink-faint)" }}> · {ageDays(s.started)}d</span></td>
                     <td style={tdR}>{(s.urls || 0).toLocaleString()}</td>
-                    <td style={tdR}>{Math.round((s.indexable_rate || 0) * 100)}%{!isMain && main && delta(Math.round(s.indexable_rate * 100), Math.round(main.indexable_rate * 100), true)}</td>
-                    <td style={{ ...tdR, color: s.errors ? "var(--sev-issue)" : "var(--ink-3)" }}>{s.errors || 0}{!isMain && main && delta(s.errors, main.errors, false)}</td>
-                    <td style={tdR}>{s.warnings || 0}</td>
-                    <td style={tdR}>{s.opportunities || 0}</td>
-                    <td style={tdR}>{(s.avg_link_score || 0).toFixed(0)}</td>
-                    {optional && <td style={tdR}>{Math.round(s.avg_word_count || 0)}</td>}
-                    {optional && <td style={tdR}>{Math.round((s.schema_coverage || 0) * 100)}%</td>}
+                    <td style={td} title={Object.entries(mix).filter(([, n]) => n).map(([k, n]) => `${k}: ${n.toLocaleString()}`).join(" · ")}>
+                      <StatusBar status={mix} height={7} radius={3} />
+                    </td>
+                    <td style={{ ...tdR, ...win("idx", Math.round((s.indexable_rate || 0) * 100)) }}>{Math.round((s.indexable_rate || 0) * 100)}%{!isMain && main && delta(Math.round(s.indexable_rate * 100), Math.round(main.indexable_rate * 100), true)}</td>
+                    <td style={{ ...tdR, color: s.errors ? "var(--sev-issue)" : "var(--ink-3)", ...win("err", s.errors || 0) }}>{s.errors || 0}{!isMain && main && delta(s.errors, main.errors, false)}</td>
+                    <td style={{ ...tdR, ...win("warn", s.warnings || 0) }}>{s.warnings || 0}</td>
+                    <td style={{ ...tdR, ...win("opp", s.opportunities || 0) }}>{s.opportunities || 0}</td>
+                    <td style={{ ...tdR, ...win("link", Math.round(s.avg_link_score || 0)) }}>{(s.avg_link_score || 0).toFixed(0)}</td>
+                    {optional && <td style={{ ...tdR, ...win("words", Math.round(s.avg_word_count || 0)) }}>{Math.round(s.avg_word_count || 0)}</td>}
+                    {optional && <td style={{ ...tdR, ...win("schema", Math.round((s.schema_coverage || 0) * 100)) }}>{Math.round((s.schema_coverage || 0) * 100)}%</td>}
                     <td style={td}><span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>{configBadges(s)}</span></td>
                   </tr>
                 );
@@ -435,10 +495,151 @@ function Comparison({ project }) {
             </tbody>
           </table>
         </div>
-        <div className="hint" style={{ marginTop: 10 }}>Click a row to see what changed on that site since its previous crawl.</div>
+        <div className="hint" style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 6 }}>
+          <Icon name="trophy" size={12} style={{ color: "var(--sev-ok)" }} /> best value per column ·
+          click a row for that site's full diff since its previous crawl
+        </div>
+
+        <div className="sb-sectlabel" style={{ padding: "18px 0 8px" }}>Momentum · what changed since each site's previous crawl</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 12 }}>
+          {card.sites.map((s) => (
+            <PulseCard key={s.domain} site={s} pulse={pulses[s.domain]}
+              onDetails={() => setDiff({ domain: s.domain })}
+              onCrawl={onCrawlSite ? () => onCrawlSite(s.domain) : null} />
+          ))}
+        </div>
       </div>
-      {diff && <DiffModal project={project} domain={diff.domain} onClose={() => setDiff(null)} />}
+      {diff && <DiffModal domain={diff.domain} pulse={pulses[diff.domain]} onClose={() => setDiff(null)} />}
     </div>
+  );
+}
+
+/* ---- one member's momentum card ----------------------------------------- */
+function PulseCard({ site, pulse, onDetails, onCrawl }) {
+  const isMain = site.role === "main";
+  const data = pulse && pulse.data;
+  const chip = (label, value, color, sign) => (
+    <span key={label} className="badge tint" style={{ "--c": color }} title={label}>
+      <span className="mono" style={{ fontWeight: 650 }}>{sign && value > 0 ? "+" : ""}{value.toLocaleString()}</span> {label}
+    </span>
+  );
+
+  let body;
+  if (site.status !== "ok") {
+    body = <PulseNote icon="circle-dashed" text="No comparable crawl yet.">{onCrawl && <Btn size="sm" icon="radar" onClick={onCrawl}>Crawl</Btn>}</PulseNote>;
+  } else if (!pulse || pulse.loading) {
+    body = <PulseNote icon="loader" spin text="Diffing the two latest crawls — instant once cached…" />;
+  } else if (pulse.err) {
+    body = <PulseNote icon="circle-alert" text={pulse.err} color="var(--s-4xx)" />;
+  } else if (!data.ok) {
+    body = <PulseNote icon="history" text="Only one comparable crawl — crawl again to start tracking changes.">{onCrawl && <Btn size="sm" icon="radar" onClick={onCrawl}>Crawl</Btn>}</PulseNote>;
+  } else {
+    const pagesNet = data.pages_curr - data.pages_prev;
+    const issuesNet = data.issues_appeared - data.issues_resolved;
+    const quiet = !data.new_pages && !data.removed_pages && !data.status_flips && !data.indexability_flips && !data.element_changes && !data.issues_appeared && !data.issues_resolved;
+    body = (
+      <>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+          {quiet && <span className="badge tint" style={{ "--c": "var(--sev-ok)" }}><Icon name="circle-check" size={11} />no changes between the runs</span>}
+          {data.new_pages > 0 && chip("pages added", data.new_pages, "var(--sev-ok)", true)}
+          {data.removed_pages > 0 && chip("pages gone", -data.removed_pages, "var(--s-4xx)")}
+          {data.issues_appeared > 0 && chip("issues appeared", data.issues_appeared, "var(--s-4xx)", true)}
+          {data.issues_resolved > 0 && chip("issues fixed", -data.issues_resolved, "var(--sev-ok)")}
+          {data.status_flips > 0 && chip("status flips", data.status_flips, "var(--s-5xx)")}
+          {data.indexability_flips > 0 && chip("indexability flips", data.indexability_flips, "var(--s-3xx)")}
+          {data.element_changes > 0 && chip("content edits", data.element_changes, "var(--sev-warn)")}
+        </div>
+
+        {(data.trend || []).length >= 2 && (
+          <div style={{ display: "flex", gap: 18, marginTop: 12 }}>
+            <SparkStat label="URLs" points={(data.trend || []).map((t) => t.urls)} color="var(--accent)" />
+            <SparkStat label="Issues" points={(data.trend || []).map((t) => t.issues)} color="var(--sev-issue)" invert />
+            <SparkStat label="Warnings" points={(data.trend || []).map((t) => t.warnings)} color="var(--sev-warn)" invert />
+          </div>
+        )}
+
+        {(data.top_moves || []).length > 0 && (
+          <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 5 }}>
+            {(data.top_moves || []).map((m) => (
+              <div key={m.name} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11.5 }}>
+                <SevDot severity={m.severity} />
+                <span style={{ flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: "var(--ink-2)" }}>{m.name}</span>
+                <span className="mono" style={{ fontWeight: 650, color: m.net > 0 ? "var(--s-4xx)" : "var(--sev-ok)" }}>{m.net > 0 ? "+" : ""}{m.net}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: "flex", alignItems: "center", marginTop: 12 }}>
+          <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>
+            {(data.pages_prev || 0).toLocaleString()} → {(data.pages_curr || 0).toLocaleString()} pages
+            {pagesNet !== 0 && <span style={{ color: pagesNet > 0 ? "var(--sev-ok)" : "var(--s-4xx)" }}> ({pagesNet > 0 ? "+" : ""}{pagesNet})</span>}
+            {issuesNet !== 0 && <span> · issues net <span style={{ color: issuesNet > 0 ? "var(--s-4xx)" : "var(--sev-ok)" }}>{issuesNet > 0 ? "+" : ""}{issuesNet}</span></span>}
+          </span>
+          <div style={{ flex: 1 }} />
+          <Btn size="sm" variant="ghost" icon="arrow-right" onClick={onDetails}>Full diff</Btn>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div className="card" style={{ padding: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 10 }}>
+        <BrandMark seed={"https://" + site.domain} size={22} />
+        <span className="mono" style={{ fontWeight: isMain ? 650 : 500, fontSize: 12, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{site.domain}</span>
+        {isMain && <span style={{ fontSize: 10, color: "var(--accent)" }}>main</span>}
+        {data && data.ok && (
+          <span className="mono" style={{ fontSize: 10.5, color: "var(--ink-faint)", whiteSpace: "nowrap" }}>
+            {fmtDate(data.prev_started)} → {fmtDate(data.curr_started)}
+          </span>
+        )}
+      </div>
+      {body}
+    </div>
+  );
+}
+
+function PulseNote({ icon, text, color, spin, children }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: color || "var(--ink-faint)", minHeight: 34 }}>
+      <Icon name={icon} size={14} style={spin ? { animation: "spin 1s linear infinite" } : undefined} />
+      <span style={{ flex: 1 }}>{text}</span>
+      {children}
+    </div>
+  );
+}
+
+/* ---- sparkline over the comparable-crawl history ------------------------- */
+function SparkStat({ label, points, color, invert }) {
+  const first = points[0], last = points[points.length - 1];
+  const net = last - first;
+  // invert: a falling line is good (issues, warnings)
+  const netColor = net === 0 ? "var(--ink-faint)" : (invert ? net < 0 : net > 0) ? "var(--sev-ok)" : "var(--s-4xx)";
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+        <span style={{ fontSize: 10.5, fontWeight: 600, color: "var(--ink-faint)", textTransform: "uppercase", letterSpacing: ".04em" }}>{label}</span>
+        <span className="mono" style={{ fontSize: 11.5, fontWeight: 650 }}>{last.toLocaleString()}</span>
+        {net !== 0 && <span className="mono" style={{ fontSize: 10, color: netColor }}>{net > 0 ? "+" : ""}{net.toLocaleString()}</span>}
+      </div>
+      <Spark points={points} color={color} />
+    </div>
+  );
+}
+
+function Spark({ points, color, w = 96, h = 24 }) {
+  if (!points || points.length < 2) return null;
+  const min = Math.min(...points), max = Math.max(...points);
+  const span = max - min || 1;
+  const step = w / (points.length - 1);
+  const y = (v) => h - 3 - ((v - min) / span) * (h - 6);
+  const pts = points.map((v, i) => `${(i * step).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  return (
+    <svg width={w} height={h} style={{ display: "block", marginTop: 3 }} aria-hidden>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" opacity="0.85" />
+      <circle cx={w} cy={y(points[points.length - 1])} r="2.2" fill={color} />
+    </svg>
   );
 }
 
@@ -458,45 +659,33 @@ function SiteCell({ s, isMain }) {
   );
 }
 
-function DiffModal({ project, domain, onClose }) {
-  const [state, setState] = useState({ loading: true });
+/* The full diff for one member — the same rich view as a crawl's Compare tab
+   (CompareResult), fed from the shared comparison cache: the pulse already
+   computed and cached this pair, so opening the modal is a registry read. */
+function DiffModal({ domain, pulse, onClose }) {
+  const data = pulse && pulse.data;
+  const [res, setRes] = useState(null);
+  const [err, setErr] = useState("");
   useEffect(() => {
-    projectApi.diff(project.id, domain)
-      .then((d) => setState({ loading: false, data: d }))
-      .catch((e) => setState({ loading: false, err: String(e) }));
-  }, [project.id, domain]);
+    if (data && data.ok) {
+      api.compareCrawls(data.prev_id, data.curr_id, false).then(setRes).catch((e) => setErr(String(e)));
+    }
+  }, [data && data.prev_id, data && data.curr_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   let body;
-  if (state.loading) body = <span style={{ color: "var(--ink-faint)" }}>Comparing the two latest crawls…</span>;
-  else if (state.err) body = <span style={{ color: "var(--s-4xx)" }}>{state.err}</span>;
-  else if (!state.data || !state.data.ok) body = <span>This site needs at least two comparable crawls to show changes. Crawl it again to start a history.</span>;
+  if (!pulse || pulse.loading) body = <span style={{ color: "var(--ink-faint)" }}>Comparing the two latest crawls…</span>;
+  else if (pulse.err) body = <span style={{ color: "var(--s-4xx)" }}>{pulse.err}</span>;
+  else if (!data || !data.ok) body = <span>This site needs at least two comparable crawls to show changes. Crawl it again to start a history.</span>;
+  else if (err) body = <span style={{ color: "var(--s-4xx)" }}>{err}</span>;
+  else if (!res) body = <span style={{ color: "var(--ink-faint)" }}>Loading the diff…</span>;
   else {
-    const r = state.data.result || {};
-    let appeared = 0, resolved = 0;
-    (r.issue_deltas || []).forEach((d) => {
-      appeared += (d.new || []).length + (d.added || []).length;
-      resolved += (d.removed || []).length + (d.missing || []).length;
-    });
     body = (
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <div style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Latest crawl vs the previous one.</div>
-        <div style={{ display: "flex", gap: 20 }}>
-          <Stat n={(r.new_pages || []).length} label="pages added" c="var(--sev-ok)" />
-          <Stat n={(r.missing_pages || []).length} label="pages gone" c="var(--s-4xx)" />
-          <Stat n={resolved} label="issues fixed" c="var(--sev-ok)" />
-          <Stat n={appeared} label="issues appeared" c="var(--sev-warn)" />
-        </div>
-        <div className="hint">{r.pages_previous} → {r.pages_current} pages crawled.</div>
+      <div style={{ maxHeight: "68vh", overflowY: "auto", margin: "0 -6px", padding: "2px 6px" }}>
+        <CompareResult res={res} />
       </div>
     );
   }
-  return <Modal icon="git-compare" title={domain + " — over time"} onClose={onClose} body={body}
+  const dates = data && data.ok ? ` · ${fmtDate(data.prev_started)} → ${fmtDate(data.curr_started)}` : "";
+  return <Modal icon="git-compare" width={1000} title={domain + dates} onClose={onClose} body={body}
     actions={<Btn variant="primary" onClick={onClose}>Close</Btn>} />;
-}
-
-function Stat({ n, label, c }) {
-  return <div>
-    <div style={{ fontSize: 22, fontWeight: 650, color: c, fontFamily: "var(--font-mono)" }}>{n}</div>
-    <div style={{ fontSize: 11, color: "var(--ink-faint)" }}>{label}</div>
-  </div>;
 }

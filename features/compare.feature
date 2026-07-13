@@ -15,6 +15,26 @@ Feature: Crawl comparison
     And the output contains "removed"
     And the output contains "Pages: 3 -> 3"
 
+  # Page-state deltas (§5.7) are always computed, independent of the
+  # compare.change_detection element list: a page going 200→404 or
+  # indexable→noindex is core to what a re-crawl diff means.
+  Scenario: Status and indexability flips are reported between crawls
+    Given a site page "/" linking to "/dying,/hiding"
+    And a site page "/dying" with body "<html><head><title>A page that is about to die</title></head><body><h1>d</h1></body></html>"
+    And a site page "/hiding" with body "<html><head><title>A page that is about to hide</title></head><body><h1>h</h1></body></html>"
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And the site page "/dying" changes to status 404
+    And the site page "/hiding" changes to body:
+      """
+      <html><head><title>A page that is about to hide</title>
+      <meta name="robots" content="noindex"></head><body><h1>h</h1></body></html>
+      """
+    And I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake compare <firstcrawlid> <crawlid> --store-dir <storedir>"
+    Then the exit code is 0
+    And the output contains "/dying: 200 -> 404"
+    And the output contains "/hiding: Indexable -> Non-Indexable (Noindex)"
+
   # The content area (nav/footer excluded) is compared with the shared minhash
   # similarity; a materially rewritten body crosses the default >10% threshold.
   Scenario: A page's content change is detected

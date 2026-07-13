@@ -202,6 +202,15 @@ func newCompareCmd() *cobra.Command {
 			for _, c := range result.Changes {
 				fmt.Fprintf(out, "changed %s %s: %q -> %q\n", c.Element, c.URL, c.Previous, c.Current)
 			}
+			for _, s := range result.StateChanges {
+				if s.PrevStatus != s.CurrStatus {
+					fmt.Fprintf(out, "status %s: %d -> %d\n", s.URL, s.PrevStatus, s.CurrStatus)
+				}
+				if s.PrevIndexable != s.CurrIndexable {
+					fmt.Fprintf(out, "indexability %s: %s -> %s\n",
+						s.URL, indexLabel(s.PrevIndexable, s.PrevIndexability), indexLabel(s.CurrIndexable, s.CurrIndexability))
+				}
+			}
 			if outPath != "" {
 				d := compareDataset(result)
 				if err := writeDataset(cmd, d, format, outPath); err != nil {
@@ -234,5 +243,27 @@ func compareDataset(r *compare.Result) *export.Dataset {
 	for _, c := range r.Changes {
 		d.Rows = append(d.Rows, []string{"change", c.Element, c.URL, c.Previous, c.Current})
 	}
+	for _, s := range r.StateChanges {
+		if s.PrevStatus != s.CurrStatus {
+			d.Rows = append(d.Rows, []string{"state", "status_code", s.URL,
+				fmt.Sprintf("%d", s.PrevStatus), fmt.Sprintf("%d", s.CurrStatus)})
+		}
+		if s.PrevIndexable != s.CurrIndexable {
+			d.Rows = append(d.Rows, []string{"state", "indexability", s.URL,
+				indexLabel(s.PrevIndexable, s.PrevIndexability), indexLabel(s.CurrIndexable, s.CurrIndexability)})
+		}
+	}
 	return d
+}
+
+// indexLabel renders an indexability verdict with its reason when non-indexable
+// (e.g. "Non-Indexable (noindex)").
+func indexLabel(indexable bool, why string) string {
+	if indexable {
+		return "Indexable"
+	}
+	if why == "" {
+		return "Non-Indexable"
+	}
+	return "Non-Indexable (" + why + ")"
 }

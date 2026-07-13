@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agentberlin/bluesnake/internal/compare"
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/finalize"
@@ -192,6 +191,10 @@ func (a *App) invalidate(id string) {
 	delete(a.issueCache, id)
 	delete(a.countCache, id)
 	a.cacheMu.Unlock()
+	// Every invalidation means this crawl's content may have changed (deleted,
+	// resumed, re-analyzed), so cached comparisons diffing it are stale too.
+	// Best-effort: the cache recomputes on demand.
+	_ = store.PurgeComparisons(a.storeDir, id)
 }
 
 // ---------------------------------------------------------------------------
@@ -516,62 +519,6 @@ func (a *App) CancelJob(id string) error {
 func (a *App) ClearJob(id string) error {
 	a.ensureQueue()
 	return store.DeleteJob(a.storeDir, id)
-}
-
-// ---------------------------------------------------------------------------
-// compare
-
-func (a *App) CompareCrawls(prevID, currID string) (*compare.Result, error) {
-	prev, err := a.compareInput(prevID)
-	if err != nil {
-		return nil, err
-	}
-	curr, err := a.compareInput(currID)
-	if err != nil {
-		return nil, err
-	}
-	st, err := store.OpenCrawl(a.storeDir, currID)
-	if err != nil {
-		return nil, err
-	}
-	defer st.Close()
-	cfgYAML, err := st.Meta("config")
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := config.Load([]byte(cfgYAML))
-	if err != nil {
-		return nil, err
-	}
-	return compare.Run(prev, curr, cfg)
-}
-
-func (a *App) compareInput(id string) (compare.Input, error) {
-	pages, err := a.loadPages(id)
-	if err != nil {
-		return compare.Input{}, err
-	}
-	st, err := store.OpenCrawl(a.storeDir, id)
-	if err != nil {
-		return compare.Input{}, err
-	}
-	defer st.Close()
-	counts, err := st.IssueCounts()
-	if err != nil {
-		return compare.Input{}, err
-	}
-	iss := map[string][]string{}
-	for issueID, n := range counts {
-		if n == 0 {
-			continue
-		}
-		urls, err := st.IssueURLs(issueID)
-		if err != nil {
-			continue
-		}
-		iss[issueID] = urls
-	}
-	return compare.Input{Pages: pages, Issues: iss}, nil
 }
 
 // ---------------------------------------------------------------------------

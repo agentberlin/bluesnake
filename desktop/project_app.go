@@ -2,11 +2,13 @@ package main
 
 import (
 	"fmt"
+	"sort"
 
-	"github.com/agentberlin/bluesnake/internal/compare"
+	"github.com/agentberlin/bluesnake/internal/issues"
 	"github.com/agentberlin/bluesnake/internal/project"
 	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/runner"
+	"github.com/agentberlin/bluesnake/internal/store"
 )
 
 // ProjectApp is the Wails binding for the opt-in project layer (competitor
@@ -230,32 +232,153 @@ func (a *ProjectApp) ProjectComparison(id string, includeOptional bool) (*projec
 	return s.BuildScorecard(id, includeOptional)
 }
 
-// ProjectDiff is the per-competitor over-time URL/issue diff (Mode A): it
-// resolves the site's two latest comparable crawls and runs the existing
-// pairwise compare. ok is false when the site has fewer than two such crawls.
-type ProjectDiffResult struct {
-	OK     bool            `json:"ok"`
-	PrevID string          `json:"prev_id,omitempty"`
-	CurrID string          `json:"curr_id,omitempty"`
-	Result *compare.Result `json:"result,omitempty"`
+// MemberPulse is one member's "what's happening" summary (Mode A, always-on):
+// the site's history reduced to trend points plus the delta between its two
+// latest comparable crawls. The delta rides the desktop comparison cache
+// (App.CompareCrawls), so the pairwise diff computes once per crawl pair and
+// every later visit — here or in the crawl's Compare tab — is a registry read.
+// Computed entirely in the desktop layer; the project package stays untouched.
+type MemberPulse struct {
+	Domain string `json:"domain"`
+	OK     bool   `json:"ok"`     // false: fewer than two comparable crawls
+	Cached bool   `json:"cached"` // delta served from the comparison cache
+
+	PrevID      string `json:"prev_id,omitempty"`
+	CurrID      string `json:"curr_id,omitempty"`
+	PrevStarted int64  `json:"prev_started,omitempty"` // unix seconds
+	CurrStarted int64  `json:"curr_started,omitempty"`
+
+	PagesPrev    int `json:"pages_prev"`
+	PagesCurr    int `json:"pages_curr"`
+	NewPages     int `json:"new_pages"`
+	RemovedPages int `json:"removed_pages"`
+
+	StatusFlips       int `json:"status_flips"`
+	IndexabilityFlips int `json:"indexability_flips"`
+	ElementChanges    int `json:"element_changes"`
+
+	IssuesAppeared int `json:"issues_appeared"`
+	IssuesResolved int `json:"issues_resolved"`
+
+	IndexablePrev int `json:"indexable_prev"`
+	IndexableCurr int `json:"indexable_curr"`
+
+	TopMoves []IssueMove  `json:"top_moves,omitempty"`
+	Trend    []TrendPoint `json:"trend"` // oldest → newest, at most pulseTrendCap points
 }
 
-func (a *ProjectApp) ProjectDiff(id, domain string) (*ProjectDiffResult, error) {
+// IssueMove is one issue's net movement between the two latest crawls.
+type IssueMove struct {
+	Name     string `json:"name"`
+	Severity string `json:"severity"`
+	Net      int    `json:"net"`
+}
+
+// TrendPoint is one comparable crawl reduced to sparkline numbers.
+type TrendPoint struct {
+	CrawlID       string `json:"crawl_id"`
+	Started       int64  `json:"started"`
+	URLs          int    `json:"urls"`
+	Issues        int    `json:"issues"`
+	Warnings      int    `json:"warnings"`
+	Opportunities int    `json:"opportunities"`
+}
+
+// pulseTrendCap bounds the per-member history walk (one crawl-DB open per
+// point for its issue counts).
+const pulseTrendCap = 12
+
+func (a *ProjectApp) MemberPulse(id, domain string) (*MemberPulse, error) {
 	s, err := a.open()
 	if err != nil {
 		return nil, err
 	}
 	defer s.Close()
-	prevID, currID, ok, err := s.ComparePair(domain)
+	hist, err := s.SiteHistory(domain)
 	if err != nil {
 		return nil, err
 	}
-	if !ok {
-		return &ProjectDiffResult{OK: false}, nil
+	var comp []project.SiteCrawl
+	for _, c := range hist { // newest first
+		if c.Comparable {
+			comp = append(comp, c)
+		}
 	}
-	res, err := s.Compare(prevID, currID)
+	if len(comp) > pulseTrendCap {
+		comp = comp[:pulseTrendCap]
+	}
+	mp := &MemberPulse{Domain: domain}
+	for i := len(comp) - 1; i >= 0; i-- { // oldest → newest
+		mp.Trend = append(mp.Trend, trendPoint(a.storeDir, comp[i]))
+	}
+	if len(comp) < 2 {
+		return mp, nil
+	}
+	prev, curr := comp[1], comp[0]
+	p, err := a.app.CompareCrawls(prev.ID, curr.ID, false)
 	if err != nil {
 		return nil, err
 	}
-	return &ProjectDiffResult{OK: true, PrevID: prevID, CurrID: currID, Result: res}, nil
+	mp.OK, mp.Cached = true, p.Cached
+	mp.PrevID, mp.CurrID = prev.ID, curr.ID
+	mp.PrevStarted, mp.CurrStarted = prev.Started.Unix(), curr.Started.Unix()
+	mp.PagesPrev, mp.PagesCurr = p.PagesPrev, p.PagesCurr
+	mp.NewPages, mp.RemovedPages = p.NewCount, p.MissingCount
+	mp.StatusFlips, mp.IndexabilityFlips = p.StatusFlipCount, p.IndexFlipCount
+	mp.ElementChanges = p.ElementChangeCount
+	mp.IndexablePrev, mp.IndexableCurr = p.IndexablePrev, p.IndexableCurr
+	moves := make([]IssueMove, 0, len(p.IssueDeltas))
+	for _, d := range p.IssueDeltas {
+		mp.IssuesAppeared += d.AddedCount + d.NewCount
+		mp.IssuesResolved += d.RemovedCount + d.MissingCount
+		if net := d.CurrCount - d.PrevCount; net != 0 {
+			moves = append(moves, IssueMove{Name: d.Name, Severity: d.Severity, Net: net})
+		}
+	}
+	sort.SliceStable(moves, func(i, j int) bool { return abs(moves[i].Net) > abs(moves[j].Net) })
+	if len(moves) > 3 {
+		moves = moves[:3]
+	}
+	mp.TopMoves = moves
+	return mp, nil
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
+// trendPoint reduces one comparable crawl to its sparkline numbers, opening
+// its DB only for the issue counts (same per-crawl read ListCrawls does).
+func trendPoint(dir string, c project.SiteCrawl) TrendPoint {
+	tp := TrendPoint{CrawlID: c.ID, Started: c.Started.Unix(), URLs: c.Total}
+	if tp.URLs == 0 {
+		tp.URLs = c.Crawled
+	}
+	st, err := store.OpenCrawl(dir, c.ID)
+	if err != nil {
+		return tp
+	}
+	defer st.Close()
+	counts, err := st.IssueCounts()
+	if err != nil {
+		return tp
+	}
+	for issueID, n := range counts {
+		def, ok := issues.Lookup(issueID)
+		if !ok || n == 0 {
+			continue
+		}
+		switch def.Severity {
+		case issues.Issue:
+			tp.Issues += n
+		case issues.Warning:
+			tp.Warnings += n
+		case issues.Opportunity:
+			tp.Opportunities += n
+		}
+	}
+	return tp
 }
