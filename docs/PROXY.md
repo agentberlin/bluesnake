@@ -151,33 +151,108 @@ works.
 
 ### 4.2 Cost model — this matters more than it looks
 
-All three price **per gigabyte**, and bandwidth is the thing a crawler consumes.
+All three price **per gigabyte of traffic through the proxy**, and bandwidth is
+the thing a crawler consumes. The unit being billed is **wire bytes** —
+compressed, both directions, including headers. It is not the page's
+uncompressed size, and it is not what `pages.size` records (§4.2.4).
 
-| Mode | Bytes/page | 10k-page crawl | @ $8/GB (BD residential PAYG) |
+#### 4.2.1 Per-page inputs
+
+Source: [HTTP Archive Web Almanac 2025, Page Weight](https://almanac.httparchive.org/en/2025/page-weight).
+HTML document **transfer** size (desktop), i.e. post-gzip/brotli wire bytes:
+
+| p10 | p25 | p50 | p75 | p90 |
+|---|---|---|---|---|
+| 6 KB | 14 KB | **35 KB** | 78 KB | 152 KB |
+
+Median **total** page weight (all subresources) is 2,412 KB desktop /
+2,164 KB mobile — roughly 70× the HTML alone.
+
+Per-request overhead on top of the body: request headers ~0.5 KB, response
+headers ~1 KB, plus amortised TLS handshake (~4–6 KB per new connection, which
+today is far more often than it should be — see P0-4). Round the raw path to
+**~40 KB/page at p50, ~85 KB at p75, ~160 KB at p90**.
+
+#### 4.2.2 Raw path (the default: `resources.*.crawl` all `false`, [`defaults.go:16`](../internal/config/defaults.go#L16))
+
+10,000 pages:
+
+| Site profile | Bytes/page | Total | Residential PAYG ($8.40/GB) | Residential committed ($3/GB) | Datacenter ($0.60/GB) |
+|---|---|---|---|---|---|
+| p50 | 40 KB | 0.40 GB | $3.4 | $1.2 | $0.24 |
+| p75 | 85 KB | 0.85 GB | $7.1 | $2.6 | $0.51 |
+| p90 | 160 KB | 1.60 GB | $13.4 | $4.8 | $0.96 |
+
+**The raw path is cheap on any tier.** Single-digit dollars per 10k pages even
+on the most expensive residential PAYG rate; cents on datacenter. This is not
+the number to optimise.
+
+#### 4.2.3 Render path — and the cache finding that changes it
+
+Naively, median total page weight × 10k = **24 GB ⇒ $120–200**. That is the
+number to worry about, and it is why REQ-R4 exists.
+
+But it overstates the steady state. chromedp's `ExecAllocator` creates one
+temp profile per `render.New` (i.e. per crawl), every render is a new *tab* in
+that shared browser process ([`render.go:537`](../internal/render/render.go#L537)),
+and bluesnake sets neither `--disable-cache` nor `Network.setCacheDisabled`.
+**Chrome's HTTP cache is therefore shared across every page of a crawl**, so a
+site's framework bundle, CSS, fonts and logo are fetched once, not 10,000
+times. Only page-unique bytes (HTML, page-specific images, XHR) recur.
+
+| Scenario | Bytes/page | 10k total | @ $8/GB |
 |---|---|---|---|
-| Raw fetch, HTML only (**our default** — `resources.*.crawl` all default `false`, [`defaults.go:16`](../internal/config/defaults.go#L16)) | ~50–200 KB | 0.5–2 GB | **$4–16** |
-| JS render (Chrome loads every subresource) | ~2–5 MB | 20–50 GB | **$160–400** |
+| Cold cache every page (worst case) | ~2.4 MB | 24 GB | $190 |
+| Warm shared cache (realistic today) | ~500 KB | 5 GB | $40 |
+| Warm + REQ-R4 resource blocking | ~150–250 KB | 1.5–2.5 GB | **$12–20** |
 
-The raw path is affordable. **The render path is not, without mitigation.**
-Chrome currently downloads everything: `network.Enable()` is called but there is
-no `Network.setBlockedURLs` and no request interception
-([`render.go:602`](../internal/render/render.go#L602)).
+**Design consequence — this constrains §7.5.** Per-proxy *browser contexts*
+(`Target.createBrowserContext`) are cache-partitioned, as is one Chrome process
+per proxy. Either form of renderer rotation therefore **destroys the shared
+cache** and pushes the bill back toward the cold-cache row, potentially 4–5×.
+With D1's single gateway this is moot — one proxy, one browser, one cache — and
+that is an argument for D1 that has nothing to do with implementation effort.
+If renderer rotation across N proxies is ever added, REQ-R4 stops being an
+optimisation and becomes a precondition.
+
+#### 4.2.4 Two traps when estimating from an existing crawl
+
+- **`pages.size` is decompressed.** `rec.Size = len(res.Body)`
+  ([`crawler.go:762`](../internal/crawler/crawler.go#L762)) measures the body
+  *after* the transport transparently gunzips it (bluesnake deliberately leaves
+  `Accept-Encoding` unset so the transport handles it,
+  [`fetch.go:36`](../internal/fetch/fetch.go#L36)). `SUM(size)` over a crawl
+  therefore **overstates billable bytes by roughly 3–4× for HTML**. Do not quote
+  it as a proxy estimate.
+- **`limits.max_page_size_kb` defaults to 51200 — 50 MB**
+  ([`defaults.go:73`](../internal/config/defaults.go#L73)). Internal links are
+  crawled by default (`links.internal.crawl: true`), and that includes PDFs and
+  other large documents, which are fetched but not parsed
+  (`extraction.pdf.*` is a documented no-op). One linked 50 MB file costs
+  50 MB of proxy traffic. On a proxied crawl, lower this cap.
 
 → **REQ-R4** (§6.4): block `Image`, `Font`, `Media` and `Stylesheet` resource
-types in the render path when a proxy is active. Expected reduction ~70–80% of
-render bandwidth. bluesnake needs the *DOM*, not the pixels — it already
-ignores `Media` for settle purposes
+types in the render path when a proxy is active. bluesnake needs the *DOM*, not
+the pixels — it already ignores `Media` for settle purposes
 ([`render.go:323`](../internal/render/render.go#L323)). Screenshots
 (`rendering.screenshots`) are the one feature that needs images; gate the
 blocking off when screenshots are on.
+
+→ **REQ-S11**: record billable bytes per request (wire bytes, not
+`len(Body)`) and report a per-crawl proxy-traffic total. Without it, cost is
+unknowable before the invoice arrives.
 
 ### 4.3 Bright Data's higher tiers (relevant to §2.2)
 
 Worth knowing, since we are buying from them anyway:
 
 - **Web Unlocker** (~$1.50–3.00/1k successful requests): handles fingerprinting,
-  CAPTCHA and unblocking server-side. Per-*request* pricing suits an HTML-only
-  crawler far better than per-GB. Plausibly the cheapest route for hard targets.
+  CAPTCHA and unblocking server-side. At 10k pages that is **$15–30** — 2–3×
+  plain residential on the raw path (§4.2.2), so not the cheapest option, but
+  per-*request* billing makes it **predictable** (immune to a site's page
+  weight and to the 50 MB-PDF tail risk), and it replaces the whole of Phase 4
+  rather than adding to it. For hard targets, compare it against
+  residential + uTLS + our own ban handling, not against residential alone.
 - **Scraping Browser / Browser API** ($5–8/GB): a remote CDP endpoint with proxy
   and fingerprint handling server-side. chromedp supports this directly via
   `chromedp.NewRemoteAllocator(ctx, wsURL)` (verified present in v0.15.1,
@@ -287,6 +362,7 @@ that closes a documented no-op.
 | REQ-S7 | `fetch.Result` and `PageRecord` carry the proxy that served the request. Persisted as a `pages` column via the migration ladder ([`store.go:414`](../internal/store/store.go#L414)). |
 | REQ-S8 | Proxy credentials are redactable: never logged, never exported, never rendered in the desktop UI or MCP responses in full. Store and display `host:port` only. |
 | REQ-S9 | Proxy config supports `password_env`, matching the existing `http.auth.basic` convention ([`types.go:370`](../internal/config/types.go#L370)). Credentials should not have to live in a YAML profile. |
+| REQ-S11 | Billable bytes (wire bytes in both directions, not `len(Body)`) are metered per request and totalled per crawl. Surfaced in the crawl summary. See §4.2.4. |
 
 ### 6.3 Phase 2 — health (REQ-H)
 
@@ -531,7 +607,7 @@ REQ-P1…P5, REQ-C1. Definition of done:
 *Estimate: ~1 day.* **Do the `:44445` verification before 2026-09-25** (§5.3).
 
 ### Phase 1 — pool and selection
-REQ-S1…S10. Definition of done:
+REQ-S1…S11. Definition of done:
 - `internal/proxypool` at ≥90% statement coverage (Makefile `COVER_MIN`).
 - `features/proxy.feature` covers: single proxy, list rotation, sticky-host
   stability, direct-entry participation, per-page attribution.
@@ -539,6 +615,8 @@ REQ-S1…S10. Definition of done:
 - Credentials redacted everywhere (assert in a test, not by inspection).
 - Config error when `proxy` and `proxies` are both set, and when rotation is
   requested with persistent cookies (REQ-S10).
+- Billable-byte metering (REQ-S11) verified against a known payload, so §4.2's
+  estimates can be replaced with measurements from a real crawl.
 
 *Estimate: ~3–4 days including tests.*
 
