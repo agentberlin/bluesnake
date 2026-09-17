@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS pages(
   link_score REAL DEFAULT 0, unique_inlinks INT DEFAULT 0, unique_outlinks INT DEFAULT 0,
   closest_similarity REAL DEFAULT 0, near_dup_count INT DEFAULT 0,
   duplicate_of TEXT,
+  proxy TEXT,
   minhash BLOB,
   headers JSON, structured JSON, jsdiff JSON, facts JSON
 );
@@ -436,7 +437,14 @@ type migration struct {
 // once all installs had reached v5 (DESIGN.md §5.3 "Retiring a migration"), and
 // the minCrawlVersion floor below refuses anything older. Append the next schema
 // change as {6, …}; its apply func can reuse addColumn/columnExists as before.
-var crawlMigrations = []migration{}
+var crawlMigrations = []migration{
+	{6, "pages.proxy", func(tx *sql.Tx) error {
+		// Which egress fetched each page. Without it, a crawl that a WAF
+		// partially blocked cannot be diagnosed after the fact — you can see
+		// the 403s but not which source IP earned them.
+		return addColumn(tx, "pages", "proxy TEXT")
+	}},
+}
 
 // registryMigrations is the ladder for the single shared registry DB. Same
 // append-only contract; retired through v2, so append the next step as {3, …}.
@@ -702,13 +710,13 @@ func (c *Crawl) Page(rec *crawler.PageRecord) error {
 		(url, scope, state, depth, status_code, status, content_type, http_version,
 		 response_time_ms, size, fetch_error, redirect_url, redirect_type,
 		 matched_robots_line, indexable, indexability_status,
-		 discovered_from, outside_start_folder, duplicate_of, minhash, headers, structured, jsdiff, facts)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 discovered_from, outside_start_folder, duplicate_of, proxy, minhash, headers, structured, jsdiff, facts)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		rec.URL, rec.Scope, rec.State, rec.Depth, rec.StatusCode, rec.Status,
 		rec.ContentType, rec.HTTPVersion, rec.ResponseTimeMs, rec.Size, rec.FetchError,
 		rec.RedirectURL, rec.RedirectType, rec.MatchedRobotsLine,
 		boolInt(rec.Indexable), rec.IndexabilityStatus,
-		rec.DiscoveredFrom, boolInt(rec.OutsideStartFolder), rec.DuplicateOf, minhashBlob(rec.Minhash), headersJSON, structuredJSON, jsdiffJSON, factsJSON)
+		rec.DiscoveredFrom, boolInt(rec.OutsideStartFolder), rec.DuplicateOf, rec.Proxy, minhashBlob(rec.Minhash), headersJSON, structuredJSON, jsdiffJSON, factsJSON)
 	if err != nil {
 		return err
 	}
@@ -1316,7 +1324,7 @@ func (c *Crawl) loadPages(stripContent bool) (map[string]*crawler.PageRecord, er
 		redirect_type, matched_robots_line, indexable, indexability_status,
 		inlinks, COALESCE(discovered_from,''), outside_start_folder,
 		link_score, unique_inlinks, unique_outlinks, closest_similarity,
-		COALESCE(duplicate_of,''), minhash, headers, structured, jsdiff, facts FROM pages`)
+		COALESCE(duplicate_of,''), COALESCE(proxy,''), minhash, headers, structured, jsdiff, facts FROM pages`)
 	if err != nil {
 		return nil, err
 	}
@@ -1332,7 +1340,7 @@ func (c *Crawl) loadPages(stripContent bool) (map[string]*crawler.PageRecord, er
 			&rec.MatchedRobotsLine, &indexable, &rec.IndexabilityStatus,
 			&rec.Inlinks, &rec.DiscoveredFrom, &outside,
 			&rec.LinkScore, &rec.UniqueInlinks, &rec.UniqueOutlinks, &rec.ClosestSimilarity,
-			&rec.DuplicateOf, &rec.Minhash, &headersJSON, &structuredJSON, &jsdiffJSON, &factsJSON); err != nil {
+			&rec.DuplicateOf, &rec.Proxy, &rec.Minhash, &headersJSON, &structuredJSON, &jsdiffJSON, &factsJSON); err != nil {
 			return nil, err
 		}
 		rec.Indexable = indexable == 1

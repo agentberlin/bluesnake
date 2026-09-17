@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/fetch"
+	"github.com/agentberlin/bluesnake/internal/proxypool"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
@@ -57,6 +59,7 @@ type Renderer struct {
 	cfg         *config.Config
 	sem         chan struct{}
 	snippets    []snippet
+	forwarder   *proxypool.Forwarder // non-nil when Chrome needs a credential shim
 }
 
 // ChromePath locates a Chrome/Chromium binary (config override first).
@@ -95,6 +98,22 @@ func New(cfg *config.Config) (*Renderer, error) {
 		chromedp.IgnoreCertErrors,
 		chromedp.UserAgent(cfg.HTTP.UserAgent),
 	)
+	// Route Chrome through the same egress as the raw fetches. Without this a
+	// javascript-mode crawl proxies its raw fetch and renders DIRECT: the origin
+	// IP leaks on every page, and every raw-vs-rendered diff becomes an artefact
+	// of two different network paths rather than a fact about the page.
+	//
+	// Chrome takes one egress for the whole browser process, so a multi-proxy
+	// pool pins renders to its first egress; rotating renders needs per-browser-
+	// context proxies, which are cache-partitioned and would cost far more in
+	// re-fetched subresources than the rotation is worth. See docs/PROXY.md §4.2.
+	forwarder, proxyArg, err := chromeProxy(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if proxyArg != "" {
+		opts = append(opts, chromedp.ProxyServer(proxyArg))
+	}
 	if w, h := cfg.Rendering.WindowWidth, cfg.Rendering.WindowHeight; w > 0 && h > 0 {
 		opts = append(opts, chromedp.WindowSize(w, h))
 	} else {
@@ -118,7 +137,47 @@ func New(cfg *config.Config) (*Renderer, error) {
 		cfg:         cfg,
 		sem:         make(chan struct{}, concurrency),
 		snippets:    snippets,
+		forwarder:   forwarder,
 	}, nil
+}
+
+// chromeProxy resolves the --proxy-server value for this config, starting a
+// credential-injecting forwarder when the egress needs one (Chrome rejects
+// user:pass@host:port outright). Returns ("", nil) when no proxy is configured.
+func chromeProxy(cfg *config.Config) (*proxypool.Forwarder, string, error) {
+	if len(cfg.HTTP.ProxyPool()) == 0 {
+		return nil, "", nil
+	}
+	pool, err := fetch.BuildPool(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	// The first non-direct egress: an include_direct pool still has to send
+	// Chrome somewhere, and a browser that silently went direct would reopen the
+	// very leak this exists to close.
+	var chosen *proxypool.Proxy
+	for _, p := range pool.Proxies() {
+		if !p.Direct() {
+			chosen = p
+			break
+		}
+	}
+	if chosen == nil {
+		return nil, "", nil
+	}
+	if !proxypool.NeedsForwarder(chosen) {
+		return nil, chosen.Label(), nil
+	}
+	if !proxypool.Forwardable(chosen) {
+		return nil, "", fmt.Errorf("rendering.mode=javascript cannot use %s: Chrome does not accept proxy "+
+			"credentials, and only http/https proxies can carry them for it. Use an http(s) proxy, or an "+
+			"unauthenticated SOCKS proxy", chosen.Label())
+	}
+	f, err := proxypool.StartForwarder(chosen)
+	if err != nil {
+		return nil, "", fmt.Errorf("rendering proxy: %w", err)
+	}
+	return f, f.ProxyServer(), nil
 }
 
 func maxTabs() int {
@@ -146,7 +205,12 @@ func GlobalRenderCap(cfg *config.Config) int {
 	return maxTabs()
 }
 
-func (r *Renderer) Close() { r.allocCancel() }
+func (r *Renderer) Close() {
+	r.allocCancel()
+	if r.forwarder != nil {
+		_ = r.forwarder.Close()
+	}
+}
 
 // settleTracker watches page lifecycle + network events on a tab so Render
 // can snapshot as soon as the DOM settles instead of sleeping the full AJAX

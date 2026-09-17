@@ -37,19 +37,23 @@ const (
 
 // PageRecord is everything recorded for one URL.
 type PageRecord struct {
-	URL                string
-	Scope              string // internal | external
-	State              string
-	Depth              int
-	StatusCode         int
-	Status             string
-	ContentType        string
-	HTTPVersion        string // negotiated protocol, e.g. HTTP/1.1, HTTP/2.0
-	ResponseTimeMs     int64
-	Size               int
-	FetchError         string
-	RedirectURL        string
-	RedirectType       string // http | hsts | meta_refresh
+	URL            string
+	Scope          string // internal | external
+	State          string
+	Depth          int
+	StatusCode     int
+	Status         string
+	ContentType    string
+	HTTPVersion    string // negotiated protocol, e.g. HTTP/1.1, HTTP/2.0
+	ResponseTimeMs int64
+	Size           int
+	FetchError     string
+	RedirectURL    string
+	RedirectType   string // http | hsts | meta_refresh
+	// Proxy is the redacted label of the egress that fetched this page
+	// ("direct" when unproxied). Attribution is what turns "why did these 200
+	// URLs 403?" into a query instead of a re-crawl. Never carries credentials.
+	Proxy              string
 	MatchedRobotsLine  int
 	Indexable          bool
 	IndexabilityStatus string
@@ -763,6 +767,7 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) ([]frontier.It
 	rec.FetchError = res.FetchError
 	rec.RedirectURL = res.RedirectURL
 	rec.RedirectType = res.RedirectType
+	rec.Proxy = res.Proxy
 	if len(res.Headers) > 0 {
 		rec.Headers = make(map[string]string, len(res.Headers))
 		for name := range res.Headers {

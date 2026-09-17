@@ -8,8 +8,8 @@ package fetch
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/proxypool"
 )
 
 // browserAccept is the navigational Accept header bluesnake sends when
@@ -53,15 +54,24 @@ type Result struct {
 	RedirectURL    string // resolved Location target for 3xx
 	RedirectType   string // "http" | "hsts"
 	FetchError     string // non-empty = no response (timeout, refused, malformed)
+	// Proxy is the redacted label of the egress that served this request
+	// ("direct" when unproxied). Never carries credentials.
+	Proxy string
 }
 
 // Option customizes a Client (test hooks).
 type Option func(*Client)
 
 // WithInsecureTLS skips certificate verification (tests against httptest TLS
-// servers; later also the trusted-certificates feature's escape hatch).
+// servers). It amends the existing TLS config rather than replacing it, so a
+// test that also configures trusted roots keeps them.
 func WithInsecureTLS() Option {
-	return func(c *Client) { c.transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} }
+	return func(c *Client) {
+		if c.transport.TLSClientConfig == nil {
+			c.transport.TLSClientConfig = &tls.Config{}
+		}
+		c.transport.TLSClientConfig.InsecureSkipVerify = true
+	}
 }
 
 type Client struct {
@@ -71,16 +81,53 @@ type Client struct {
 	maxBody   int64
 	timeout   time.Duration
 	hsts      *hstsStore
+	pool      *proxypool.Pool
+	meter     *meter
 }
 
+// ctxProxyKey carries the egress chosen for one request. The transport's Proxy
+// hook reads it back out, which is what makes selection per-request without
+// mutating shared state: the caller picks, so the caller also KNOWS which
+// egress served the response and can record it. A transport field would be
+// racy across workers and would tell us nothing after the fact.
+type ctxProxyKey struct{}
+
 func New(cfg *config.Config, opts ...Option) (*Client, error) {
-	transport := &http.Transport{}
-	if cfg.HTTP.Proxy != "" {
-		pu, err := url.Parse(cfg.HTTP.Proxy)
-		if err != nil {
-			return nil, fmt.Errorf("http.proxy: %w", err)
-		}
-		transport.Proxy = http.ProxyURL(pu)
+	pool, err := BuildPool(cfg)
+	if err != nil {
+		return nil, err
+	}
+	m := newMeter(pool)
+	transport := &http.Transport{
+		Proxy: func(req *http.Request) (*url.URL, error) {
+			if p, ok := req.Context().Value(ctxProxyKey{}).(*proxypool.Proxy); ok {
+				return p.URL, nil
+			}
+			// No egress stamped (an internal caller bypassing FetchWith): go
+			// direct rather than guessing, so a missing stamp can never be
+			// mistaken for a deliberate proxy choice.
+			return nil, nil
+		},
+		// Keep-alive sized to the worker count. The stdlib default is 2 per
+		// host, so every thread past the second re-dialled and re-handshook for
+		// each page: latency we paid for nothing, and — through a proxy — a
+		// fresh TLS ClientHello per page for any fingerprinting defender to
+		// sample. The cap is per (proxy, host), so a pool multiplies the
+		// connections this permits, which is the intended behaviour.
+		MaxIdleConnsPerHost: max(cfg.Speed.MaxThreads, 2),
+		IdleConnTimeout:     90 * time.Second,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			c, err := (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			return &countingConn{Conn: c, total: &m.total, own: m.forAddr(addr)}, nil
+		},
+	}
+	if roots, err := rootPool(cfg.HTTP.TrustedCertDirs); err != nil {
+		return nil, err
+	} else if roots != nil {
+		transport.TLSClientConfig = &tls.Config{RootCAs: roots}
 	}
 	switch cfg.HTTP.Version {
 	case "1.1":
@@ -101,6 +148,8 @@ func New(cfg *config.Config, opts ...Option) (*Client, error) {
 		maxBody:   int64(cfg.Limits.MaxPageSizeKB) * 1024,
 		timeout:   time.Duration(cfg.Advanced.ResponseTimeoutSec) * time.Second,
 		hsts:      newHSTSStore(),
+		pool:      pool,
+		meter:     m,
 	}
 	c.hc = &http.Client{
 		Transport: transport,
@@ -123,12 +172,11 @@ func New(cfg *config.Config, opts ...Option) (*Client, error) {
 }
 
 // CloseIdleConnections drops the client's pooled keep-alive connections,
-// releasing their read/write-loop goroutines and sockets. The transport sets
-// no IdleConnTimeout, so without this an idle connection is pinned until the
-// PEER closes it — for a keep-alive-forever server, indefinitely: a per-owner
-// goroutine/socket leak in long-lived multi-crawl processes. Call it when the
-// client's owner is done fetching (a finished crawl, a completed tool run);
-// the client stays usable — a later request simply dials fresh.
+// releasing their read/write-loop goroutines and sockets. IdleConnTimeout
+// reaps them eventually, but "eventually" is 90s of pinned sockets per finished
+// crawl in a long-lived multi-crawl process, so owners still close explicitly.
+// Call it when the client's owner is done fetching (a finished crawl, a
+// completed tool run); the client stays usable — a later request dials fresh.
 func (c *Client) CloseIdleConnections() { c.transport.CloseIdleConnections() }
 
 // Override customizes a single request without touching the configured
@@ -167,8 +215,14 @@ func (c *Client) FetchWith(ctx context.Context, rawURL string, o Override) *Resu
 	}
 
 	attempts := 1 + c.cfg.Advanced.Retry5xx
+	// last is the egress that served the previous attempt. A retry deliberately
+	// avoids it: a 5xx is as likely to have come from a proxy being throttled or
+	// blocked as from the origin, and retrying through the same egress both
+	// burns the retry budget and, when the proxy was the cause, records a
+	// phantom origin error in the audit.
+	var last *proxypool.Proxy
 	for range attempts {
-		c.doOnce(ctx, u, res, o)
+		last = c.doOnce(ctx, u, res, o, last)
 		if res.FetchError != "" || res.StatusCode < 500 {
 			break
 		}
@@ -176,16 +230,32 @@ func (c *Client) FetchWith(ctx context.Context, rawURL string, o Override) *Resu
 	return res
 }
 
-func (c *Client) doOnce(ctx context.Context, u *url.URL, res *Result, o Override) {
+// doOnce performs one attempt and returns the egress it used, so the caller can
+// route a retry elsewhere. avoid is the previous attempt's egress, or nil.
+func (c *Client) doOnce(ctx context.Context, u *url.URL, res *Result, o Override, avoid *proxypool.Proxy) *proxypool.Proxy {
 	*res = Result{URL: res.URL} // reset between retries
 
+	p := c.pool.SelectExcluding(u.Hostname(), avoid)
+	// The per-egress concurrency cap is held only around the request itself.
+	// Providers enforce their own limits and answer a breach with errors
+	// indistinguishable from a ban, so exceeding one corrupts the crawl's
+	// results, not just its manners.
+	if !p.Acquire(ctx) {
+		res.FetchError = ctx.Err().Error()
+		return p
+	}
+	defer p.Release()
+	res.Proxy = p.Label()
+
+	// Stamp the egress where the transport's Proxy hook will find it.
+	ctx = context.WithValue(ctx, ctxProxyKey{}, p)
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		res.FetchError = err.Error()
-		return
+		return p
 	}
 	ua := c.cfg.HTTP.UserAgent
 	if o.UserAgent != "" {
@@ -212,7 +282,7 @@ func (c *Client) doOnce(ctx context.Context, u *url.URL, res *Result, o Override
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		res.FetchError = err.Error()
-		return
+		return p
 	}
 	defer resp.Body.Close()
 
@@ -220,7 +290,7 @@ func (c *Client) doOnce(ctx context.Context, u *url.URL, res *Result, o Override
 	res.ResponseTimeMs = time.Since(start).Milliseconds()
 	if err != nil {
 		res.FetchError = err.Error()
-		return
+		return p
 	}
 	if int64(len(body)) > c.maxBody {
 		body = body[:c.maxBody]
@@ -248,6 +318,7 @@ func (c *Client) doOnce(ctx context.Context, u *url.URL, res *Result, o Override
 			}
 		}
 	}
+	return p
 }
 
 // applyAuth adds basic credentials for the longest matching configured URL

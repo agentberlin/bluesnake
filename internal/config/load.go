@@ -150,6 +150,35 @@ func (c *Config) Validate() error {
 	oneOf("advanced.cookie_storage", c.Advanced.CookieStorage, "session", "persistent", "none")
 	oneOf("advanced.percent_encoding", c.Advanced.PercentEncoding, "upper", "lower")
 	oneOf("http.version", c.HTTP.Version, "", "1.1", "2")
+	oneOf("http.proxy_strategy", c.HTTP.ProxyStrategy, "", "round_robin", "sticky_host", "random")
+
+	// Proxy pool. The shorthand and the list are mutually exclusive: a silent
+	// precedence rule would let a profile look like it rotates while a stale
+	// http.proxy quietly carried every request.
+	if c.HTTP.Proxy != "" && len(c.HTTP.Proxies) > 0 {
+		bad("http.proxy and http.proxies are mutually exclusive — use the list, or the single-proxy shorthand, not both")
+	}
+	for i, p := range c.HTTP.Proxies {
+		if strings.TrimSpace(p.URL) == "" {
+			bad("http.proxies[%d].url: required", i)
+		}
+		if p.MaxConcurrent < 0 {
+			bad("http.proxies[%d].max_concurrent: must be >= 0 (0 = unbounded), got %d", i, p.MaxConcurrent)
+		}
+	}
+	// Rotating source IPs while every request replays one identity (a persistent
+	// cookie jar, or configured auth cookies) is worse than not rotating: one
+	// session seen from many IPs is a strong bot signal, and on an authenticated
+	// crawl it reads as session hijacking. Auto resolves to sticky_host there;
+	// asking for spread explicitly is refused rather than silently overridden.
+	if len(c.HTTP.ProxyPool()) > 1 && c.SharedIdentity() &&
+		(c.HTTP.ProxyStrategy == "round_robin" || c.HTTP.ProxyStrategy == "random") {
+		bad("http.proxy_strategy=%s cannot be combined with a shared identity "+
+			"(advanced.cookie_storage=persistent or http.auth.cookies): one session from many source IPs "+
+			"is a stronger bot signal than the traffic concentration rotation avoids. "+
+			"Use sticky_host, or leave proxy_strategy empty to get it automatically",
+			c.HTTP.ProxyStrategy)
+	}
 
 	if c.Speed.MaxThreads < 1 {
 		bad("speed.max_threads: must be >= 1, got %d", c.Speed.MaxThreads)
