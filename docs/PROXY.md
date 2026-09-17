@@ -1,7 +1,6 @@
 # Proxy support — requirements & implementation spec
 
-Status: **specification**. Nothing here is implemented beyond the single
-`http.proxy` field described in §3.
+Status: **Phase 1 delivered** (§3, §9); Phases 2–4 specified and not yet built.
 
 bluesnake crawls sites it does not control — competitor audits, pre-sales
 audits, agency portfolios — so a WAF allowlist is not always available. This
@@ -16,17 +15,18 @@ scope for the design — see §7.4, where it constrains rotation.
 
 ## 1. Decisions
 
-Settled before writing this. Rationale in the sections named.
+Settled before the first line of code. Rationale in the sections named.
 
 | # | Decision | §  |
 |---|---|---|
 | D1 | Ship a **single rotating gateway** (Bright Data) as the supported, documented path. | §4 |
-| D2 | Build the **per-request selection seam** for N proxies from day one even though we ship with N=1. The marginal cost is small; retrofitting it is not. | §6.2 |
+| D2 | Build the **per-request selection seam** for N proxies from day one even though we ship with N=1. The marginal cost is small; retrofitting it is not. | §6.1 |
 | D3 | **Degraded crawls fail loud.** A crawl that silently completes with a dead proxy pool is a defective audit. | §8.5 |
 | D4 | Proxy rotation **never auto-raises** `speed.max_urls_per_sec` or `speed.max_threads`. The operator raises them deliberately. | §8.6 |
-| D5 | `http.trusted_cert_dirs` must be **implemented first** — Bright Data's native proxy MITMs TLS and does not work without it. | §5.3 |
-| D6 | Fix the **renderer proxy leak** before anything else. It is a live correctness and privacy bug today. | §3.2 |
+| D5 | Trust MITM proxies via `http.trusted_cert_dirs`, **never** by skipping verification. Bright Data's native proxy re-signs every response, and an auditor that does not verify its own connections cannot audit anyone else's. | §5.3 |
+| D6 | The renderer uses the **same egress** as the raw fetch, always. A crawl that proxies its fetch and renders direct leaks the origin IP and makes every raw-vs-rendered diff an artefact of two network paths. | §7.5 |
 | D7 | Record the proxy **per page** in the store. Without attribution, diagnosing a partially-blocked crawl is guesswork. | §7.3 |
+| D8 | `HTTP_PROXY`/`HTTPS_PROXY` are **ignored**. A crawler that silently inherited an ambient proxy would produce audit results nobody could explain. Egress is explicit configuration only. | §7.7 |
 
 ---
 
@@ -56,78 +56,54 @@ PerimeterX) rotation buys **nothing**, because the discriminator is not the IP:
 - **ASN reputation.** Datacenter proxy ranges are widely pre-blocked. A cheap DC
   pool can perform *worse* than one clean origin IP.
 
-**Consequence:** rotation is necessary but not sufficient for hard targets. §9.4
-covers the fingerprint question as its own phase, because for competitor audits
+**Consequence:** rotation is necessary but not sufficient for hard targets. Phase 4 (§9)
+covers the fingerprint question on its own, because for competitor audits
 it is the binding constraint, not the IP.
-
-### 2.3 Cheaper wins that are not proxies
-
-Two findings from the current code that likely affect throughput more than
-proxies will:
-
-- **`MaxIdleConnsPerHost` is the stdlib default of 2.** The transport is built
-  as a bare `&http.Transport{}`
-  ([`fetch.go:77`](../internal/fetch/fetch.go#L77)), so at `max_threads: 10`
-  against one host we are already tearing down and re-handshaking connections
-  constantly. That costs latency *and* multiplies our TLS-handshake footprint
-  (more ClientHellos = more fingerprint samples for the defender). With a pool
-  the cap becomes 2 per (proxy, host) pair, so it gets worse, not better.
-- **`HTTP_PROXY` / `HTTPS_PROXY` env vars are ignored** for the same reason
-  (`Transport.Proxy` is nil unless `http.proxy` is set). Undocumented today.
 
 ---
 
-## 3. Current state
+## 3. What exists today
 
-### 3.1 What exists
+Phase 1 is implemented (§9). The shipped behaviour:
 
-One field, `http.proxy`, applied once at client construction:
+- **`http.proxy`** — the single-proxy shorthand, and **`http.proxies`** — a pool
+  of `{url, password_env, max_concurrent}` entries. Setting both is a config
+  error rather than a silent precedence rule.
+- **`http.proxy_strategy`** — `round_robin`, `sticky_host`, `random`, or empty
+  for auto (§7.4).
+- **`http.proxy_include_direct`** — put an unproxied egress into the rotation.
+- **`http.trusted_cert_dirs`** — extra roots for TLS-terminating proxies (§5.3).
+- Selection is **per request**; the egress that served each page is recorded on
+  `pages.proxy`, exported in the `response_codes` tab, and shown per URL.
+- Wire bytes are metered per egress, so a crawl's proxy cost is measured rather
+  than estimated (§4.2).
+- The renderer routes Chrome through the same egress, via a loopback
+  credential-injecting forwarder (§7.5).
 
-```go
-// internal/fetch/fetch.go:78
-if cfg.HTTP.Proxy != "" {
-    pu, err := url.Parse(cfg.HTTP.Proxy)
-    ...
-    transport.Proxy = http.ProxyURL(pu)
-}
-```
+`http.proxies` is a list of objects, so — like `http.auth.basic` — it is set in
+YAML rather than through `--set`, whose dotted paths cannot address list
+elements.
 
-Surfaced in the desktop settings
-([`config-schema.js:112`](../desktop/frontend/src/views/config-schema.js#L112))
-and the MCP catalog. No validation beyond URL parseability — a malformed proxy
-fails at `crawler.New` (covered by
-[`internal/runner/executor_status_test.go`](../internal/runner/executor_status_test.go)).
+### 3.1 What the architecture made easy
 
-### 3.2 Known defects (fix regardless of this feature)
-
-| ID | Defect | Impact |
-|---|---|---|
-| **P0-1** | **The renderer ignores `http.proxy` entirely.** `render.New` builds Chrome exec options with no `--proxy-server` ([`render.go:91`](../internal/render/render.go#L91)). | With `rendering.mode: javascript` the raw fetch goes through the proxy and the Chrome render goes **direct** — leaking the origin IP, and producing raw-vs-rendered diffs that are artefacts of two different network paths. |
-| **P0-2** | **`http.trusted_cert_dirs` is declared and never read.** Only occurrence is the struct field ([`types.go:391`](../internal/config/types.go#L391)); documented as a known no-op in DESIGN.md §4. | Blocks Bright Data's native proxy outright (§5.3). |
-| **P0-3** | **5xx retries reuse the same proxy.** `FetchWith` loops `doOnce` on one client ([`fetch.go:169`](../internal/fetch/fetch.go#L169)). | A 503 emitted *by* a blocked proxy retries through that same proxy, burning the retry budget and writing phantom errors into the audit. |
-| **P0-4** | `MaxIdleConnsPerHost` / `IdleConnTimeout` unset (§2.3). | Throughput and fingerprint churn. |
-
-### 3.3 What the architecture gets right
-
-The core is well-shaped for this. Three properties matter:
+Three properties of the existing core did most of the work:
 
 1. **One choke point.** Every request in the product reaches the network via
    `fetch.Client.doOnce` → `c.hc.Do(req)`. Five `fetch.New` call sites (crawler,
    sitemap, MCP site tools, CLI tools, desktop tools) all take the same
    `*config.Config`, so a pool configured once applies everywhere.
 
-2. **`Transport.Proxy` is already a per-request hook.** Verified in the Go
-   1.26 source: `cm.proxyURL, err = t.Proxy(treq.Request)` is evaluated per
-   request, and `connectMethodKey` includes the proxy string — so **connection
-   pooling is correctly partitioned per proxy with zero work on our side**.
-   One transport multiplexes the whole pool with proper keep-alive per
-   (proxy, host, scheme).
+2. **`Transport.Proxy` is already a per-request hook.** In the Go 1.26 source,
+   `cm.proxyURL, err = t.Proxy(treq.Request)` is evaluated per request, and
+   `connectMethodKey` includes the proxy string — so **connection pooling is
+   correctly partitioned per proxy with zero work on our side**. One transport
+   multiplexes the whole pool with proper keep-alive per (proxy, host, scheme).
 
 3. **Concurrency is already bounded and layered.** `newWorkPool` + N persistent
    workers ([`workpool.go:51`](../internal/crawler/workpool.go#L51)), a
    crawl-wide token bucket ([`crawler.go:405`](../internal/crawler/crawler.go#L405)),
-   and a process-wide `limiter`. Proxy selection slots into `crawlOne` with no
-   restructuring.
+   and a process-wide `limiter`. Per-egress caps slot in beside them as a third
+   axis without touching either.
 
 ---
 
@@ -169,9 +145,10 @@ Median **total** page weight (all subresources) is 2,412 KB desktop /
 2,164 KB mobile — roughly 70× the HTML alone.
 
 Per-request overhead on top of the body: request headers ~0.5 KB, response
-headers ~1 KB, plus amortised TLS handshake (~4–6 KB per new connection, which
-today is far more often than it should be — see P0-4). Round the raw path to
-**~40 KB/page at p50, ~85 KB at p75, ~160 KB at p90**.
+headers ~1 KB, plus amortised TLS handshake (~4–6 KB per new connection —
+keep-alive is sized to `speed.max_threads`, so this amortises over a run rather
+than recurring per page). Round the raw path to **~40 KB/page at p50, ~85 KB at
+p75, ~160 KB at p90**.
 
 #### 4.2.2 Raw path (the default: `resources.*.crawl` all `false`, [`defaults.go:16`](../internal/config/defaults.go#L16))
 
@@ -190,7 +167,7 @@ the number to optimise.
 #### 4.2.3 Render path — and the cache finding that changes it
 
 Naively, median total page weight × 10k = **24 GB ⇒ $120–200**. That is the
-number to worry about, and it is why REQ-R4 exists.
+number to worry about, and it is why REQ-R3 exists.
 
 But it overstates the steady state. chromedp's `ExecAllocator` creates one
 temp profile per `render.New` (i.e. per crawl), every render is a new *tab* in
@@ -204,7 +181,7 @@ times. Only page-unique bytes (HTML, page-specific images, XHR) recur.
 |---|---|---|---|
 | Cold cache every page (worst case) | ~2.4 MB | 24 GB | $190 |
 | Warm shared cache (realistic today) | ~500 KB | 5 GB | $40 |
-| Warm + REQ-R4 resource blocking | ~150–250 KB | 1.5–2.5 GB | **$12–20** |
+| Warm + REQ-R3 resource blocking | ~150–250 KB | 1.5–2.5 GB | **$12–20** |
 
 **Design consequence — this constrains §7.5.** Per-proxy *browser contexts*
 (`Target.createBrowserContext`) are cache-partitioned, as is one Chrome process
@@ -212,7 +189,7 @@ per proxy. Either form of renderer rotation therefore **destroys the shared
 cache** and pushes the bill back toward the cold-cache row, potentially 4–5×.
 With D1's single gateway this is moot — one proxy, one browser, one cache — and
 that is an argument for D1 that has nothing to do with implementation effort.
-If renderer rotation across N proxies is ever added, REQ-R4 stops being an
+If renderer rotation across N proxies is ever added, REQ-R3 stops being an
 optimisation and becomes a precondition.
 
 #### 4.2.4 Two traps when estimating from an existing crawl
@@ -231,7 +208,7 @@ optimisation and becomes a precondition.
   (`extraction.pdf.*` is a documented no-op). One linked 50 MB file costs
   50 MB of proxy traffic. On a proxied crawl, lower this cap.
 
-→ **REQ-R4** (§6.4): block `Image`, `Font`, `Media` and `Stylesheet` resource
+→ **REQ-R3** (§6.3): block `Image`, `Font`, `Media` and `Stylesheet` resource
 types in the render path when a proxy is active. bluesnake needs the *DOM*, not
 the pixels — it already ignores `Media` for settle purposes
 ([`render.go:323`](../internal/render/render.go#L323)). Screenshots
@@ -258,55 +235,50 @@ Worth knowing, since we are buying from them anyway:
   `chromedp.NewRemoteAllocator(ctx, wsURL)` (verified present in v0.15.1,
   [`allocate.go:532`](https://pkg.go.dev/github.com/chromedp/chromedp#NewRemoteAllocator)).
   This would **sidestep the entire per-context-proxy problem** in §7.5 — but at
-  render-path bandwidth prices (§4.2), so only with REQ-R4 in place.
+  render-path bandwidth prices (§4.2), so only with REQ-R3 in place.
 
-Both are deferred to Phase 4 (§9.4) but shape the design: the renderer's
+Both are deferred to Phase 4 (§9) but shape the design: the renderer's
 allocator must be swappable, not hard-wired to `NewExecAllocator`.
 
 ---
 
-## 5. Correction: what the live spike is actually for
-
-An earlier note suggested the Chrome per-context proxy spike was about
-authentication. **That was imprecise, and the distinction changes the plan.**
+## 5. Chrome, credentials, and the one real blocker
 
 ### 5.1 Proxy auth ≠ site auth
 
-Two unrelated things:
+Two unrelated things, and conflating them hides the problem:
 
 - **Site authentication** — logging into the crawled site. Out of scope; all
-  crawls are public URLs.
+  crawls are of public URLs.
 - **Proxy authentication** — credentials for the *gateway*. Bright Data's
-  username carries the customer ID and zone
-  (`brd-customer-<id>-zone-<zone>:<password>@brd.superproxy.io:44445`), and all
-  targeting and session control is done by mutating that username.
+  username IS the configuration
+  (`brd-customer-<id>-zone-<zone>:<password>@brd.superproxy.io:44445`); all
+  targeting and session control is done by mutating it.
 
 **Bright Data's gateway requires proxy auth on every request, on public URLs,
-always.** So the spike is squarely on the critical path.
+always.** So credential handling is on the critical path, not an edge case.
 
 ### 5.2 Chrome does not accept proxy credentials
 
-Confirmed: Chrome ignores credentials in `--proxy-server` — the
-`user:pass@host:port` form produces "no supported proxies". The options are:
+Chrome ignores credentials in `--proxy-server` — the `user:pass@host:port` form
+produces "no supported proxies". Three ways out were considered:
 
-1. **CDP:** `Fetch.enable{handleAuthRequests:true}` + respond to
-   `Fetch.authRequired` with `Fetch.continueWithAuth`. cdproto has all of it
-   (`fetch.ContinueWithAuthParams`, `AuthChallengeResponse` — verified in the
-   pinned version). But there are credible reports of `authRequired` not firing
-   reliably, and of `Target.createBrowserContext`'s `proxyServer` silently
-   falling back to a direct connection.
-2. **Local forwarding proxy:** run an unauthenticated loopback listener that
-   injects `Proxy-Authorization` and forwards upstream. Chrome gets a
-   credential-free `--proxy-server=http://127.0.0.1:<port>`. ~150 LOC in Go,
-   no CDP flakiness, and it also gives per-context rotation for free (one
-   listener per proxy). Ugly but boring, and boring is the right trade here.
+1. **CDP:** `Fetch.enable{handleAuthRequests:true}` answering
+   `Fetch.authRequired`. cdproto carries all of it, but enabling the Fetch
+   domain with no patterns pauses *every* request in the tab awaiting an
+   explicit continue — a large behavioural change to the render path for a
+   small problem — and `authRequired` is reported not to fire reliably.
+2. **Local forwarding proxy:** an unauthenticated loopback listener that injects
+   `Proxy-Authorization` and forwards upstream, so Chrome gets a
+   credential-free `--proxy-server=http://127.0.0.1:<port>`. No CDP dependency,
+   nothing intercepted, and Chrome never sees a credential.
 3. **Remote browser** (§4.3): credentials live in the WebSocket URL.
 
-**The spike must answer, in this order:** (a) does `Fetch.authRequired` fire
-reliably against a real Bright Data gateway under chromedp; (b) does per-context
-`proxyServer` actually route, or silently fall back. If either fails, take
-option 2 — it is the lower-risk default and should be the assumed plan until
-the spike says otherwise.
+**Option 2 shipped** (`internal/proxypool/forward.go`). It relays both shapes a
+browser uses — absolute-form requests for `http://` targets and CONNECT tunnels
+for `https://` — and surfaces an upstream 407 rather than flattening it to a
+502, because wrong proxy credentials are a config error the operator needs to
+see, not a site that blocked us.
 
 ### 5.3 The blocker — Bright Data MITMs TLS, and the clock is running
 
@@ -314,10 +286,11 @@ Bright Data's native proxy terminates TLS and re-signs with its own root CA.
 Their own quickstart uses `curl --insecure`. To verify properly you must load
 `brightdata_root_ca_44445.crt`.
 
-**bluesnake cannot do this today.** `http.trusted_cert_dirs` is declared and
-never read (P0-2). The only alternative is `WithInsecureTLS()`, which is a test
-hook and must not become a production path — an SEO auditor that reports on
-HSTS and mixed content cannot itself skip certificate verification.
+`http.trusted_cert_dirs` exists for exactly this (REQ-S12): PEM roots from the
+configured directories are appended to the system pool. The alternative —
+`WithInsecureTLS()` — is a test hook and must never become a production path:
+an auditor that reports on HSTS and mixed content cannot itself skip
+certificate verification (D5).
 
 **Timing — act on this now:**
 
@@ -326,58 +299,45 @@ HSTS and mixed content cannot itself skip certificate verification.
 | `22225` (DC), `33335` (residential) | legacy | **expire 2026-09-25 00:00 UTC** — cannot be renewed; traffic on them fails afterwards |
 | `44445` | `brightdata_root_ca_44445.crt` | current; use for all new setups |
 
-That is **eight days from this document's date (2026-09-17)**. Any integration
-work must target `:44445` from the first line of code. Do not write `:33335`
-into a config example, a test fixture, or a doc.
-
-→ **REQ-C1**: implement `http.trusted_cert_dirs` (load PEMs from the configured
-directories into a `tls.Config.RootCAs` pool, appended to the system pool) as a
-Phase 0 blocker. It is a small, self-contained, independently useful feature
-that closes a documented no-op.
+Always target `:44445`. Do not write `:33335` into a config example, a test
+fixture, or a doc.
 
 ---
 
 ## 6. Requirements
 
-### 6.1 Phase 0 — defects (REQ-P)
+### 6.1 Egress and selection — REQ-S *(delivered)*
 
 | ID | Requirement |
 |---|---|
-| REQ-P1 | The Chrome renderer honours the configured proxy. No configuration in which the raw fetch is proxied and the render is not. |
-| REQ-P2 | `http.trusted_cert_dirs` loads PEM certificates from each listed directory and appends them to the system root pool for all HTTPS connections. Unreadable dir or unparseable PEM = config error at construction, not a silent skip. |
-| REQ-P3 | 5xx retries re-select a proxy rather than reusing the failed one. |
-| REQ-P4 | `MaxIdleConnsPerHost` and `IdleConnTimeout` are set explicitly and derived from `speed.max_threads`. |
-| REQ-P5 | The documented behaviour of `HTTP_PROXY`/`HTTPS_PROXY` (currently ignored) is stated in DESIGN.md §4, whichever way we settle it. |
-
-### 6.2 Phase 1 — pool and selection (REQ-S)
-
-| ID | Requirement |
-|---|---|
-| REQ-S1 | A new `internal/proxypool` package owns proxy selection. Pure and table-testable — no network, no config parsing. |
-| REQ-S2 | Config accepts a list. `http.proxy` (string) remains the one-proxy shorthand and is equivalent to a one-element list. Both set = config error. |
+| REQ-S1 | `internal/proxypool` owns selection. Pure and table-testable — no network, no config parsing. |
+| REQ-S2 | Config accepts a list. `http.proxy` remains the one-proxy shorthand and is equivalent to a one-element list. Both set = config error. |
 | REQ-S3 | Selection is per request, via `Transport.Proxy` reading a value the caller placed on the request context. Never a mutable field on the shared transport. |
-| REQ-S4 | Strategies: `round_robin` (default), `sticky_host` (stable proxy per target authority), `random`. |
-| REQ-S5 | An optional direct (no-proxy) entry may participate in rotation (Crawlee's null-proxy pattern), off by default. |
-| REQ-S6 | Per-proxy concurrency cap, so one endpoint does not absorb all workers. Residential providers enforce their own concurrency limits; exceeding them returns errors that look like bans. |
-| REQ-S7 | `fetch.Result` and `PageRecord` carry the proxy that served the request. Persisted as a `pages` column via the migration ladder ([`store.go:414`](../internal/store/store.go#L414)). |
-| REQ-S8 | Proxy credentials are redactable: never logged, never exported, never rendered in the desktop UI or MCP responses in full. Store and display `host:port` only. |
-| REQ-S9 | Proxy config supports `password_env`, matching the existing `http.auth.basic` convention ([`types.go:370`](../internal/config/types.go#L370)). Credentials should not have to live in a YAML profile. |
-| REQ-S11 | Billable bytes (wire bytes in both directions, not `len(Body)`) are metered per request and totalled per crawl. Surfaced in the crawl summary. See §4.2.4. |
+| REQ-S4 | Strategies: `round_robin` (default), `sticky_host`, `random`. |
+| REQ-S5 | An optional direct (no-proxy) entry may participate in rotation, off by default. |
+| REQ-S6 | Per-egress concurrency cap. Providers enforce their own limits and answer a breach with errors indistinguishable from a ban, so exceeding one corrupts results, not just manners. |
+| REQ-S7 | `fetch.Result` and `PageRecord` carry the egress that served the request, persisted as `pages.proxy`. |
+| REQ-S8 | Credentials are never logged, exported, or displayed. `scheme://host:port` is the only printable form. |
+| REQ-S9 | `password_env`, matching the existing `http.auth.basic` convention. An unset variable fails loudly at construction — a proxy dialled without its password answers 407 on every request, which reads as a site-wide block. |
+| REQ-S10 | Rotation under a shared identity (persistent cookies, auth cookies) resolves to `sticky_host`; asking for spread explicitly is refused. §7.4. |
+| REQ-S11 | Wire bytes metered per egress and totalled per crawl. Attribution is per connection, which is the granularity an invoice has. |
+| REQ-S12 | `http.trusted_cert_dirs` loads PEM roots for TLS-terminating proxies. Unreadable directory, unparseable PEM, or a directory with nothing to load is a config error at construction — never a silent skip that resurfaces as an x509 failure on every URL. |
+| REQ-S13 | The renderer uses the same egress as the raw fetch, with credentials handled without exposing them to page JavaScript. §7.5. |
 
-### 6.3 Phase 2 — health (REQ-H)
+### 6.2 Health — REQ-H *(Phase 2)*
 
 | ID | Requirement |
 |---|---|
 | REQ-H1 | **Preflight.** Before the crawl opens, each proxy makes one request to the seed host's `robots.txt` and is classified alive/dead/slow. Zero alive = the crawl fails to start with a named error. |
 | REQ-H2 | **Passive scoring.** Health is derived from real request outcomes — consecutive failures, rolling success rate, p50 latency. No synthetic probe traffic during the crawl. |
-| REQ-H3 | **Ban detection** is a named, testable policy, not inline conditionals. Hard signals: 403, 429, 503, connection reset, proxy 407/502. Soft signals: §6.3.1. |
-| REQ-H4 | **Quarantine and re-dispatch.** A banned proxy is quarantined; the URL is re-queued to a *different* proxy and is **not** recorded as a page error. Distinguishing "proxy failed" from "page failed" is the whole point — without it a dead proxy writes phantom 5xx rows into the audit. |
-| REQ-H5 | **Reanimation** on *randomized* exponential backoff (base ~5 min, cap ~60 min — scrapy-rotating-proxies' proven numbers). Randomised, or all proxies retry in the same second and are re-banned together. |
-| REQ-H6 | **Per-URL attempt budget** bounds proxy-attributed retries (default 5, cf. `ROTATING_PROXY_PAGE_RETRY_TIMES`). Exhausted = a genuine page error. |
-| REQ-H7 | **Degradation is loud** (D3). See §8.5. |
-| REQ-H8 | Pool state is observable: a periodic log line (alive/dead/quarantined counts) and a per-crawl summary persisted with the crawl. |
+| REQ-H3 | **Ban detection** is a named, testable policy, not inline conditionals. Hard signals: 403, 429, 503, connection reset, proxy 407/502. Soft signals: §6.2.1. |
+| REQ-H4 | **Quarantine and re-dispatch.** A banned proxy is quarantined; the URL is re-queued to a *different* proxy and is **not** recorded as a page error. Without that split, a dead proxy writes phantom 5xx rows into the audit. |
+| REQ-H5 | **Reanimation** on *randomized* exponential backoff (base ~5 min, cap ~60 min). Randomised, or all proxies retry in the same second and are re-banned together. |
+| REQ-H6 | **Per-URL attempt budget** bounds proxy-attributed retries (default 5). Exhausted = a genuine page error. |
+| REQ-H7 | **Degradation is loud** (D3). §8.5. |
+| REQ-H8 | Pool state is observable: a periodic log line and a per-crawl summary persisted with the crawl. |
 
-#### 6.3.1 Soft-ban detection — we have an unusual advantage
+#### 6.2.1 Soft-ban detection — we have an unusual advantage
 
 Status codes miss the important cases: a `200` carrying a challenge page, or a
 `200` with a suspiciously short body. bluesnake already computes a raw-body
@@ -385,23 +345,21 @@ content hash per page for duplicate detection
 ([`crawler.go:1309`](../internal/crawler/crawler.go#L1309)).
 
 **If N distinct URLs suddenly return byte-identical bodies, that is a challenge
-page.** We detect it for free by reusing machinery that already exists. Make
-this an explicit signal in the ban policy:
+page.** We detect it for free by reusing machinery that already exists:
 
 - ≥3 distinct URLs sharing one content hash within a short window, **and** that
   hash not already claimed as a legitimate canonical → soft ban.
 - A sharp collapse in mean body size against the crawl's running baseline →
   soft ban.
 
-### 6.4 Phase 3 — renderer (REQ-R)
+### 6.3 Renderer rotation — REQ-R *(Phase 3)*
 
 | ID | Requirement |
 |---|---|
-| REQ-R1 | The renderer routes through the same pool as the fetch client, with the same health state. |
-| REQ-R2 | Proxy credentials work without exposing them to page JavaScript. |
-| REQ-R3 | The renderer's allocator is swappable (`ExecAllocator` today, `RemoteAllocator` in Phase 4) behind an interface. |
-| REQ-R4 | When a proxy is active and `rendering.screenshots` is off, block `Image`, `Font`, `Media` and `Stylesheet` resource types. Bandwidth is what we are billed for (§4.2). |
-| REQ-R5 | Memory stays inside the `MEMORY-SCALING.md` budget. If the fallback is one Chrome allocator per proxy (~100–300 MB each), the proxy count must be hard-capped and the interaction with `rendering.max_global_renders` specified. |
+| REQ-R1 | The renderer rotates across the pool with the same health state as the fetch client, rather than pinning to one egress. |
+| REQ-R2 | The renderer's allocator is swappable (`ExecAllocator` today, `RemoteAllocator` for a hosted browser) behind an interface. |
+| REQ-R3 | When a proxy is active and `rendering.screenshots` is off, block `Image`, `Font`, `Media` and `Stylesheet` resource types. Bandwidth is what we are billed for (§4.2). |
+| REQ-R4 | Memory stays inside the `MEMORY-SCALING.md` budget, and the interaction with `rendering.max_global_renders` is specified. |
 
 ---
 
@@ -410,14 +368,21 @@ this an explicit signal in the ban policy:
 ### 7.1 Package
 
 ```
-internal/proxypool/          selection + health. Pure; no net, no config parsing.
-  pool.go                    Pool, Proxy, Strategy
-  select.go                  round_robin | sticky_host | random
-  health.go                  state machine, scoring, backoff
-  ban.go                     BanPolicy interface + default policy
+internal/proxypool/
+  pool.go        Pool, Proxy, Strategy, selection      (delivered)
+  forward.go     loopback credential shim for Chrome   (delivered)
+  health.go      state machine, scoring, backoff       (Phase 2)
+  ban.go         BanPolicy interface + default policy  (Phase 2)
 ```
 
-`internal/fetch` depends on `internal/proxypool`. Never the reverse.
+`pool.go` is pure — no network, no config parsing — which is what makes the
+strategies and (later) the health state machine table-testable. `forward.go` is
+the one part that opens sockets, and it is separated for that reason.
+
+`internal/fetch` and `internal/render` depend on `internal/proxypool`; never the
+reverse. `internal/render` resolves its egress through `fetch.BuildPool` rather
+than re-reading the config, so the renderer can never drift from the client and
+silently send Chrome somewhere else.
 
 ### 7.2 The selection seam
 
@@ -426,8 +391,8 @@ internal/proxypool/          selection + health. Pure; no net, no config parsing
 type ctxProxyKey struct{}
 
 transport.Proxy = func(req *http.Request) (*url.URL, error) {
-    if p, ok := req.Context().Value(ctxProxyKey{}).(*url.URL); ok {
-        return p, nil
+    if p, ok := req.Context().Value(ctxProxyKey{}).(*proxypool.Proxy); ok {
+        return p.URL, nil
     }
     return nil, nil // explicit direct
 }
@@ -443,12 +408,12 @@ costs the `Strategy` switch (~40 LOC) and the health state being a map rather
 than a scalar. The expensive parts — the seam itself, attribution, renderer
 plumbing, ban detection, config, UI, docs — are identical either way.
 
-**So: no, multi-proxy is not meaningfully harder, provided the seam is built
-per-request from the start.** What we defer by shipping N=1 first is
-`sticky_host`, cross-proxy re-dispatch, and per-proxy health — all of which are
-Phase 2 anyway. Shipping a static `transport.Proxy` and retrofitting later would
-mean touching every one of those call sites twice; that is the cost we are
-avoiding, and it is the only reason D2 exists.
+**So: multi-proxy is not meaningfully harder, provided the seam is built
+per-request from the start** — which is why all three strategies shipped in
+Phase 1 even though the supported deployment is one gateway. What genuinely
+waits for Phase 2 is per-proxy *health*: quarantine, re-dispatch and
+reanimation. Shipping a static `transport.Proxy` and retrofitting later would
+have meant touching every call site twice; that is the cost D2 avoids.
 
 ### 7.3 Attribution
 
@@ -478,19 +443,26 @@ explicitly. One identity per IP, enforced.
 
 ### 7.5 Renderer
 
-Preference order, cheapest-risk first:
+**Delivered:** Chrome is launched with `--proxy-server` pointed at the pool's
+first proxy — through the loopback forwarder (§5.2) when that proxy carries
+credentials, directly when it does not. A SOCKS proxy with credentials is
+refused with a named error at construction rather than silently ignored, because
+there is no header to inject them into and a browser that quietly went direct
+would reopen the leak this exists to close.
 
-1. **Local forwarding proxy** (§5.2 option 2). One loopback listener per proxy,
-   injecting `Proxy-Authorization`. Chrome gets a credential-free
-   `--proxy-server`. No CDP dependency, no per-context uncertainty, and it
-   sidesteps both spike risks at once. **Assume this until the spike says
-   otherwise.**
-2. **Per-browser-context proxy.** `chromedp.WithNewBrowserContext()` +
-   `target.CreateBrowserContextParams.WithProxyServer()` — both verified present
-   in the pinned chromedp v0.15.1 / cdproto. Rotates inside one Chrome process,
-   which is the memory-efficient answer. Gated on the spike.
-3. **One allocator per proxy.** Simple, correct, expensive (REQ-R5). Fallback
-   only.
+Chrome takes one egress per browser process, so **renders pin to one proxy**
+while raw fetches rotate. That asymmetry is deliberate for now, not an oversight:
+
+1. **Per-browser-context proxy** (`chromedp.WithNewBrowserContext()` +
+   `target.CreateBrowserContextParams.WithProxyServer()`, both present in the
+   pinned chromedp/cdproto) would rotate inside one process — but browser
+   contexts are **cache-partitioned**, and §4.2.3 shows the shared HTTP cache is
+   worth more than the rotation. It is also reported to fall back silently to a
+   direct connection, which is the worst possible failure mode here.
+2. **One allocator per proxy** is simple and correct but costs ~100–300 MB each
+   (REQ-R4).
+
+Phase 3 picks between them with the bandwidth maths in hand, not before.
 
 ### 7.6 Interaction with existing concurrency
 
@@ -507,22 +479,33 @@ Add per-proxy concurrency (REQ-S6) as a distinct axis, alongside
 
 ```yaml
 http:
-  # one-proxy shorthand (existing; unchanged)
+  # one-proxy shorthand
   proxy: http://user:pass@brd.superproxy.io:44445
 
   # OR the pool form (mutually exclusive with the above)
   proxies:
     - url: http://brd-customer-x-zone-y@brd.superproxy.io:44445
-      password_env: BRIGHTDATA_ZONE_PASSWORD
-      max_concurrent: 10
-  proxy_strategy: round_robin      # round_robin | sticky_host | random
+      password_env: BRIGHTDATA_ZONE_PASSWORD   # preferred over an inline password
+      max_concurrent: 10                        # 0 = unbounded
+  proxy_strategy: ""                # "" = auto | round_robin | sticky_host | random
   proxy_include_direct: false
-  proxy_preflight: true
-  proxy_min_alive: 1               # below this the crawl fails (D3)
 
   trusted_cert_dirs:
     - /etc/bluesnake/certs          # brightdata_root_ca_44445.crt
+
+  # Phase 2:
+  # proxy_preflight: true
+  # proxy_min_alive: 1              # below this the crawl fails (D3)
 ```
+
+`proxies` is a list of objects, so — like `http.auth.basic` — it is set in YAML,
+not through `--set`, whose dotted paths cannot address list elements. The
+single-proxy shorthand works either way.
+
+Profiles are plain-text YAML that get shared and committed, so prefer
+`password_env` over an inline password. An unset variable fails at construction
+rather than dialling without it: a proxy reached without its password answers
+407 on every request, which reads as a site-wide block.
 
 ---
 
@@ -556,7 +539,7 @@ Pluggable (`BanPolicy` interface), one default implementation. Signals:
   a *configuration* error, so fail the crawl, do not quarantine and carry on);
   proxy 502.
 - **Soft:** the content-hash convergence and body-size-collapse signals of
-  §6.3.1.
+  §6.2.1.
 - **Latency:** p50 above a multiple of the pool median → degrade, do not ban.
 
 Each returns ban / not-ban / unknown, mirroring scrapy's three-valued model, so
@@ -590,76 +573,74 @@ Three thresholds, all loud:
 
 ---
 
+---
+
 ## 9. Phases
 
-### Phase 0 — defects and the cert blocker
-**Ships independently. Do this first regardless of the rest.**
+### Phase 1 — egress, selection, attribution *(delivered)*
 
-REQ-P1…P5, REQ-C1. Definition of done:
-- `http.trusted_cert_dirs` loads PEMs into the root pool; acceptance scenario in
-  `features/fetch.feature` against an httptest server with a private CA.
-- Renderer honours `http.proxy`; regression test asserts no direct connection
-  when a proxy is configured.
-- Retry re-selects; `MaxIdleConnsPerHost`/`IdleConnTimeout` set from
-  `speed.max_threads`.
-- Bright Data reachable end-to-end on `:44445` with a real zone (manual, once).
+REQ-S1…S13. Shipped:
+- `internal/proxypool`: pool, strategies, per-egress concurrency, credential
+  redaction, and the loopback forwarder that lets Chrome use a credentialed
+  proxy.
+- Per-request selection through the request context; retries re-select.
+- `pages.proxy` (crawl-DB migration v6), the `response_codes` export column,
+  the MCP catalog and the desktop settings.
+- Wire-byte metering per egress.
+- `http.trusted_cert_dirs`, closing a documented no-op and unblocking Bright
+  Data's native proxy.
+- `features/proxy.feature` plus config-validation scenarios; unit tables in
+  `internal/proxypool` and `internal/fetch`.
 
-*Estimate: ~1 day.* **Do the `:44445` verification before 2026-09-25** (§5.3).
-
-### Phase 1 — pool and selection
-REQ-S1…S11. Definition of done:
-- `internal/proxypool` at ≥90% statement coverage (Makefile `COVER_MIN`).
-- `features/proxy.feature` covers: single proxy, list rotation, sticky-host
-  stability, direct-entry participation, per-page attribution.
-- `pages.proxy` migration + export column + desktop drawer field.
-- Credentials redacted everywhere (assert in a test, not by inspection).
-- Config error when `proxy` and `proxies` are both set, and when rotation is
-  requested with persistent cookies (REQ-S10).
-- Billable-byte metering (REQ-S11) verified against a known payload, so §4.2's
-  estimates can be replaced with measurements from a real crawl.
-
-*Estimate: ~3–4 days including tests.*
+**Still to do before a real Bright Data run:** verify the account end to end on
+port **44445** (§5.3).
 
 ### Phase 2 — health
-REQ-H1…H8 + §6.3.1. Definition of done:
+
+REQ-H1…H8 + §6.2.1. Definition of done:
 - Preflight blocks a crawl with an all-dead pool; named error.
 - Ban policy table-tested over hard, soft and unknown signals.
 - Re-dispatch verified: a banned proxy's URL is retried elsewhere and **not**
   recorded as a page error.
-- Reanimation backoff is deterministic under an injected clock.
+- Reanimation backoff deterministic under an injected clock.
 - Degraded-pool summary persisted and surfaced.
 
 *Estimate: ~3 days.*
 
-### Phase 3 — renderer
-REQ-R1…R5. **Gated on the spike (§5.2).** Timebox the spike to half a day: run
-chromedp against a real Bright Data zone, answer the two questions, then pick
-the path. Default to the local forwarding proxy.
+### Phase 3 — renderer rotation
 
-*Estimate: unknown until the spike; 2–4 days after.*
+REQ-R1…R4. Chrome takes one egress per browser process, so today renders pin to
+the pool's first proxy. Rotating them needs per-browser-context proxies, which
+are **cache-partitioned** — §4.2.3 — so REQ-R3 is a precondition, not an
+optimisation, and the bandwidth maths has to come out before the work is worth
+doing. Spike `Target.createBrowserContext`'s `proxyServer` against a real zone
+first; it is reported to fall back silently to a direct connection.
+
+*Estimate: 2–4 days after the spike.*
 
 ### Phase 4 — the fingerprint question
-Not scheduled. Opened here because §2.2 says it is the binding constraint for
-competitor audits, and shipping Phases 0–3 will not change that on a
-Cloudflare-protected target.
 
-Options, in ascending order of cost and descending order of risk:
+Not scheduled. Opened here because §2.2 says it is the binding constraint for
+competitor audits, and Phases 1–3 will not change that on a Cloudflare-protected
+target.
+
+Options, ascending cost, descending risk:
 
 1. **Bright Data Web Unlocker** (§4.3). Per-request pricing suits an HTML-only
-   crawler. Least code: a different endpoint, not a different client. **Evaluate
-   this first** — it may make options 2 and 3 unnecessary.
-2. **Remote browser** (`NewRemoteAllocator`) for the render path. Needs REQ-R4
+   crawler. Least code: a different endpoint, not a different client.
+   **Evaluate this first** — it may make 2 and 3 unnecessary.
+2. **Remote browser** (`NewRemoteAllocator`) for the render path. Needs REQ-R3
    first or the bandwidth bill is punishing.
-3. **uTLS** (`utls`-backed transport) to present a Chrome ClientHello. Real
-   caveat, and it is the reason this is ranked last: **uTLS fixes the TLS
-   handshake and stops there.** The HTTP/2 layer is a separate package, so a
-   client can present a flawless Chrome JA4 and then send a Go SETTINGS frame —
-   and a detector that checks both sees a contradiction that is *more*
-   distinctive than either signal alone. A half-measure here is worse than none.
+3. **uTLS** to present a Chrome ClientHello. Ranked last for a real reason:
+   **uTLS fixes the TLS handshake and stops there.** The HTTP/2 layer is a
+   separate package, so a client can present a flawless Chrome JA4 and then
+   send a Go SETTINGS frame — and a detector that checks both sees a
+   contradiction *more* distinctive than either signal alone. A half-measure
+   here is worse than none.
 
-Whatever we choose, it must not compromise bluesnake's own audit integrity: we
-report on HSTS, mixed content and certificate validity, so we do not ship a
-production path that skips verification.
+Whatever we choose must not compromise bluesnake's own audit integrity: we
+report on HSTS, mixed content and certificate validity, so no production path
+skips verification (D5).
 
 ---
 
@@ -668,21 +649,32 @@ production path that skips verification.
 Per DESIGN.md §6–7, BDD-first and ≥90% statement coverage across
 `./internal/...` and `./cmd/...`.
 
-- **Unit (`internal/proxypool`)** — table-driven over strategies, state
-  transitions, backoff (injected clock), ban policy signals. Pure package; no
-  network.
-- **Unit (`internal/fetch`)** — per-request selection against multiple
-  `httptest` proxies; attribution correctness; retry re-selection; trusted-cert
-  loading against a private CA.
-- **Acceptance (`features/proxy.feature`)** — rotation observable across
-  requests, preflight failure, mid-crawl quarantine and re-dispatch, degraded
-  summary, credential redaction.
-- **Integration (`@proxy`, excluded by default)** — like the existing `@chrome`
-  tag: real provider credentials from the environment, skipped in CI.
+**Delivered:**
 
-**Test proxies:** an in-process HTTP CONNECT proxy in `internal/proxypool` test
-helpers (~80 LOC) with injectable behaviour — always-403, always-timeout,
-slow, healthy. That covers every ban path without a provider account.
+- **Unit (`internal/proxypool`)** — table-driven over strategies, selection,
+  exclusion, per-egress concurrency, credential redaction, and the forwarder
+  against a fake gateway that demands Basic credentials (plain HTTP, CONNECT
+  tunnel, 407, open upstream, dead upstream).
+- **Unit (`internal/fetch`)** — per-request selection against multiple
+  `httptest` proxies; attribution matching the egress that actually served the
+  response; retry re-selection; wire-byte metering per egress; trusted-cert
+  loading against a private CA, including a negative case proving the pass is
+  the configured root and not verification being off.
+- **Acceptance (`features/proxy.feature`)** — direct recorded as direct, single
+  proxy, rotation across a pool, sticky-host pinning, retry through a different
+  egress, per-egress metering, credential redaction. Plus config-validation
+  scenarios in `features/config.feature`.
+
+**Phase 2 adds:** ban-policy tables over hard/soft/unknown signals, reanimation
+backoff under an injected clock, and re-dispatch asserting a banned proxy's URL
+is retried elsewhere and **not** recorded as a page error.
+
+**Test doubles:** the recording proxies live in `internal/proxypool` and `test/`
+helpers. They take injectable behaviour (always-403, always-timeout, slow,
+healthy), which covers every Phase 2 ban path without a provider account.
+
+**Not covered by any of this:** whether a real gateway behaves as documented.
+Only a live run against a real Bright Data zone on `:44445` answers that.
 
 ---
 
@@ -690,11 +682,11 @@ slow, healthy. That covers every ban path without a provider account.
 
 | # | Question | Owner |
 |---|---|---|
-| Q1 | Does `Fetch.authRequired` fire reliably under chromedp against a real Bright Data zone? Does per-context `proxyServer` route, or silently fall back? | Phase 3 spike |
+| Q1 | Does per-context `proxyServer` actually route under chromedp, or fall back silently to direct? | Phase 3 spike |
 | Q2 | Should proxy health persist across pause/resume, or should each session preflight cold? Leaning cold — simpler, and health is only minutes-fresh anyway. | Phase 2 |
-| Q3 | Should WARC records carry the proxy used? Arguably provenance metadata. | Phase 1, low priority |
-| Q4 | Is Web Unlocker (§9.4 option 1) cheaper per audit than residential + uTLS? Needs one real measurement on a Cloudflare-protected target. | Phase 4 |
-| Q5 | `HTTP_PROXY`/`HTTPS_PROXY` currently ignored — keep ignoring (explicit config only) or honour as a fallback? Leaning keep ignoring; a crawler silently inheriting an ambient proxy is a surprising audit result. | Phase 0 |
+| Q3 | Should WARC records carry the egress used? Arguably provenance metadata. | low priority |
+| Q4 | Is Web Unlocker (§9, Phase 4) cheaper per audit than residential + uTLS? Needs one real measurement on a Cloudflare-protected target. | Phase 4 |
+| Q5 | Should a per-egress byte budget be able to *stop* a crawl, not just report it? Relevant once bills are attributable. | Phase 2 |
 
 ---
 
@@ -712,4 +704,4 @@ slow, healthy. That covers every ban path without a provider account.
   (parity target: one proxy, no rotation)
 - [chromedp issue #645 — proxy authentication](https://github.com/chromedp/chromedp/issues/645)
 - [chrome-remote-interface issue #478 — per-context proxyServer](https://github.com/cyrus-and/chrome-remote-interface/issues/478)
-- [uTLS and the HTTP/2 mismatch](https://blog.crawlex.net/blog/utls-browser-clienthello/) (§9.4)
+- [uTLS and the HTTP/2 mismatch](https://blog.crawlex.net/blog/utls-browser-clienthello/) (Phase 4)
