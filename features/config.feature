@@ -71,6 +71,50 @@ Feature: Plain-text configuration
     When the config is loaded
     Then loading fails with an error containing "http.version"
 
+  Scenario: The single-proxy shorthand and the proxy list cannot both be set
+    Given a config file with contents:
+      """
+      http:
+        proxy: http://a:8080
+        proxies:
+          - url: http://b:8080
+      """
+    When the config is loaded
+    Then loading fails with an error containing "mutually exclusive"
+
+  Scenario: A proxy entry without a URL is rejected
+    Given a config file with contents:
+      """
+      http:
+        proxies:
+          - max_concurrent: 4
+      """
+    When the config is loaded
+    Then loading fails with an error containing "http.proxies[0].url"
+
+  Scenario: An invalid proxy strategy is rejected
+    Given a config file with contents:
+      """
+      http:
+        proxy_strategy: spiral
+      """
+    When the config is loaded
+    Then loading fails with an error containing "http.proxy_strategy"
+
+  Scenario: Spreading requests across proxies is refused when one session is reused
+    Given a config file with contents:
+      """
+      advanced:
+        cookie_storage: persistent
+      http:
+        proxy_strategy: round_robin
+        proxies:
+          - url: http://a:8080
+          - url: http://b:8080
+      """
+    When the config is loaded
+    Then loading fails with an error containing "shared identity"
+
   Scenario: Out-of-range threshold is rejected
     Given a config file with contents:
       """

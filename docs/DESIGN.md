@@ -191,8 +191,11 @@ describes the shape. The top-level groups:
 - `url_rewriting` — remove params, regex replace, lowercase.
 - `speed` — max threads, max URLs/sec.
 - `http` — user agent, robots UA, HTTP version, browser headers, custom headers,
-  proxy, and basic/cookie auth (a supplied session cookie is the forms-auth
-  replacement).
+  the proxy pool (`proxy` / `proxies` + `proxy_strategy`), trusted certificate
+  directories, and basic/cookie auth (a supplied session cookie is the forms-auth
+  replacement). Egress is explicit config only: `HTTP_PROXY`/`HTTPS_PROXY` are
+  deliberately ignored, so a crawl never silently inherits an ambient proxy.
+  Full design: [PROXY.md](PROXY.md).
 - `custom_search` / `custom_extraction` / `custom_js` — user-defined matchers,
   xpath/css/regex extraction, and CDP JS snippets.
 - `link_positions` — ordered element-path → position-bucket rules.
@@ -215,7 +218,7 @@ doesn't silently lie (the YAML stays valid for forward-compat):
 - **Reserved for unbuilt features:** `extraction.pdf.*`,
   `extraction.structured_data.{google_rich_results_validation,case_sensitive}`,
   `rendering.flatten_iframes`, the `rendering.window` preset name (explicit
-  width/height are honoured), `advanced.html_validation`, `http.trusted_cert_dirs`.
+  width/height are honoured), `advanced.html_validation`.
 - **Resource/link `store` flags are unenforced** — every parsed edge is stored
   regardless; the `crawl` half of each pair *is* enforced.
 - **Not yet wired:** `advanced.{respect_noindex,respect_canonical,respect_next_prev}`,
@@ -240,7 +243,10 @@ internal/robots/         REP parser/matcher (Google semantics), per-host cache, 
 internal/llmstxt/        /llms.txt parser/validator (llmstxt.org): H1 title, blockquote summary,
                          H2 section link lists; pure (fetch/admit/issues live in crawler/analyze)
 internal/fetch/          HTTP client: timeouts, retries, HSTS emulation, auth, headers, UA,
-                         proxy, cookies, TLS, redirects-as-data (never auto-follow), rate metering
+                         cookies, TLS + extra roots, redirects-as-data (never auto-follow),
+                         per-request proxy selection, wire-byte metering
+internal/proxypool/      egress pool: round-robin/sticky-host/random selection, per-egress
+                         concurrency, credential redaction, loopback shim for Chrome
 internal/parse/          HTML tokenization → PageFacts: elements, directives, links (typed edges),
                          forms, security signals, head-validity, content area text, word count,
                          readability, hash, structured-data raw blocks

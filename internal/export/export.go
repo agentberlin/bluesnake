@@ -108,7 +108,7 @@ func tabHeader(name string) []string {
 			"meta_description", "h1", "word_count", "canonical", "redirect_url", "redirect_type"}
 	case "response_codes":
 		return []string{"url", "scope", "state", "status_code", "status", "redirect_url",
-			"redirect_type", "fetch_error"}
+			"redirect_type", "fetch_error", "proxy"}
 	case "titles":
 		return []string{"url", "title", "length", "pixel_width", "count", "indexability_status"}
 	case "descriptions":
@@ -163,7 +163,7 @@ func tabRow(name string, rec *crawler.PageRecord) ([]string, bool) {
 			rec.RedirectURL, rec.RedirectType}, true
 	case "response_codes":
 		return []string{rec.URL, rec.Scope, rec.State, itoa(rec.StatusCode), rec.Status,
-			rec.RedirectURL, rec.RedirectType, rec.FetchError}, true
+			rec.RedirectURL, rec.RedirectType, rec.FetchError, rec.Proxy}, true
 	case "titles":
 		if f == nil {
 			return nil, false

@@ -381,15 +381,38 @@ type AuthConfig struct {
 	Cookies []AuthCookie `yaml:"cookies"`
 }
 
+// ProxyEntry is one egress in the proxy pool. The password may live in the URL
+// or, preferably, in an environment variable named by PasswordEnv — profiles are
+// plain-text YAML that get shared and committed, and proxy credentials are
+// account credentials.
+type ProxyEntry struct {
+	URL           string `yaml:"url"`
+	PasswordEnv   string `yaml:"password_env"`
+	MaxConcurrent int    `yaml:"max_concurrent"` // 0 = unbounded
+}
+
 type HTTPConfig struct {
 	UserAgent       string            `yaml:"user_agent"`
 	RobotsUserAgent string            `yaml:"robots_user_agent"`
 	Version         string            `yaml:"version"`         // "" (negotiate, prefer HTTP/2) | "1.1" (force HTTP/1.1) | "2"
 	BrowserHeaders  bool              `yaml:"browser_headers"` // send browser-like Accept/Accept-Language defaults
 	Headers         map[string]string `yaml:"headers"`
-	Proxy           string            `yaml:"proxy"`
-	TrustedCertDirs []string          `yaml:"trusted_cert_dirs"`
-	Auth            AuthConfig        `yaml:"auth"`
+	// Proxy is the one-proxy shorthand, equivalent to a single-entry Proxies.
+	// Setting both is a config error rather than a silent precedence rule.
+	Proxy string `yaml:"proxy"`
+	// Proxies is the egress pool. Requests are distributed across it by
+	// ProxyStrategy; one entry behaves exactly like Proxy.
+	Proxies []ProxyEntry `yaml:"proxies"`
+	// ProxyStrategy is "" (auto), "round_robin", "sticky_host" or "random".
+	// Auto means round_robin, except when the crawl carries a shared identity
+	// (persistent cookies or configured auth cookies), where it resolves to
+	// sticky_host so one session never emerges from many source IPs.
+	ProxyStrategy string `yaml:"proxy_strategy"`
+	// ProxyIncludeDirect adds an unproxied egress to the rotation, so some
+	// share of traffic leaves from the machine's own IP.
+	ProxyIncludeDirect bool       `yaml:"proxy_include_direct"`
+	TrustedCertDirs    []string   `yaml:"trusted_cert_dirs"`
+	Auth               AuthConfig `yaml:"auth"`
 }
 
 type CustomSearch struct {

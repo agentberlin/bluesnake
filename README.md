@@ -6,6 +6,8 @@ A modern, headless, CLI-first website crawler and SEO auditor in Go — feature 
 
 **Designing a UI on top?** [docs/UI-DESIGN-BRIEF.md](docs/UI-DESIGN-BRIEF.md) — the complete, code-free product spec for designers: every feature, every setting, every dataset and state.
 
+**Planning proxy support?** [docs/PROXY.md](docs/PROXY.md) — requirements, provider landscape and phased implementation spec for proxy/rotation support (specification; not yet implemented).
+
 Feature research (what Screaming Frog does, exhaustively inventoried from official docs):
 - [docs/research/01-crawl-configuration.md](docs/research/01-crawl-configuration.md)
 - [docs/research/02-data-model-and-checks.md](docs/research/02-data-model-and-checks.md)

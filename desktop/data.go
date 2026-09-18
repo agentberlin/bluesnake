@@ -412,37 +412,40 @@ type LinkRef struct {
 }
 
 type PageDetail struct {
-	URL               string            `json:"url"`
-	StatusCode        int               `json:"statusCode"`
-	Status            string            `json:"status"`
-	State             string            `json:"state"`
-	ContentType       string            `json:"contentType"`
-	HTTPVersion       string            `json:"httpVersion"`
-	Indexable         bool              `json:"indexable"`
-	IndexabilityState string            `json:"indexabilityStatus"`
-	Depth             int               `json:"depth"`
-	ResponseTimeMs    int64             `json:"responseTimeMs"`
-	SizeKB            int               `json:"sizeKB"`
-	WordCount         int               `json:"wordCount"`
-	LinkScore         float64           `json:"linkScore"`
-	Inlinks           int               `json:"inlinksCount"`
-	UniqueInlinks     int               `json:"uniqueInlinks"`
-	UniqueOutlinks    int               `json:"uniqueOutlinks"`
-	Title             string            `json:"title"`
-	Description       string            `json:"description"`
-	H1                string            `json:"h1"`
-	Canonical         string            `json:"canonical"`
-	RedirectURL       string            `json:"redirectUrl"`
-	RedirectType      string            `json:"redirectType"`
-	RobotsLine        int               `json:"robotsLine"`
-	Similarity        float64           `json:"similarity"`
-	DiscoveredFrom    string            `json:"discoveredFrom"`
-	DiscoveryPath     []string          `json:"discoveryPath"`
-	FetchError        string            `json:"fetchError"`
-	Headers           map[string]string `json:"headers"`
-	Issues            []IssueEntry      `json:"issues"`
-	InlinkRefs        []LinkRef         `json:"inlinkRefs"`
-	OutlinkRefs       []LinkRef         `json:"outlinkRefs"`
+	URL               string  `json:"url"`
+	StatusCode        int     `json:"statusCode"`
+	Status            string  `json:"status"`
+	State             string  `json:"state"`
+	ContentType       string  `json:"contentType"`
+	HTTPVersion       string  `json:"httpVersion"`
+	Indexable         bool    `json:"indexable"`
+	IndexabilityState string  `json:"indexabilityStatus"`
+	Depth             int     `json:"depth"`
+	ResponseTimeMs    int64   `json:"responseTimeMs"`
+	SizeKB            int     `json:"sizeKB"`
+	WordCount         int     `json:"wordCount"`
+	LinkScore         float64 `json:"linkScore"`
+	Inlinks           int     `json:"inlinksCount"`
+	UniqueInlinks     int     `json:"uniqueInlinks"`
+	UniqueOutlinks    int     `json:"uniqueOutlinks"`
+	Title             string  `json:"title"`
+	Description       string  `json:"description"`
+	H1                string  `json:"h1"`
+	Canonical         string  `json:"canonical"`
+	RedirectURL       string  `json:"redirectUrl"`
+	RedirectType      string  `json:"redirectType"`
+	// Proxy is the egress that fetched this page ("direct" when unproxied),
+	// already redacted to scheme://host:port — never credentials.
+	Proxy          string            `json:"proxy"`
+	RobotsLine     int               `json:"robotsLine"`
+	Similarity     float64           `json:"similarity"`
+	DiscoveredFrom string            `json:"discoveredFrom"`
+	DiscoveryPath  []string          `json:"discoveryPath"`
+	FetchError     string            `json:"fetchError"`
+	Headers        map[string]string `json:"headers"`
+	Issues         []IssueEntry      `json:"issues"`
+	InlinkRefs     []LinkRef         `json:"inlinkRefs"`
+	OutlinkRefs    []LinkRef         `json:"outlinkRefs"`
 }
 
 func (a *App) PageDetail(id, pageURL string) (*PageDetail, error) {
@@ -461,7 +464,7 @@ func (a *App) PageDetail(id, pageURL string) (*PageDetail, error) {
 		Depth: p.Depth, ResponseTimeMs: p.ResponseTimeMs, SizeKB: p.Size / 1024,
 		LinkScore: p.LinkScore, Inlinks: p.Inlinks,
 		UniqueInlinks: p.UniqueInlinks, UniqueOutlinks: p.UniqueOutlinks,
-		RedirectURL: p.RedirectURL, RedirectType: p.RedirectType,
+		RedirectURL: p.RedirectURL, RedirectType: p.RedirectType, Proxy: p.Proxy,
 		RobotsLine: p.MatchedRobotsLine, Similarity: p.ClosestSimilarity,
 		DiscoveredFrom: p.DiscoveredFrom, DiscoveryPath: discoveryPath(pages, p.URL),
 		FetchError: p.FetchError,

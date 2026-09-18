@@ -124,6 +124,8 @@ type world struct {
 	basicPass     string
 	fetchRes      *fetch.Result
 	fetchClient   *fetch.Client
+	proxies       []*acceptProxy
+	proxyEntries  []config.ProxyEntry
 	seenHeaders   map[string]http.Header
 
 	// parse steps
@@ -259,6 +261,7 @@ func initializeScenario(sc *godog.ScenarioContext) {
 		if w.extServer != nil {
 			w.extServer.Close()
 		}
+		w.closeProxies()
 		if w.tmpDir != "" {
 			os.RemoveAll(w.tmpDir)
 		}
@@ -341,6 +344,7 @@ func initializeScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^the fetch body is truncated to (\d+) bytes$`, w.fetchTruncated)
 
 	// --- parse + indexability (registered in parse_steps_test.go) ---
+	w.registerProxySteps(sc)
 	w.registerParseSteps(sc)
 	w.registerIndexabilitySteps(sc)
 
@@ -764,6 +768,10 @@ func (w *world) client() (*fetch.Client, error) {
 			return nil, err
 		}
 	}
+	// Set() builds nested YAML from a dotted path and cannot address list
+	// elements, so lists of objects (http.proxies, like http.auth.basic) are
+	// assigned directly rather than through an override string.
+	cfg.HTTP.Proxies = w.proxyEntries
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

@@ -141,6 +141,7 @@ function DetailFields({ p }) {
         {p.redirectType && <Row k="Redirect type" v={p.redirectType} />}
         {p.robotsLine > 0 && <Row k="Blocked by" v={`robots.txt line ${p.robotsLine}`} color="var(--s-4xx)" />}
         {p.fetchError && <Row k="Fetch error" v={p.fetchError} color="var(--s-4xx)" />}
+        {p.proxy && p.proxy !== "direct" && <Row k="Fetched via" v={p.proxy} copy={p.proxy} />}
         <Row k="Near-duplicate" v={p.similarity ? `${p.similarity.toFixed(0)}% closest match` : "None"} color={p.similarity > 90 ? "var(--sev-warn)" : null} />
         <Row k="Discovered via" v={p.discoveredFrom ? urlShort(p.discoveredFrom) : "Start URL"} copy={p.discoveredFrom || null} />
       </div>
