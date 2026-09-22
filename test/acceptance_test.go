@@ -363,10 +363,11 @@ func initializeScenario(sc *godog.ScenarioContext) {
 	// --- issues (registered in issues_steps_test.go) ---
 	w.registerIssuesSteps(sc)
 
-	// --- custom JS / WARC / serve (registered in their own steps files) ---
+	// --- custom JS / WARC / serve / bundle (registered in their own steps files) ---
 	w.registerCustomJSSteps(sc)
 	w.registerWARCSteps(sc)
 	w.registerServeSteps(sc)
+	w.registerBundleSteps(sc)
 
 	// --- include/exclude ---
 	sc.Step(`^no include or exclude patterns$`, w.noPatterns)

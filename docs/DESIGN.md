@@ -94,6 +94,7 @@ record the domain*, so the same divergence is never investigated twice.
 - First-class JSON/JSONL output for piping (SF is spreadsheet-centric).
 - Single static binary; storage is embedded (SQLite), no JVM/memory allocation tuning.
 - Discoverable exports: `bluesnake export --list` enumerates every exportable dataset.
+- A whole crawl exports as ONE self-describing file (`bluesnake bundle`, §5.13) — page text, structured data and the nested link graph — rather than a directory of CSVs plus one file per URL that a consumer has to re-join.
 - Go regex (RE2) everywhere — documented difference from SF's Java regex (no backtracking/lookahead; predictable performance).
 
 ---
@@ -130,6 +131,7 @@ bluesnake resume <crawl-id>            # resume a paused/interrupted crawl
 bluesnake crawls [ls|rm|export|info]   # manage stored crawls (by crawl ID)
 bluesnake analyze <crawl-id>           # (re-)run post-crawl analysis
 bluesnake export <crawl-id> ...        # tab/filter/bulk exports; --list to discover
+bluesnake bundle <crawl-id>            # whole crawl as one streamable JSON Lines file (§5.13)
 bluesnake report <crawl-id> ...        # named reports; --list to discover
 bluesnake issues <crawl-id>            # issues summary (and per-issue export)
 bluesnake sitemap <crawl-id>           # generate XML sitemap(s) from a crawl
@@ -251,7 +253,8 @@ internal/parse/          HTML tokenization → PageFacts: elements, directives, 
                          forms, security signals, head-validity, content area text, word count,
                          readability, hash, structured-data raw blocks
 internal/extract/        custom search, custom extraction (xpath/css/regex) over parsed docs
-internal/structured/     JSON-LD/Microdata/RDFa parsing + Google rich-results validation;
+internal/structured/     JSON-LD/Microdata/RDFa parsing + Google rich-results validation; each
+                         JSON-LD block is retained verbatim (the evidence behind the verdict);
                          embedded schema.org IS-A graph resolves subtypes to the most-specific
                          curated root (a Restaurant validates as a LocalBusiness)
 internal/render/         chromedp session pool, rendered DOM, screenshots, console log, custom JS
@@ -267,6 +270,9 @@ internal/analyze/        post-crawl: link score, chains (redirect/canonical), ne
                          hreflang reciprocity, pagination sequence, sitemap set-ops, orphans,
                          inlink-derived flags
 internal/export/         tab/filter datasets, bulk exports, writers (csv/json/jsonl/xlsx)
+internal/bundle/         the whole-crawl machine export (§5.13): versioned, counted, streamed
+                         JSON Lines — header + one nested record per page (text, structured
+                         data incl. raw JSON-LD, link edges). Never loads the page map.
 internal/report/         named reports (crawl overview, chains, insecure content, ...)
 internal/sitemapgen/     XML sitemap + image sitemap generation w/ splitting + index
 internal/compare/        crawl comparison, change detection, URL mapping
@@ -696,6 +702,51 @@ MCP start beyond a bounded width is rejected naming the running crawls
 (an agent's crawl is never silently queued behind other work; at the
 unlimited default there is no capacity to exhaust, so every start is
 admitted), while the desktop enqueues and shows the wait in its queue view.
+
+### 5.13 Crawl bundle — the whole-crawl machine export
+
+`bluesnake bundle <crawl-id>` writes a crawl as **one** file: gzipped JSON
+Lines, a header record followed by one record per page. A page record nests what
+the flat tab exports cannot carry — the content-area text, the structured-data
+block (schema.org types AND the raw JSON-LD bodies), and the page's link edges
+with their anchor, position, element path and position path.
+
+It is a separate command rather than another `export` dataset because
+`export.Dataset{Header []string, Rows [][]string}` is flat by construction. A
+page is not: its headings, robots directives, schema types and JSON-LD blocks
+are natural multiples that CSV forces into `H1-1`, `H1-2`, … or drops, and its
+body text has no column at all. The tab exports stay SF-tab-shaped for humans;
+the bundle is the machine surface.
+
+Three properties are contractual, each with a test that fails if it is lost:
+
+- **Versioned and counted.** The header's `format` (`bluesnake.pages/1`) is what
+  a consumer pins on so it can refuse a shape it does not understand instead of
+  silently misreading it — the failure mode of every CSV column rename. Its
+  `pages` is the exact number of lines that follow, counted inside the same
+  transaction that streams them, so a short read means a truncated transfer.
+  The major bumps only on a non-additive change; a new field does not bump it.
+- **Streamed.** One `sql.Rows` scan over `pages`: decode a row, write a line,
+  let it go — the shape `StreamContentText` already uses, with links read from
+  that row's own `facts`. Peak RAM is one page record regardless of crawl size.
+  `LoadPages` is exactly what this must not do (MEMORY-SCALING.md §4 regime 3 /
+  Phase 2), and `TestBundleRAMFlatOnPageCount` is the gate, carrying the
+  detector arm that proves it can still see the failure mode.
+- **Deterministic.** Pages ordered by URL, links left in document order, no
+  wall-clock value in a page record, so two bundles of one unchanged crawl are
+  byte-identical and can be diffed.
+
+The header also carries `config_digest`, a hash of the crawl's frozen config:
+the link-position rules are configurable, so `position` is only interpretable
+against the config that produced it. Crawl-level facts (status, timings, the
+headline counts) come from the registry row, so a bundle of an INTERRUPTED crawl
+is emitted and says so rather than being refused.
+
+Scope defaults to `internal` (the analogue of SF's `internal_all.csv`) and link
+types to `hyperlink` (the link graph; assets are the majority of the links table
+by volume and have the `links` tab). The bundle emits evidence, never verdicts:
+content-vs-boilerplate classification, what counts as a "page", and which links
+to keep are consumer decisions that must not need a re-crawl to change.
 
 ---
 

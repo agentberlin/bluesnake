@@ -41,6 +41,16 @@ const (
 	XHR             LinkType = "xhr" // GET XHR/fetch observed during JS rendering
 )
 
+// LinkTypes lists every link type an edge can carry, in declaration order. It
+// lives next to the constants so a new type is listed by the surfaces that
+// enumerate them (e.g. the bundle export's --link-types validation) without a
+// second list to remember.
+func LinkTypes() []LinkType {
+	return []LinkType{Hyperlink, Image, CSS, JS, Media, SWF, IFrame, Canonical,
+		HreflangLink, Next, Prev, AMP, MetaRefreshLink, MobileAlternate,
+		FormAction, Uncrawlable, XHR}
+}
+
 // Link is one typed edge from the parsed page to a target URL.
 type Link struct {
 	Type     LinkType

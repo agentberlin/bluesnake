@@ -787,6 +787,7 @@ wholesale — they are the guard layer and must be re-sourced FIRST.
 | SD-14 | red-new | M | `st.Counts()` error → fallback to `res.Crawled/Total` which are now 0 → "Found 0 URLs" / registry 0/0. | `TestFinalizeCountsFallbackNotZeroAfterStreamDrop` (unit) — injected Counts() error: fallback still correct (streamed tally/PageCount), never 0. |
 | SD-15 | guard-existing | H | Resume `RecomputeInlinks/Depths` read `rec.Facts.Links`; a RAM-saving trim of links from the facts JSON (keeping only the table) → empty edges → under-count. | `TestResumeRecomputeReadsFullLinkGraphAfterStreamDrop` (integration) — `/hub` inlink=4 cross-session; either Facts.Links stays in JSON OR recompute is re-pointed at the links table. |
 | SD-17 | guard-existing | M | desktop page-detail Outlink/Inlink refs empty if Facts.Links are trimmed (same dependency as SD-15). | `TestDesktopLinkRefsSurviveStreamDrop` (integration) — Out/InlinkRefs (From/To/Anchor/Type/Position/Nofollow/Origin) == golden. |
+| SD-18 | guard-new | H | A new whole-crawl EXPORT reintroduces the page map on a fresh axis: `bluesnake bundle` reaches for `LoadPages()` (every `PageRecord` incl. `ContentText`) instead of streaming, and the regression is invisible because a bundle of a 500-page test crawl looks identical either way. | `TestBundleRAMFlatOnPageCount` (stress, `internal/bundle`) — retained HeapAlloc flat across a 200→6,000-page delta (measured +0.0 MB); the detector arm materialises the same crawl via `LoadPages` and MUST show the linear slope (+19.0 MB) the gate forbids. |
 
 ---
 

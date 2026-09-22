@@ -1747,6 +1747,36 @@ func ListCrawls(dir string) ([]Info, error) {
 	return infos, rows.Err()
 }
 
+// CrawlInfo reads one crawl's full registry row — the crawl-level facts the
+// per-crawl DB does not hold (status, timings, the headline counts). An export
+// that describes the crawl it came from reads them here rather than inferring
+// them from the pages table, so a bundle of an interrupted crawl says so
+// instead of looking like a small completed one. Unknown ids return an error.
+func CrawlInfo(dir, id string) (Info, error) {
+	reg, err := registryDB(dir)
+	if err != nil {
+		return Info{}, err
+	}
+	defer reg.Close()
+	var in Info
+	var started, finished int64
+	err = reg.QueryRow(`SELECT id, seed, mode, status, started, COALESCE(finished, 0), crawled, COALESCE(total, 0)
+		FROM crawls WHERE id = ?`, id).Scan(&in.ID, &in.Seed, &in.Mode, &in.Status,
+		&started, &finished, &in.Crawled, &in.Total)
+	switch err {
+	case nil:
+	case sql.ErrNoRows:
+		return Info{}, fmt.Errorf("crawl %q not found", id)
+	default:
+		return Info{}, err
+	}
+	in.Started = time.Unix(started, 0)
+	if finished > 0 {
+		in.Finished = time.Unix(finished, 0)
+	}
+	return in, nil
+}
+
 // CrawlStatus reads one crawl's registry status. Unknown ids return an error
 // (the registry row is created with the crawl, so a missing row means a missing
 // or foreign crawl).
