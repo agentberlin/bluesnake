@@ -78,6 +78,23 @@ Feature: Link extraction
     Then the link to "https://ex.com/one" has element path "//body/main/a[1]"
     And the link to "https://ex.com/two" has element path "//body/main/a[2]"
 
+  # The position rules match against an id/class-annotated ancestor chain, and
+  # that path is stored alongside the label they produced. Terms a downstream
+  # classifier cares about (masthead, breadcrumb, sticky-header) live ONLY in a
+  # class or id, so the pure-positional element path can never carry them.
+  Scenario: Links carry the id/class-annotated path the position rules matched
+    Given a page at URL "https://ex.com/p" with HTML:
+      """
+      <html><body>
+        <div class="site-footer"><a href="/imprint">Imprint</a></div>
+        <div id="masthead"><a href="/home">Home</a></div>
+      </body></html>
+      """
+    Then the link to "https://ex.com/imprint" has position path "/html/body/div[@class='site-footer']/a"
+    And the link to "https://ex.com/imprint" has position "footer"
+    And the link to "https://ex.com/imprint" has element path "//body/div[1]/a"
+    And the link to "https://ex.com/home" has position path "/html/body/div[@id='masthead']/a"
+
   Scenario: Path types record how the href was written
     Then the link to "https://ex.com/about" has path type "root_relative"
     And the link to "https://ex.com/dir/next-page" has path type "path_relative"

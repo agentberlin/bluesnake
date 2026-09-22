@@ -43,22 +43,32 @@ const (
 
 // Link is one typed edge from the parsed page to a target URL.
 type Link struct {
-	Type      LinkType
-	URL       string // resolved + normalized; empty for uncrawlable raw links
-	Raw       string // href as written
-	Anchor    string
-	Alt       string
-	Rel       string
-	Target    string
-	Nofollow  bool
-	PathType  string
-	ElemPath  string
-	Position  string
-	Lang      string // hreflang code
-	Width     string // img width attribute
-	Height    string // img height attribute
-	NoAltAttr bool   // img carried no alt attribute at all (vs alt="")
-	Origin    string // html | rendered | xhr (JS rendering mode)
+	Type     LinkType
+	URL      string // resolved + normalized; empty for uncrawlable raw links
+	Raw      string // href as written
+	Anchor   string
+	Alt      string
+	Rel      string
+	Target   string
+	Nofollow bool
+	PathType string
+	ElemPath string
+	// PositionPath is the ancestor chain the link-position rules are matched
+	// against: each step annotated with the element's id and single-token class
+	// (see positionPath). Unlike ElemPath — pure-positional for Screaming Frog
+	// parity, and the better input for template detection precisely because it
+	// is — this carries the class names a downstream classifier needs to see: a
+	// <div class="site-footer"> is only recognisable as furniture from here.
+	// Position is the verdict this path produced; the path itself is what lets a
+	// consumer apply its own rules without re-crawling. Gated by
+	// cfg.StoreLinkPaths exactly as Position is.
+	PositionPath string
+	Position     string
+	Lang         string // hreflang code
+	Width        string // img width attribute
+	Height       string // img height attribute
+	NoAltAttr    bool   // img carried no alt attribute at all (vs alt="")
+	Origin       string // html | rendered | xhr (JS rendering mode)
 }
 
 // Hreflang is one hreflang annotation.
@@ -349,9 +359,10 @@ func (p *parser) handleElement(n *html.Node, path string) {
 		// uncrawlable: href on elements that are not hyperlink carriers
 		if p.cfg.Links.Uncrawlable.Store && n.Data != "base" {
 			if href := attr(n, "href"); href != "" {
+				posPath, pos := p.position(n)
 				f.Links = append(f.Links, Link{
 					Type: Uncrawlable, Raw: href,
-					ElemPath: p.elemPath(n, path), Position: p.position(n),
+					ElemPath: p.elemPath(n, path), PositionPath: posPath, Position: pos,
 				})
 			}
 		}
@@ -478,9 +489,10 @@ func (p *parser) handleAnchor(n *html.Node, path string) {
 	switch {
 	case strings.HasPrefix(lower, "javascript:"):
 		if p.cfg.Links.Uncrawlable.Store {
+			posPath, pos := p.position(n)
 			p.facts.Links = append(p.facts.Links, Link{
-				Type: Uncrawlable, Raw: href,
-				Anchor: collapseSpace(subtreeText(n)), ElemPath: p.elemPath(n, path), Position: p.position(n),
+				Type: Uncrawlable, Raw: href, Anchor: collapseSpace(subtreeText(n)),
+				ElemPath: p.elemPath(n, path), PositionPath: posPath, Position: pos,
 			})
 		}
 		return
@@ -544,7 +556,7 @@ func (p *parser) addLink(n *html.Node, path string, l Link) {
 	}
 	l.PathType = urlutil.ClassifyPathType(l.Raw).String()
 	l.ElemPath = p.elemPath(n, path)
-	l.Position = p.position(n)
+	l.PositionPath, l.Position = p.position(n)
 	p.facts.Links = append(p.facts.Links, l)
 }
 
@@ -622,18 +634,23 @@ func sfSegment(n *html.Node) string {
 // position classifies a link's region (Navigation/Header/Aside/Footer/Content/
 // Head) by applying the ordered link-position rules — Screaming Frog's default
 // search terms — as a case-sensitive substring search over the link's
-// positionPath, first match wins.
-func (p *parser) position(n *html.Node) string {
+// positionPath, first match wins. It returns the path alongside the verdict:
+// the path is computed here anyway, and a consumer that wants to apply its own
+// rules (substring terms like "masthead"/"breadcrumb" that live ONLY in a class
+// or id) cannot reconstruct it from the stored pure-positional ElemPath. Both
+// are gated on StoreLinkPaths, so turning link-path storage off still stores
+// neither. An unmatched link keeps its path and an empty name.
+func (p *parser) position(n *html.Node) (path, name string) {
 	if !p.cfg.StoreLinkPaths {
-		return ""
+		return "", ""
 	}
-	path := positionPath(n)
+	path = positionPath(n)
 	for _, rule := range p.cfg.LinkPositions {
 		if strings.Contains(path, rule.Match) {
-			return rule.Name
+			return path, rule.Name
 		}
 	}
-	return ""
+	return path, ""
 }
 
 // positionPath renders the string that link-position rules match against: the
