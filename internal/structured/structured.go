@@ -19,8 +19,20 @@ import (
 
 // PageData is the structured-data result for one page.
 type PageData struct {
-	Formats     []string `json:"formats,omitempty"` // jsonld | microdata | rdfa
-	Types       []string `json:"types,omitempty"`
+	Formats []string `json:"formats,omitempty"` // jsonld | microdata | rdfa
+	Types   []string `json:"types,omitempty"`
+	// JSONLD holds each <script type="application/ld+json"> body verbatim, in
+	// document order — one entry per block, whitespace-trimmed, exactly as the
+	// page served it. Types/Formats are the verdict; this is the evidence, and
+	// without it bluesnake can tell an owner "BlogPosting: missing recommended
+	// property image" but never show them the block that is missing it. It is
+	// also what gives compare's structured_data detection something to diff
+	// beyond the type list (a JSON-LD body can be rewritten end to end while
+	// @type holds). A block that FAILED to parse is recorded too: the block a
+	// site got wrong is the one its owner most needs to see, and ParseErrors on
+	// its own cannot show it. Microdata and RDFa have no verbatim block to keep,
+	// so they contribute to Formats/Types alone.
+	JSONLD      []string `json:"jsonld,omitempty"`
 	ParseErrors []string `json:"parse_errors,omitempty"`
 	// Recovered notes blocks that were syntactically invalid but salvaged by a
 	// lenient retry (e.g. raw control chars escaped). The data IS extracted, but
@@ -300,6 +312,11 @@ func extractJSONLD(root *html.Node, data *PageData) {
 			raw.WriteString(c.Data)
 		}
 		rawStr := raw.String()
+		// Retained BEFORE the lenient retry below, so JSONLD carries the bytes the
+		// page served rather than escapeJSONControlChars' cleaned form: the recovery
+		// is already reported through Recovered, and the raw text is the thing an
+		// author has to go and fix.
+		data.JSONLD = append(data.JSONLD, strings.TrimSpace(rawStr))
 		var parsed any
 		if err := json.Unmarshal([]byte(rawStr), &parsed); err != nil {
 			// Google's (and Screaming Frog's) JSON-LD parser tolerates raw

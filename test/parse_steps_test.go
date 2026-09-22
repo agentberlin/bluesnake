@@ -53,6 +53,7 @@ func (w *world) registerParseSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a link of type "([^"]*)" to "([^"]*)" exists$`, w.checkTypedLink)
 	sc.Step(`^the link to "([^"]*)" has position "([^"]*)"$`, w.checkLinkPosition)
 	sc.Step(`^the link to "([^"]*)" has element path "([^"]*)"$`, w.checkLinkElemPath)
+	sc.Step(`^the link to "([^"]*)" has position path "([^"]*)"$`, w.checkLinkPositionPath)
 	sc.Step(`^the link to "([^"]*)" has path type "([^"]*)"$`, w.checkLinkPathType)
 	sc.Step(`^the link to "([^"]*)" has target "([^"]*)"$`, w.checkLinkTarget)
 	sc.Step(`^the link to "([^"]*)" has rel "([^"]*)"$`, w.checkLinkRel)
@@ -389,6 +390,17 @@ func (w *world) checkLinkElemPath(url, want string) error {
 	}
 	if l.ElemPath != want {
 		return fmt.Errorf("element path = %q, want %q", l.ElemPath, want)
+	}
+	return nil
+}
+
+func (w *world) checkLinkPositionPath(url, want string) error {
+	l, err := w.mustFindLink(url)
+	if err != nil {
+		return err
+	}
+	if l.PositionPath != want {
+		return fmt.Errorf("position path = %q, want %q", l.PositionPath, want)
 	}
 	return nil
 }

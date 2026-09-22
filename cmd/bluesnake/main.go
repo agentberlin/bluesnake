@@ -53,6 +53,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newIssuesCmd())
 	root.AddCommand(newAnalyzeCmd())
 	root.AddCommand(newExportCmd())
+	root.AddCommand(newBundleCmd())
 	root.AddCommand(newReportCmd())
 	root.AddCommand(newSitemapCmd())
 	root.AddCommand(newServeCmd())

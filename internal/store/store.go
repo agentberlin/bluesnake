@@ -71,10 +71,16 @@ CREATE TABLE IF NOT EXISTS pages(
   minhash BLOB,
   headers JSON, structured JSON, jsdiff JSON, facts JSON
 );
+-- elem_path is the pure-positional Screaming-Frog link path; position_path is the
+-- id/class-annotated ancestor chain the link-position RULES matched, and position
+-- the rule name that won. Keeping the path as well as the verdict is what lets a
+-- consumer apply its own region terms (masthead, breadcrumb, sticky-header — all
+-- of which live only in a class or id) without re-crawling. Both paths are
+-- written only when link_paths storage is on.
 CREATE TABLE IF NOT EXISTS links(
   src TEXT, dst TEXT, type TEXT, anchor TEXT, alt TEXT,
   nofollow INT, rel TEXT, target TEXT, path_type TEXT,
-  elem_path TEXT, position TEXT
+  elem_path TEXT, position TEXT, position_path TEXT
 );
 CREATE INDEX IF NOT EXISTS links_src ON links(src);
 CREATE INDEX IF NOT EXISTS links_dst ON links(dst);
@@ -433,16 +439,22 @@ type migration struct {
 // crawlMigrations is the per-crawl-DB ladder. APPEND ONLY, never renumber. New
 // TABLES need no step — the schema's CREATE IF NOT EXISTS runs on every open (that
 // is how llmstxt and site_checks arrived); the ladder is for ALTERs and rebuilds
-// of existing tables. It is currently EMPTY: every step through v5 was retired
-// once all installs had reached v5 (DESIGN.md §5.3 "Retiring a migration"), and
-// the minCrawlVersion floor below refuses anything older. Append the next schema
-// change as {6, …}; its apply func can reuse addColumn/columnExists as before.
+// of existing tables. Every step through v5 was retired once all installs had
+// reached v5 (DESIGN.md §5.3 "Retiring a migration"), and the minCrawlVersion
+// floor below refuses anything older, so the live steps start at {6}. Append the
+// next schema change as {8, …}; its apply func can reuse addColumn/columnExists.
 var crawlMigrations = []migration{
 	{6, "pages.proxy", func(tx *sql.Tx) error {
 		// Which egress fetched each page. Without it, a crawl that a WAF
 		// partially blocked cannot be diagnosed after the fact — you can see
 		// the 403s but not which source IP earned them.
 		return addColumn(tx, "pages", "proxy TEXT")
+	}},
+	{7, "links.position_path", func(tx *sql.Tx) error {
+		// The id/class-annotated path the link-position rules matched. Older
+		// crawls keep an empty column: the value cannot be recovered without the
+		// DOM, and a re-crawl is the only way to fill it.
+		return addColumn(tx, "links", "position_path TEXT")
 	}},
 }
 
@@ -531,9 +543,9 @@ func setUserVersion(db *sql.DB, v int) error {
 	return err
 }
 
-// addColumn and columnExists are the migration helper toolkit. The ladders above
-// are currently empty (all steps retired), but the next ALTER/rebuild step will
-// use these the same way the retired steps did, so they stay.
+// addColumn and columnExists are the migration helper toolkit — what the live
+// ladder steps above are built from, and what the next ALTER/rebuild step will
+// use the same way.
 //
 // addColumn applies an ADD COLUMN that tolerates the column already existing, so a
 // re-run — or a DB that already carries it — is a no-op rather than an error.
@@ -744,15 +756,15 @@ func (c *Crawl) Page(rec *crawler.PageRecord) error {
 			return err
 		}
 		stmt, err := tx.Prepare(`INSERT INTO links
-			(src, dst, type, anchor, alt, nofollow, rel, target, path_type, elem_path, position)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
+			(src, dst, type, anchor, alt, nofollow, rel, target, path_type, elem_path, position, position_path)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
 		for _, l := range rec.Facts.Links {
 			if _, err := stmt.Exec(rec.URL, l.URL, string(l.Type), l.Anchor, l.Alt,
-				boolInt(l.Nofollow), l.Rel, l.Target, l.PathType, l.ElemPath, l.Position); err != nil {
+				boolInt(l.Nofollow), l.Rel, l.Target, l.PathType, l.ElemPath, l.Position, l.PositionPath); err != nil {
 				return err
 			}
 		}
@@ -1733,6 +1745,36 @@ func ListCrawls(dir string) ([]Info, error) {
 		infos = append(infos, in)
 	}
 	return infos, rows.Err()
+}
+
+// CrawlInfo reads one crawl's full registry row — the crawl-level facts the
+// per-crawl DB does not hold (status, timings, the headline counts). An export
+// that describes the crawl it came from reads them here rather than inferring
+// them from the pages table, so a bundle of an interrupted crawl says so
+// instead of looking like a small completed one. Unknown ids return an error.
+func CrawlInfo(dir, id string) (Info, error) {
+	reg, err := registryDB(dir)
+	if err != nil {
+		return Info{}, err
+	}
+	defer reg.Close()
+	var in Info
+	var started, finished int64
+	err = reg.QueryRow(`SELECT id, seed, mode, status, started, COALESCE(finished, 0), crawled, COALESCE(total, 0)
+		FROM crawls WHERE id = ?`, id).Scan(&in.ID, &in.Seed, &in.Mode, &in.Status,
+		&started, &finished, &in.Crawled, &in.Total)
+	switch err {
+	case nil:
+	case sql.ErrNoRows:
+		return Info{}, fmt.Errorf("crawl %q not found", id)
+	default:
+		return Info{}, err
+	}
+	in.Started = time.Unix(started, 0)
+	if finished > 0 {
+		in.Finished = time.Unix(finished, 0)
+	}
+	return in, nil
 }
 
 // CrawlStatus reads one crawl's registry status. Unknown ids return an error

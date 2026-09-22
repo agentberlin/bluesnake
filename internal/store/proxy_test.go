@@ -107,6 +107,15 @@ func TestMigrationAddsProxyToAnExistingDatabase(t *testing.T) {
 		headers JSON, structured JSON, jsdiff JSON, facts JSON)`); err != nil {
 		t.Fatal(err)
 	}
+	// In production upgrade() runs AFTER the schema's CREATE IF NOT EXISTS pass,
+	// so every table the ladder ALTERs exists by then. A hand-built fixture has
+	// to carry them too, or a later step legitimately fails on a missing table.
+	if _, err := db.Exec(`CREATE TABLE links(
+		src TEXT, dst TEXT, type TEXT, anchor TEXT, alt TEXT,
+		nofollow INT, rel TEXT, target TEXT, path_type TEXT,
+		elem_path TEXT, position TEXT)`); err != nil {
+		t.Fatal(err)
+	}
 	if err := setUserVersion(db, minCrawlVersion); err != nil {
 		t.Fatal(err)
 	}
