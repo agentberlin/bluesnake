@@ -35,14 +35,15 @@ func mixedStatusServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// snapObs reads the executor's live snapshot when a crawl starts and ends, the
-// way a progress surface would, and can pause the crawl after N pages.
+// snapObs reads the executor's live snapshot at each lifecycle point, the way
+// a progress surface would, and can pause the crawl after N pages.
 type snapObs struct {
 	exec       *Executor
 	pauseAfter int
 
 	mu                  sync.Mutex
 	pages               int
+	finalizingMidCrawl  bool
 	atStart, atDone     Snapshot
 	startLive, doneLive bool
 }
@@ -54,10 +55,14 @@ func (o *snapObs) OnStart(crawlID, _ string) {
 	o.mu.Unlock()
 }
 
-func (o *snapObs) OnPage(string, *crawler.PageRecord) {
+func (o *snapObs) OnPage(crawlID string, _ *crawler.PageRecord) {
+	s, _ := o.exec.SnapshotCrawl(crawlID)
 	o.mu.Lock()
 	o.pages++
 	n := o.pages
+	if s.Finalizing {
+		o.finalizingMidCrawl = true
+	}
 	o.mu.Unlock()
 	if o.pauseAfter > 0 && n == o.pauseAfter {
 		o.exec.Pause()
@@ -91,6 +96,26 @@ type breakdown struct{ total, s2, s3, s4, s5, blocked, noresp, indexable int }
 
 func breakdownOf(s Snapshot) breakdown {
 	return breakdown{s.Total, s.S2xx, s.S3xx, s.S4xx, s.S5xx, s.Blocked, s.NoResponse, s.Indexable}
+}
+
+// TestSnapshotFinalizingFlag pins the phase flag a headless progress feed
+// uses to tell post-crawl analysis from a stalled crawl: clear while pages
+// stream, set once the engine has returned. OnDone still reads a live
+// snapshot, and its counters are final by then.
+func TestSnapshotFinalizingFlag(t *testing.T) {
+	srv := mixedStatusServer(t)
+	obs := runSnap(t, t.TempDir(), queue.JobSpec{URL: srv.URL + "/", Config: single(1)}, 0)
+
+	if obs.atStart.Finalizing || obs.finalizingMidCrawl {
+		t.Errorf("Finalizing set while the crawl was running (start=%v, mid-crawl=%v)", obs.atStart.Finalizing, obs.finalizingMidCrawl)
+	}
+	if !obs.atDone.Finalizing {
+		t.Error("Finalizing not set at OnDone, after the engine returned")
+	}
+	want := breakdown{total: 5, s2: 3, s3: 1, s4: 1, indexable: 3} // "/", /a, /b; /old; /gone
+	if got := breakdownOf(obs.atDone); got != want {
+		t.Errorf("final breakdown = %+v, want %+v", got, want)
+	}
 }
 
 // TestResumeSeedsLiveBreakdown pins that a resumed crawl's live status

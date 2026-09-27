@@ -33,6 +33,7 @@ func newCrawlCmd() *cobra.Command {
 		exclude   []string
 		userAgent string
 		quiet     bool
+		progress  progressOpts
 	)
 
 	cmd := &cobra.Command{
@@ -40,6 +41,9 @@ func newCrawlCmd() *cobra.Command {
 		Short: "Crawl a site in spider mode",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := progress.validate(cmd); err != nil {
+				return err
+			}
 			cfg, source, err := crawlBase(storeDir, setup, cmd.Flags().Changed("setup"), profile, cfgFile, args[0])
 			if err != nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), err)
@@ -80,8 +84,10 @@ func newCrawlCmd() *cobra.Command {
 			// The crawl runs through the same queue wiring every surface uses: an
 			// in-process dispatcher drains a single job through the shared executor.
 			// The CLI's file/flag config travels as a frozen ConfigYAML spec, and a
-			// cliObserver tallies the live stream for the summary. Ctrl-C cancels the
-			// signal context, which the executor turns into a resumable interrupt.
+			// cliObserver tallies the live stream for the summary (and, with
+			// --progress json, streams the executor's live snapshot to stderr).
+			// Ctrl-C cancels the signal context, which the executor turns into a
+			// resumable interrupt.
 			cfgYAML, err := yaml.Marshal(cfg)
 			if err != nil {
 				return exitErr{1, err}
@@ -89,7 +95,9 @@ func newCrawlCmd() *cobra.Command {
 			spec := queue.JobSpec{URL: args[0], ConfigYAML: string(cfgYAML)}
 
 			obs := &cliObserver{done: make(chan struct{})}
-			disp := queue.New(queue.NewMemStore(), runner.New(storeDir, obs))
+			exec := runner.New(storeDir, obs)
+			obs.feed = progress.feed(cmd.ErrOrStderr(), exec)
+			disp := queue.New(queue.NewMemStore(), exec)
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
@@ -99,7 +107,7 @@ func newCrawlCmd() *cobra.Command {
 			if _, err := disp.Enqueue(spec, "manual", "", args[0]); err != nil {
 				return exitErr{1, err}
 			}
-			<-obs.done
+			obs.wait()
 			disp.Shutdown()
 
 			out := obs.outcome()
@@ -141,14 +149,17 @@ func newCrawlCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&exclude, "exclude", nil, "exclude pattern (scope.exclude), repeatable")
 	cmd.Flags().StringVar(&userAgent, "user-agent", "", "HTTP user-agent (http.user_agent)")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "suppress the summary")
+	progress.register(cmd)
 	return cmd
 }
 
 // cliObserver implements runner.Observer for the one-shot CLI crawl: it tallies
 // the page stream for the summary, captures the crawl id and the terminal
-// outcome, and signals done when the crawl ends (or fails to start).
+// outcome, drives the --progress feed when there is one, and signals done when
+// the crawl ends (or fails to start).
 type cliObserver struct {
 	done chan struct{}
+	feed *progressFeed // nil unless --progress json
 
 	mu  sync.Mutex
 	t   crawlTally
@@ -159,6 +170,9 @@ func (o *cliObserver) OnStart(crawlID, seed string) {
 	o.mu.Lock()
 	o.out.CrawlID = crawlID
 	o.mu.Unlock()
+	if o.feed != nil {
+		o.feed.start(crawlID)
+	}
 }
 
 func (o *cliObserver) OnPage(_ string, rec *crawler.PageRecord) {
@@ -174,8 +188,21 @@ func (o *cliObserver) OnDone(out runner.Outcome) {
 	if o.out.CrawlID == "" {
 		o.out.CrawlID = id
 	}
+	final := o.out
 	o.mu.Unlock()
+	if o.feed != nil {
+		o.feed.finish(final)
+	}
 	close(o.done)
+}
+
+// wait blocks until the crawl has ended and any progress feed has written its
+// final line, so nothing the command prints next lands before it.
+func (o *cliObserver) wait() {
+	<-o.done
+	if o.feed != nil {
+		o.feed.wait()
+	}
 }
 
 func (o *cliObserver) outcome() runner.Outcome {

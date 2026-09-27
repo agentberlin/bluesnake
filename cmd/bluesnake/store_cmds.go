@@ -81,12 +81,16 @@ func newResumeCmd() *cobra.Command {
 	var sets []string
 	var cfgFile string
 	var force bool
+	var progress progressOpts
 
 	cmd := &cobra.Command{
 		Use:   "resume <crawl-id>",
 		Short: "Resume an interrupted crawl from its stored frontier",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := progress.validate(cmd); err != nil {
+				return err
+			}
 			// the config was frozen into the crawl at start; a different config
 			// would change discovery semantics mid-crawl
 			if (len(sets) > 0 || cfgFile != "") && !force {
@@ -111,7 +115,9 @@ func newResumeCmd() *cobra.Command {
 			// load — so the CLI cannot drift from the MCP/desktop semantics again
 			// (#74 R1). The CLI only renders the outcome.
 			obs := &cliObserver{done: make(chan struct{})}
-			disp := queue.New(queue.NewMemStore(), runner.New(storeDir, obs))
+			exec := runner.New(storeDir, obs)
+			obs.feed = progress.feed(cmd.ErrOrStderr(), exec)
+			disp := queue.New(queue.NewMemStore(), exec)
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 			if err := disp.Start(ctx); err != nil {
@@ -120,7 +126,7 @@ func newResumeCmd() *cobra.Command {
 			if _, err := disp.Enqueue(queue.JobSpec{ResumeID: args[0]}, "manual", "", "resume "+args[0]); err != nil {
 				return exitErr{1, err}
 			}
-			<-obs.done
+			obs.wait()
 			disp.Shutdown()
 
 			out := obs.outcome()
@@ -157,6 +163,7 @@ func newResumeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cfgFile, "config", "", "config file (requires --force; replaces the crawl's stored config)")
 	cmd.Flags().StringArrayVar(&sets, "set", nil, "config override (requires --force; persisted into the crawl)")
 	cmd.Flags().BoolVar(&force, "force", false, "resume with a different config, replacing the one stored with the crawl")
+	progress.register(cmd)
 	return cmd
 }
 

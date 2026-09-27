@@ -28,12 +28,16 @@ func newListCmd() *cobra.Command {
 		sets                                   []string
 		followRedirects                        bool
 		quiet                                  bool
+		progress                               progressOpts
 	)
 	cmd := &cobra.Command{
 		Use:   "list [<file>|-]",
 		Short: "Audit a list of URLs (file, stdin, or --sitemap <url>)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := progress.validate(cmd); err != nil {
+				return err
+			}
 			cfg, err := baseConfig(storeDir, profile, cfgFile)
 			if err != nil {
 				return exitErr{2, err}
@@ -91,7 +95,9 @@ func newListCmd() *cobra.Command {
 			// One crawl path: the list audit runs through the same queue wiring as
 			// crawl/resume, so limiter/finalize behaviour cannot drift per-command.
 			obs := &cliObserver{done: make(chan struct{})}
-			disp := queue.New(queue.NewMemStore(), runner.New(storeDir, obs))
+			exec := runner.New(storeDir, obs)
+			obs.feed = progress.feed(cmd.ErrOrStderr(), exec)
+			disp := queue.New(queue.NewMemStore(), exec)
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 			if err := disp.Start(ctx); err != nil {
@@ -100,7 +106,7 @@ func newListCmd() *cobra.Command {
 			if _, err := disp.Enqueue(spec, "manual", "", "list"); err != nil {
 				return exitErr{1, err}
 			}
-			<-obs.done
+			obs.wait()
 			disp.Shutdown()
 
 			out := obs.outcome()
@@ -135,6 +141,7 @@ func newListCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sitemapURL, "sitemap", "", "download a sitemap (or index) as the URL source")
 	cmd.Flags().BoolVar(&followRedirects, "follow-redirects", false, "follow redirect chains to their final target regardless of depth")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "suppress the summary")
+	progress.register(cmd)
 	return cmd
 }
 

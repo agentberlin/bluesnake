@@ -2,9 +2,10 @@
 // be two near-identical session managers (the desktop's crawlSession and the
 // MCP Runner's runnerSession) into one Executor that satisfies queue.Executor:
 // the queue dispatcher drives it, and every surface plugs in an Observer for its
-// own live feedback (the desktop emits Wails events; the CLI prints a progress
-// line; the MCP server exposes a status snapshot). The engine and the shared
-// finalize path are untouched — this is orchestration, not a new crawler.
+// own live feedback (the desktop emits Wails events; the CLI streams JSON
+// progress lines with --progress json; the MCP server exposes a status
+// snapshot). The engine and the shared finalize path are untouched — this is
+// orchestration, not a new crawler.
 package runner
 
 import (
@@ -48,6 +49,13 @@ type Snapshot struct {
 	SiteChecksState    string
 	SiteChecksRan      int
 	SiteChecksFindings int
+	// Finalizing is set once the engine has returned and finalize (aggregates,
+	// full-graph depth/inlinks, analysis) is running. The counters are final by
+	// then, so a surface can tell a long analysis from a stalled crawl. It is a
+	// flag, not a state, because MCP's crawl_status must keep reporting
+	// "running" until the crawl is completed: agents poll until the state
+	// changes and then query the analysis.
+	Finalizing bool
 }
 
 // Outcome is the terminal result handed to Observer.OnDone. The analysis fields
@@ -126,6 +134,7 @@ type run struct {
 
 	mu             sync.Mutex
 	stopMode       string // "" | "pause" | "stop"
+	finalizing     bool
 	total          int
 	discovered     int
 	s2, s3, s4, s5 int
@@ -234,6 +243,7 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 
 	r.mu.Lock()
 	mode := r.stopMode
+	r.finalizing = true
 	r.mu.Unlock()
 
 	out := Outcome{CrawlID: st.ID, Status: store.StatusInterrupted, Err: runErr}
@@ -583,6 +593,7 @@ func (r *run) snapshot() Snapshot {
 		RatePerSec: float64(len(r.recent)) / 4.0,
 		ElapsedSec: int(time.Since(r.started).Seconds()),
 		Threads:    r.threads,
+		Finalizing: r.finalizing,
 	}
 	if r.c != nil {
 		snap.SiteChecksState, snap.SiteChecksRan, snap.SiteChecksFindings = r.c.SiteCheckProgress()
