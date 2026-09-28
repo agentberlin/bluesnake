@@ -1,14 +1,23 @@
 name: test
 
-# The project's test suite (lint + unit + acceptance). Runs on every pull
+# The project's test suite (lint + unit + acceptance + race). Runs on every pull
 # request to main and every push to main, and is reused by the release workflow
 # (workflow_call) so a tagged release can never ship code that fails tests.
 #
-# Pure Go: no CGO and no Chrome (the @chrome acceptance scenarios are opt-in and
-# skipped here), so a bare ubuntu runner is enough — the whole suite is ~1 min.
-# The desktop (Wails) package is deliberately outside `make test`: it needs the
-# platform GUI toolchain and is built/tested per-OS by release.yml. This mirrors
-# the Makefile's `unit` scope exactly.
+# Not pure Go, and it leans on the runner image: `make race` needs cgo and the
+# image's gcc (on Linux the race detector requires a host C toolchain), and the
+# render tests (internal/render, plus Chrome-driven tests in internal/crawler and
+# internal/sitecheck) launch the image's preinstalled Google Chrome, sandboxed
+# (chromedp only adds --no-sandbox as root), so the image must let Chrome create
+# user namespaces (Ubuntu's AppArmor `chrome` profile does). They skip only when
+# no Chrome binary is found, so here they run; only the godog @chrome acceptance
+# scenarios are opt-in and excluded (see test/acceptance_test.go). The job takes
+# ~3-4 min.
+#
+# The desktop (Wails) package is outside `make test`, and release.yml only builds
+# it (per-OS, with the platform GUI toolchain). Its unit tests run here under
+# `make race`: plain `go test` compiles none of Wails' GUI frontend (that needs
+# the wails CLI's build tags), so no GTK/WebKit is required.
 
 on:
   pull_request:
@@ -44,8 +53,8 @@ jobs:
           fi
 
       - name: go vet
-        # Scoped to the packages `make test` covers; the desktop (Wails) package
-        # needs the GUI toolchain and is built/tested per-OS in release.yml.
+        # Scoped to the packages `make test` covers (the desktop package is not
+        # one of them; see the header).
         run: go vet ./internal/... ./cmd/... ./tunnelserver/... ./test/...
 
       - name: Unit + acceptance tests
