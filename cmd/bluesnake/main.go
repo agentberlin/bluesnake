@@ -23,6 +23,14 @@ type exitErr struct {
 
 func (e exitErr) Error() string { return e.err.Error() }
 
+// interrupted is what a crawl command returns once it has reported the
+// interrupt on stderr (a single crawl, with its resume hint): exit 3, and no
+// "Error: interrupted" under a report that already says so.
+func interrupted(cmd *cobra.Command) error {
+	cmd.SilenceErrors = true
+	return exitErr{3, errors.New("interrupted")}
+}
+
 func main() {
 	root := newRootCmd()
 	if err := root.Execute(); err != nil {
@@ -37,9 +45,11 @@ func main() {
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "bluesnake",
-		Short:         "A modern, headless website crawler and SEO auditor",
-		SilenceUsage:  true,
+		Use:          "bluesnake",
+		Short:        "A modern, headless website crawler and SEO auditor",
+		SilenceUsage: true,
+		// cobra prints every error a command returns, once, as "Error: <err>"
+		// on stderr, so a command returns its error rather than printing it too.
 		SilenceErrors: false,
 	}
 	root.AddCommand(newConfigCmd())
@@ -119,7 +129,6 @@ func newConfigCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, err := config.LoadFile(args[0]); err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
 				return exitErr{2, err}
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s: ok\n", args[0])
@@ -142,13 +151,10 @@ func newConfigCmd() *cobra.Command {
 			// --set would be ambiguous, so that's rejected.
 			if crawlID != "" {
 				if cfgFile != "" || profile != "" || len(sets) > 0 {
-					err := errors.New("--crawl reads the crawl's frozen config; it can't be combined with --config, --profile, or --set")
-					fmt.Fprintln(cmd.ErrOrStderr(), err)
-					return exitErr{2, err}
+					return exitErr{2, errors.New("--crawl reads the crawl's frozen config; it can't be combined with --config, --profile, or --set")}
 				}
 				st, err := store.OpenCrawl(storeDir, crawlID)
 				if err != nil {
-					fmt.Fprintln(cmd.ErrOrStderr(), err)
 					return exitErr{2, err}
 				}
 				defer st.Close()
@@ -161,17 +167,14 @@ func newConfigCmd() *cobra.Command {
 			}
 			c, err := baseConfig(storeDir, profile, cfgFile)
 			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
 				return exitErr{2, err}
 			}
 			for _, s := range sets {
 				if err := c.Set(s); err != nil {
-					fmt.Fprintln(cmd.ErrOrStderr(), err)
 					return exitErr{2, err}
 				}
 			}
 			if err := c.Validate(); err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
 				return exitErr{2, err}
 			}
 			data, err := yaml.Marshal(c)

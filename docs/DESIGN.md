@@ -153,7 +153,7 @@ Named profiles (the configs the desktop app manages; the default one is presente
 
 Crawl UX (headless but informative): `crawl`, `list` and `resume` take `--progress none|json`. The default `none` leaves the output exactly as it is. `json` streams the executor's live snapshot (the `runner.Snapshot` the desktop and MCP read) to stderr as JSON Lines, one object per line with `"type":"progress"`: a record when the crawl starts, one every `--progress-interval` (default 10s, minimum 1s) and a final record with the terminal state. Fields: `crawl_id`, `seed`, `time`, `state` (`running`, then `finalizing`, then `completed` or `interrupted`), `elapsed_sec`, `processed`, `discovered` (queued URLs included), `queued`, `urls_per_sec`, `status_2xx`…`status_5xx`, `blocked_by_robots`, `no_response`, `indexable`, `site_checks` (while the pass is part of the crawl) and `error` (final record only). `finalizing` covers the post-crawl analysis, when the counters stop moving but the crawl is not stalled. A resumed crawl's counters, status breakdown included, cover every session. stdout is untouched, so the summary and the `Crawl ID:` line parse as before.
 
-Exit codes contract: `0` ok, `1` crawl error, `2` config error, `3` interrupted (resumable).
+Exit codes contract: `0` ok, `1` crawl error, `2` config error, `3` interrupted (resumable). A failing command prints its error once, on stderr, as `Error: <message>`. An interrupted crawl prints only its resume hint.
 
 `Ctrl-C` = graceful pause (frontier + state committed; prints `bluesnake resume <id>` hint). Second `Ctrl-C` = hard stop (still safe by WAL).
 

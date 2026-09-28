@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os/signal"
@@ -46,7 +45,6 @@ func newCrawlCmd() *cobra.Command {
 			}
 			cfg, source, err := crawlBase(storeDir, setup, cmd.Flags().Changed("setup"), profile, cfgFile, args[0])
 			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
 				return exitErr{2, err}
 			}
 			if source != "" && !quiet {
@@ -54,7 +52,6 @@ func newCrawlCmd() *cobra.Command {
 			}
 			for _, s := range sets {
 				if err := cfg.Set(s); err != nil {
-					fmt.Fprintln(cmd.ErrOrStderr(), err)
 					return exitErr{2, err}
 				}
 			}
@@ -77,7 +74,6 @@ func newCrawlCmd() *cobra.Command {
 			cfg.Scope.Include = append(cfg.Scope.Include, include...)
 			cfg.Scope.Exclude = append(cfg.Scope.Exclude, exclude...)
 			if err := cfg.Validate(); err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
 				return exitErr{2, err}
 			}
 
@@ -113,7 +109,6 @@ func newCrawlCmd() *cobra.Command {
 			out := obs.outcome()
 			if out.Err != nil && out.Status != store.StatusInterrupted && out.CrawlID == "" {
 				// the crawl never started (bad seed, sitemap fetch, ...)
-				fmt.Fprintln(cmd.ErrOrStderr(), out.Err)
 				return exitErr{1, out.Err}
 			}
 			if !quiet {
@@ -122,7 +117,7 @@ func newCrawlCmd() *cobra.Command {
 			}
 			if out.Status == store.StatusInterrupted {
 				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", out.CrawlID, storeDir)
-				return exitErr{3, errors.New("interrupted")}
+				return interrupted(cmd)
 			}
 			if out.Err != nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), "finalize:", out.Err)

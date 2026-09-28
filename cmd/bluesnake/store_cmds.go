@@ -94,9 +94,7 @@ func newResumeCmd() *cobra.Command {
 			// the config was frozen into the crawl at start; a different config
 			// would change discovery semantics mid-crawl
 			if (len(sets) > 0 || cfgFile != "") && !force {
-				err := errors.New("resume uses the config stored with the crawl; pass --force to override it")
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
-				return exitErr{2, err}
+				return exitErr{2, errors.New("resume uses the config stored with the crawl; pass --force to override it")}
 			}
 			// --force replaces the crawl's FROZEN config before the resume runs:
 			// validate the override, persist it, and every later resume sees the
@@ -104,7 +102,6 @@ func newResumeCmd() *cobra.Command {
 			// that silently reverts.
 			if force {
 				if err := persistForcedConfig(storeDir, args[0], cfgFile, sets); err != nil {
-					fmt.Fprintln(cmd.ErrOrStderr(), err)
 					return exitErr{2, err}
 				}
 			}
@@ -133,15 +130,13 @@ func newResumeCmd() *cobra.Command {
 			if out.Err != nil && out.CrawlID == "" {
 				// the resume was refused before a crawl session began (unknown id,
 				// pre-edges, already completed, resume-state load failure)
-				fmt.Fprintln(cmd.ErrOrStderr(), out.Err)
 				return exitErr{2, out.Err}
 			}
 			if out.Status == store.StatusInterrupted {
 				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", args[0], storeDir)
-				return exitErr{3, errors.New("interrupted")}
+				return interrupted(cmd)
 			}
 			if out.Err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), out.Err)
 				return exitErr{1, out.Err}
 			}
 			// Break down the full two-session graph (the registry counts are

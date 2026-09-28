@@ -112,7 +112,6 @@ func newListCmd() *cobra.Command {
 			out := obs.outcome()
 			if out.Err != nil && out.Status != store.StatusInterrupted && out.CrawlID == "" {
 				// the crawl never started (sitemap fetch failure, bad seed, ...)
-				fmt.Fprintln(cmd.ErrOrStderr(), out.Err)
 				return exitErr{1, out.Err}
 			}
 			if !quiet {
@@ -121,7 +120,7 @@ func newListCmd() *cobra.Command {
 			}
 			if out.Status == store.StatusInterrupted {
 				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", out.CrawlID, storeDir)
-				return exitErr{3, fmt.Errorf("interrupted")}
+				return interrupted(cmd)
 			}
 			if out.Err != nil {
 				fmt.Fprintln(cmd.ErrOrStderr(), "finalize:", out.Err)

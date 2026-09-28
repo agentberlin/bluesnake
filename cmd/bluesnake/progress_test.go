@@ -259,7 +259,7 @@ func TestCrawlProgressQuiet(t *testing.T) {
 }
 
 // TestCrawlProgressInterrupted: a signal mid-crawl ends the feed with an
-// interrupted record, and the resume hint and exit 3 follow it unchanged.
+// interrupted record, then the resume hint as stderr's last line, and exit 3.
 func TestCrawlProgressInterrupted(t *testing.T) {
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -319,7 +319,8 @@ func TestCrawlProgressInterrupted(t *testing.T) {
 	if last["state"] != store.StatusInterrupted {
 		t.Errorf("final record state = %v, want interrupted", last["state"])
 	}
-	// the hint comes after the final record, never before or between records
+	// the hint comes after the final record, never before or between records,
+	// and nothing follows it
 	lines := strings.Split(strings.TrimSuffix(stderr.String(), "\n"), "\n")
 	hint := -1
 	for i, l := range lines {
@@ -327,8 +328,8 @@ func TestCrawlProgressInterrupted(t *testing.T) {
 			hint = i
 		}
 	}
-	if hint < 0 || len(other) == 0 || hint != len(recs) {
-		t.Errorf("resume hint not right after the final record:\n%s", stderr.String())
+	if hint < 0 || len(other) != 1 || hint != len(recs) {
+		t.Errorf("stderr should end with the final record, then the resume hint alone:\n%s", stderr.String())
 	}
 }
 

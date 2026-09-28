@@ -49,7 +49,6 @@ func newToolsStructuredCmd() *cobra.Command {
 			}
 			rep, err := chk.Structured(cmd.Context(), args[0])
 			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
 				return exitErr{2, err}
 			}
 			if asJSON {
@@ -92,7 +91,6 @@ func newToolsSerpCmd() *cobra.Command {
 			}
 			rep, err := chk.Serp(cmd.Context(), sitecheck.SerpOptions{Title: title, Description: description, URL: pageURL})
 			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
 				return exitErr{2, err}
 			}
 			if asJSON {
@@ -148,7 +146,6 @@ func newToolsRenderCmd() *cobra.Command {
 			}
 			rep, err := chk.RenderDiff(cmd.Context(), args[0])
 			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
 				return exitErr{2, err}
 			}
 			if asJSON {
@@ -206,7 +203,6 @@ func newToolsLlmsCmd() *cobra.Command {
 			}
 			rep, err := chk.LlmsTxt(cmd.Context(), args[0])
 			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
 				return exitErr{2, err}
 			}
 			if asJSON {
@@ -250,7 +246,6 @@ func newToolsAIBotsCmd() *cobra.Command {
 			}
 			rep, err := chk.AIBots(cmd.Context(), args[0], sitecheck.AIBotOptions{Live: live, Skip: skip})
 			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
 				return exitErr{2, err}
 			}
 			if asJSON {
@@ -333,7 +328,6 @@ func newToolsRobotsCmd() *cobra.Command {
 			case robotsFile != "":
 				data, err := os.ReadFile(robotsFile)
 				if err != nil {
-					fmt.Fprintln(cmd.ErrOrStderr(), err)
 					return exitErr{2, err}
 				}
 				rep = chk.EvaluateRobotsFile(data, opts)
@@ -341,14 +335,11 @@ func newToolsRobotsCmd() *cobra.Command {
 				target := site
 				if target == "" {
 					if len(args) == 0 {
-						err := errors.New("provide --site, --robots-file, or at least one URL")
-						fmt.Fprintln(cmd.ErrOrStderr(), err)
-						return exitErr{2, err}
+						return exitErr{2, errors.New("provide --site, --robots-file, or at least one URL")}
 					}
 					target = args[0]
 				}
 				if rep, err = chk.Robots(cmd.Context(), target, opts); err != nil {
-					fmt.Fprintln(cmd.ErrOrStderr(), err)
 					return exitErr{2, err}
 				}
 			}
@@ -403,7 +394,6 @@ func newToolsSitemapCmd() *cobra.Command {
 			}
 			rep, err := chk.Sitemaps(cmd.Context(), args[0], sitecheck.SitemapOptions{CheckEntries: checkEntries})
 			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), err)
 				return exitErr{2, err}
 			}
 			if asJSON {

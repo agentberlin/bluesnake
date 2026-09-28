@@ -411,7 +411,7 @@ func newProjectCmd() *cobra.Command {
 				stop()
 				disp.Shutdown()
 				fmt.Fprintln(cmd.ErrOrStderr(), "interrupted — in-flight member crawls paused (resumable); queued members not started")
-				return exitErr{3, fmt.Errorf("interrupted")}
+				return interrupted(cmd)
 			}
 		},
 	}
