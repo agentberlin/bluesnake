@@ -1,5 +1,10 @@
 name: test
 
+# TEMPORARY PROBE BRANCH (do not merge): runs this workflow on the explicit
+# ubuntu-26.04 image ahead of the ubuntu-latest switch (actions/runner-images#14748).
+# The `test` job's steps are byte-identical to main; only runs-on changed. The
+# "Probe:" steps/jobs are diagnostics that exist only on this branch.
+#
 # The project's test suite (lint + unit + acceptance). Runs on every pull
 # request to main and every push to main, and is reused by the release workflow
 # (workflow_call) so a tagged release can never ship code that fails tests.
@@ -28,7 +33,7 @@ concurrency:
 jobs:
   test:
     name: Lint + unit + acceptance
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -53,3 +58,173 @@ jobs:
 
       - name: Race detector (concurrency-critical packages)
         run: make race
+
+      # ---------------------------------------------------- probe-only steps
+      - name: "Probe: image facts"
+        if: always()
+        run: |
+          head -4 /etc/os-release; uname -r
+          echo "--- chrome"
+          readlink -f /usr/bin/google-chrome || true
+          google-chrome --version || true
+          stat -c '%A %U %n' /opt/google/chrome/chrome-sandbox 2>/dev/null || echo "no SUID chrome-sandbox"
+          echo "--- user namespaces / AppArmor"
+          sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone user.max_user_namespaces 2>&1 || true
+          ls /etc/apparmor.d/ | grep -iE 'chrom|unprivileged' || echo "no chrome AppArmor profile"
+          unshare --user --map-root-user true && echo "unshare -U: ok" || echo "unshare -U: blocked"
+          echo "--- toolchain"
+          gcc --version | head -1; make --version | head -1
+          go version; go env CGO_ENABLED CC
+          sha256sum --version | head -1; tar --version | head -1; find --version | head -1
+
+      - name: "Probe: headless Chrome launch with the sandbox (as chromedp does)"
+        if: always()
+        run: |
+          rc=0
+          timeout 60 google-chrome --headless --disable-gpu --no-first-run \
+            --dump-dom 'data:text/html,<p id="x">sandboxed-ok</p>' 2>"$RUNNER_TEMP/chrome.err" || rc=$?
+          echo "exit=$rc"; tail -20 "$RUNNER_TEMP/chrome.err"; exit "$rc"
+
+      - name: "Probe: Chrome-dependent tests ran (not skipped)"
+        if: always()
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/chrome-tests.log"
+          pick() { tee -a "$log" | grep -E -- '--- (PASS|SKIP|FAIL)|^(ok|FAIL)[[:space:]]'; }
+          go test -count=1 -v ./internal/render/ 2>&1 | pick
+          go test -count=1 -v -run '^(TestCrawlerRenderingIntegration|TestRenderedStructuredDataFromDOM|TestCrawlerCustomJSIntegration|TestCrawlerCustomJSCoexistsWithSearch|TestStoreRenderedHTMLAndScreenshot|TestStoreRenderedHTMLDisabled)$' ./internal/crawler/ 2>&1 | pick
+          go test -count=1 -v -run '^TestRenderDiffEndToEnd$' ./internal/sitecheck/ 2>&1 | pick
+          if grep -E -- '--- SKIP' "$log"; then echo "::error::Chrome-dependent tests were SKIPPED"; exit 1; fi
+          echo "no Chrome-dependent test was skipped"
+
+  # ------------------------------------------------------- probe-only jobs
+  # release.yml's Linux jobs, replicated on ubuntu-26.04 (no publish).
+  cli-linux-probe:
+    name: "Probe: CLI + .deb (linux/${{ matrix.arch }})"
+    runs-on: ubuntu-26.04
+    env:
+      VERSION: 0.0.0-dev
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Stamp version (tag is authoritative)
+        run: echo "$VERSION" > internal/version/VERSION
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build CLI (pure Go, CGO disabled)
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w" -o dist/bluesnake ./cmd/bluesnake
+          tar -C dist -czf "dist/bluesnake-${VERSION}-linux-${{ matrix.arch }}.tar.gz" bluesnake
+
+      - name: Package .deb (nfpm)
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          "$(go env GOPATH)/bin/nfpm" package --config packaging/nfpm.yaml --packager deb --target dist/
+
+      - name: "Probe: inspect artifacts"
+        run: |
+          file dist/bluesnake; ls -la dist
+          dpkg-deb --info dist/*.deb; dpkg-deb --contents dist/*.deb
+          if [ "${{ matrix.arch }}" = amd64 ]; then ./dist/bluesnake version; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-linux-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+          if-no-files-found: error
+          retention-days: 1
+
+  release-assembly-probe:
+    name: "Probe: resolve-version + release asset assembly (no publish)"
+    needs: cli-linux-probe
+    runs-on: ubuntu-26.04
+    env:
+      VERSION: 0.0.0-dev
+    steps:
+      - name: "resolve-version script (simulated tag v1.2.3)"
+        run: |
+          GITHUB_OUTPUT="$RUNNER_TEMP/rv-out"; GITHUB_REF=refs/tags/v1.2.3; GITHUB_REF_NAME=v1.2.3
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            v="${GITHUB_REF_NAME#v}"
+            if ! printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+'; then
+              echo "::error::tag ${GITHUB_REF_NAME} is not v<semver> (expected e.g. v1.2.3)"; exit 1
+            fi
+            echo "version=$v" >> "$GITHUB_OUTPUT"
+            echo "Release version: $v (from tag ${GITHUB_REF_NAME})"
+          else
+            echo "version=0.0.0-dev" >> "$GITHUB_OUTPUT"
+            echo "Build-only run (not a tag) — version 0.0.0-dev"
+          fi
+          grep -qx 'version=1.2.3' "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name '*.deb' -o -name '*.tar.gz' -o -name '*.dmg' \
+            -o -name '*.zip' -o -name '*.exe' \) -exec cp {} dist/ \;
+          cp packaging/install.sh dist/install.sh
+          ls -la dist
+
+      - name: Stable-named assets + checksums (for latest-download links)
+        run: |
+          cd dist
+          # Linux: extract the raw binary from each tarball and checksum it.
+          for arch in amd64 arm64; do
+            tarball="bluesnake-${VERSION}-linux-${arch}.tar.gz"
+            if [ ! -f "$tarball" ]; then echo "::warning::missing $tarball"; continue; fi
+            tar -xzf "$tarball" bluesnake
+            mv -f bluesnake "bluesnake-linux-${arch}"
+            chmod +x "bluesnake-linux-${arch}"
+            sha256sum "bluesnake-linux-${arch}" > "bluesnake-linux-${arch}.sha256"
+          done
+          # macOS + Windows: copy the versioned artifact to a stable name.
+          for pair in \
+            "bluesnake-${VERSION}-darwin-universal.dmg:bluesnake-darwin-universal.dmg" \
+            "bluesnake-${VERSION}-windows-amd64.exe:bluesnake-windows-amd64.exe" \
+            "bluesnake-${VERSION}-windows-amd64-installer.exe:bluesnake-windows-amd64-installer.exe"; do
+            src="${pair%%:*}"; dst="${pair##*:}"
+            if [ -f "$src" ]; then cp "$src" "$dst"; else echo "::warning::missing $src (no stable alias $dst)"; fi
+          done
+          # combined checksum manifest over every artifact (humans / auditing)
+          : > SHA256SUMS
+          for f in bluesnake*; do
+            case "$f" in *.sha256|SHA256SUMS) continue;; esac
+            sha256sum "$f" >> SHA256SUMS
+          done
+          ls -la
+
+      - name: "Probe: Linux assets present + checksums verify (install.sh's parse)"
+        run: |
+          cd dist
+          for asset in bluesnake-linux-amd64 bluesnake-linux-arm64 install.sh; do
+            [ -f "$asset" ] || { echo "::error::missing $asset"; exit 1; }
+          done
+          cat bluesnake-linux-*.sha256 SHA256SUMS
+          sha256sum -c bluesnake-linux-amd64.sha256 bluesnake-linux-arm64.sha256
+          sha256sum -c SHA256SUMS
+          for arch in amd64 arm64; do
+            expected="$(awk '{print $1; exit}' "bluesnake-linux-${arch}.sha256" | tr -d '[:space:]')"
+            actual="$(sha256sum "bluesnake-linux-${arch}" | awk '{print $1}')"
+            [ "${#expected}" -eq 64 ] && [ "$expected" = "$actual" ] || { echo "::error::sidecar mismatch for $arch"; exit 1; }
+          done
+          echo "sidecars parse the way install.sh reads them"
