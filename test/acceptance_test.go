@@ -87,6 +87,9 @@ type world struct {
 	// CLI steps
 	out      string
 	exitCode int
+	// stdout/stderr apart, for scenarios that run with the streams on
+	// separate pipes (progress.feature); out is then their concatenation
+	stdout, stderr string
 
 	// urlutil steps
 	opts       urlutil.Options
@@ -368,6 +371,7 @@ func initializeScenario(sc *godog.ScenarioContext) {
 	w.registerWARCSteps(sc)
 	w.registerServeSteps(sc)
 	w.registerBundleSteps(sc)
+	w.registerProgressSteps(sc)
 
 	// --- include/exclude ---
 	sc.Step(`^no include or exclude patterns$`, w.noPatterns)
@@ -450,6 +454,32 @@ func (w *world) effectiveValue(key, want string) error {
 // --- CLI step implementations ---
 
 func (w *world) runCLI(command string) error {
+	cmd, err := w.cliCommand(command)
+	if err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	return w.cliResult(cmd.Run(), buf.String())
+}
+
+// runCLIApart runs a command with stdout and stderr on separate pipes, the way
+// a container runtime or CI runner hands them to a log consumer.
+func (w *world) runCLIApart(command string) error {
+	cmd, err := w.cliCommand(command)
+	if err != nil {
+		return err
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err = cmd.Run()
+	w.stdout, w.stderr = stdout.String(), stderr.String()
+	return w.cliResult(err, w.stdout+w.stderr)
+}
+
+// cliCommand expands a step's command placeholders into a bluesnake process
+// that runs inside the scenario's temp dir.
+func (w *world) cliCommand(command string) (*exec.Cmd, error) {
 	command = strings.ReplaceAll(command, "<configfile>", w.cfgPath)
 	command = strings.ReplaceAll(command, "<robotsfile>", w.robotsPath)
 	if strings.Contains(command, "<serverurl>") {
@@ -464,15 +494,17 @@ func (w *world) runCLI(command string) error {
 	}
 	args := strings.Fields(command)
 	if len(args) == 0 || args[0] != "bluesnake" {
-		return fmt.Errorf("command must start with 'bluesnake': %q", command)
+		return nil, fmt.Errorf("command must start with 'bluesnake': %q", command)
 	}
 	cmd := exec.Command(binPath, args[1:]...)
 	cmd.Dir = w.tmpDir
 	cmd.Env = append(os.Environ(), "HOME="+w.tmpDir) // keep default store dir inside the scenario
-	var buf bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &buf, &buf
-	err := cmd.Run()
-	w.out = buf.String()
+	return cmd, nil
+}
+
+// cliResult records a finished command's output and exit code.
+func (w *world) cliResult(err error, out string) error {
+	w.out = out
 	w.exitCode = 0
 	if ee, ok := err.(*exec.ExitError); ok {
 		w.exitCode = ee.ExitCode()

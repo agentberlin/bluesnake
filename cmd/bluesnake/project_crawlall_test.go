@@ -12,6 +12,7 @@ import (
 	"errors"
 	"net"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -100,6 +101,10 @@ func TestProjectCrawlAll_InterruptDoesNotHang(t *testing.T) {
 	case r := <-done:
 		if r.code != 3 {
 			t.Errorf("interrupted crawl-all exit = %d, want 3, output:\n%s", r.code, r.out)
+		}
+		// the interrupt notice is the report; no "Error: interrupted" under it
+		if !strings.Contains(r.out, "interrupted — in-flight member crawls paused") || strings.Contains(r.out, "Error:") {
+			t.Errorf("interrupted crawl-all should report the interrupt once, with its notice:\n%s", r.out)
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("crawl-all hung after interrupt with members still queued (N3)")

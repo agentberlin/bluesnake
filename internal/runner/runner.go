@@ -2,9 +2,10 @@
 // be two near-identical session managers (the desktop's crawlSession and the
 // MCP Runner's runnerSession) into one Executor that satisfies queue.Executor:
 // the queue dispatcher drives it, and every surface plugs in an Observer for its
-// own live feedback (the desktop emits Wails events; the CLI prints a progress
-// line; the MCP server exposes a status snapshot). The engine and the shared
-// finalize path are untouched — this is orchestration, not a new crawler.
+// own live feedback (the desktop emits Wails events; the CLI streams JSON
+// progress lines with --progress json; the MCP server exposes a status
+// snapshot). The engine and the shared finalize path are untouched — this is
+// orchestration, not a new crawler.
 package runner
 
 import (
@@ -48,6 +49,13 @@ type Snapshot struct {
 	SiteChecksState    string
 	SiteChecksRan      int
 	SiteChecksFindings int
+	// Finalizing is set once the engine has returned and finalize (aggregates,
+	// full-graph depth/inlinks, analysis) is running. The counters are final by
+	// then, so a surface can tell a long analysis from a stalled crawl. It is a
+	// flag, not a state, because MCP's crawl_status must keep reporting
+	// "running" until the crawl is completed: agents poll until the state
+	// changes and then query the analysis.
+	Finalizing bool
 }
 
 // Outcome is the terminal result handed to Observer.OnDone. The analysis fields
@@ -126,6 +134,7 @@ type run struct {
 
 	mu             sync.Mutex
 	stopMode       string // "" | "pause" | "stop"
+	finalizing     bool
 	total          int
 	discovered     int
 	s2, s3, s4, s5 int
@@ -156,6 +165,9 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 	if resume != nil {
 		r.total = resume.processed
 		r.discovered = resume.discovered
+		sc := resume.statuses
+		r.s2, r.s3, r.s4, r.s5 = sc.S2xx, sc.S3xx, sc.S4xx, sc.S5xx
+		r.blocked, r.noresp, r.indexable = sc.Blocked, sc.NoResponse, sc.Indexable
 	}
 	// One global limiter shared across every crawl this executor runs, so M
 	// parallel crawls honour a single process-wide fetch ceiling. Fall back to a
@@ -231,6 +243,7 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 
 	r.mu.Lock()
 	mode := r.stopMode
+	r.finalizing = true
 	r.mu.Unlock()
 
 	out := Outcome{CrawlID: st.ID, Status: store.StatusInterrupted, Err: runErr}
@@ -396,6 +409,7 @@ func openForResume(storeDir, id string) (
 type resumeSource interface {
 	PageCount() (int, error)
 	Count() (int, error)
+	StatusCounts() (store.StatusCounts, error)
 	FetchedCount() (int, error)
 	MaxEdgeSeq() (int64, error)
 	EachAdmitted(fn func(url string, depth int) error) error
@@ -405,8 +419,9 @@ type resumeSource interface {
 // live-counter seeds the runner's progress starts from.
 type resumeState struct {
 	crawler.Resume
-	processed  int // recorded pages — seeds the live "total" counter
-	discovered int // admitted URLs (frontier ∪ pages) — seeds "discovered"
+	processed  int                // recorded pages — seeds the live "total" counter
+	discovered int                // admitted URLs (frontier ∪ pages) — seeds "discovered"
+	statuses   store.StatusCounts // recorded pages by outcome — seeds the live breakdown
 }
 
 // loadResume assembles the resume state from the store. Any load error refuses
@@ -435,6 +450,9 @@ func loadResume(src resumeSource, lim *config.LimitsConfig) (resumeState, error)
 	}
 	if r.discovered, err = src.Count(); err != nil {
 		return resumeState{}, fmt.Errorf("resume: load discovered count: %w", err)
+	}
+	if r.statuses, err = src.StatusCounts(); err != nil {
+		return resumeState{}, fmt.Errorf("resume: load status breakdown: %w", err)
 	}
 	if r.Fetched, err = src.FetchedCount(); err != nil {
 		return resumeState{}, fmt.Errorf("resume: load fetched count: %w", err)
@@ -575,6 +593,7 @@ func (r *run) snapshot() Snapshot {
 		RatePerSec: float64(len(r.recent)) / 4.0,
 		ElapsedSec: int(time.Since(r.started).Seconds()),
 		Threads:    r.threads,
+		Finalizing: r.finalizing,
 	}
 	if r.c != nil {
 		snap.SiteChecksState, snap.SiteChecksRan, snap.SiteChecksFindings = r.c.SiteCheckProgress()

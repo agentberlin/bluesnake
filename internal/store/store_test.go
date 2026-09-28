@@ -177,6 +177,50 @@ func TestCounts(t *testing.T) {
 	}
 }
 
+// TestStatusCounts pins the stored breakdown to the runner's live page
+// classification (run.onPage): blocked/no-response by state first, then every
+// other state — skipped_too_large included — by status class, with indexable
+// counted only among those. Resume seeds the live counters from it, so a drift
+// here makes a resumed crawl's progress disagree with a straight crawl's.
+func TestStatusCounts(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	pages := []*crawler.PageRecord{
+		{URL: "https://ex.com/", State: crawler.StateCrawled, StatusCode: 200, Indexable: true},
+		{URL: "https://ex.com/nx", State: crawler.StateCrawled, StatusCode: 204},
+		{URL: "https://ex.com/old", State: crawler.StateCrawled, StatusCode: 301},
+		{URL: "https://ex.com/gone", State: crawler.StateCrawled, StatusCode: 404},
+		{URL: "https://ex.com/deny", State: crawler.StateCrawled, StatusCode: 403},
+		{URL: "https://ex.com/boom", State: crawler.StateCrawled, StatusCode: 503},
+		{URL: "https://ex.com/big", State: crawler.StateSkippedTooLarge, StatusCode: 200, Indexable: true},
+		// blocked/error pages are classified by state, never by a status code or
+		// indexable flag they happen to carry
+		{URL: "https://ex.com/block", State: crawler.StateBlockedRobots, StatusCode: 200, Indexable: true},
+		{URL: "https://ex.com/err", State: crawler.StateError, StatusCode: 500, Indexable: true},
+		{URL: "https://ex.com/err2", State: crawler.StateError},
+	}
+	for _, p := range pages {
+		p.Scope = "internal"
+		if err := c.Page(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := c.StatusCounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := StatusCounts{S2xx: 3, S3xx: 1, S4xx: 2, S5xx: 1, Blocked: 1, NoResponse: 2, Indexable: 2}
+	if got != want {
+		t.Errorf("StatusCounts = %+v, want %+v", got, want)
+	}
+}
+
 // cancellingSink cancels the context after N pages, simulating an interrupt.
 type cancellingSink struct {
 	*Crawl

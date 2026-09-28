@@ -1310,6 +1310,33 @@ func (c *Crawl) PageCount() (int, error) {
 	return n, err
 }
 
+// StatusCounts is the recorded pages broken down exactly as the runner's live
+// progress counters classify the page stream: robots-blocked and no-response
+// pages by state, every other page by status class, plus the indexable subset
+// of those. Resume seeds the live breakdown from it, so a resumed crawl's
+// progress covers the whole crawl like its processed/discovered totals do.
+type StatusCounts struct {
+	S2xx, S3xx, S4xx, S5xx int
+	Blocked, NoResponse    int
+	Indexable              int
+}
+
+// StatusCounts classifies every recorded page in one pass over the pages table.
+func (c *Crawl) StatusCounts() (StatusCounts, error) {
+	var s StatusCounts
+	err := c.db.QueryRow(`SELECT
+		COUNT(*) FILTER (WHERE state = ?1),
+		COUNT(*) FILTER (WHERE state = ?2),
+		COUNT(*) FILTER (WHERE state NOT IN (?1, ?2) AND status_code >= 500),
+		COUNT(*) FILTER (WHERE state NOT IN (?1, ?2) AND status_code >= 400 AND status_code < 500),
+		COUNT(*) FILTER (WHERE state NOT IN (?1, ?2) AND status_code >= 300 AND status_code < 400),
+		COUNT(*) FILTER (WHERE state NOT IN (?1, ?2) AND status_code >= 200 AND status_code < 300),
+		COUNT(*) FILTER (WHERE state NOT IN (?1, ?2) AND indexable = 1)
+		FROM pages`, crawler.StateBlockedRobots, crawler.StateError).
+		Scan(&s.Blocked, &s.NoResponse, &s.S5xx, &s.S4xx, &s.S3xx, &s.S2xx, &s.Indexable)
+	return s, err
+}
+
 // LoadPages reconstructs every stored page record, including the full Facts
 // (with ContentText). Used by re-analysis, compare, and any path that needs the
 // page body text.

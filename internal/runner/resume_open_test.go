@@ -117,7 +117,7 @@ func TestOpenForResumePurgesStrandedFrontierRows(t *testing.T) {
 // refusal arms (#74 N15): a resume-state read error must refuse the resume,
 // not silently degrade (e.g. an edge-seq of 0 reproduces the R2 corruption).
 type erroringResumeSource struct {
-	failPageCount, failFetched, failCount, failSeq, failAdmitted bool
+	failPageCount, failFetched, failCount, failStatuses, failSeq, failAdmitted bool
 }
 
 var errLoad = errors.New("store read failed")
@@ -139,6 +139,12 @@ func (s *erroringResumeSource) Count() (int, error) {
 		return 0, errLoad
 	}
 	return 2, nil
+}
+func (s *erroringResumeSource) StatusCounts() (store.StatusCounts, error) {
+	if s.failStatuses {
+		return store.StatusCounts{}, errLoad
+	}
+	return store.StatusCounts{S2xx: 1, Indexable: 1}, nil
 }
 func (s *erroringResumeSource) MaxEdgeSeq() (int64, error) {
 	if s.failSeq {
@@ -166,6 +172,7 @@ func TestResumeRefusedOnResumeStateLoadError(t *testing.T) {
 		{"processed-count", &erroringResumeSource{failPageCount: true}, capOff},
 		{"fetched-count", &erroringResumeSource{failFetched: true}, capOff},
 		{"discovered-count", &erroringResumeSource{failCount: true}, capOff},
+		{"status-breakdown", &erroringResumeSource{failStatuses: true}, capOff},
 		{"edge-seq", &erroringResumeSource{failSeq: true}, capOff},
 		{"admitted-stream", &erroringResumeSource{failAdmitted: true}, capOn},
 	}

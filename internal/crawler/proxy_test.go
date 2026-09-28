@@ -149,7 +149,15 @@ func TestPageRecordsAttributePerEgress(t *testing.T) {
 
 	a, b := newRecordingProxy(t, "A"), newRecordingProxy(t, "B")
 	res := crawl(t, s, func(cfg *config.Config) {
-		cfg.Speed.MaxThreads = 1 // deterministic round-robin order
+		// Round-robin alternates the pages across A and B only when they take
+		// consecutive turns in the pool: one worker, and no site-check pass.
+		// That pass fetches through the same pool concurrently with the crawl,
+		// and a check fetch landing between every two page fetches put all
+		// seven pages on one egress. The crawl-start fetches (robots.txt,
+		// llms.txt) finish before the first page, so they only decide which
+		// egress the rotation starts on.
+		cfg.Speed.MaxThreads = 1
+		cfg.SiteChecks.Enabled = "never"
 		cfg.HTTP.Proxies = []config.ProxyEntry{{URL: a.srv.URL}, {URL: b.srv.URL}}
 	})
 
