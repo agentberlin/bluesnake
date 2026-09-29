@@ -2,7 +2,8 @@ name: release
 
 # Releases are cut from a version tag `v<X.Y.Z>`. Every merge to main gets one
 # automatically: auto-release.yml tags the merge commit with the next minor
-# version and dispatches this workflow on that tag (a tag pushed with
+# version (or the one a `[release vX.Y.Z]` title asks for; `[skip]` opts out)
+# and dispatches this workflow on that tag (a tag pushed with
 # GITHUB_TOKEN can't fire the `push: tags` trigger itself). A tag pushed by hand
 # (e.g. a patch release) runs it through `push: tags` as before. The TAG is
 # authoritative: CI derives the version from it and stamps

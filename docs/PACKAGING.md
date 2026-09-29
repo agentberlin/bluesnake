@@ -162,6 +162,18 @@ workflows. A commit already covered by the latest tag (a re-run, or an older
 merge whose tests finished after a newer one's) is skipped, and runs are
 serialized so two merges never claim the same version.
 
+The PR or commit title can steer it. Both titles are checked, since a squash
+merge of a one-commit PR titles the commit after that commit, not the PR.
+Markers are case-insensitive:
+
+| Title | Effect |
+|---|---|
+| ends with `[skip]` | No release for this merge; its changes ship with the next one. |
+| contains `[release v0.19.1]` | Releases exactly that version, which must be the next patch, minor or major after the highest tag (`v0.19.1`, `v0.20.0` or `v1.0.0` after `v0.19.0`). |
+
+A `[release …]` version that isn't one of those, a malformed marker, or
+`[skip]` together with `[release …]` fails the run without tagging anything.
+
 A tag pushed by hand still releases through the `push: tags` trigger, e.g. a
 patch release:
 

@@ -5,6 +5,15 @@ name: auto-release
 # tag, minor + 1, patch 0: v0.19.0 -> v0.20.0) and starts release.yml on the new
 # tag, which builds and publishes it.
 #
+# The PR or commit title can steer it (markers are case-insensitive):
+#   "... [skip]"            title ENDS with [skip]: no release for this merge; its
+#                           changes ship with the next one.
+#   "... [release v0.19.1]" release exactly that version instead. It must be the
+#                           next patch, minor or major after the highest tag
+#                           (v0.19.1, v0.20.0 or v1.0.0 after v0.19.0); anything
+#                           else, a malformed marker, or [skip] alongside it
+#                           fails the run without tagging.
+#
 # Why it dispatches release.yml rather than relying on the tag push: a tag pushed
 # with the workflow's GITHUB_TOKEN does not trigger other workflows (GitHub's
 # guard against recursive runs), so release.yml's `push: tags` trigger never
@@ -22,8 +31,9 @@ on:
     branches: [main]
 
 permissions:
-  contents: write   # push the tag
-  actions: write    # dispatch release.yml
+  contents: write       # push the tag
+  actions: write        # dispatch release.yml
+  pull-requests: read   # read the merged PR's title
 
 concurrency:
   # One tagger at a time, so two merges can never claim the same version.
@@ -32,7 +42,7 @@ concurrency:
 
 jobs:
   tag:
-    name: Tag next minor + start release
+    name: Tag next version + start release
     # Only a green run from a push to main (a merge), never a PR run.
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
@@ -47,40 +57,96 @@ jobs:
 
       - name: Pick the next version
         id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          shopt -s nocasematch
+          say() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+
           latest="$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
-          if [ -z "$latest" ]; then
-            next=v0.1.0
-          else
-            # Already released: the commit carries the latest tag (a re-run), or a
-            # later merge whose test run finished first was released on top of it.
-            if git merge-base --is-ancestor "$SHA" "$latest"; then
-              echo "$SHA is already part of $latest; nothing to release"
-              exit 0
-            fi
-            IFS=. read -r major minor _ <<< "${latest#v}"
-            next="v${major}.$((minor + 1)).0"
+          # Already released: the commit carries the latest tag (a re-run), or a
+          # later merge whose test run finished first was released on top of it.
+          if [ -n "$latest" ] && git merge-base --is-ancestor "$SHA" "$latest"; then
+            say "$SHA is already part of $latest; nothing to release."
+            exit 0
           fi
+
+          # Markers are read from both the merged PR's title and the commit's: a
+          # squash merge of a one-commit PR titles the commit after that commit,
+          # not the PR, and a direct push has no PR. A merge commit carries the PR
+          # title as the first line of its body; a squash merge appends " (#N)".
+          pr_title="$(gh api "repos/$GH_REPO/commits/$SHA/pulls" --jq '[.[] | select(.merged_at)][0].title // ""')"
+          commit_title="$(git log -1 --format=%s "$SHA")"
+          if [[ "$commit_title" == "Merge pull request "* ]]; then
+            commit_title="$(git log -1 --format=%b "$SHA" | sed -n '/./{p;q;}')"
+          fi
+          commit_title="$(sed -E 's/ \(#[0-9]+\)$//' <<< "$commit_title")"
+
+          skip_re='\[skip\][[:space:]]*$'
+          release_re='\[release([^]]*)\]'
+          version_re='^[[:space:]]+v?([0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$'
+          skip=false
+          want=""
+          for title in "$pr_title" "$commit_title"; do
+            if [[ $title =~ $skip_re ]]; then skip=true; fi
+            if [[ $title =~ $release_re ]]; then
+              marker="${BASH_REMATCH[0]}"
+              if ! [[ ${BASH_REMATCH[1]} =~ $version_re ]]; then
+                echo "::error::malformed release marker $marker in title \"$title\" (expected [release vX.Y.Z])"
+                exit 1
+              fi
+              if [ -n "$want" ] && [ "$want" != "v${BASH_REMATCH[1]}" ]; then
+                echo "::error::the PR and commit titles ask for different versions: $want and v${BASH_REMATCH[1]}"
+                exit 1
+              fi
+              want="v${BASH_REMATCH[1]}"
+            fi
+          done
+
+          if $skip && [ -n "$want" ]; then
+            echo "::error::the title has both [skip] and [release $want]; keep one"
+            exit 1
+          fi
+          if $skip; then
+            say "[skip] in the title: not releasing $SHA. Its changes ship with the next release."
+            exit 0
+          fi
+
+          base="${latest:-v0.0.0}"
+          IFS=. read -r major minor patch <<< "${base#v}"
+          next="v${major}.$((minor + 1)).0"
+          if [ -n "$want" ]; then
+            allowed="v${major}.${minor}.$((patch + 1)) v${major}.$((minor + 1)).0 v$((major + 1)).0.0"
+            if [[ " $allowed " != *" $want "* ]]; then
+              echo "::error::[release $want] is not the next version after ${latest:-no tags}; use one of: $allowed"
+              exit 1
+            fi
+            next="$want"
+          fi
+
+          # Tag message summary: the PR title (else the commit's), minus the marker.
+          summary="${pr_title:-$commit_title}"
+          if [[ $summary =~ $release_re ]]; then
+            summary="${summary/"${BASH_REMATCH[0]}"/}"
+          fi
+          summary="$(sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' <<< "$summary")"
+
           echo "next=$next" >> "$GITHUB_OUTPUT"
-          echo "Releasing $SHA as $next (previous: ${latest:-none})"
+          echo "summary=$summary" >> "$GITHUB_OUTPUT"
+          say "Releasing $SHA as $next (previous: ${latest:-none}${want:+, requested by the title})."
 
       - name: Tag the merge commit
         if: steps.v.outputs.next != ''
         env:
           NEXT: ${{ steps.v.outputs.next }}
+          SUMMARY: ${{ steps.v.outputs.summary }}
         run: |
           set -euo pipefail
-          # Tag message "vX.Y.Z — <summary>": the PR title, which a merge commit
-          # carries as the first line of its body (a squash merge as its subject).
-          subject="$(git log -1 --format=%s "$SHA")"
-          summary="$subject"
-          if [[ "$subject" == "Merge pull request "* ]]; then
-            summary="$(git log -1 --format=%b "$SHA" | sed -n '/./{p;q}')"
-          fi
           git -c user.name='github-actions[bot]' \
               -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-              tag -a "$NEXT" -m "$NEXT — ${summary:-$subject}" "$SHA"
+              tag -a "$NEXT" -m "$NEXT${SUMMARY:+ — $SUMMARY}" "$SHA"
           git push origin "refs/tags/$NEXT"
 
       - name: Start the release build
