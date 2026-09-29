@@ -115,10 +115,13 @@ asset names and `SHA256SUMS` straight from the published release.
 ## CI/CD
 
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) is
-**tag-driven**: pushing a `v*` tag builds everything and publishes a GitHub
-Release for that version, marked as the repo's latest. It does **not** run on
-pull requests or on plain pushes to `main`. (`workflow_dispatch` builds all
-platforms without releasing — a manual smoke test.)
+**tag-driven**: a `v*` tag builds everything and publishes a GitHub Release for
+that version, marked as the repo's latest. It does **not** run on pull requests
+or on plain pushes to `main`; every merge gets its tag from
+[`auto-release.yml`](../.github/workflows/auto-release.yml) (see
+[below](#versioning--cutting-a-release)). (`workflow_dispatch` on a branch
+builds all platforms without releasing — a manual smoke test; on a tag ref it
+releases, which is how `auto-release.yml` starts it.)
 
 On a `v*` tag:
 1. `resolve-version` derives the version from the tag (`v1.2.3` → `1.2.3`) and
@@ -147,15 +150,29 @@ is embedded in the binary (`//go:embed`, also read by the desktop frontend), so
 `bluesnake version` and the MCP server report it — but for a release, CI derives
 the version from the tag and **overwrites that file before building**. The
 committed value is just a development placeholder (`0.0.0-dev`), which is what
-local/source builds report. Cutting a release is therefore a single step:
+local/source builds report.
+
+**Every merge to `main` is a release.** When the post-merge `test` run on `main`
+passes, [`auto-release.yml`](../.github/workflows/auto-release.yml) tags the
+merge commit with the next **minor** version (highest `vX.Y.Z` tag, minor + 1:
+`v0.19.0` → `v0.20.0`), message `vX.Y.Z — <PR title>`, and dispatches
+`release.yml` on that tag. It dispatches rather than relying on the tag push
+because a tag pushed with the workflow's `GITHUB_TOKEN` doesn't trigger other
+workflows. A commit already covered by the latest tag (a re-run, or an older
+merge whose tests finished after a newer one's) is skipped, and runs are
+serialized so two merges never claim the same version.
+
+A tag pushed by hand still releases through the `push: tags` trigger, e.g. a
+patch release:
 
 ```sh
-git tag v0.2.0
-git push origin v0.2.0
+git tag -a v0.20.1 -m "v0.20.1 — <summary>"
+git push origin v0.20.1
 ```
 
-CI stamps `0.2.0` into the build, publishes the release, and `releases/latest`
-points at it. No file to bump, no file/tag mismatch to police. (Tradeoff: a
+The next merge then bumps the minor from the highest tag (`v0.21.0`). Either
+way CI stamps the version into the build, publishes the release, and
+`releases/latest` points at it. No file to bump, no file/tag mismatch to police. (Tradeoff: a
 plain `go build`/`go install` from source — outside CI — reports `0.0.0-dev`
 rather than a real version, since only CI does the stamping. That's fine here
 because every distributed artifact comes from CI.)

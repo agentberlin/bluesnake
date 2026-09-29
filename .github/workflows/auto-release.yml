@@ -1,0 +1,94 @@
+name: auto-release
+
+# Every merge to main ships a release. When the post-merge `test` run on main
+# passes, this tags that commit with the next minor version (the highest vX.Y.Z
+# tag, minor + 1, patch 0: v0.19.0 -> v0.20.0) and starts release.yml on the new
+# tag, which builds and publishes it.
+#
+# Why it dispatches release.yml rather than relying on the tag push: a tag pushed
+# with the workflow's GITHUB_TOKEN does not trigger other workflows (GitHub's
+# guard against recursive runs), so release.yml's `push: tags` trigger never
+# fires for it. workflow_dispatch is exempt from that rule, and dispatching on the
+# tag ref gives release.yml the same GITHUB_REF (refs/tags/vX.Y.Z) a pushed tag
+# does, so it releases exactly as for a hand-pushed tag.
+#
+# Pushing a tag by hand still works (e.g. a patch release, v0.20.1); the next
+# merge then bumps the minor from the highest tag (-> v0.21.0).
+
+on:
+  workflow_run:
+    workflows: [test]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write   # push the tag
+  actions: write    # dispatch release.yml
+
+concurrency:
+  # One tagger at a time, so two merges can never claim the same version.
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag next minor + start release
+    # Only a green run from a push to main (a merge), never a PR run.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # full history + tags: the latest tag and ancestry checks
+
+      - name: Pick the next version
+        id: v
+        run: |
+          set -euo pipefail
+          latest="$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
+          if [ -z "$latest" ]; then
+            next=v0.1.0
+          else
+            # Already released: the commit carries the latest tag (a re-run), or a
+            # later merge whose test run finished first was released on top of it.
+            if git merge-base --is-ancestor "$SHA" "$latest"; then
+              echo "$SHA is already part of $latest; nothing to release"
+              exit 0
+            fi
+            IFS=. read -r major minor _ <<< "${latest#v}"
+            next="v${major}.$((minor + 1)).0"
+          fi
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "Releasing $SHA as $next (previous: ${latest:-none})"
+
+      - name: Tag the merge commit
+        if: steps.v.outputs.next != ''
+        env:
+          NEXT: ${{ steps.v.outputs.next }}
+        run: |
+          set -euo pipefail
+          # Tag message "vX.Y.Z — <summary>": the PR title, which a merge commit
+          # carries as the first line of its body (a squash merge as its subject).
+          subject="$(git log -1 --format=%s "$SHA")"
+          summary="$subject"
+          if [[ "$subject" == "Merge pull request "* ]]; then
+            summary="$(git log -1 --format=%b "$SHA" | sed -n '/./{p;q}')"
+          fi
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              tag -a "$NEXT" -m "$NEXT — ${summary:-$subject}" "$SHA"
+          git push origin "refs/tags/$NEXT"
+
+      - name: Start the release build
+        if: steps.v.outputs.next != ''
+        env:
+          NEXT: ${{ steps.v.outputs.next }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh workflow run release.yml --ref "$NEXT"
+          echo "Started release.yml for $NEXT: https://github.com/$GH_REPO/actions/workflows/release.yml" >> "$GITHUB_STEP_SUMMARY"

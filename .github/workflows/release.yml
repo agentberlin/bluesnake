@@ -1,15 +1,20 @@
 name: release
 
-# Releases are cut by pushing a version tag `v<X.Y.Z>`. The TAG is authoritative:
-# CI derives the version from it and stamps internal/version/VERSION before
-# building, so the binary/frontend report the tag's version. (The committed
-# VERSION is just a "0.0.0-dev" placeholder for local builds.) On a tag this
-# builds all artifacts and publishes a GitHub Release named for that version,
-# marked as the repo's latest, so:
+# Releases are cut from a version tag `v<X.Y.Z>`. Every merge to main gets one
+# automatically: auto-release.yml tags the merge commit with the next minor
+# version and dispatches this workflow on that tag (a tag pushed with
+# GITHUB_TOKEN can't fire the `push: tags` trigger itself). A tag pushed by hand
+# (e.g. a patch release) runs it through `push: tags` as before. The TAG is
+# authoritative: CI derives the version from it and stamps
+# internal/version/VERSION before building, so the binary/frontend report the
+# tag's version. (The committed VERSION is just a "0.0.0-dev" placeholder for
+# local builds.) On a tag this builds all artifacts and publishes a GitHub
+# Release named for that version, marked as the repo's latest, so:
 #   https://github.com/<repo>/releases/latest/download/<asset>
 # always resolves to the newest released version. Does NOT run on pull requests
-# or on plain pushes to main. workflow_dispatch builds everything without
-# releasing (a manual smoke test). No external storage. macOS is signed with a
+# or on plain pushes to main. workflow_dispatch on a tag ref releases exactly
+# like a tag push; on a branch it builds everything without releasing (a manual
+# smoke test). No external storage. macOS is signed with a
 # Developer ID and notarized (REQUIRED — the desktop-macos job fails loudly if
 # the signing secrets are absent or any sign/notarize step fails; there is no
 # unsigned fallback). Linux and Windows artifacts are still unsigned (see
