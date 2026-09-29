@@ -11,6 +11,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"sync"
 	"time"
@@ -45,6 +46,11 @@ type Snapshot struct {
 	ElapsedSec int
 	Threads    int
 	MaxURLs    int // limits.max_urls: the crawl fetches at most this many URLs
+	// StatusCodes splits S2xx..S5xx by exact status code: each class's codes
+	// sum to its bucket (a code of 600 or more is in S5xx, like the bucket's
+	// >= 500). Blocked and no-response pages carry no code here. A copy, so
+	// the caller may keep it.
+	StatusCodes map[int]int
 	// Site-check pass status (DESIGN.md §5.10): state "" when the pass is not
 	// part of this crawl, else "running"/"done" with live report/finding counts.
 	SiteChecksState    string
@@ -140,6 +146,7 @@ type run struct {
 	total          int
 	discovered     int
 	s2, s3, s4, s5 int
+	codes          map[int]int // the s2..s5 pages by exact status code
 	blocked        int
 	noresp         int
 	indexable      int
@@ -170,6 +177,7 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 		sc := resume.statuses
 		r.s2, r.s3, r.s4, r.s5 = sc.S2xx, sc.S3xx, sc.S4xx, sc.S5xx
 		r.blocked, r.noresp, r.indexable = sc.Blocked, sc.NoResponse, sc.Indexable
+		r.codes = resume.codes
 	}
 	// One global limiter shared across every crawl this executor runs, so M
 	// parallel crawls honour a single process-wide fetch ceiling. Fall back to a
@@ -412,6 +420,7 @@ type resumeSource interface {
 	PageCount() (int, error)
 	Count() (int, error)
 	StatusCounts() (store.StatusCounts, error)
+	StatusCodeCounts() (map[int]int, error)
 	FetchedCount() (int, error)
 	MaxEdgeSeq() (int64, error)
 	EachAdmitted(fn func(url string, depth int) error) error
@@ -424,6 +433,7 @@ type resumeState struct {
 	processed  int                // recorded pages — seeds the live "total" counter
 	discovered int                // admitted URLs (frontier ∪ pages) — seeds "discovered"
 	statuses   store.StatusCounts // recorded pages by outcome — seeds the live breakdown
+	codes      map[int]int        // their status-class pages by exact code — seeds the per-code split
 }
 
 // loadResume assembles the resume state from the store. Any load error refuses
@@ -455,6 +465,9 @@ func loadResume(src resumeSource, lim *config.LimitsConfig) (resumeState, error)
 	}
 	if r.statuses, err = src.StatusCounts(); err != nil {
 		return resumeState{}, fmt.Errorf("resume: load status breakdown: %w", err)
+	}
+	if r.codes, err = src.StatusCodeCounts(); err != nil {
+		return resumeState{}, fmt.Errorf("resume: load status codes: %w", err)
 	}
 	if r.Fetched, err = src.FetchedCount(); err != nil {
 		return resumeState{}, fmt.Errorf("resume: load fetched count: %w", err)
@@ -590,7 +603,7 @@ func (r *run) snapshot() Snapshot {
 	snap := Snapshot{
 		CrawlID: r.st.ID, Seed: seed,
 		Total: r.total, Discovered: r.discovered, Queue: queueLen,
-		S2xx: r.s2, S3xx: r.s3, S4xx: r.s4, S5xx: r.s5,
+		S2xx: r.s2, S3xx: r.s3, S4xx: r.s4, S5xx: r.s5, StatusCodes: maps.Clone(r.codes),
 		Blocked: r.blocked, NoResponse: r.noresp, Indexable: r.indexable,
 		RatePerSec: float64(len(r.recent)) / 4.0,
 		ElapsedSec: int(time.Since(r.started).Seconds()),
@@ -631,6 +644,12 @@ func (r *run) onPage(rec *crawler.PageRecord) {
 			// store.PageBreakdown (the resume seed and the bundle header) mirrors
 			// this switch.
 			r.noresp++
+		}
+		if rec.StatusCode >= 200 {
+			if r.codes == nil {
+				r.codes = make(map[int]int)
+			}
+			r.codes[rec.StatusCode]++
 		}
 		if rec.Indexable {
 			r.indexable++

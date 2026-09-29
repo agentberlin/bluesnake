@@ -333,6 +333,7 @@ func TestOperationsOnClosedCrawlReturnErrors(t *testing.T) {
 		"Counts":               func() error { _, _, err := c.Counts(); return err },
 		"PageCount":            func() error { _, err := c.PageCount(); return err },
 		"StatusCounts":         func() error { _, err := c.StatusCounts(); return err },
+		"StatusCodeCounts":     func() error { _, err := c.StatusCodeCounts(); return err },
 		"Meta":                 func() error { _, err := c.Meta("config"); return err },
 	}
 	for name, fn := range checks {
