@@ -154,7 +154,7 @@ func newCrawlCmd() *cobra.Command {
 // the crawl ends (or fails to start).
 type cliObserver struct {
 	done chan struct{}
-	feed *progressFeed // nil unless --progress json
+	feed *progressFeed // nil without --progress
 
 	mu  sync.Mutex
 	t   crawlTally
@@ -174,6 +174,9 @@ func (o *cliObserver) OnPage(_ string, rec *crawler.PageRecord) {
 	o.mu.Lock()
 	o.t.add(rec)
 	o.mu.Unlock()
+	if o.feed != nil {
+		o.feed.page(rec)
+	}
 }
 
 func (o *cliObserver) OnDone(out runner.Outcome) {
