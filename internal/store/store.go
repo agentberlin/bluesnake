@@ -1312,28 +1312,59 @@ func (c *Crawl) PageCount() (int, error) {
 
 // StatusCounts is the recorded pages broken down exactly as the runner's live
 // progress counters classify the page stream: robots-blocked and no-response
-// pages by state, every other page by status class, plus the indexable subset
-// of those. Resume seeds the live breakdown from it, so a resumed crawl's
-// progress covers the whole crawl like its processed/discovered totals do.
+// pages by state, every other page by status class — and one with no status
+// class at all (a status below 200) as no-response — plus the indexable subset
+// of the pages not blocked or errored. Every page lands in exactly one of the
+// six buckets, so they sum to the page count. Resume seeds the live breakdown
+// from it, so a resumed crawl's progress covers the whole crawl like its
+// processed/discovered totals do; the bundle header carries the same six.
 type StatusCounts struct {
 	S2xx, S3xx, S4xx, S5xx int
 	Blocked, NoResponse    int
 	Indexable              int
 }
 
+// statusClassSQL is run.onPage's classification as one CASE, first match
+// winning like the Go switch. The ELSE makes "exactly one bucket" structural:
+// a row the named arms miss (status 0, a 1xx, a NULL) is no-response rather
+// than nowhere. The state values are compile-time constants, inlined so the
+// statement's only placeholders are the caller's filter.
+const statusClassSQL = `CASE
+		WHEN state = '` + crawler.StateBlockedRobots + `' THEN 'blocked'
+		WHEN state = '` + crawler.StateError + `' THEN 'noresp'
+		WHEN status_code >= 500 THEN '5xx'
+		WHEN status_code >= 400 THEN '4xx'
+		WHEN status_code >= 300 THEN '3xx'
+		WHEN status_code >= 200 THEN '2xx'
+		ELSE 'noresp' END`
+
+// RowQueryer is the single-row read surface shared by *sql.DB and *sql.Tx.
+type RowQueryer interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// PageBreakdown counts the pages rows matching where (a " WHERE …" clause over
+// pages, or "" for every row) and classifies them, in ONE statement, so the
+// total and the breakdown can never describe different row sets. q may be a
+// transaction: the bundle calls it inside the one that streams the rows its
+// header describes.
+func PageBreakdown(q RowQueryer, where string, args ...any) (total int, s StatusCounts, err error) {
+	err = q.QueryRow(`SELECT COUNT(*),
+		COUNT(*) FILTER (WHERE class = '2xx'),
+		COUNT(*) FILTER (WHERE class = '3xx'),
+		COUNT(*) FILTER (WHERE class = '4xx'),
+		COUNT(*) FILTER (WHERE class = '5xx'),
+		COUNT(*) FILTER (WHERE class = 'blocked'),
+		COUNT(*) FILTER (WHERE class = 'noresp'),
+		COUNT(*) FILTER (WHERE state NOT IN ('`+crawler.StateBlockedRobots+`', '`+crawler.StateError+`') AND indexable = 1)
+		FROM (SELECT state, indexable, `+statusClassSQL+` AS class FROM pages`+where+`)`, args...).
+		Scan(&total, &s.S2xx, &s.S3xx, &s.S4xx, &s.S5xx, &s.Blocked, &s.NoResponse, &s.Indexable)
+	return total, s, err
+}
+
 // StatusCounts classifies every recorded page in one pass over the pages table.
 func (c *Crawl) StatusCounts() (StatusCounts, error) {
-	var s StatusCounts
-	err := c.db.QueryRow(`SELECT
-		COUNT(*) FILTER (WHERE state = ?1),
-		COUNT(*) FILTER (WHERE state = ?2),
-		COUNT(*) FILTER (WHERE state NOT IN (?1, ?2) AND status_code >= 500),
-		COUNT(*) FILTER (WHERE state NOT IN (?1, ?2) AND status_code >= 400 AND status_code < 500),
-		COUNT(*) FILTER (WHERE state NOT IN (?1, ?2) AND status_code >= 300 AND status_code < 400),
-		COUNT(*) FILTER (WHERE state NOT IN (?1, ?2) AND status_code >= 200 AND status_code < 300),
-		COUNT(*) FILTER (WHERE state NOT IN (?1, ?2) AND indexable = 1)
-		FROM pages`, crawler.StateBlockedRobots, crawler.StateError).
-		Scan(&s.Blocked, &s.NoResponse, &s.S5xx, &s.S4xx, &s.S3xx, &s.S2xx, &s.Indexable)
+	_, s, err := PageBreakdown(c.db, "")
 	return s, err
 }
 

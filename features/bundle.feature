@@ -39,6 +39,19 @@ Feature: Crawl bundle export
     And the bundle header carries "config_digest"
     And the bundle page count matches the header
 
+  # status_counts breaks the lines that follow down with the progress feed's six
+  # keys and its classification, so a consumer can describe a crawl's outcomes
+  # from line 1 alone. Every key is always present and the six sum to `pages`.
+  Scenario: The header breaks the pages down by outcome
+    Given a site page "/" linking to "/about, /missing"
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
+    Then the exit code is 0
+    And the bundle header counts 2 pages as "status_2xx"
+    And the bundle header counts 1 page as "status_4xx"
+    And the bundle header counts 0 pages as "no_response"
+    And the bundle header status counts add up to its pages
+
   # The single highest-value assertion in this file: page text is the field the
   # whole downstream index is built on, and the one no other export carries.
   Scenario: A crawled page carries its body text
