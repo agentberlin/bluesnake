@@ -290,6 +290,7 @@ func (w *world) crawlSiteAt(path string) error {
 	if err != nil {
 		return err
 	}
+	defer c.Close() // a rendering crawl's Chrome must not outlive the scenario
 	seed := srv.URL + path
 	w.crawlResult, err = c.Run(context.Background(), seed)
 	if err != nil {

@@ -27,6 +27,20 @@ Feature: Live progress for headless crawls
     And the last progress record has "status_4xx" equal to "0"
     And the last progress record has "no_response" equal to "0"
 
+  Scenario: A progress bar off a terminal writes a plain line per reading
+    # On a terminal --progress bar redraws one line in place; on a pipe the
+    # carriage returns would pile up, so each reading is a line of its own.
+    Given a site page "/" linking to "/a,/b"
+    And a site page "/a" linking to ""
+    And a site page "/b" linking to ""
+    And a test server route "/b" that sleeps 1500ms before responding 200
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --setup defaults --progress bar --progress-interval 1s" with stdout and stderr apart
+    Then the exit code is 0
+    And stdout contains "Found 3 URLs"
+    And stderr is whole lines with no carriage returns
+    And a stderr line other than the last contains " left "
+    And the last stderr line contains "100%  3/3  done in"
+
   Scenario: Without --progress nothing is written to stderr
     Given a site page "/" linking to "/a"
     And a site page "/a" linking to ""
@@ -64,6 +78,9 @@ Feature: Live progress for headless crawls
     Then the exit code is 2
     And stdout is empty
     When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --progress json --progress-interval 100ms" with stdout and stderr apart
+    Then the exit code is 2
+    And stdout is empty
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --progress bar --progress-interval 100ms" with stdout and stderr apart
     Then the exit code is 2
     And stdout is empty
     When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --progress-interval 30s" with stdout and stderr apart

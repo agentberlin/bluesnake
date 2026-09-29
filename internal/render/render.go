@@ -8,6 +8,7 @@ package render
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,9 +20,11 @@ import (
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/fetch"
 	"github.com/agentberlin/bluesnake/internal/proxypool"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 )
 
@@ -51,8 +54,11 @@ type snippet struct {
 	source string
 }
 
-// Renderer owns a headless Chrome allocator; each Render call runs in its
-// own tab. Safe for concurrent use (bounded internally).
+// Renderer owns one headless Chrome, shared by every Render call: each render
+// runs in its own tab inside its own throwaway browser context, so pages share
+// the browser process but never cookies, storage or cache. Chrome starts on
+// the first render and is started again if it dies. Safe for concurrent use
+// (bounded internally).
 type Renderer struct {
 	allocCtx    context.Context
 	allocCancel context.CancelFunc
@@ -60,6 +66,11 @@ type Renderer struct {
 	sem         chan struct{}
 	snippets    []snippet
 	forwarder   *proxypool.Forwarder // non-nil when Chrome needs a credential shim
+
+	mu            sync.Mutex
+	browserCtx    context.Context // the running Chrome; nil until the first render
+	browserCancel context.CancelFunc
+	closed        bool
 }
 
 // ChromePath locates a Chrome/Chromium binary (config override first).
@@ -114,11 +125,7 @@ func New(cfg *config.Config) (*Renderer, error) {
 	if proxyArg != "" {
 		opts = append(opts, chromedp.ProxyServer(proxyArg))
 	}
-	if w, h := cfg.Rendering.WindowWidth, cfg.Rendering.WindowHeight; w > 0 && h > 0 {
-		opts = append(opts, chromedp.WindowSize(w, h))
-	} else {
-		opts = append(opts, chromedp.WindowSize(1024, 768)) // googlebot-desktop preset
-	}
+	opts = append(opts, chromedp.WindowSize(windowSize(cfg)))
 	// custom JS snippets load once, at construction: a missing file is a
 	// config error, not a per-page one
 	var snippets []snippet
@@ -139,6 +146,15 @@ func New(cfg *config.Config) (*Renderer, error) {
 		snippets:    snippets,
 		forwarder:   forwarder,
 	}, nil
+}
+
+// windowSize is the browser window every page renders in: the configured
+// size, or the googlebot-desktop preset.
+func windowSize(cfg *config.Config) (w, h int) {
+	if w, h := cfg.Rendering.WindowWidth, cfg.Rendering.WindowHeight; w > 0 && h > 0 {
+		return w, h
+	}
+	return 1024, 768
 }
 
 // chromeProxy resolves the --proxy-server value for this config, starting a
@@ -206,6 +222,12 @@ func GlobalRenderCap(cfg *config.Config) int {
 }
 
 func (r *Renderer) Close() {
+	r.mu.Lock()
+	r.closed = true
+	if r.browserCancel != nil {
+		r.browserCancel()
+	}
+	r.mu.Unlock()
 	r.allocCancel()
 	if r.forwarder != nil {
 		_ = r.forwarder.Close()
@@ -592,14 +614,92 @@ func (r *Renderer) runCustomJS(ctx context.Context, res *Result) {
 	}
 }
 
+// browser returns the shared Chrome, starting it on first use and starting a
+// new one when the last has died (crashed, OOM-killed, killed by hand).
+func (r *Renderer) browser() (context.Context, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil, errors.New("renderer closed")
+	}
+	if r.browserCtx != nil && r.browserCtx.Err() == nil {
+		return r.browserCtx, nil
+	}
+	if r.browserCancel != nil {
+		r.browserCancel() // reap the dead one: its process and temp profile
+	}
+	// The browser lives as long as the context its first Run is given, so that
+	// context carries no deadline; tabs get theirs in renderIn.
+	ctx, cancel := chromedp.NewContext(r.allocCtx)
+	if err := chromedp.Run(ctx); err != nil {
+		cancel()
+		r.browserCtx, r.browserCancel = nil, nil
+		return nil, fmt.Errorf("start chrome: %w", err)
+	}
+	r.browserCtx, r.browserCancel = ctx, cancel
+	return ctx, nil
+}
+
 // Render loads the URL, waits for the network to settle (at most the AJAX
 // timeout), and snapshots the DOM.
 func (r *Renderer) Render(ctx context.Context, url string) (*Result, error) {
 	r.sem <- struct{}{}
 	defer func() { <-r.sem }()
 
-	tabCtx, cancel := chromedp.NewContext(r.allocCtx)
-	defer cancel()
+	for attempt := 1; ; attempt++ {
+		browser, err := r.browser()
+		if err != nil {
+			return nil, err
+		}
+		res, err := r.renderIn(ctx, browser, url)
+		// Chrome going away mid-render says nothing about the page: give it
+		// one more go on a fresh browser.
+		if err != nil && attempt == 1 && browser.Err() != nil && ctx.Err() == nil {
+			continue
+		}
+		return res, err
+	}
+}
+
+// openTab opens a tab on browser in a browser context of its own, so the page
+// sees none of the cookies, storage or cache an earlier page left behind, just
+// as in a freshly launched Chrome (the raw fetcher carries no cookies between
+// pages either, unless advanced.cookie_storage=persistent). ctx bounds the
+// opening only. closeTab shuts the tab and disposes of its context.
+func (r *Renderer) openTab(ctx, browser context.Context) (tabCtx context.Context, closeTab func(), err error) {
+	b := chromedp.FromContext(browser).Browser
+	exec := cdp.WithExecutor(ctx, b)
+	bctx, err := target.CreateBrowserContext().WithDisposeOnDetach(true).Do(exec)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open tab: %w", err)
+	}
+	dispose := func() {
+		// ctx may be done by now, and the browser dead; a stuck dispose must
+		// not hold up the render
+		dctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = target.DisposeBrowserContext(bctx).Do(cdp.WithExecutor(dctx, b))
+	}
+	// Headless Chrome only opens a tab in a new browser context together with
+	// a window of its own ("no browser is open" otherwise), so the window gets
+	// the configured size here rather than from --window-size.
+	w, h := windowSize(r.cfg)
+	id, err := target.CreateTarget("about:blank").
+		WithBrowserContextID(bctx).
+		WithNewWindow(true).
+		WithWidth(int64(w)).
+		WithHeight(int64(h)).
+		Do(exec)
+	if err != nil {
+		dispose()
+		return nil, nil, fmt.Errorf("open tab: %w", err)
+	}
+	tabCtx, cancel := chromedp.NewContext(browser, chromedp.WithTargetID(id))
+	return tabCtx, func() { cancel(); dispose() }, nil
+}
+
+// renderIn renders url in a fresh tab of browser (see openTab).
+func (r *Renderer) renderIn(ctx, browser context.Context, url string) (*Result, error) {
 	// the tab budget must cover the wait phase AND every custom JS snippet's
 	// own timeout, or a slow snippet (within its documented timeout_sec) would
 	// blow the deadline mid-snippet and abort the whole render — losing the
@@ -613,12 +713,19 @@ func (r *Renderer) Render(ctx context.Context, url string) (*Result, error) {
 		}
 	}
 	timeout := time.Duration(budget) * time.Second
+	openCtx, cancelOpen := context.WithTimeout(ctx, timeout)
+	defer cancelOpen()
+	tabCtx, closeTab, err := r.openTab(openCtx, browser)
+	if err != nil {
+		return nil, err
+	}
+	defer closeTab()
 	tabCtx, cancelTimeout := context.WithTimeout(tabCtx, timeout)
 	defer cancelTimeout()
 	go func() { // propagate caller cancellation
 		select {
 		case <-ctx.Done():
-			cancel()
+			cancelTimeout()
 		case <-tabCtx.Done():
 		}
 	}()
