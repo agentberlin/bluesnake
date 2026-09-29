@@ -23,6 +23,39 @@ func (w *world) registerProgressSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the progress records carry the crawl ID printed on stdout$`, w.progressCrawlIDOnStdout)
 	sc.Step(`^the (first|last) progress record has "([^"]*)" equal to "([^"]*)"$`, w.progressRecordField)
 	sc.Step(`^a mid-crawl progress record reports at least (\d+) processed$`, w.progressMidCrawl)
+	sc.Step(`^stderr is whole lines with no carriage returns$`, w.stderrWholeLines)
+	sc.Step(`^a stderr line other than the last contains "([^"]*)"$`, w.stderrEarlierLineContains)
+	sc.Step(`^the last stderr line contains "([^"]*)"$`, w.stderrLastLineContains)
+}
+
+// stderrLines splits stderr into its lines.
+func (w *world) stderrLines() []string {
+	return strings.Split(strings.TrimSuffix(w.stderr, "\n"), "\n")
+}
+
+func (w *world) stderrWholeLines() error {
+	if w.stderr == "" || strings.Contains(w.stderr, "\r") || !strings.HasSuffix(w.stderr, "\n") {
+		return fmt.Errorf("stderr is not newline-terminated lines without carriage returns:\n%q", w.stderr)
+	}
+	return nil
+}
+
+func (w *world) stderrEarlierLineContains(substr string) error {
+	lines := w.stderrLines()
+	for _, l := range lines[:len(lines)-1] {
+		if strings.Contains(l, substr) {
+			return nil
+		}
+	}
+	return fmt.Errorf("no stderr line before the last contains %q:\n%s", substr, w.stderr)
+}
+
+func (w *world) stderrLastLineContains(substr string) error {
+	lines := w.stderrLines()
+	if last := lines[len(lines)-1]; !strings.Contains(last, substr) {
+		return fmt.Errorf("last stderr line %q does not contain %q", last, substr)
+	}
+	return nil
 }
 
 func (w *world) stdoutContains(substr string) error {

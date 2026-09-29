@@ -44,6 +44,7 @@ type Snapshot struct {
 	RatePerSec float64
 	ElapsedSec int
 	Threads    int
+	MaxURLs    int // limits.max_urls: the crawl fetches at most this many URLs
 	// Site-check pass status (DESIGN.md §5.10): state "" when the pass is not
 	// part of this crawl, else "running"/"done" with live report/finding counts.
 	SiteChecksState    string
@@ -131,6 +132,7 @@ type run struct {
 	cancel  context.CancelFunc
 
 	threads int
+	maxURLs int
 
 	mu             sync.Mutex
 	stopMode       string // "" | "pause" | "stop"
@@ -160,7 +162,7 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 
 	r := &run{
 		st: st, seeds: seeds, resumed: resume != nil, started: time.Now(),
-		threads: cfg.Speed.MaxThreads,
+		threads: cfg.Speed.MaxThreads, maxURLs: cfg.Limits.MaxURLs,
 	}
 	if resume != nil {
 		r.total = resume.processed
@@ -593,6 +595,7 @@ func (r *run) snapshot() Snapshot {
 		RatePerSec: float64(len(r.recent)) / 4.0,
 		ElapsedSec: int(time.Since(r.started).Seconds()),
 		Threads:    r.threads,
+		MaxURLs:    r.maxURLs,
 		Finalizing: r.finalizing,
 	}
 	if r.c != nil {
