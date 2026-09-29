@@ -28,8 +28,10 @@ Feature: Live progress for headless crawls
     And the last progress record has "no_response" equal to "0"
 
   Scenario: A progress bar off a terminal writes a plain line per reading
-    # On a terminal --progress bar redraws one line in place; on a pipe the
-    # carriage returns would pile up, so each reading is a line of its own.
+    # On a terminal --progress bar redraws a panel in place (a bar split by
+    # status class, each class's status codes, the last minute's rate and
+    # response times); on a pipe the redraws would pile up, so each reading is
+    # one line of its own, ending in the status classes seen so far.
     Given a site page "/" linking to "/a,/b"
     And a site page "/a" linking to ""
     And a site page "/b" linking to ""
@@ -40,6 +42,7 @@ Feature: Live progress for headless crawls
     And stderr is whole lines with no carriage returns
     And a stderr line other than the last contains " left "
     And the last stderr line contains "100%  3/3  done in"
+    And the last stderr line contains "  ·  2xx 3"
 
   Scenario: Without --progress nothing is written to stderr
     Given a site page "/" linking to "/a"

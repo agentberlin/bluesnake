@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -228,6 +229,16 @@ func TestStatusCounts(t *testing.T) {
 	}
 	if sum := got.S2xx + got.S3xx + got.S4xx + got.S5xx + got.Blocked + got.NoResponse; sum != len(pages) {
 		t.Errorf("breakdown sums to %d, want every one of the %d pages counted once", sum, len(pages))
+	}
+
+	// The per-code split covers exactly the four status classes: the blocked
+	// 200 and the errored 500 carry no code, nor do status 0 and 101.
+	codes, err := c.StatusCodeCounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[int]int{200: 2, 204: 1, 301: 1, 403: 1, 404: 1, 503: 1}; !maps.Equal(codes, want) {
+		t.Errorf("StatusCodeCounts = %v, want %v", codes, want)
 	}
 }
 
