@@ -164,30 +164,35 @@ p75, ~160 KB at p90**.
 on the most expensive residential PAYG rate; cents on datacenter. This is not
 the number to optimise.
 
-#### 4.2.3 Render path — and the cache finding that changes it
+#### 4.2.3 Render path — and the cache
 
 Naively, median total page weight × 10k = **24 GB ⇒ $120–200**. That is the
 number to worry about, and it is why REQ-R3 exists.
 
-But it overstates the steady state. chromedp's `ExecAllocator` creates one
-temp profile per `render.New` (i.e. per crawl), every render is a new *tab* in
-that shared browser process ([`render.go:537`](../internal/render/render.go#L537)),
-and bluesnake sets neither `--disable-cache` nor `Network.setCacheDisabled`.
-**Chrome's HTTP cache is therefore shared across every page of a crawl**, so a
-site's framework bundle, CSS, fonts and logo are fetched once, not 10,000
-times. Only page-unique bytes (HTML, page-specific images, XHR) recur.
+Today that naive number is the real one. The renderer runs one Chrome per
+crawl, but opens every page in a browser context of its own
+(`Target.createBrowserContext`, `Renderer.openTab` in
+[`render.go`](../internal/render/render.go)), so each page starts from a clean
+profile: no cookies or storage from earlier pages, and no HTTP cache either.
+**A site's framework bundle, CSS, fonts and logo are fetched on every page.**
+(Before one Chrome served the whole crawl, every render launched a Chrome with a
+fresh temp profile, with the same cold cache.) Sharing one context across the
+crawl would fetch them once, with only page-unique bytes (HTML, page-specific
+images, XHR) recurring, at the price of pages also sharing cookies and storage,
+which the raw fetch only does under `advanced.cookie_storage: persistent`.
 
 | Scenario | Bytes/page | 10k total | @ $8/GB |
 |---|---|---|---|
-| Cold cache every page (worst case) | ~2.4 MB | 24 GB | $190 |
-| Warm shared cache (realistic today) | ~500 KB | 5 GB | $40 |
+| Cold cache every page (today) | ~2.4 MB | 24 GB | $190 |
+| Warm shared cache (one context per crawl; not built) | ~500 KB | 5 GB | $40 |
 | Warm + REQ-R3 resource blocking | ~150–250 KB | 1.5–2.5 GB | **$12–20** |
 
 **Design consequence — this constrains §7.5.** Per-proxy *browser contexts*
 (`Target.createBrowserContext`) are cache-partitioned, as is one Chrome process
 per proxy. Either form of renderer rotation therefore **destroys the shared
 cache** and pushes the bill back toward the cold-cache row, potentially 4–5×.
-With D1's single gateway this is moot — one proxy, one browser, one cache — and
+With D1's single gateway this is moot — one proxy, one browser (and one cache,
+once pages share a context) — and
 that is an argument for D1 that has nothing to do with implementation effort.
 If renderer rotation across N proxies is ever added, REQ-R3 stops being an
 optimisation and becomes a precondition.

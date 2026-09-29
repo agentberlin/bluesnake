@@ -51,6 +51,7 @@ func (w *world) crawlIntoStoreAt(path string) error {
 	if err != nil {
 		return err
 	}
+	defer c.Close() // a rendering crawl's Chrome must not outlive the scenario
 	seed := srv.URL + path
 	if w.crawlResult, err = c.Run(context.Background(), seed); err != nil {
 		return err
