@@ -165,6 +165,172 @@ func TestHeaderDescribesTheCrawlAndCountsTheLines(t *testing.T) {
 	}
 }
 
+// outcomeFixture crawls a site with one page of every outcome the header's
+// status_counts separates: 2xx, 3xx, 4xx and 5xx responses, a URL robots.txt
+// disallows, and one whose connection drops before a response (a fetch error).
+// The outbound link reaches a 404 on a second server, so the external scope
+// has a count of its own.
+func outcomeFixture(t *testing.T) (*store.Crawl, store.Info) {
+	t.Helper()
+	ext := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(ext.Close)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/robots.txt":
+			fmt.Fprint(w, "User-agent: *\nDisallow: /private\n")
+		case "/":
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<html><body><a href="/ok">ok</a> <a href="/old">old</a>
+<a href="/missing">missing</a> <a href="/broken">broken</a> <a href="/private/x">private</a>
+<a href="/reset">reset</a> <a href="%s/gone">gone</a></body></html>`, ext.URL)
+		case "/ok":
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprint(w, "<html><body>ok</body></html>")
+		case "/old":
+			http.Redirect(w, r, "/ok", http.StatusMovedPermanently)
+		case "/broken":
+			http.Error(w, "boom", http.StatusInternalServerError)
+		case "/reset":
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err == nil {
+				conn.Close() // no response at all
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.Links.External.Store = true
+	cfg.Links.External.Crawl = true
+	st, err := store.CreateCrawl(dir, []string{srv.URL + "/"}, "spider", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	c, err := crawler.New(cfg, crawler.WithSink(st))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := c.Run(context.Background(), srv.URL+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetStatus(dir, st.ID, store.StatusCompleted, res.Crawled, res.Total); err != nil {
+		t.Fatal(err)
+	}
+	info, err := store.CrawlInfo(dir, st.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st, info
+}
+
+// tally classifies page records the way the progress feed classifies the page
+// stream: state first, then status class, and no status class is no response.
+func tally(pages []Page) StatusCounts {
+	var c StatusCounts
+	for _, p := range pages {
+		switch {
+		case p.State == crawler.StateBlockedRobots:
+			c.BlockedByRobots++
+		case p.State == crawler.StateError:
+			c.NoResponse++
+		case p.StatusCode >= 500:
+			c.Status5xx++
+		case p.StatusCode >= 400:
+			c.Status4xx++
+		case p.StatusCode >= 300:
+			c.Status3xx++
+		case p.StatusCode >= 200:
+			c.Status2xx++
+		default:
+			c.NoResponse++
+		}
+	}
+	return c
+}
+
+func (c StatusCounts) sum() int {
+	return c.Status2xx + c.Status3xx + c.Status4xx + c.Status5xx + c.BlockedByRobots + c.NoResponse
+}
+
+// The header's status_counts describe exactly the page lines that follow —
+// the same scope, the same classification as the progress feed — and add up
+// to `pages`, so a consumer can chart a crawl's outcomes from line 1 alone.
+func TestHeaderStatusCountsMatchTheRecords(t *testing.T) {
+	st, info := outcomeFixture(t)
+
+	h, pages, _ := bundleOf(t, st, info, Options{})
+	want := StatusCounts{Status2xx: 2, Status3xx: 1, Status4xx: 1, Status5xx: 1, BlockedByRobots: 1, NoResponse: 1}
+	if got := tally(pages); got != want {
+		t.Fatalf("fixture records classify as %+v, want one of each outcome (\"/\" and /ok are the 2xx): %+v", got, want)
+	}
+	if h.StatusCounts != want {
+		t.Errorf("header status_counts = %+v, want the records' %+v", h.StatusCounts, want)
+	}
+	if h.StatusCounts.sum() != h.Pages || h.Pages != len(pages) {
+		t.Errorf("status_counts sum to %d, header pages = %d, %d lines follow", h.StatusCounts.sum(), h.Pages, len(pages))
+	}
+
+	// The counts follow the scope filter with `pages`: the external 404 is
+	// counted only by the bundles that emit it.
+	for _, scope := range []string{ScopeExternal, ScopeAll} {
+		h, pages, _ := bundleOf(t, st, info, Options{Scope: scope})
+		if got := tally(pages); h.StatusCounts != got {
+			t.Errorf("--scope %s: header status_counts = %+v, records classify as %+v", scope, h.StatusCounts, got)
+		}
+		if h.StatusCounts.sum() != h.Pages || h.Pages != len(pages) {
+			t.Errorf("--scope %s: status_counts sum to %d, header pages = %d, %d lines follow",
+				scope, h.StatusCounts.sum(), h.Pages, len(pages))
+		}
+	}
+	if h, _, _ := bundleOf(t, st, info, Options{Scope: ScopeAll}); h.StatusCounts.Status4xx != 2 {
+		t.Errorf("--scope all: status_4xx = %d, want the internal and the external 404", h.StatusCounts.Status4xx)
+	}
+}
+
+// All six keys are always on the wire, zeros included, so a consumer never has
+// to guess whether a missing key means zero — an absent status_counts object
+// means only an older bundle. A recorded response with no status class counts
+// as no_response, so the six still sum to `pages`.
+func TestHeaderStatusCountsCarryEveryKey(t *testing.T) {
+	c, err := store.CreateCrawl(t.TempDir(), []string{"https://ex.test/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	header := func() (Header, string) {
+		h, _, raw := bundleOf(t, c, store.Info{ID: c.ID}, Options{})
+		return h, strings.SplitN(string(raw), "\n", 2)[0]
+	}
+	if _, line := header(); !strings.Contains(line,
+		`"status_counts":{"status_2xx":0,"status_3xx":0,"status_4xx":0,"status_5xx":0,"blocked_by_robots":0,"no_response":0}`) {
+		t.Errorf("an empty crawl's header must carry all six keys at zero:\n%s", line)
+	}
+
+	for _, p := range []*crawler.PageRecord{
+		{URL: "https://ex.test/", State: crawler.StateCrawled, StatusCode: 200},
+		{URL: "https://ex.test/switch", State: crawler.StateCrawled, StatusCode: 101},
+	} {
+		p.Scope = "internal"
+		if err := c.Page(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, line := header()
+	if !strings.Contains(line,
+		`"status_counts":{"status_2xx":1,"status_3xx":0,"status_4xx":0,"status_5xx":0,"blocked_by_robots":0,"no_response":1}`) {
+		t.Errorf("header status_counts, want the 101 as no_response and every zero kept:\n%s", line)
+	}
+	if h.StatusCounts.sum() != h.Pages {
+		t.Errorf("status_counts sum to %d, pages = %d", h.StatusCounts.sum(), h.Pages)
+	}
+}
+
 // The single highest-value field in the format: the page body text the whole
 // downstream index is built on, and the one no tab export carries.
 func TestPageCarriesContentTextAndFacts(t *testing.T) {

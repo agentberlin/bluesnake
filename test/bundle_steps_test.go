@@ -25,6 +25,8 @@ func (w *world) registerBundleSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the bundle header has "([^"]*)" equal to "([^"]*)"$`, w.bundleHeaderEquals)
 	sc.Step(`^the bundle header carries "([^"]*)"$`, w.bundleHeaderCarries)
 	sc.Step(`^the bundle page count matches the header$`, w.bundlePageCountMatches)
+	sc.Step(`^the bundle header counts (\d+) pages? as "([^"]*)"$`, w.bundleHeaderStatusCount)
+	sc.Step(`^the bundle header status counts add up to its pages$`, w.bundleHeaderStatusCountsSum)
 	sc.Step(`^the bundle page "([^"]*)" has "([^"]*)" equal to "([^"]*)"$`, w.bundlePageFieldEquals)
 	sc.Step(`^the bundle page "([^"]*)" has "([^"]*)" containing "([^"]*)"$`, w.bundlePageFieldContains)
 	sc.Step(`^the bundle page "([^"]*)" has structured jsonld containing "([^"]*)"$`, w.bundlePageJSONLDContains)
@@ -142,6 +144,63 @@ func (w *world) bundlePageCountMatches() error {
 		return fmt.Errorf("bundle carries no pages")
 	}
 	return nil
+}
+
+// statusCountKeys are the header's status_counts keys — the progress feed's.
+var statusCountKeys = []string{"status_2xx", "status_3xx", "status_4xx", "status_5xx", "blocked_by_robots", "no_response"}
+
+// bundleStatusCounts reads status_counts off the raw header line, as a
+// consumer sees it on the wire: a missing key is a failure, not a zero.
+func (w *world) bundleStatusCounts() (map[string]int, int, error) {
+	data, err := os.ReadFile(filepath.Join(w.storeDirPath(), bundleFile))
+	if err != nil {
+		return nil, 0, err
+	}
+	line, _, _ := strings.Cut(string(data), "\n")
+	var h struct {
+		Pages        int             `json:"pages"`
+		StatusCounts *map[string]int `json:"status_counts"`
+	}
+	if err := json.Unmarshal([]byte(line), &h); err != nil {
+		return nil, 0, fmt.Errorf("header line is not JSON: %w\n%s", err, line)
+	}
+	if h.StatusCounts == nil {
+		return nil, 0, fmt.Errorf("header has no status_counts:\n%s", line)
+	}
+	for _, k := range statusCountKeys {
+		if _, ok := (*h.StatusCounts)[k]; !ok {
+			return nil, 0, fmt.Errorf("status_counts has no %q key: %v", k, *h.StatusCounts)
+		}
+	}
+	return *h.StatusCounts, h.Pages, nil
+}
+
+func (w *world) bundleHeaderStatusCount(want int, key string) error {
+	counts, _, err := w.bundleStatusCounts()
+	if err != nil {
+		return err
+	}
+	if got, ok := counts[key]; !ok || got != want {
+		return fmt.Errorf("status_counts %s = %d (present: %v), want %d: %v", key, got, ok, want, counts)
+	}
+	return nil
+}
+
+// The six are a partition of the page lines: they sum to `pages`, which is
+// the number of lines that follow.
+func (w *world) bundleHeaderStatusCountsSum() error {
+	counts, pages, err := w.bundleStatusCounts()
+	if err != nil {
+		return err
+	}
+	sum := 0
+	for _, k := range statusCountKeys {
+		sum += counts[k]
+	}
+	if sum != pages {
+		return fmt.Errorf("status_counts sum to %d, header pages = %d: %v", sum, pages, counts)
+	}
+	return w.bundlePageCountMatches()
 }
 
 func (w *world) bundlePageFieldEquals(path, field, want string) error {

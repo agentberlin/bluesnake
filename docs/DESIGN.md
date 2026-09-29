@@ -151,7 +151,7 @@ Base setup (§5.11): `crawl` defaults to reusing the setup the seed's site last 
 
 Named profiles (the configs the desktop app manages; the default one is presented there as "App settings") are readable and usable from the CLI — `config profiles` lists them, `config show --profile <name>` prints one, and `crawl`/`list`/`projects crawl-all` accept `--profile <name>` as the base config (mutually exclusive with `--config`; `--set` and shorthand flags apply on top). The CLI never creates or edits profiles. Every enqueue path — CLI, desktop, MCP — freezes the effective config into the job spec at enqueue time (`runner.FreezeSpec`), so a queued job is immune to profile edits made while it waits; the crawl then freezes its own copy into the crawl DB at start (`store.CreateCrawl`) as before.
 
-Crawl UX (headless but informative): `crawl`, `list` and `resume` take `--progress none|json`. The default `none` leaves the output exactly as it is. `json` streams the executor's live snapshot (the `runner.Snapshot` the desktop and MCP read) to stderr as JSON Lines, one object per line with `"type":"progress"`: a record when the crawl starts, one every `--progress-interval` (default 10s, minimum 1s) and a final record with the terminal state. Fields: `crawl_id`, `seed`, `time`, `state` (`running`, then `finalizing`, then `completed` or `interrupted`), `elapsed_sec`, `processed`, `discovered` (queued URLs included), `queued`, `urls_per_sec`, `status_2xx`…`status_5xx`, `blocked_by_robots`, `no_response`, `indexable`, `site_checks` (while the pass is part of the crawl) and `error` (final record only). `finalizing` covers the post-crawl analysis, when the counters stop moving but the crawl is not stalled. A resumed crawl's counters, status breakdown included, cover every session. stdout is untouched, so the summary and the `Crawl ID:` line parse as before.
+Crawl UX (headless but informative): `crawl`, `list` and `resume` take `--progress none|json`. The default `none` leaves the output exactly as it is. `json` streams the executor's live snapshot (the `runner.Snapshot` the desktop and MCP read) to stderr as JSON Lines, one object per line with `"type":"progress"`: a record when the crawl starts, one every `--progress-interval` (default 10s, minimum 1s) and a final record with the terminal state. Fields: `crawl_id`, `seed`, `time`, `state` (`running`, then `finalizing`, then `completed` or `interrupted`), `elapsed_sec`, `processed`, `discovered` (queued URLs included), `queued`, `urls_per_sec`, `status_2xx`…`status_5xx`, `blocked_by_robots`, `no_response` (a fetch error, or a response with no status class — below 200; the six partition `processed`, and a bundle header's `status_counts` classifies the same way, §5.13), `indexable`, `site_checks` (while the pass is part of the crawl) and `error` (final record only). `finalizing` covers the post-crawl analysis, when the counters stop moving but the crawl is not stalled. A resumed crawl's counters, status breakdown included, cover every session. stdout is untouched, so the summary and the `Crawl ID:` line parse as before.
 
 Exit codes contract: `0` ok, `1` crawl error, `2` config error, `3` interrupted (resumable). A failing command prints its error once, on stderr, as `Error: <message>`. An interrupted crawl prints only its resume hint.
 
@@ -738,7 +738,21 @@ Three properties are contractual, each with a test that fails if it is lost:
   wall-clock value in a page record, so two bundles of one unchanged crawl are
   byte-identical and can be diffed.
 
-The header also carries `config_digest`, a hash of the crawl's frozen config:
+The header also carries `status_counts`, the page lines broken down by outcome
+with the six keys of the `--progress json` feed — `status_2xx`, `status_3xx`,
+`status_4xx`, `status_5xx`, `blocked_by_robots`, `no_response` — so a consumer
+can describe a crawl (a per-status bar, say) from line 1 alone, which is the
+only source of those numbers for a crawl run elsewhere and uploaded. They are
+counted in the same statement as `pages`, under the same scope filter, and
+classified by the feed's own rule (`store.PageBreakdown` mirrors
+`runner.onPage`): state `blocked_robots` → `blocked_by_robots`, state `error` →
+`no_response`, otherwise by status class, and a page with no class (status
+below 200) → `no_response`. Every page lands in exactly one bucket, so the six
+sum to `pages`. All six keys are always present, zeros included; the field was
+added within `bluesnake.pages/1`, so a bundle without it is an older bundle and
+means "no breakdown", not zeros.
+
+It also carries `config_digest`, a hash of the crawl's frozen config:
 the link-position rules are configurable, so `position` is only interpretable
 against the config that produced it. Crawl-level facts (status, timings, the
 headline counts) come from the registry row, so a bundle of an INTERRUPTED crawl

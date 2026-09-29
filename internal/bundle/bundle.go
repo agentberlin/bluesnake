@@ -106,14 +106,35 @@ type Header struct {
 	LinkTypes []string `json:"link_types"`
 	// Pages is the EXACT number of page lines that follow, counted before the
 	// stream opens. A consumer that reads fewer has a truncated file.
-	Pages   int `json:"pages"`
-	Crawled int `json:"crawled"`
-	Total   int `json:"total"`
+	Pages int `json:"pages"`
+	// StatusCounts breaks those same lines down by outcome, so a consumer can
+	// describe a crawl without reading its pages. It is counted in the statement
+	// that counts Pages and sums to it. Added within bluesnake.pages/1: a bundle
+	// written before it has no such key, which means "no breakdown", not zeros.
+	StatusCounts StatusCounts `json:"status_counts"`
+	Crawled      int          `json:"crawled"`
+	Total        int          `json:"total"`
 	// ConfigDigest hashes the crawl's frozen config. The link-position rules are
 	// configurable, so `position` is only interpretable against the config that
 	// produced it; the digest is how a consumer notices a corpus built under two
 	// different rule sets.
 	ConfigDigest string `json:"config_digest"`
+}
+
+// StatusCounts is the header's per-outcome breakdown of the page lines, keyed
+// exactly as the `--progress json` feed keys its live counters and classified
+// by the same rule (store.PageBreakdown mirrors the runner's): state
+// blocked_robots is blocked_by_robots and state error is no_response, then
+// status >= 500 / 400 / 300 / 200 by class, and a page with no class (status
+// below 200) is no_response too — so every page counts exactly once and the six
+// sum to Pages. All six keys are always present, zeros included.
+type StatusCounts struct {
+	Status2xx       int `json:"status_2xx"`
+	Status3xx       int `json:"status_3xx"`
+	Status4xx       int `json:"status_4xx"`
+	Status5xx       int `json:"status_5xx"`
+	BlockedByRobots int `json:"blocked_by_robots"`
+	NoResponse      int `json:"no_response"`
 }
 
 // Page is one page record. Every field is an existing stored value — nothing
@@ -220,7 +241,9 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 
 	// The count and the stream run in ONE transaction so the header's `pages` is
 	// the exact number of lines that follow — the consumer's truncation check is
-	// only worth having if it cannot race a concurrent write.
+	// only worth having if it cannot race a concurrent write. The status
+	// breakdown is counted in the same statement, over the same scope filter, so
+	// it describes exactly those lines too.
 	tx, err := st.DB().Begin()
 	if err != nil {
 		return err
@@ -228,9 +251,13 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 	defer tx.Rollback()
 
 	where, args := scopeFilter(scope)
-	var pages int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM pages`+where, args...).Scan(&pages); err != nil {
+	pages, sc, err := store.PageBreakdown(tx, where, args...)
+	if err != nil {
 		return err
+	}
+	counts := StatusCounts{
+		Status2xx: sc.S2xx, Status3xx: sc.S3xx, Status4xx: sc.S4xx, Status5xx: sc.S5xx,
+		BlockedByRobots: sc.Blocked, NoResponse: sc.NoResponse,
 	}
 
 	out := w
@@ -258,6 +285,7 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 		Scope:            scope,
 		LinkTypes:        linkTypes,
 		Pages:            pages,
+		StatusCounts:     counts,
 		Crawled:          info.Crawled,
 		Total:            info.Total,
 		ConfigDigest:     digest,

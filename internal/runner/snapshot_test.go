@@ -8,8 +8,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/queue"
+	"github.com/agentberlin/bluesnake/internal/store"
 )
 
 // mixedStatusServer serves one page of each status class the live breakdown
@@ -147,5 +149,61 @@ func TestResumeSeedsLiveBreakdown(t *testing.T) {
 	}
 	if got, want := breakdownOf(resumed.atDone), breakdownOf(straight.atDone); got != want {
 		t.Errorf("resumed crawl's final live breakdown = %+v, want the straight crawl's %+v", got, want)
+	}
+}
+
+// TestLiveBreakdownMatchesStoredBreakdown pins the live classification
+// (run.onPage) to the stored one (store.PageBreakdown), which seeds a resumed
+// crawl's feed and is the bundle header's status_counts. Every kind of page
+// goes through the production sink, so each is persisted and counted live
+// exactly as in a crawl; the two breakdowns must agree and each must count
+// every page exactly once, including pages the status classes miss.
+func TestLiveBreakdownMatchesStoredBreakdown(t *testing.T) {
+	st, err := store.CreateCrawl(t.TempDir(), []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	r := &run{st: st}
+	s := &sink{Crawl: st, r: r}
+
+	pages := []*crawler.PageRecord{
+		{URL: "https://ex.com/", State: crawler.StateCrawled, StatusCode: 200, Indexable: true},
+		{URL: "https://ex.com/old", State: crawler.StateCrawled, StatusCode: 301},
+		{URL: "https://ex.com/gone", State: crawler.StateCrawled, StatusCode: 404},
+		{URL: "https://ex.com/boom", State: crawler.StateCrawled, StatusCode: 503},
+		{URL: "https://ex.com/odd", State: crawler.StateCrawled, StatusCode: 999},
+		{URL: "https://ex.com/big", State: crawler.StateSkippedTooLarge, StatusCode: 200, Indexable: true},
+		{URL: "https://ex.com/block", State: crawler.StateBlockedRobots, IndexabilityStatus: "Blocked by Robots.txt"},
+		{URL: "https://ex.com/err", State: crawler.StateError, FetchError: "EOF"},
+		{URL: "https://ex.com/zero", State: crawler.StateCrawled, StatusCode: 0},
+		{URL: "https://ex.com/switch", State: crawler.StateCrawled, StatusCode: 101, Indexable: true},
+		{URL: "https://ex.com/early", State: crawler.StateSkippedTooLarge, StatusCode: 103},
+	}
+	for _, p := range pages {
+		p.Scope = "internal"
+		if err := s.Page(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	live := r.snapshot()
+	stored, err := st.StatusCounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveCounts := store.StatusCounts{
+		S2xx: live.S2xx, S3xx: live.S3xx, S4xx: live.S4xx, S5xx: live.S5xx,
+		Blocked: live.Blocked, NoResponse: live.NoResponse, Indexable: live.Indexable,
+	}
+	if liveCounts != stored {
+		t.Errorf("live breakdown %+v disagrees with the stored %+v", liveCounts, stored)
+	}
+	if sum := live.S2xx + live.S3xx + live.S4xx + live.S5xx + live.Blocked + live.NoResponse; sum != live.Total || live.Total != len(pages) {
+		t.Errorf("live breakdown sums to %d, processed = %d, pages = %d: %+v", sum, live.Total, len(pages), breakdownOf(live))
+	}
+	want := store.StatusCounts{S2xx: 2, S3xx: 1, S4xx: 1, S5xx: 2, Blocked: 1, NoResponse: 4, Indexable: 3}
+	if stored != want {
+		t.Errorf("stored breakdown = %+v, want %+v", stored, want)
 	}
 }

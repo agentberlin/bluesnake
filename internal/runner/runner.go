@@ -621,6 +621,13 @@ func (r *run) onPage(rec *crawler.PageRecord) {
 			r.s3++
 		case rec.StatusCode >= 200:
 			r.s2++
+		default:
+			// No status class (status 0, or a 1xx the client returned as final):
+			// nothing classifiable came back, which is what no_response means.
+			// Every page lands in exactly one bucket, so the six sum to Total —
+			// store.PageBreakdown (the resume seed and the bundle header) mirrors
+			// this switch.
+			r.noresp++
 		}
 		if rec.Indexable {
 			r.indexable++

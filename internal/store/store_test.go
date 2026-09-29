@@ -179,9 +179,11 @@ func TestCounts(t *testing.T) {
 
 // TestStatusCounts pins the stored breakdown to the runner's live page
 // classification (run.onPage): blocked/no-response by state first, then every
-// other state — skipped_too_large included — by status class, with indexable
-// counted only among those. Resume seeds the live counters from it, so a drift
-// here makes a resumed crawl's progress disagree with a straight crawl's.
+// other state — skipped_too_large included — by status class, a page with no
+// status class (below 200) as no-response, with indexable counted only among
+// the pages not blocked or errored. Resume seeds the live counters from it, so
+// a drift here makes a resumed crawl's progress disagree with a straight
+// crawl's.
 func TestStatusCounts(t *testing.T) {
 	dir := t.TempDir()
 	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
@@ -203,6 +205,11 @@ func TestStatusCounts(t *testing.T) {
 		{URL: "https://ex.com/block", State: crawler.StateBlockedRobots, StatusCode: 200, Indexable: true},
 		{URL: "https://ex.com/err", State: crawler.StateError, StatusCode: 500, Indexable: true},
 		{URL: "https://ex.com/err2", State: crawler.StateError},
+		// a recorded response with no status class — status 0, or a 1xx the
+		// client returned as final — has nothing classifiable: no-response,
+		// never no bucket at all
+		{URL: "https://ex.com/zero", State: crawler.StateCrawled, StatusCode: 0},
+		{URL: "https://ex.com/switch", State: crawler.StateCrawled, StatusCode: 101},
 	}
 	for _, p := range pages {
 		p.Scope = "internal"
@@ -215,9 +222,49 @@ func TestStatusCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := StatusCounts{S2xx: 3, S3xx: 1, S4xx: 2, S5xx: 1, Blocked: 1, NoResponse: 2, Indexable: 2}
+	want := StatusCounts{S2xx: 3, S3xx: 1, S4xx: 2, S5xx: 1, Blocked: 1, NoResponse: 4, Indexable: 2}
 	if got != want {
 		t.Errorf("StatusCounts = %+v, want %+v", got, want)
+	}
+	if sum := got.S2xx + got.S3xx + got.S4xx + got.S5xx + got.Blocked + got.NoResponse; sum != len(pages) {
+		t.Errorf("breakdown sums to %d, want every one of the %d pages counted once", sum, len(pages))
+	}
+}
+
+// TestPageBreakdownHonoursTheFilter pins that the total and the breakdown are
+// counted over the same filtered rows: the bundle header's `pages` and
+// `status_counts` describe exactly the lines that follow, never the whole
+// crawl.
+func TestPageBreakdownHonoursTheFilter(t *testing.T) {
+	c, err := CreateCrawl(t.TempDir(), []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, p := range []*crawler.PageRecord{
+		{URL: "https://ex.com/", Scope: "internal", State: crawler.StateCrawled, StatusCode: 200},
+		{URL: "https://ex.com/gone", Scope: "internal", State: crawler.StateCrawled, StatusCode: 404},
+		{URL: "https://other.com/gone", Scope: "external", State: crawler.StateCrawled, StatusCode: 404},
+		{URL: "https://other.com/down", Scope: "external", State: crawler.StateError},
+	} {
+		if err := c.Page(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	total, got, err := PageBreakdown(c.DB(), " WHERE scope = ?", "internal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (StatusCounts{S2xx: 1, S4xx: 1}); total != 2 || got != want {
+		t.Errorf("internal: total = %d, breakdown = %+v; want 2, %+v", total, got, want)
+	}
+	total, got, err = PageBreakdown(c.DB(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (StatusCounts{S2xx: 1, S4xx: 2, NoResponse: 1}); total != 4 || got != want {
+		t.Errorf("unfiltered: total = %d, breakdown = %+v; want 4, %+v", total, got, want)
 	}
 }
 
