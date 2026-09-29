@@ -64,6 +64,9 @@ jobs:
           set -euo pipefail
           shopt -s nocasematch
           say() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+          # GitHub now and then answers a push or API call with a 5xx (v0.21.0's
+          # first tag push got a 500 and passed on a re-run), so retry them.
+          retry() { for wait in 10 20 40; do "$@" && return; echo "failed: $*; retrying in ${wait}s" >&2; sleep "$wait"; done; "$@"; }
 
           latest="$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)"
           # Already released: the commit carries the latest tag (a re-run), or a
@@ -77,7 +80,7 @@ jobs:
           # squash merge of a one-commit PR titles the commit after that commit,
           # not the PR, and a direct push has no PR. A merge commit carries the PR
           # title as the first line of its body; a squash merge appends " (#N)".
-          pr_title="$(gh api "repos/$GH_REPO/commits/$SHA/pulls" --jq '[.[] | select(.merged_at)][0].title // ""')"
+          pr_title="$(retry gh api "repos/$GH_REPO/commits/$SHA/pulls" --jq '[.[] | select(.merged_at)][0].title // ""')"
           commit_title="$(git log -1 --format=%s "$SHA")"
           if [[ "$commit_title" == "Merge pull request "* ]]; then
             commit_title="$(git log -1 --format=%b "$SHA" | sed -n '/./{p;q;}')"
@@ -144,10 +147,12 @@ jobs:
           SUMMARY: ${{ steps.v.outputs.summary }}
         run: |
           set -euo pipefail
+          retry() { for wait in 10 20 40; do "$@" && return; echo "failed: $*; retrying in ${wait}s" >&2; sleep "$wait"; done; "$@"; }
           git -c user.name='github-actions[bot]' \
               -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
               tag -a "$NEXT" -m "$NEXT${SUMMARY:+ — $SUMMARY}" "$SHA"
-          git push origin "refs/tags/$NEXT"
+          # A retry after a push that landed despite the error is a no-op (same tag object).
+          retry git push origin "refs/tags/$NEXT"
 
       - name: Start the release build
         if: steps.v.outputs.next != ''
@@ -156,5 +161,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh workflow run release.yml --ref "$NEXT"
+          set -euo pipefail
+          retry() { for wait in 10 20 40; do "$@" && return; echo "failed: $*; retrying in ${wait}s" >&2; sleep "$wait"; done; "$@"; }
+          if ! retry gh workflow run release.yml --ref "$NEXT"; then
+            # A re-run can't recover this: it would see the commit as part of
+            # $NEXT already and stop, so say how to start the build by hand.
+            echo "::error::$NEXT is tagged but release.yml did not start; run: gh workflow run release.yml --ref $NEXT"
+            exit 1
+          fi
           echo "Started release.yml for $NEXT: https://github.com/$GH_REPO/actions/workflows/release.yml" >> "$GITHUB_STEP_SUMMARY"
