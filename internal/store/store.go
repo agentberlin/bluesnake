@@ -1368,6 +1368,28 @@ func (c *Crawl) StatusCounts() (StatusCounts, error) {
 	return s, err
 }
 
+// StatusCodeCounts splits StatusCounts' four status classes by exact code,
+// classifying with the same statusClassSQL, so each class's codes sum to its
+// bucket. Resume seeds the live per-code counts from it.
+func (c *Crawl) StatusCodeCounts() (map[int]int, error) {
+	rows, err := c.db.Query(`SELECT status_code, COUNT(*)
+		FROM (SELECT status_code, ` + statusClassSQL + ` AS class FROM pages)
+		WHERE class IN ('2xx', '3xx', '4xx', '5xx') GROUP BY status_code`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	codes := make(map[int]int)
+	for rows.Next() {
+		var code, n int
+		if err := rows.Scan(&code, &n); err != nil {
+			return nil, err
+		}
+		codes[code] = n
+	}
+	return codes, rows.Err()
+}
+
 // LoadPages reconstructs every stored page record, including the full Facts
 // (with ContentText). Used by re-analysis, compare, and any path that needs the
 // page body text.
