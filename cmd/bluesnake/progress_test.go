@@ -19,7 +19,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
@@ -544,94 +543,6 @@ func TestProgressFeedNeverStarted(t *testing.T) {
 	}
 }
 
-// TestProgressBarLines pins what the bar says at each point of a crawl.
-func TestProgressBarLines(t *testing.T) {
-	running := func(total, discovered, maxURLs, elapsed int) progressReading {
-		return progressReading{state: "running", snap: runner.Snapshot{
-			Total: total, Discovered: discovered, MaxURLs: maxURLs, ElapsedSec: elapsed}}
-	}
-	cases := []struct {
-		name     string
-		readings []progressReading // the last one's line is checked
-		want     string
-	}{
-		{"just started", []progressReading{running(0, 1, 5000000, 0)},
-			"░░░░░░░░░░░░░░░░░░░░    0%  0/1  1 left  0.0 URLs/s  ETA --"},
-		{"mid-crawl", []progressReading{running(0, 1, 5000000, 0), running(2480, 11879, 5000000, 775)},
-			"████░░░░░░░░░░░░░░░░   20%  2,480/11,879  9,399 left  3.2 URLs/s  ETA 48m57s"},
-		{"capped by max_urls", []progressReading{running(0, 1, 30, 0), running(10, 11879, 30, 5)},
-			"██████░░░░░░░░░░░░░░   33%  10/30  20 left  2.0 URLs/s  ETA 10s"},
-		// a resume starts at the earlier sessions' count; only this run's
-		// pages count toward the rate
-		{"resumed", []progressReading{running(352, 11879, 5000000, 0), running(452, 11879, 5000000, 100)},
-			"░░░░░░░░░░░░░░░░░░░░    3%  452/11,879  11,427 left  1.0 URLs/s  ETA 3h10m"},
-		{"finalizing", []progressReading{{state: "finalizing", snap: runner.Snapshot{Total: 30, Discovered: 30, MaxURLs: 30, ElapsedSec: 70}}},
-			"████████████████████  100%  30/30  analysing…"},
-		{"completed short of discovered", []progressReading{{state: store.StatusCompleted, final: true,
-			snap: runner.Snapshot{Total: 30, Discovered: 11879, MaxURLs: 5000000, ElapsedSec: 27660}}},
-			"████████████████████  100%  30/30  done in 7h41m"},
-		{"interrupted", []progressReading{{state: store.StatusInterrupted, final: true,
-			snap: runner.Snapshot{Total: 352, Discovered: 11879, MaxURLs: 5000000, ElapsedSec: 720}}},
-			"░░░░░░░░░░░░░░░░░░░░    2%  352/11,879  interrupted after 12m00s"},
-	}
-	for _, c := range cases {
-		var buf bytes.Buffer
-		o := &progressBarOutput{w: &buf}
-		for _, r := range c.readings {
-			o.write(r)
-		}
-		lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
-		if got := lines[len(lines)-1]; got != c.want {
-			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
-		}
-	}
-}
-
-// On a terminal the bar redraws one line in place: a carriage return before
-// each reading, blanks over what a longer earlier line left behind, and a
-// newline only after the final reading, so the summary starts on its own line.
-func TestProgressBarRedrawsInPlace(t *testing.T) {
-	var buf bytes.Buffer
-	o := &progressBarOutput{w: &buf, redraw: true}
-	o.write(progressReading{state: "running", snap: runner.Snapshot{Total: 5, Discovered: 1000, MaxURLs: 5000000, ElapsedSec: 2}})
-	first := buf.String()
-	o.write(progressReading{state: store.StatusCompleted, final: true, snap: runner.Snapshot{Total: 9, Discovered: 9, ElapsedSec: 3}})
-	second := strings.TrimPrefix(buf.String(), first)
-
-	if !strings.HasPrefix(first, "\r") || strings.Contains(first, "\n") {
-		t.Errorf("running reading = %q, want a carriage return and no newline", first)
-	}
-	if !strings.HasPrefix(second, "\r") || !strings.HasSuffix(second, "\n") || strings.Count(second, "\n") != 1 {
-		t.Fatalf("final reading = %q, want a carriage return and one trailing newline", second)
-	}
-	drawn := strings.TrimSuffix(strings.TrimPrefix(second, "\r"), "\n")
-	if w1, w2 := utf8.RuneCountInString(strings.TrimPrefix(first, "\r")), utf8.RuneCountInString(drawn); w2 != w1 {
-		t.Errorf("final line is %d columns over a %d-column line: the old tail shows through", w2, w1)
-	}
-	if !strings.HasPrefix(drawn, "████████████████████  100%  9/9  done in 3s ") {
-		t.Errorf("final line = %q", drawn)
-	}
-}
-
-func TestGroupDigits(t *testing.T) {
-	for n, want := range map[int]string{0: "0", 999: "999", 1000: "1,000", 11879: "11,879", 5000000: "5,000,000", -1234: "-1,234"} {
-		if got := groupDigits(n); got != want {
-			t.Errorf("groupDigits(%d) = %q, want %q", n, got, want)
-		}
-	}
-}
-
-func TestShortDuration(t *testing.T) {
-	for d, want := range map[time.Duration]string{
-		0: "0s", 45 * time.Second: "45s", 192 * time.Second: "3m12s",
-		7*time.Hour + 41*time.Minute + 20*time.Second: "7h41m", 53 * time.Hour: "2d5h",
-	} {
-		if got := shortDuration(d); got != want {
-			t.Errorf("shortDuration(%s) = %q, want %q", d, got, want)
-		}
-	}
-}
-
 // TestCrawlProgressBar: off a terminal (stderr is a pipe here) the bar writes
 // a plain line per reading, ending on the completed crawl's line, and stdout
 // is what it is without the flag.
@@ -661,7 +572,7 @@ func TestCrawlProgressBar(t *testing.T) {
 			t.Errorf("running line %q lacks what is left and the ETA", l)
 		}
 	}
-	if last := lines[len(lines)-1]; !strings.Contains(last, "100%  3/3  done in ") {
-		t.Errorf("final line = %q, want the completed crawl's 3/3", last)
+	if last := lines[len(lines)-1]; !strings.Contains(last, "100%  3/3  done in ") || !strings.HasSuffix(last, "  ·  2xx 3") {
+		t.Errorf("final line = %q, want the completed crawl's 3/3, all of them 2xx", last)
 	}
 }

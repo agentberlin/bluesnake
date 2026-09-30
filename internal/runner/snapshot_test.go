@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -118,6 +119,9 @@ func TestSnapshotFinalizingFlag(t *testing.T) {
 	if got := breakdownOf(obs.atDone); got != want {
 		t.Errorf("final breakdown = %+v, want %+v", got, want)
 	}
+	if got, want := obs.atDone.StatusCodes, map[int]int{200: 3, 301: 1, 404: 1}; !maps.Equal(got, want) {
+		t.Errorf("final status codes = %v, want %v", got, want)
+	}
 }
 
 // TestResumeSeedsLiveBreakdown pins that a resumed crawl's live status
@@ -150,6 +154,21 @@ func TestResumeSeedsLiveBreakdown(t *testing.T) {
 	if got, want := breakdownOf(resumed.atDone), breakdownOf(straight.atDone); got != want {
 		t.Errorf("resumed crawl's final live breakdown = %+v, want the straight crawl's %+v", got, want)
 	}
+	// the per-code split carries over the same way
+	if sum := s.S2xx + s.S3xx + s.S4xx + s.S5xx; sumCodes(s.StatusCodes) != sum {
+		t.Errorf("resumed status codes at start %v sum to %d, want the classes' %d", s.StatusCodes, sumCodes(s.StatusCodes), sum)
+	}
+	if got, want := resumed.atDone.StatusCodes, straight.atDone.StatusCodes; !maps.Equal(got, want) {
+		t.Errorf("resumed crawl's final status codes = %v, want the straight crawl's %v", got, want)
+	}
+}
+
+func sumCodes(codes map[int]int) int {
+	n := 0
+	for _, c := range codes {
+		n += c
+	}
+	return n
 }
 
 // TestLiveBreakdownMatchesStoredBreakdown pins the live classification
@@ -205,5 +224,18 @@ func TestLiveBreakdownMatchesStoredBreakdown(t *testing.T) {
 	want := store.StatusCounts{S2xx: 2, S3xx: 1, S4xx: 1, S5xx: 2, Blocked: 1, NoResponse: 4, Indexable: 3}
 	if stored != want {
 		t.Errorf("stored breakdown = %+v, want %+v", stored, want)
+	}
+
+	// The per-code split: live and stored agree, and only the pages in the
+	// four status classes carry a code, 999 among the 5xx.
+	storedCodes, err := st.StatusCodeCounts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(live.StatusCodes, storedCodes) {
+		t.Errorf("live status codes %v disagree with the stored %v", live.StatusCodes, storedCodes)
+	}
+	if want := map[int]int{200: 2, 301: 1, 404: 1, 503: 1, 999: 1}; !maps.Equal(storedCodes, want) {
+		t.Errorf("stored status codes = %v, want %v", storedCodes, want)
 	}
 }
