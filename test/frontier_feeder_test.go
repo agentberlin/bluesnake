@@ -12,10 +12,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
+	"github.com/agentberlin/bluesnake/internal/urlutil"
 )
 
 // facetServer serves "/" linking to `hubs` hub pages, each linking to
@@ -72,9 +74,60 @@ type queuelessSink struct{ *store.Crawl }
 
 func (queuelessSink) ClaimBatch() {}
 
+// sustainSamples is how many consecutive 100 ms samples a heap level must hold
+// to count as the crawl's peak (see sustainedPeak).
+const sustainSamples = 3
+
+// sustainedPeak returns the highest level the samples held for sustainSamples
+// consecutive samples: the max, over every window of that length, of the
+// window's min. A series shorter than one window counts as a single window.
+func sustainedPeak(samples []uint64) uint64 {
+	w := min(sustainSamples, len(samples))
+	var peak uint64
+	for i := 0; w > 0 && i+w <= len(samples); i++ {
+		low := samples[i]
+		for _, s := range samples[i+1 : i+w] {
+			low = min(low, s)
+		}
+		peak = max(peak, low)
+	}
+	return peak
+}
+
+func TestSustainedPeak(t *testing.T) {
+	for _, tc := range []struct {
+		samples []uint64
+		want    uint64
+	}{
+		{[]uint64{1, 9, 1, 9, 1}, 1},    // isolated spikes are not a peak
+		{[]uint64{1, 9, 9, 1, 1}, 1},    // nor is a two-sample burst
+		{[]uint64{1, 5, 6, 7, 2}, 5},    // a level held for the whole window counts
+		{[]uint64{1, 2, 3, 4, 5, 6}, 4}, // steady growth: the window's floor
+		{[]uint64{3, 8}, 3},             // shorter than a window: one window
+		{nil, 0},
+	} {
+		if got := sustainedPeak(tc.samples); got != tc.want {
+			t.Errorf("sustainedPeak(%v) = %d, want %d", tc.samples, got, tc.want)
+		}
+	}
+}
+
 // facetCrawlPeak crawls the facet fixture with the given total fanout and
-// returns the crawl's peak live-heap growth over the pre-crawl baseline,
-// sampled with forced GCs (HeapInuse after GC ≈ live bytes; §13.9 protocol).
+// returns the crawl's sustained peak live-heap growth over the pre-crawl
+// baseline, sampled every 100 ms with forced GCs (HeapInuse after GC ≈ live
+// bytes; §13.9 protocol).
+//
+// The peak is sustained (sustainedPeak), not the single highest sample. A
+// forced GC also counts whatever the 4 workers hold mid-page: a hub's parse
+// tree, its 500 extracted links, the page record's JSON, ~1 MB each. That
+// working set is bounded by the thread count, not the frontier, but one sample
+// can catch several of them at once, and the max over a crawl's samples grows
+// with how many samples it takes. The 55k crawl takes ~11x more than the 5k
+// one, so the plain max turned per-page spikes into a spurious slope: -2.1..
+// +6.5 MB for the bounded queue, over the old 4 MB gate about 1 run in 20 at
+// <= 4 CPUs. Retained frontier state lives as long as its URLs stay queued,
+// i.e. seconds, so requiring 300 ms of persistence drops the spikes and keeps
+// it (measured in-RAM slope: see TestFrontierRAMSlopeFlat).
 func facetCrawlPeak(t *testing.T, fanout int, hideQueue bool) uint64 {
 	t.Helper()
 	const fanoutPerHub = 500 // constant per-page cost — only the frontier scales
@@ -82,7 +135,26 @@ func facetCrawlPeak(t *testing.T, fanout int, hideQueue bool) uint64 {
 	srv := facetServer(t, hubs, fanoutPerHub)
 	cfg := config.Default()
 	cfg.Speed.MaxThreads = 4
-	cfg.Limits.MaxURLs = hubs + 2 // crawl the seed + every hub; facets stay frontier-only
+	// The measured frontier must be the nominal `fanout` URLs on EVERY run, so the
+	// facets are kept frontier-only by a robots.txt Disallow, not by the fetch
+	// budget alone. The robots gate runs before the fetch-slot reservation, so a
+	// facet never spends a slot a hub needed. The budget alone was racy: hubs are
+	// published one by one while the first hubs are already being parsed, so some
+	// facets get queued ahead of later hubs (FIFO in the in-RAM arm; an empty
+	// depth-1 claim in the store arm). Each fetched facet then starved a hub of its
+	// slot, and with it that hub's 500 URLs — measured: 142/210 hubs at 105k,
+	// 104–107/110 at 55k. Blocked facets drain as cheaply as over-budget ones
+	// did (no fetch; no record, ShowBlockedInternal off).
+	robotsPath := filepath.Join(t.TempDir(), "robots.txt")
+	if err := os.WriteFile(robotsPath, []byte("User-agent: *\nDisallow: /facet/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Robots.Custom = []config.CustomRobots{{Host: urlutil.Host(srv.URL), File: robotsPath}}
+	cfg.Robots.ShowBlockedInternal = false
+	// The seed + every hub, plus one spare slot: a facet that ever gets fetched
+	// then shows up in the Crawled check below instead of silently taking a
+	// hub's place.
+	cfg.Limits.MaxURLs = hubs + 2
 
 	st, err := store.CreateCrawl(t.TempDir(), []string{srv.URL + "/"}, "spider", cfg)
 	if err != nil {
@@ -103,17 +175,14 @@ func facetCrawlPeak(t *testing.T, fanout int, hideQueue bool) uint64 {
 	var base runtime.MemStats
 	runtime.ReadMemStats(&base)
 
-	var peak atomic.Uint64
+	// Appended by the sampler goroutine, then once more by this one after
+	// wg.Wait(), so the two never touch it concurrently.
+	var samples []uint64
 	sample := func() {
 		runtime.GC()
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
-		for {
-			cur := peak.Load()
-			if m.HeapInuse <= cur || peak.CompareAndSwap(cur, m.HeapInuse) {
-				return
-			}
-		}
+		samples = append(samples, m.HeapInuse)
 	}
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -129,14 +198,19 @@ func facetCrawlPeak(t *testing.T, fanout int, hideQueue bool) uint64 {
 			}
 		}
 	}()
-	if _, err := c.Run(context.Background(), srv.URL+"/"); err != nil {
+	res, err := c.Run(context.Background(), srv.URL+"/")
+	if err != nil {
 		t.Fatal(err)
 	}
 	close(stop)
 	wg.Wait()
 	sample() // a crawl shorter than one tick still gets measured
 
-	if p := peak.Load(); p > base.HeapInuse {
+	if res.Crawled != hubs+1 {
+		t.Fatalf("fixture drift: crawled %d pages, want exactly the seed + %d hubs — the frontier under test is not the nominal %d URLs",
+			res.Crawled, hubs, fanout)
+	}
+	if p := sustainedPeak(samples); p > base.HeapInuse {
 		return p - base.HeapInuse
 	}
 	return 0
@@ -152,13 +226,30 @@ func facetCrawlPeak(t *testing.T, fanout int, hideQueue bool) uint64 {
 // capability hidden (the pre-#77 in-RAM queue) must show the frontier-linear
 // slope the gate exists to forbid. If THAT arm goes flat the gate is blind,
 // not the engine fixed.
+//
+// Margins, from repeated runs at GOMAXPROCS 2/4/10 (58 of the bounded arm, 34
+// of the in-RAM arm; sustained peaks, see facetCrawlPeak): the bounded queue
+// measures -0.4..+1.2 MB (median +0.5); the in-RAM queue measures +5.3..+7.8
+// MB (median +6.7). That is ~140 B per queued URL: an ~80 B URL string plus a
+// 48 B frontier.Item slot in a slice grown ~1.25x at a time.
 func TestFrontierRAMSlopeFlat(t *testing.T) {
 	if testing.Short() {
 		t.Skip("multi-crawl memory gate — skipped in -short")
 	}
 	const small, large = 5_000, 55_000
-	const maxFlatSlope = 4 << 20 // bounded queue: window + batches, way under the ~10MB linear cost
-	const minLinearSlope = 5 << 20
+	// 2.5 MB: >2x the worst bounded-queue run, and failed by any regression
+	// that retains over ~1/3 of the in-RAM queue's per-URL cost. It was 4 MB
+	// under the plain max, whose spike bias added ~2 MB to every flat run (median
+	// +1.9 MB), so a leak of ~2 MB already failed there. Dropping the bias
+	// without lowering the threshold would have let a larger leak through.
+	const maxFlatSlope = 5 << 19
+	// The detector floor is the gate's threshold + 25% (3.1 MB): the in-RAM
+	// queue must fail the gate by a clear margin, not graze it. It sits ~2 MB
+	// from both sides, above the worst flat run and below the weakest linear one,
+	// so neither a noisy peak nor a blind harness lands on the wrong side. Tying
+	// it to maxFlatSlope keeps the two in step: tighten the gate and the detector
+	// must still prove it can see a failure of the tighter gate.
+	const minLinearSlope = maxFlatSlope + maxFlatSlope/4
 
 	smallPeak := facetCrawlPeak(t, small, false)
 	largePeak := facetCrawlPeak(t, large, false)
@@ -166,17 +257,18 @@ func TestFrontierRAMSlopeFlat(t *testing.T) {
 	t.Logf("store-backed queue: peak(+%dk URLs) - peak(+%dk URLs) = %+.1f MB",
 		large/1000, small/1000, float64(slope)/(1<<20))
 	if slope > maxFlatSlope {
-		t.Errorf("peak RAM grew %.1f MB across a %dk-URL frontier delta — RAM is still frontier-linear (want < %d MB)",
-			float64(slope)/(1<<20), (large-small)/1000, maxFlatSlope>>20)
+		t.Errorf("peak RAM grew %.1f MB across a %dk-URL frontier delta — RAM is still frontier-linear (want < %.1f MB)",
+			float64(slope)/(1<<20), (large-small)/1000, float64(maxFlatSlope)/(1<<20))
 	}
 
 	memSmall := facetCrawlPeak(t, small, true)
 	memLarge := facetCrawlPeak(t, large, true)
 	memSlope := int64(memLarge) - int64(memSmall)
-	t.Logf("in-RAM queue fallback: slope = %+.1f MB", float64(memSlope)/(1<<20))
+	t.Logf("in-RAM queue fallback: slope = %+.1f MB (%.0f B/URL)",
+		float64(memSlope)/(1<<20), float64(memSlope)/float64(large-small))
 	if memSlope < minLinearSlope {
-		t.Errorf("detector check failed: the in-RAM queue arm grew only %.1f MB (want > %d MB) — the harness cannot see the failure mode it gates",
-			float64(memSlope)/(1<<20), minLinearSlope>>20)
+		t.Errorf("detector check failed: the in-RAM queue arm grew only %.1f MB (want > %.1f MB) — the harness cannot see the failure mode it gates",
+			float64(memSlope)/(1<<20), float64(minLinearSlope)/(1<<20))
 	}
 }
 
