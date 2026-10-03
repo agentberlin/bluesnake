@@ -113,6 +113,26 @@ Feature: Crawl bundle export
     And the bundle page "/" has custom result "heading" of kind "extraction" with value "Bundle heading"
     And the bundle page "/about" has custom result "marker" of kind "search" with value "0"
 
+  # What a page withholds from search engines, by engine: a robots meta tag
+  # addressed to one crawler (the generic meta_robots does not carry it) and
+  # the text of its data-nosnippet elements.
+  Scenario: A page carries its per-crawler robots meta tags and nosnippet text
+    Given a site page "/" with body:
+      """
+      <html><head><title>Bundle snippet page title</title>
+      <meta name="robots" content="index">
+      <meta name="Googlebot" content="nosnippet">
+      </head><body><h1>Snippets</h1>
+      <p>shown <span data-nosnippet>withheld from snippets</span></p>
+      </body></html>
+      """
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
+    Then the exit code is 0
+    And the bundle page "/" has a robots meta tag for "googlebot" with content "nosnippet"
+    And the bundle page "/" has a data-nosnippet element with text "withheld from snippets"
+    And the bundle page "/" has "meta_robots" equal to "[index]"
+
   # Every stored column rides along: the response headers as recorded, and the
   # link graph as finalize derived it.
   Scenario: A page carries its response headers and link graph

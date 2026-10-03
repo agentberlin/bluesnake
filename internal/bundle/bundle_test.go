@@ -635,7 +635,8 @@ func TestFactlessPagesAreEmittedWithEmptyFacts(t *testing.T) {
 	}
 	// Arrays, not nulls — and the headers map and custom results likewise.
 	for _, want := range []string{`"h1":[]`, `"h2":[]`, `"heading_levels":[]`, `"meta_keywords":[]`,
-		`"meta_robots":[]`, `"x_robots_tag":[]`, `"hreflang":[]`, `"amp_links":[]`, `"mobile_alternates":[]`,
+		`"meta_robots":[]`, `"x_robots_tag":[]`, `"meta_robots_agents":[]`, `"data_nosnippet":[]`,
+		`"hreflang":[]`, `"amp_links":[]`, `"mobile_alternates":[]`,
 		`"head":{"invalid_elements":[],"missing":false,"multiple":false}`,
 		`"headers":{}`, `"custom_results":[]`, `"links":[]`, `"depth":null`} {
 		if !strings.Contains(string(raw), want) {
@@ -1095,7 +1096,9 @@ func TestPageCarriesTheRestOfTheFacts(t *testing.T) {
 			HreflangHTTP: []parse.Hreflang{{Lang: "de", URL: "https://ex.test/de"}},
 			AMPLinks:     []string{"https://ex.test/amp"}, MobileAlternates: []string{"https://m.ex.test/"},
 			Lang: "en", IsAMP: true,
-			TextRatio: 12.5, AvgWordsPerSentence: 9.5, Flesch: 70.25, Hash: "abc123",
+			MetaRobotsAgents: []parse.AgentDirective{{Agent: "googlebot", Content: "nosnippet"}, {Agent: "bingbot", Content: "noindex"}},
+			NoSnippet:        []string{"members only", "price: $10"},
+			TextRatio:        12.5, AvgWordsPerSentence: 9.5, Flesch: 70.25, Hash: "abc123",
 			Head: parse.HeadValidity{InvalidElementsInHead: []string{"img"}, MultipleHead: true},
 			Links: []parse.Link{
 				{Type: parse.Image, URL: "https://ex.test/i.png", Raw: "/i.png", Alt: "An image", Width: "10", Height: "20", PathType: "root-relative"},
@@ -1129,6 +1132,13 @@ func TestPageCarriesTheRestOfTheFacts(t *testing.T) {
 	}
 	if p.Lang != "en" || !p.IsAMP {
 		t.Errorf("lang = %q is_amp = %v", p.Lang, p.IsAMP)
+	}
+	wantAgents := []AgentDirective{{Agent: "googlebot", Content: "nosnippet"}, {Agent: "bingbot", Content: "noindex"}}
+	if !slices.Equal(p.MetaRobotsAgents, wantAgents) {
+		t.Errorf("meta_robots_agents = %+v, want %+v in document order", p.MetaRobotsAgents, wantAgents)
+	}
+	if !slices.Equal(p.DataNoSnippet, []string{"members only", "price: $10"}) {
+		t.Errorf("data_nosnippet = %v", p.DataNoSnippet)
 	}
 	if p.TextRatio != 12.5 || p.AvgWordsPerSentence != 9.5 || p.Flesch != 70.25 || p.ContentHash != "abc123" {
 		t.Errorf("readability = %v/%v/%v hash = %q", p.TextRatio, p.AvgWordsPerSentence, p.Flesch, p.ContentHash)

@@ -33,6 +33,8 @@ func (w *world) registerBundleSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the bundle page "([^"]*)" has no "([^"]*)" field$`, w.bundlePageFieldAbsent)
 	sc.Step(`^the bundle page "([^"]*)" has custom result "([^"]*)" of kind "([^"]*)" with value "([^"]*)"$`, w.bundleCustomResult)
 	sc.Step(`^the bundle page "([^"]*)" has response header "([^"]*)" containing "([^"]*)"$`, w.bundlePageHeaderContains)
+	sc.Step(`^the bundle page "([^"]*)" has a robots meta tag for "([^"]*)" with content "([^"]*)"$`, w.bundleAgentRobotsMeta)
+	sc.Step(`^the bundle page "([^"]*)" has a data-nosnippet element with text "([^"]*)"$`, w.bundleNoSnippet)
 	sc.Step(`^the bundle page "([^"]*)" has structured jsonld containing "([^"]*)"$`, w.bundlePageJSONLDContains)
 	sc.Step(`^the bundle page "([^"]*)" has a link to "([^"]*)" with "([^"]*)" equal to "([^"]*)"$`, w.bundleLinkFieldEquals)
 	sc.Step(`^the bundle page "([^"]*)" has a link to "([^"]*)" with "([^"]*)" containing "([^"]*)"$`, w.bundleLinkFieldContains)
@@ -310,6 +312,32 @@ func (w *world) bundleCustomResult(path, name, kind, value string) error {
 		return nil
 	}
 	return fmt.Errorf("page %s has no %s custom result %q; got %+v", path, kind, name, p.CustomResults)
+}
+
+func (w *world) bundleAgentRobotsMeta(path, agent, content string) error {
+	p, err := w.bundlePage(path)
+	if err != nil {
+		return err
+	}
+	for _, d := range p.MetaRobotsAgents {
+		if d.Agent == agent && d.Content == content {
+			return nil
+		}
+	}
+	return fmt.Errorf("page %s has no robots meta tag for %s with content %q; got %+v", path, agent, content, p.MetaRobotsAgents)
+}
+
+func (w *world) bundleNoSnippet(path, text string) error {
+	p, err := w.bundlePage(path)
+	if err != nil {
+		return err
+	}
+	for _, s := range p.DataNoSnippet {
+		if s == text {
+			return nil
+		}
+	}
+	return fmt.Errorf("page %s has no data-nosnippet element with text %q; got %v", path, text, p.DataNoSnippet)
 }
 
 func (w *world) bundlePageHeaderContains(path, name, want string) error {

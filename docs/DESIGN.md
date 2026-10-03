@@ -718,7 +718,8 @@ column of its `pages` row (the response headers as a map, the link-graph
 metrics finalize derived — inlinks, unique in/outlinks, link score, discovered
 from — the duplicate fields, egress attribution), every parsed fact (h1/h2 and
 heading order, hreflang from both sources, rel next/prev, meta refresh, AMP and
-mobile alternates, readability, the raw-body hash, head validity), the
+mobile alternates, readability, the raw-body hash, head validity, robots meta
+tags addressed to one crawler and the text of `data-nosnippet` elements), the
 `custom_search` / `custom_extraction` / `custom_js` values by name, and the
 `jsdiff` of a rendering crawl. The bundle is the one export a consumer should
 never have to go back to the store for, so an omission is a bug, not a trim.

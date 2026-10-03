@@ -248,6 +248,13 @@ type Page struct {
 	RelPrev    string   `json:"rel_prev"`
 	MetaRobots []string `json:"meta_robots"`
 	XRobotsTag []string `json:"x_robots_tag"`
+	// MetaRobotsAgents are the robots meta tags addressed to a single crawler
+	// (googlebot, bingbot, …), which meta_robots — the generic tag — does not
+	// carry; the agent name is lowercased. DataNoSnippet is the text of every
+	// element carrying a data-nosnippet attribute, in document order. Both are
+	// parsed facts, so a crawl made before they were retained carries [].
+	MetaRobotsAgents []AgentDirective `json:"meta_robots_agents"`
+	DataNoSnippet    []string         `json:"data_nosnippet"`
 	// MetaRefresh is the raw content attribute; MetaRefreshURL its resolved
 	// target (the page itself for a bare delay, "" when there is none).
 	MetaRefresh    string `json:"meta_refresh"`
@@ -287,6 +294,12 @@ type Page struct {
 	// come last so the rest of a record is readable before the wall of markup.
 	HTML         *string `json:"html,omitempty"`
 	RenderedHTML *string `json:"rendered_html,omitempty"`
+}
+
+// AgentDirective is one robots meta tag scoped to a named crawler.
+type AgentDirective struct {
+	Agent   string `json:"agent"`
+	Content string `json:"content"`
 }
 
 // Hreflang is one hreflang annotation with its source (html | http).
@@ -627,6 +640,11 @@ func fillFromFacts(p *Page, f *parse.Facts, want map[string]bool) {
 	p.RelPrev = firstOf(f.PrevHTML, f.PrevHTTP)
 	p.MetaRobots = nonNil(f.MetaRobots)
 	p.XRobotsTag = nonNil(f.XRobotsTag)
+	p.MetaRobotsAgents = make([]AgentDirective, 0, len(f.MetaRobotsAgents))
+	for _, d := range f.MetaRobotsAgents {
+		p.MetaRobotsAgents = append(p.MetaRobotsAgents, AgentDirective{Agent: d.Agent, Content: d.Content})
+	}
+	p.DataNoSnippet = nonNil(f.NoSnippet)
 	p.MetaRefresh = f.MetaRefresh
 	p.MetaRefreshURL = f.MetaRefreshURL
 	p.Lang = f.Lang
