@@ -27,8 +27,14 @@ func (w *world) registerBundleSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the bundle page count matches the header$`, w.bundlePageCountMatches)
 	sc.Step(`^the bundle header counts (\d+) pages? as "([^"]*)"$`, w.bundleHeaderStatusCount)
 	sc.Step(`^the bundle header status counts add up to its pages$`, w.bundleHeaderStatusCountsSum)
+	sc.Step(`^the bundle header says "([^"]*)" is (stored|not stored)$`, w.bundleHeaderStored)
 	sc.Step(`^the bundle page "([^"]*)" has "([^"]*)" equal to "([^"]*)"$`, w.bundlePageFieldEquals)
 	sc.Step(`^the bundle page "([^"]*)" has "([^"]*)" containing "([^"]*)"$`, w.bundlePageFieldContains)
+	sc.Step(`^the bundle page "([^"]*)" has no "([^"]*)" field$`, w.bundlePageFieldAbsent)
+	sc.Step(`^the bundle page "([^"]*)" has custom result "([^"]*)" of kind "([^"]*)" with value "([^"]*)"$`, w.bundleCustomResult)
+	sc.Step(`^the bundle page "([^"]*)" has response header "([^"]*)" containing "([^"]*)"$`, w.bundlePageHeaderContains)
+	sc.Step(`^the bundle page "([^"]*)" has a robots meta tag for "([^"]*)" with content "([^"]*)"$`, w.bundleAgentRobotsMeta)
+	sc.Step(`^the bundle page "([^"]*)" has a data-nosnippet element with text "([^"]*)"$`, w.bundleNoSnippet)
 	sc.Step(`^the bundle page "([^"]*)" has structured jsonld containing "([^"]*)"$`, w.bundlePageJSONLDContains)
 	sc.Step(`^the bundle page "([^"]*)" has a link to "([^"]*)" with "([^"]*)" equal to "([^"]*)"$`, w.bundleLinkFieldEquals)
 	sc.Step(`^the bundle page "([^"]*)" has a link to "([^"]*)" with "([^"]*)" containing "([^"]*)"$`, w.bundleLinkFieldContains)
@@ -203,11 +209,34 @@ func (w *world) bundleHeaderStatusCountsSum() error {
 	return w.bundlePageCountMatches()
 }
 
+// bundleHeaderStored checks the header's `stored` record of which page assets
+// the crawl kept — and therefore which optional page fields the stream carries.
+func (w *world) bundleHeaderStored(kind, state string) error {
+	h, _, err := w.readBundle()
+	if err != nil {
+		return err
+	}
+	var got bool
+	switch kind {
+	case "html":
+		got = h.Stored.HTML
+	case "rendered_html":
+		got = h.Stored.RenderedHTML
+	default:
+		return fmt.Errorf("unknown stored asset %q", kind)
+	}
+	if want := state == "stored"; got != want {
+		return fmt.Errorf("header stored.%s = %v, want %v", kind, got, want)
+	}
+	return nil
+}
+
 func (w *world) bundlePageFieldEquals(path, field, want string) error {
 	got, err := w.bundlePageField(path, field)
 	if err != nil {
 		return err
 	}
+	want = strings.ReplaceAll(want, "<serverurl>", w.ensureServer().URL)
 	if got != want {
 		return fmt.Errorf("page %s: %s = %q, want %q", path, field, got, want)
 	}
@@ -219,30 +248,111 @@ func (w *world) bundlePageFieldContains(path, field, want string) error {
 	if err != nil {
 		return err
 	}
+	want = strings.ReplaceAll(want, "<serverurl>", w.ensureServer().URL)
 	if !strings.Contains(got, want) {
 		return fmt.Errorf("page %s: %s = %q, want it to contain %q", path, field, got, want)
 	}
 	return nil
 }
 
-func (w *world) bundlePageField(path, field string) (string, error) {
+// pageFields reads one page record back as a consumer sees it on the wire, so
+// a step names a field exactly as it is spelled there and an absent key is
+// distinguishable from an empty value.
+func (w *world) pageFields(path string) (map[string]any, error) {
 	p, err := w.bundlePage(path)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (w *world) bundlePageField(path, field string) (string, error) {
+	m, err := w.pageFields(path)
 	if err != nil {
 		return "", err
 	}
-	switch field {
-	case "content_text":
-		return p.ContentText, nil
-	case "title":
-		return p.Title, nil
-	case "meta_description":
-		return p.MetaDescription, nil
-	case "state":
-		return p.State, nil
-	case "content_type":
-		return p.ContentType, nil
+	v, ok := m[field]
+	if !ok {
+		return "", fmt.Errorf("page %s has no field %q", path, field)
 	}
-	return "", fmt.Errorf("unsupported bundle page field %q", field)
+	return fmt.Sprint(v), nil
+}
+
+func (w *world) bundlePageFieldAbsent(path, field string) error {
+	m, err := w.pageFields(path)
+	if err != nil {
+		return err
+	}
+	if v, ok := m[field]; ok {
+		return fmt.Errorf("page %s carries %s = %v, want the key absent", path, field, v)
+	}
+	return nil
+}
+
+func (w *world) bundleCustomResult(path, name, kind, value string) error {
+	p, err := w.bundlePage(path)
+	if err != nil {
+		return err
+	}
+	for _, r := range p.CustomResults {
+		if r.Name != name || r.Kind != kind {
+			continue
+		}
+		if r.Value != value {
+			return fmt.Errorf("page %s: %s %q = %q, want %q", path, kind, name, r.Value, value)
+		}
+		return nil
+	}
+	return fmt.Errorf("page %s has no %s custom result %q; got %+v", path, kind, name, p.CustomResults)
+}
+
+func (w *world) bundleAgentRobotsMeta(path, agent, content string) error {
+	p, err := w.bundlePage(path)
+	if err != nil {
+		return err
+	}
+	for _, d := range p.MetaRobotsAgents {
+		if d.Agent == agent && d.Content == content {
+			return nil
+		}
+	}
+	return fmt.Errorf("page %s has no robots meta tag for %s with content %q; got %+v", path, agent, content, p.MetaRobotsAgents)
+}
+
+func (w *world) bundleNoSnippet(path, text string) error {
+	p, err := w.bundlePage(path)
+	if err != nil {
+		return err
+	}
+	for _, s := range p.DataNoSnippet {
+		if s == text {
+			return nil
+		}
+	}
+	return fmt.Errorf("page %s has no data-nosnippet element with text %q; got %v", path, text, p.DataNoSnippet)
+}
+
+func (w *world) bundlePageHeaderContains(path, name, want string) error {
+	p, err := w.bundlePage(path)
+	if err != nil {
+		return err
+	}
+	v, ok := p.Headers[name]
+	if !ok {
+		return fmt.Errorf("page %s has no response header %q; got %v", path, name, p.Headers)
+	}
+	if !strings.Contains(v, want) {
+		return fmt.Errorf("page %s: header %s = %q, want it to contain %q", path, name, v, want)
+	}
+	return nil
 }
 
 func (w *world) bundlePageJSONLDContains(path, want string) error {

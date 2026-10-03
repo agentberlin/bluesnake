@@ -2,6 +2,7 @@ package parse
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -702,5 +703,47 @@ func TestTemplateContentInert(t *testing.T) {
 	// text — guard it here so the two extraction paths never drift apart.
 	if strings.Contains(f.ContentText, "tpltpl") || strings.Contains(f.ContentText, "TemplateHeading") {
 		t.Errorf("ContentText leaked template text: %q", f.ContentText)
+	}
+}
+
+// What a page withholds from search engines, by engine: a robots meta tag
+// addressed to one crawler is kept apart from the generic name="robots" tag
+// (and never leaks into it), and the text of every data-nosnippet element is
+// kept in document order — nested ones once inside their ancestor's text and
+// once on their own, whatever value the attribute carries.
+func TestAgentRobotsMetaAndDataNoSnippet(t *testing.T) {
+	f := parseHTML(t, "https://ex.com/p", `
+		<html><head>
+			<meta name="robots" content="index">
+			<meta name="Googlebot" content=" nosnippet ">
+			<meta name="googlebot-news" content="noindex">
+			<meta name="description" content="not a directive">
+			<meta name="bingbot" content="max-snippet:0">
+		</head><body>
+			<p>Public <span data-nosnippet>price:  <b>$10</b></span> text</p>
+			<div data-nosnippet="true">Members <em>only</em></div>
+			<section data-nosnippet>Outer <span data-nosnippet>inner</span></section>
+		</body></html>`, nil, nil)
+
+	if len(f.MetaRobots) != 1 || f.MetaRobots[0] != "index" {
+		t.Errorf("meta robots = %v, want only the generic tag", f.MetaRobots)
+	}
+	wantAgents := []AgentDirective{
+		{Agent: "googlebot", Content: "nosnippet"},
+		{Agent: "googlebot-news", Content: "noindex"},
+		{Agent: "bingbot", Content: "max-snippet:0"},
+	}
+	if !slices.Equal(f.MetaRobotsAgents, wantAgents) {
+		t.Errorf("agent robots meta = %+v, want %+v (lowercased name, collapsed content, document order, no description)", f.MetaRobotsAgents, wantAgents)
+	}
+	wantNoSnippet := []string{"price: $10", "Members only", "Outer inner", "inner"}
+	if !slices.Equal(f.NoSnippet, wantNoSnippet) {
+		t.Errorf("nosnippet = %q, want %q", f.NoSnippet, wantNoSnippet)
+	}
+
+	// A page with neither carries nil for both — the bundle renders that as [].
+	g := parseHTML(t, "https://ex.com/q", `<html><head><meta name="robots" content="noindex"></head><body><p>plain</p></body></html>`, nil, nil)
+	if g.MetaRobotsAgents != nil || g.NoSnippet != nil {
+		t.Errorf("plain page: agents = %+v nosnippet = %v, want none", g.MetaRobotsAgents, g.NoSnippet)
 	}
 }

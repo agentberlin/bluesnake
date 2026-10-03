@@ -81,6 +81,23 @@ type Link struct {
 	Origin       string // html | rendered | xhr (JS rendering mode)
 }
 
+// AgentDirective is a robots meta tag scoped to a single crawler.
+type AgentDirective struct {
+	Agent   string
+	Content string
+}
+
+// robotsAgents are the meta names that address a single crawler's robots
+// directives: the ones Google and Bing document, plus the other major engines'
+// crawlers. Lowercase; handleMeta lowercases the name before the lookup.
+var robotsAgents = map[string]bool{
+	"googlebot": true, "googlebot-news": true, "googlebot-image": true, "googlebot-video": true,
+	"adsbot-google": true, "mediapartners-google": true,
+	"bingbot": true, "msnbot": true,
+	"yandex": true, "yandexbot": true, "baiduspider": true, "slurp": true,
+	"duckduckbot": true, "applebot": true,
+}
+
 // Hreflang is one hreflang annotation.
 type Hreflang struct {
 	Lang string
@@ -121,6 +138,19 @@ type Facts struct {
 	MetaRobots            []string
 	MetaRobotsOutsideHead int
 	XRobotsTag            []string
+	// MetaRobotsAgents are the robots meta tags addressed to ONE crawler
+	// (<meta name="googlebot" content="nosnippet">), which MetaRobots — the
+	// generic name="robots" tag — does not carry. Document order; the agent
+	// name lowercased. Only names in robotsAgents count: any other meta name is
+	// some other meta, never a directive.
+	MetaRobotsAgents []AgentDirective
+
+	// NoSnippet is the text of every element carrying a data-nosnippet
+	// attribute, in document order — the content a page withholds from search
+	// snippets. The attribute's presence is what counts, whatever its value, as
+	// it does for Google; a nested data-nosnippet element appears twice, once
+	// inside its ancestor's text and once on its own.
+	NoSnippet []string
 
 	MetaRefresh    string // raw content attribute
 	MetaRefreshURL string // resolved target ("" if none); self URL for bare delays
@@ -285,6 +315,9 @@ func inHead(path string) bool {
 
 func (p *parser) handleElement(n *html.Node, path string) {
 	f := p.facts
+	if hasAttr(n, "data-nosnippet") {
+		f.NoSnippet = append(f.NoSnippet, collapseSpace(subtreeText(n)))
+	}
 	switch n.Data {
 	case "html":
 		if lang := attr(n, "lang"); lang != "" {
@@ -402,6 +435,10 @@ func (p *parser) handleMeta(n *html.Node, path string) {
 		}
 	case "viewport":
 		f.HasViewport = true
+	default:
+		if robotsAgents[name] {
+			f.MetaRobotsAgents = append(f.MetaRobotsAgents, AgentDirective{Agent: name, Content: collapseSpace(content)})
+		}
 	}
 	if hasAttr(n, "charset") || strings.EqualFold(attr(n, "http-equiv"), "content-type") {
 		f.HasCharset = true

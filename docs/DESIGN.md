@@ -94,7 +94,7 @@ record the domain*, so the same divergence is never investigated twice.
 - First-class JSON/JSONL output for piping (SF is spreadsheet-centric).
 - Single static binary; storage is embedded (SQLite), no JVM/memory allocation tuning.
 - Discoverable exports: `bluesnake export --list` enumerates every exportable dataset.
-- A whole crawl exports as ONE self-describing file (`bluesnake bundle`, §5.13) — page text, structured data and the nested link graph — rather than a directory of CSVs plus one file per URL that a consumer has to re-join.
+- A whole crawl exports as ONE self-describing file (`bluesnake bundle`, §5.13) — page text, structured data, the nested link graph and, with `--full`, the page sources the crawl kept — rather than a directory of CSVs plus one file per URL that a consumer has to re-join.
 - Go regex (RE2) everywhere — documented difference from SF's Java regex (no backtracking/lookahead; predictable performance).
 
 ---
@@ -712,6 +712,40 @@ Lines, a header record followed by one record per page. A page record nests what
 the flat tab exports cannot carry — the content-area text, the structured-data
 block (schema.org types AND the raw JSON-LD bodies), and the page's link edges
 with their anchor, position, element path and position path.
+
+A page record carries **everything the crawl stored about the page**: every
+column of its `pages` row (the response headers as a map, the link-graph
+metrics finalize derived — inlinks, unique in/outlinks, link score, discovered
+from — the duplicate fields, egress attribution), every parsed fact (h1/h2 and
+heading order, hreflang from both sources, rel next/prev, meta refresh, AMP and
+mobile alternates, readability, the raw-body hash, head validity, robots meta
+tags addressed to one crawler and the text of `data-nosnippet` elements), the
+`custom_search` / `custom_extraction` / `custom_js` values by name, and the
+`jsdiff` of a rendering crawl. The bundle is the one export a consumer should
+never have to go back to the store for, so an omission is a bug, not a trim.
+Two things are deliberately not in the default stream: issues, which are
+verdicts, and the page sources, which are opt-in below.
+
+**Stored page sources are opt-in (`--full`) and follow the crawl's frozen
+config.** A crawl run with `extraction.store_html` (and `store_rendered_html`
+under JavaScript rendering) kept each page's source as a file beside its DB. The
+bundle reads the frozen config and says in the header's `stored` which kinds
+the crawl kept; with `--full` it carries that kind on **every** page line —
+`html` / `rendered_html` as a string, empty where that page had no stored file
+(a non-HTML response, an error, an external page) — and the header's `full`
+says so. Without `--full`, or on a crawl that kept nothing, no such key is
+emitted at all: `""` could not tell "not carried" from "stored empty", and the
+two header fields are what make the cases distinguishable (a consumer holding
+`stored.html: true, full: false` knows a re-bundle, not a re-crawl, yields the
+sources). Off by default because the sources are the whole file by volume —
+measured at 7–13× the gzipped bundle on crawls that kept raw and rendered HTML,
+the rendered DOM alone up to 3× the raw — while the full page record without
+them costs ≈15–30% over the first bundles and is what an index or a diff wants.
+The file is read per page and dropped, so the streaming property holds (the RAM
+gate's fixture stores HTML and bundles `--full` for exactly this reason), and a
+blobs row whose file is gone is an error naming the URL, not an empty page. A
+store that has moved since the crawl still bundles: the file is found under the
+store's own assets dir by name.
 
 It is a separate command rather than another `export` dataset because
 `export.Dataset{Header []string, Rows [][]string}` is flat by construction. A

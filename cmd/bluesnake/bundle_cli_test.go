@@ -157,7 +157,7 @@ func TestBundleCmd_Help(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, out)
 	}
-	for _, want := range []string{"--scope", "--link-types", "--gzip", "--output"} {
+	for _, want := range []string{"--scope", "--link-types", "--gzip", "--output", "--full"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help missing %q:\n%s", want, out)
 		}
