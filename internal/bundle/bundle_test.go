@@ -9,6 +9,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -369,6 +372,16 @@ func TestPageCarriesContentTextAndFacts(t *testing.T) {
 	if !home.Indexable {
 		t.Error("indexable = false; it must be a bool, not the tab exports' string")
 	}
+	// The whole header map, not just the one value the first bundles pulled out.
+	if ct := home.Headers["Content-Type"]; !strings.Contains(ct, "text/html") {
+		t.Errorf("headers = %v, want the response's Content-Type", home.Headers)
+	}
+	if home.ContentHash == "" {
+		t.Error("content_hash is empty; the raw-body MD5 is stored on every parsed page")
+	}
+	if home.WordCount == 0 || home.TextRatio == 0 {
+		t.Errorf("word_count = %d text_ratio = %v, want the readability metrics", home.WordCount, home.TextRatio)
+	}
 }
 
 // The verbatim JSON-LD block, and the position path behind a link's label —
@@ -620,14 +633,23 @@ func TestFactlessPagesAreEmittedWithEmptyFacts(t *testing.T) {
 	if p.ContentText != "" || p.Title != "" {
 		t.Errorf("Facts-derived fields must be empty: %+v", p)
 	}
-	// Arrays, not nulls.
-	for _, want := range []string{`"h1":[]`, `"meta_robots":[]`, `"x_robots_tag":[]`, `"links":[]`, `"depth":null`} {
+	// Arrays, not nulls — and the headers map and custom results likewise.
+	for _, want := range []string{`"h1":[]`, `"h2":[]`, `"heading_levels":[]`, `"meta_keywords":[]`,
+		`"meta_robots":[]`, `"x_robots_tag":[]`, `"hreflang":[]`, `"amp_links":[]`, `"mobile_alternates":[]`,
+		`"head":{"invalid_elements":[],"missing":false,"multiple":false}`,
+		`"headers":{}`, `"custom_results":[]`, `"links":[]`, `"depth":null`} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("record does not contain %s:\n%s", want, raw)
 		}
 	}
-	if strings.Contains(string(raw), `"structured":`) {
-		t.Errorf("a page with no structured data must omit the key, not emit null:\n%s", raw)
+	// The three optional keys are absent, not null: structured where the page
+	// has none, jsdiff where the crawl did not render, html where it did not
+	// store sources.
+	line := strings.SplitN(string(raw), "\n", 2)[1]
+	for _, absent := range []string{`"structured":`, `"jsdiff":`, `"html":`, `"rendered_html":`} {
+		if strings.Contains(line, absent) {
+			t.Errorf("record must omit %s rather than emit null or empty:\n%s", absent, line)
+		}
 	}
 }
 
@@ -828,5 +850,347 @@ func TestUnfinishedCrawlHasEmptyFinishedAt(t *testing.T) {
 	}
 	if h.StartedAt == "" {
 		t.Error("started_at is empty")
+	}
+}
+
+// pageLines splits a raw bundle into its page lines (everything after the
+// header), for assertions about what a record does NOT carry.
+func pageLines(raw []byte) []string {
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	return lines[1:]
+}
+
+// A Full bundle of a crawl that kept its sources (extraction.store_html)
+// carries every page's raw HTML, and the header says both what the crawl kept
+// and that this stream has it.
+func TestFullCarriesStoredHTML(t *testing.T) {
+	st, info := crawledFixture(t, func(c *config.Config) { c.Extraction.StoreHTML = true })
+	h, pages, _ := bundleOf(t, st, info, Options{Scope: ScopeAll, Full: true})
+	if !h.Stored.HTML || h.Stored.RenderedHTML || !h.Full {
+		t.Errorf("header stored = %+v full = %v, want html stored and full", h.Stored, h.Full)
+	}
+	home := pageByPath(pages, "/")
+	if home == nil || home.HTML == nil {
+		t.Fatal("home page carries no html field")
+	}
+	if !strings.Contains(*home.HTML, "<h1>First heading</h1>") {
+		t.Errorf("html = %q, want the raw source", *home.HTML)
+	}
+	// Every line carries the key — "" for a page with no stored source — so a
+	// consumer never has to guess whether a missing key means "not kept for
+	// this page" or "never requested". The external page is that case: fetched
+	// for its status, never parsed, so nothing was stored for it.
+	var external *Page
+	for i := range pages {
+		if pages[i].HTML == nil {
+			t.Errorf("%s: html key missing although the crawl stored HTML", pages[i].URL)
+		}
+		if pages[i].Scope == ScopeExternal {
+			external = &pages[i]
+		}
+	}
+	if external == nil || external.HTML == nil || *external.HTML != "" {
+		t.Errorf("external page = %+v, want html present and empty", external)
+	}
+}
+
+// The sources are opt-in: without Full a crawl that kept them still bundles
+// without them, and the header says so — stored.html true, full false — so a
+// consumer knows a re-bundle, not a re-crawl, is what gets them the HTML.
+func TestStoredHTMLStaysOutWithoutFull(t *testing.T) {
+	st, info := crawledFixture(t, func(c *config.Config) { c.Extraction.StoreHTML = true })
+	h, _, raw := bundleOf(t, st, info, Options{Scope: ScopeAll})
+	if !h.Stored.HTML || h.Full {
+		t.Errorf("header stored = %+v full = %v, want html stored and not full", h.Stored, h.Full)
+	}
+	for _, line := range pageLines(raw) {
+		if strings.Contains(line, `"html":`) || strings.Contains(line, `"rendered_html":`) {
+			t.Fatalf("a bundle without Full must not emit the source keys:\n%s", line)
+		}
+	}
+}
+
+// Full on a crawl that stored nothing carries nothing, and the key is absent
+// rather than "" on every page: "" could not say whether the source was never
+// stored or stored empty.
+func TestFullOnACrawlThatStoredNoHTMLCarriesNone(t *testing.T) {
+	st, info := crawledFixture(t, nil)
+	h, _, raw := bundleOf(t, st, info, Options{Full: true})
+	if h.Stored.HTML || h.Stored.RenderedHTML || !h.Full {
+		t.Errorf("header stored = %+v full = %v, want neither stored and full", h.Stored, h.Full)
+	}
+	for _, line := range pageLines(raw) {
+		if strings.Contains(line, `"html":`) || strings.Contains(line, `"rendered_html":`) {
+			t.Fatalf("a crawl that stored no HTML must not emit the keys:\n%s", line)
+		}
+	}
+}
+
+// A recorded blob whose file is gone is corruption, not an empty page: the
+// bundle fails naming the URL rather than quietly emitting "" for it.
+func TestMissingStoredHTMLFileIsAnError(t *testing.T) {
+	st, info := crawledFixture(t, func(c *config.Config) { c.Extraction.StoreHTML = true })
+	_, pages, _ := bundleOf(t, st, info, Options{})
+	home := pageByPath(pages, "/")
+	path, err := st.BlobPath(home.URL, "html")
+	if err != nil || path == "" {
+		t.Fatalf("blob path = %q, %v", path, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	err = Write(st, info, Options{Full: true}, &buf)
+	if err == nil || !strings.Contains(err.Error(), home.URL) {
+		t.Errorf("Write = %v, want an error naming %s", err, home.URL)
+	}
+	// Without Full the file is never read, so the default bundle is unaffected.
+	buf.Reset()
+	if err := Write(st, info, Options{}, &buf); err != nil {
+		t.Errorf("a bundle without Full must not touch the stored files: %v", err)
+	}
+}
+
+// The blobs table records each file's path as it was at crawl time. A store
+// that has moved since still bundles: the file is found under the store's own
+// assets dir by name.
+func TestStoredHTMLSurvivesAMovedStore(t *testing.T) {
+	st, info := crawledFixture(t, func(c *config.Config) { c.Extraction.StoreHTML = true })
+	dir := filepath.Dir(filepath.Dir(st.AssetsDir())) // <dir>/crawls/<id>.assets
+	st.Close()
+	moved := filepath.Join(t.TempDir(), "moved")
+	if err := os.Rename(dir, moved); err != nil {
+		t.Fatal(err)
+	}
+	re, err := store.OpenCrawl(moved, info.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer re.Close()
+	_, pages, _ := bundleOf(t, re, info, Options{Full: true})
+	home := pageByPath(pages, "/")
+	if home == nil || home.HTML == nil || !strings.Contains(*home.HTML, "<h1>First heading</h1>") {
+		t.Errorf("home page after the move = %+v, want its stored HTML", home)
+	}
+}
+
+// rendered_html rides along only on a JavaScript-rendering crawl that asked
+// for it: the flag alone writes nothing, so the header must not promise it.
+func TestRenderedHTMLNeedsARenderingCrawl(t *testing.T) {
+	textMode := config.Default()
+	textMode.Extraction.StoreRenderedHTML = true
+	c, err := store.CreateCrawl(t.TempDir(), []string{"https://ex.test/"}, "spider", textMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if h, _, _ := bundleOf(t, c, store.Info{ID: c.ID}, Options{Full: true}); h.Stored.RenderedHTML {
+		t.Error("header promises rendered_html on a text-mode crawl, which never renders")
+	}
+
+	// The stored DOM is written through the same BlobSink the crawler uses.
+	jsMode := config.Default()
+	jsMode.Rendering.Mode = "javascript"
+	jsMode.Extraction.StoreRenderedHTML = true
+	r, err := store.CreateCrawl(t.TempDir(), []string{"https://ex.test/"}, "spider", jsMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if err := r.Page(&crawler.PageRecord{
+		URL: "https://ex.test/", Scope: "internal", State: crawler.StateCrawled, StatusCode: 200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const dom = "<html><body><h1>JS Title</h1></body></html>"
+	if err := r.Blob("https://ex.test/", "rendered_html", []byte(dom)); err != nil {
+		t.Fatal(err)
+	}
+	h, pages, _ := bundleOf(t, r, store.Info{ID: r.ID}, Options{Full: true})
+	if !h.Stored.RenderedHTML || h.Stored.HTML {
+		t.Errorf("header stored = %+v, want rendered_html only", h.Stored)
+	}
+	if len(pages) != 1 || pages[0].RenderedHTML == nil || *pages[0].RenderedHTML != dom {
+		t.Fatalf("rendered_html = %v, want the stored DOM", pages[0].RenderedHTML)
+	}
+	if pages[0].HTML != nil {
+		t.Error("html key present although store_html is off")
+	}
+}
+
+// The columns finalize and the analyses write — the link graph, duplicates,
+// egress attribution — are carried as stored, and jsdiff like structured:
+// present only where a rendering crawl recorded one.
+func TestPageCarriesGraphDuplicateAndRenderFields(t *testing.T) {
+	c, err := store.CreateCrawl(t.TempDir(), []string{"https://ex.test/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Page(&crawler.PageRecord{
+		URL: "https://ex.test/a", Scope: "internal", State: crawler.StateCrawled, StatusCode: 200,
+		DiscoveredFrom: "https://ex.test/", OutsideStartFolder: true,
+		DuplicateOf: "https://ex.test/", Proxy: "direct", MatchedRobotsLine: 7,
+		Headers: map[string]string{"Content-Type": "text/html", "X-Cache": "HIT"},
+		JSDiff:  &crawler.JSDiff{RenderedWordCount: 120, WordCountChange: 20, TitleChanged: true, RenderedTitle: "JS title"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Inlinks and the analysis metrics are written by finalize, after the
+	// crawl, with UPDATEs like these — not by Page.
+	if _, err := c.DB().Exec(`UPDATE pages SET inlinks = 3, link_score = 0.25, unique_inlinks = 2, unique_outlinks = 5,
+		closest_similarity = 0.9, near_dup_count = 1 WHERE url = ?`, "https://ex.test/a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Page(&crawler.PageRecord{
+		URL: "https://ex.test/b", Scope: "internal", State: crawler.StateCrawled, StatusCode: 200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, pages, raw := bundleOf(t, c, store.Info{ID: c.ID}, Options{})
+	a := pageByPath(pages, "/a")
+	if a == nil {
+		t.Fatal("/a missing")
+	}
+	if a.Inlinks != 3 || a.UniqueInlinks != 2 || a.UniqueOutlinks != 5 || a.LinkScore != 0.25 {
+		t.Errorf("graph = inlinks %d unique %d/%d score %v", a.Inlinks, a.UniqueInlinks, a.UniqueOutlinks, a.LinkScore)
+	}
+	if a.DiscoveredFrom != "https://ex.test/" || !a.OutsideStartFolder {
+		t.Errorf("discovered_from = %q outside_start_folder = %v", a.DiscoveredFrom, a.OutsideStartFolder)
+	}
+	if a.DuplicateOf != "https://ex.test/" || a.ClosestSimilarity != 0.9 || a.NearDupCount != 1 {
+		t.Errorf("duplicates = %q %v %d", a.DuplicateOf, a.ClosestSimilarity, a.NearDupCount)
+	}
+	if a.Proxy != "direct" || a.MatchedRobotsLine != 7 {
+		t.Errorf("proxy = %q matched_robots_line = %d", a.Proxy, a.MatchedRobotsLine)
+	}
+	if a.Headers["X-Cache"] != "HIT" || len(a.Headers) != 2 {
+		t.Errorf("headers = %v, want both stored headers", a.Headers)
+	}
+	if a.JSDiff == nil || a.JSDiff.RenderedTitle != "JS title" || !a.JSDiff.TitleChanged {
+		t.Errorf("jsdiff = %+v, want the stored comparison", a.JSDiff)
+	}
+	for _, line := range pageLines(raw) {
+		if strings.Contains(line, `"url":"https://ex.test/b"`) && strings.Contains(line, `"jsdiff":`) {
+			t.Errorf("a page the crawl did not render must omit jsdiff:\n%s", line)
+		}
+	}
+}
+
+// The remaining parsed facts — the ones the tab exports flatten or drop — and
+// the link attributes the links tab carries but the first bundles did not.
+func TestPageCarriesTheRestOfTheFacts(t *testing.T) {
+	c, err := store.CreateCrawl(t.TempDir(), []string{"https://ex.test/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Page(&crawler.PageRecord{
+		URL: "https://ex.test/", Scope: "internal", State: crawler.StateCrawled, StatusCode: 200,
+		Facts: &parse.Facts{
+			Keywords: []string{"alpha, bravo"}, H2s: []string{"Sub one", "Sub two"}, HeadingLevels: []int{1, 2, 2},
+			NextHTTP: []string{"https://ex.test/?page=2"}, PrevHTML: []string{"https://ex.test/?page=0"},
+			MetaRefresh: "5; url=/x", MetaRefreshURL: "https://ex.test/x",
+			HreflangHTML: []parse.Hreflang{{Lang: "en", URL: "https://ex.test/"}},
+			HreflangHTTP: []parse.Hreflang{{Lang: "de", URL: "https://ex.test/de"}},
+			AMPLinks:     []string{"https://ex.test/amp"}, MobileAlternates: []string{"https://m.ex.test/"},
+			Lang: "en", IsAMP: true,
+			TextRatio: 12.5, AvgWordsPerSentence: 9.5, Flesch: 70.25, Hash: "abc123",
+			Head: parse.HeadValidity{InvalidElementsInHead: []string{"img"}, MultipleHead: true},
+			Links: []parse.Link{
+				{Type: parse.Image, URL: "https://ex.test/i.png", Raw: "/i.png", Alt: "An image", Width: "10", Height: "20", PathType: "root-relative"},
+				{Type: parse.Hyperlink, URL: "https://ex.test/x", Raw: "/x", Target: "_blank", PathType: "root-relative"},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, pages, raw := bundleOf(t, c, store.Info{ID: c.ID}, Options{LinkTypes: []string{LinkTypeAll}})
+	p := pages[0]
+	if !slices.Equal(p.MetaKeywords, []string{"alpha, bravo"}) || !slices.Equal(p.H2, []string{"Sub one", "Sub two"}) {
+		t.Errorf("meta_keywords = %v h2 = %v", p.MetaKeywords, p.H2)
+	}
+	if !slices.Equal(p.HeadingLevels, []int{1, 2, 2}) {
+		t.Errorf("heading_levels = %v", p.HeadingLevels)
+	}
+	// rel next/prev follow the canonical rule: HTML, else the HTTP Link header.
+	if p.RelNext != "https://ex.test/?page=2" || p.RelPrev != "https://ex.test/?page=0" {
+		t.Errorf("rel_next = %q rel_prev = %q", p.RelNext, p.RelPrev)
+	}
+	if p.MetaRefresh != "5; url=/x" || p.MetaRefreshURL != "https://ex.test/x" {
+		t.Errorf("meta_refresh = %q -> %q", p.MetaRefresh, p.MetaRefreshURL)
+	}
+	wantHreflang := []Hreflang{{Lang: "en", URL: "https://ex.test/", Source: "html"}, {Lang: "de", URL: "https://ex.test/de", Source: "http"}}
+	if !slices.Equal(p.Hreflang, wantHreflang) {
+		t.Errorf("hreflang = %+v, want both sources kept apart: %+v", p.Hreflang, wantHreflang)
+	}
+	if !slices.Equal(p.AMPLinks, []string{"https://ex.test/amp"}) || !slices.Equal(p.MobileAlternates, []string{"https://m.ex.test/"}) {
+		t.Errorf("amp_links = %v mobile_alternates = %v", p.AMPLinks, p.MobileAlternates)
+	}
+	if p.Lang != "en" || !p.IsAMP {
+		t.Errorf("lang = %q is_amp = %v", p.Lang, p.IsAMP)
+	}
+	if p.TextRatio != 12.5 || p.AvgWordsPerSentence != 9.5 || p.Flesch != 70.25 || p.ContentHash != "abc123" {
+		t.Errorf("readability = %v/%v/%v hash = %q", p.TextRatio, p.AvgWordsPerSentence, p.Flesch, p.ContentHash)
+	}
+	if !slices.Equal(p.Head.InvalidElements, []string{"img"}) || p.Head.Missing || !p.Head.Multiple {
+		t.Errorf("head = %+v", p.Head)
+	}
+
+	if len(p.Links) != 2 {
+		t.Fatalf("links = %+v, want the image and the hyperlink", p.Links)
+	}
+	img, a := p.Links[0], p.Links[1]
+	if img.Raw != "/i.png" || img.Alt != "An image" || img.Width != "10" || img.Height != "20" || img.PathType != "root-relative" {
+		t.Errorf("image link = %+v", img)
+	}
+	if a.Raw != "/x" || a.Target != "_blank" || a.Alt != "" {
+		t.Errorf("hyperlink = %+v", a)
+	}
+	// Image-only attributes are omitted where the type cannot carry them: one
+	// alt/width/height on the line, the image's.
+	line := pageLines(raw)[0]
+	for _, key := range []string{`"alt":`, `"width":`, `"height":`} {
+		if n := strings.Count(line, key); n != 1 {
+			t.Errorf("%s appears %d times, want once (the image's):\n%s", key, n, line)
+		}
+	}
+	for _, key := range []string{`"raw":`, `"target":`, `"path_type":`} {
+		if n := strings.Count(line, key); n != 2 {
+			t.Errorf("%s appears %d times, want on both links:\n%s", key, n, line)
+		}
+	}
+}
+
+// Custom search and extraction values ride on their page, sorted by (kind,
+// name) so the stream stays reproducible, and a page where nothing matched
+// still carries the search's answer rather than nothing.
+func TestPageCarriesCustomResults(t *testing.T) {
+	st, info := crawledFixture(t, func(c *config.Config) {
+		c.CustomSearch = []config.CustomSearch{{Name: "marker", Mode: "contains", Pattern: "uniquecontentmarker"}}
+		c.CustomExtraction = []config.CustomExtraction{{Name: "heading", Type: "css", Expression: "h1"}}
+	})
+	_, pages, _ := bundleOf(t, st, info, Options{Scope: ScopeAll})
+	home := pageByPath(pages, "/")
+	want := []CustomResult{
+		{Kind: "extraction", Name: "heading", Value: "First heading | Second heading"},
+		{Kind: "search", Name: "marker", Value: "1"},
+	}
+	if home == nil || !slices.Equal(home.CustomResults, want) {
+		t.Errorf("home custom_results = %+v, want %+v", home.CustomResults, want)
+	}
+	about := pageByPath(pages, "/about")
+	wantAbout := []CustomResult{
+		{Kind: "extraction", Name: "heading", Value: "About"},
+		{Kind: "search", Name: "marker", Value: "0"},
+	}
+	if about == nil || !slices.Equal(about.CustomResults, wantAbout) {
+		t.Errorf("about custom_results = %+v, want %+v", about.CustomResults, wantAbout)
+	}
+	// The external page is never parsed; nothing ran, and [] says so.
+	for _, p := range pages {
+		if p.Scope == ScopeExternal && (p.CustomResults == nil || len(p.CustomResults) != 0) {
+			t.Errorf("external page custom_results = %+v, want an empty array", p.CustomResults)
+		}
 	}
 }

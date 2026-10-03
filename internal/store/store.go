@@ -612,7 +612,7 @@ func (c *Crawl) Archive(url string, res *fetch.Result) error {
 	c.archiveMu.Lock()
 	defer c.archiveMu.Unlock()
 	if c.archive == nil {
-		dir := filepath.Join(c.dir, "crawls", c.ID+".assets")
+		dir := c.AssetsDir()
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
@@ -1582,10 +1582,18 @@ func (c *Crawl) IssueURLs(issueID string) ([]string, error) {
 	return urls, rows.Err()
 }
 
+// AssetsDir is the directory beside the crawl database that holds its
+// on-disk assets: stored page sources, screenshots and the WARC archive. The
+// blobs table records each asset's path as it was at crawl time; a store that
+// has moved since still has every asset under this directory, by file name.
+func (c *Crawl) AssetsDir() string {
+	return filepath.Join(c.dir, "crawls", c.ID+".assets")
+}
+
 // Blob stores page source (or other binary assets) on disk next to the
 // crawl database and records the location (Bulk Export > All Page Source).
 func (c *Crawl) Blob(url, kind string, data []byte) error {
-	dir := filepath.Join(c.dir, "crawls", c.ID+".assets")
+	dir := c.AssetsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}

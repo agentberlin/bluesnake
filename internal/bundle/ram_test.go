@@ -27,12 +27,16 @@ import (
 )
 
 // bodyTextStore builds a crawl DB of n pages, each carrying a realistic body of
-// content text — the per-record cost the whole-map load is dominated by. A small
-// SQLite page cache is forced so a full-table scan can never retain
-// table-proportional memory and confound the page-axis slope.
+// content text — the per-record cost the whole-map load is dominated by — and,
+// as a crawl with extraction.store_html on would, one stored HTML file per page,
+// so a Full bundle exercises the file-per-page read path too. A small SQLite
+// page cache is forced so a full-table scan can never retain table-proportional
+// memory and confound the page-axis slope.
 func bodyTextStore(t *testing.T, n int) *store.Crawl {
 	t.Helper()
-	st, err := store.CreateCrawl(t.TempDir(), []string{"https://ex.test/"}, "spider", config.Default())
+	cfg := config.Default()
+	cfg.Extraction.StoreHTML = true
+	st, err := store.CreateCrawl(t.TempDir(), []string{"https://ex.test/"}, "spider", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,6 +44,7 @@ func bodyTextStore(t *testing.T, n int) *store.Crawl {
 		t.Fatal(err)
 	}
 	body := strings.Repeat("lorem ipsum dolor sit amet consectetur ", 40) // ~1.5 KB
+	html := []byte("<html><body><h1>Heading</h1><p>" + body + "</p></body></html>")
 	for i := range n {
 		url := fmt.Sprintf("https://ex.test/page/%d", i)
 		if err := st.Page(&crawler.PageRecord{
@@ -51,6 +56,9 @@ func bodyTextStore(t *testing.T, n int) *store.Crawl {
 				Links: []parse.Link{{Type: parse.Hyperlink, URL: "https://ex.test/page/0", Anchor: "home"}},
 			},
 		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Blob(url, "html", html); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -85,13 +93,14 @@ func TestBundleRAMFlatOnPageCount(t *testing.T) {
 	const minLinearSlope = 4 << 20 // the O(pages) map a LoadPages-based writer would hold
 
 	// The contract: one sql.Rows scan, one page record at a time, nothing
-	// retained. The bundle goes to io.Discard so the OUTPUT is not what is
-	// measured — only what the writer holds while producing it.
+	// retained — stored sources included, hence Full. The bundle goes to
+	// io.Discard so the OUTPUT is not what is measured — only what the writer
+	// holds while producing it.
 	bundleRetained := func(n int) uint64 {
 		st := bodyTextStore(t, n)
 		defer st.Close()
 		return retainedHeapAlloc(t, func() any {
-			if err := Write(st, store.Info{ID: st.ID}, Options{}, io.Discard); err != nil {
+			if err := Write(st, store.Info{ID: st.ID}, Options{Full: true}, io.Discard); err != nil {
 				t.Fatal(err)
 			}
 			return nil

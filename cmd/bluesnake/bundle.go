@@ -17,15 +17,20 @@ import (
 // column at all.
 func newBundleCmd() *cobra.Command {
 	var storeDir, outPath, scope, linkTypes string
-	var gzipOut bool
+	var gzipOut, full bool
 	cmd := &cobra.Command{
 		Use:   "bundle <crawl-id>",
-		Short: "Export a whole crawl as one streamable JSON Lines file (page text, structured data, link graph)",
+		Short: "Export a whole crawl as one streamable JSON Lines file (page text, structured data, link graph; --full adds stored HTML)",
 		Long: "Write a stored crawl as JSON Lines: one header record describing the crawl,\n" +
-			"then one record per page carrying its text, structured data (including the raw\n" +
-			"JSON-LD blocks) and its nested link edges. The stream is versioned, counted and\n" +
-			"byte-reproducible, so a consumer can refuse a format it does not understand,\n" +
-			"detect a truncated transfer, and diff two bundles of the same crawl.",
+			"then one record per page carrying everything the crawl stored about it — its\n" +
+			"text, response headers, structured data (including the raw JSON-LD blocks),\n" +
+			"custom search/extraction values, link-graph metrics and its nested link edges.\n" +
+			"With --full, a crawl that kept its page sources (extraction.store_html,\n" +
+			"store_rendered_html) also carries them on every page record; the header's\n" +
+			"`stored` and `full` say what the crawl kept and whether this file has it. The\n" +
+			"stream is versioned, counted and byte-reproducible, so a consumer can refuse a\n" +
+			"format it does not understand, detect a truncated transfer, and diff two\n" +
+			"bundles of the same crawl.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts := bundle.Options{
@@ -34,6 +39,7 @@ func newBundleCmd() *cobra.Command {
 				// An explicit --gzip wins; otherwise the output's extension decides,
 				// so `-o out.jsonl.gz` does what it says.
 				GZIP: gzipOut,
+				Full: full,
 			}
 			if !cmd.Flags().Changed("gzip") {
 				opts.GZIP = strings.HasSuffix(outPath, ".gz")
@@ -74,5 +80,7 @@ func newBundleCmd() *cobra.Command {
 	cmd.Flags().StringVar(&scope, "scope", bundle.ScopeInternal, "internal | external | all")
 	cmd.Flags().StringVar(&linkTypes, "link-types", "hyperlink",
 		"comma-separated link types to nest under each page, or \"all\"")
+	cmd.Flags().BoolVar(&full, "full", false,
+		"also carry each page's stored HTML (raw and rendered) when the crawl kept it — the sources are most of the file")
 	return cmd
 }

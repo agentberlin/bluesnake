@@ -11,6 +11,18 @@
 // all. Reconstructing one from the internal/links/response_codes tabs means
 // joining three CSVs and still coming up short.
 //
+// A page record carries EVERYTHING the crawl stored about the page: every
+// column of its pages row, every parsed fact, its custom search/extraction
+// values, and — on request (Options.Full), when the crawl was configured to
+// keep them — its raw and rendered HTML. The bundle is the one export a
+// consumer should never have to go back to the store for, so an omission here
+// is a bug, not a trim. Two things are deliberately NOT in the default stream:
+// issues, which are verdicts (see Link) the consumer's own catalogue run can
+// reproduce, and the page sources, which are opt-in because they are the
+// whole file by volume — measured at 7–13× the gzipped bundle on crawls that
+// kept both raw and rendered HTML — and most consumers want the text, not the
+// markup.
+//
 // Three properties are load-bearing, and each has a test that fails if it is
 // lost:
 //
@@ -19,11 +31,13 @@
 //     a map, which is the shape MEMORY-SCALING.md §4/Phase 2 exists to keep off
 //     the finalize peak; a bundle of a multi-million-page crawl must not
 //     reintroduce it. Peak RAM is one page record regardless of crawl size,
-//     pinned by TestBundleRAMFlatOnPageCount.
+//     pinned by TestBundleRAMFlatOnPageCount. Stored HTML follows the same
+//     rule: one page's file is read, written and dropped before the next.
 //   - It is DETERMINISTIC. Two bundles of one unchanged crawl are byte-
 //     identical: pages ordered by URL, links left in Facts.Links (document)
-//     order, and no wall-clock value anywhere in a page record. That is what
-//     lets a consumer diff two bundles and a test compare against a fixture.
+//     order, custom results sorted, map keys sorted by the encoder, and no
+//     wall-clock value anywhere in a page record. That is what lets a consumer
+//     diff two bundles and a test compare against a fixture.
 //   - It is VERSIONED and COUNTED. A consumer must be able to refuse a format
 //     it does not understand rather than silently misread it (the failure mode
 //     of every CSV column rename), and must be able to tell a truncated
@@ -38,13 +52,18 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/parse"
 	"github.com/agentberlin/bluesnake/internal/store"
@@ -84,6 +103,11 @@ type Options struct {
 	// GZIP compresses the stream. Go's gzip writer emits no mtime and no OS
 	// byte, so a gzipped bundle stays byte-reproducible like the plain one.
 	GZIP bool
+	// Full also carries each page's stored sources — html and rendered_html —
+	// when the crawl kept them (Header.Stored). Off by default: the sources are
+	// the whole file by volume (7–13× the gzipped bundle on crawls that stored
+	// both), and the metadata-only bundle is what an index or a diff wants.
+	Full bool
 }
 
 // Header is the bundle's first line: everything needed to know what the stream
@@ -112,8 +136,18 @@ type Header struct {
 	// that counts Pages and sums to it. Added within bluesnake.pages/1: a bundle
 	// written before it has no such key, which means "no breakdown", not zeros.
 	StatusCounts StatusCounts `json:"status_counts"`
-	Crawled      int          `json:"crawled"`
-	Total        int          `json:"total"`
+	// Stored says which page sources the crawl was configured to keep on disk,
+	// read from its frozen config rather than from the files. Full says whether
+	// this stream carries them (Options.Full): a page line has `html` /
+	// `rendered_html` exactly when Full is true AND Stored says the crawl kept
+	// that kind. A consumer holding a bundle with stored.html true and full
+	// false knows a re-bundle with --full yields the sources without a re-crawl.
+	// Both added within bluesnake.pages/1: absent on an older bundle, which
+	// carries neither.
+	Stored  Stored `json:"stored"`
+	Full    bool   `json:"full"`
+	Crawled int    `json:"crawled"`
+	Total   int    `json:"total"`
 	// ConfigDigest hashes the crawl's frozen config. The link-position rules are
 	// configurable, so `position` is only interpretable against the config that
 	// produced it; the digest is how a consumer notices a corpus built under two
@@ -137,6 +171,18 @@ type StatusCounts struct {
 	NoResponse      int `json:"no_response"`
 }
 
+// Stored is the header's record of which page sources the crawl kept on disk.
+// HTML is extraction.store_html (the raw response body); RenderedHTML is
+// extraction.store_rendered_html AND a JavaScript-rendering crawl, since the
+// flag alone writes nothing without a renderer. In a Full bundle each true here
+// means every page line carries the matching field — as a string, empty where
+// that page had no stored file (a non-HTML response, an error, an external
+// page). Otherwise it is a statement about the crawl alone.
+type Stored struct {
+	HTML         bool `json:"html"`
+	RenderedHTML bool `json:"rendered_html"`
+}
+
 // Page is one page record. Every field is an existing stored value — nothing
 // here is computed for the first time.
 type Page struct {
@@ -157,22 +203,114 @@ type Page struct {
 	RedirectType       string `json:"redirect_type"`
 	Indexable          bool   `json:"indexable"`
 	IndexabilityStatus string `json:"indexability_status"`
-	LastModified       string `json:"last_modified"`
-	Title              string `json:"title"`
-	MetaDescription    string `json:"meta_description"`
-	// H1, MetaRobots and XRobotsTag stay ARRAYS. They are natural multiples that
-	// CSV forced into H1-1, H1-2, …; the single-value flattening in the tab
+	// MatchedRobotsLine is the robots.txt line that decided a blocked page (0
+	// when none did). Proxy is the redacted egress label that fetched the page —
+	// what turns "why did these 200 URLs 403?" into a query — and never carries
+	// credentials.
+	MatchedRobotsLine int    `json:"matched_robots_line"`
+	Proxy             string `json:"proxy"`
+	// The link graph as finalize derived it: inlink counts over the gated
+	// discovery edges, the first page that discovered this one, and the
+	// PageRank-style link score. Zero/empty on a crawl that has not finalised.
+	Inlinks            int     `json:"inlinks"`
+	UniqueInlinks      int     `json:"unique_inlinks"`
+	UniqueOutlinks     int     `json:"unique_outlinks"`
+	LinkScore          float64 `json:"link_score"`
+	DiscoveredFrom     string  `json:"discovered_from"`
+	OutsideStartFolder bool    `json:"outside_start_folder"`
+	// Duplicates: DuplicateOf names the page whose raw body this one was
+	// byte-identical to (the R8 short-circuit); ClosestSimilarity and
+	// NearDupCount are the near-duplicate analysis over content text.
+	DuplicateOf       string  `json:"duplicate_of"`
+	ClosestSimilarity float64 `json:"closest_similarity"`
+	NearDupCount      int     `json:"near_dup_count"`
+	// Headers are the response headers as stored (first value each). The map
+	// is always present — {} where nothing was recorded — and LastModified stays
+	// as the one header the first bundles already pulled out.
+	Headers         map[string]string `json:"headers"`
+	LastModified    string            `json:"last_modified"`
+	Title           string            `json:"title"`
+	MetaDescription string            `json:"meta_description"`
+	MetaKeywords    []string          `json:"meta_keywords"`
+	// H1, H2, MetaRobots and XRobotsTag stay ARRAYS. They are natural multiples
+	// that CSV forced into H1-1, H1-2, …; the single-value flattening in the tab
 	// exports is a presentation choice a machine format should not inherit.
-	H1 []string `json:"h1"`
-	// Canonical follows the `canonicals` tab's rule (HTML, falling back to the
-	// HTTP Link header), not the `internal` tab's HTML-only one.
-	Canonical   string               `json:"canonical"`
-	MetaRobots  []string             `json:"meta_robots"`
-	XRobotsTag  []string             `json:"x_robots_tag"`
-	WordCount   int                  `json:"word_count"`
+	// HeadingLevels is the document order of every h1..h6 level, the evidence
+	// behind any heading-structure verdict.
+	H1            []string `json:"h1"`
+	H2            []string `json:"h2"`
+	HeadingLevels []int    `json:"heading_levels"`
+	// Canonical, RelNext and RelPrev follow the `canonicals` tab's rule (HTML,
+	// falling back to the HTTP Link header), not the `internal` tab's HTML-only
+	// one.
+	Canonical  string   `json:"canonical"`
+	RelNext    string   `json:"rel_next"`
+	RelPrev    string   `json:"rel_prev"`
+	MetaRobots []string `json:"meta_robots"`
+	XRobotsTag []string `json:"x_robots_tag"`
+	// MetaRefresh is the raw content attribute; MetaRefreshURL its resolved
+	// target (the page itself for a bare delay, "" when there is none).
+	MetaRefresh    string `json:"meta_refresh"`
+	MetaRefreshURL string `json:"meta_refresh_url"`
+	Lang           string `json:"lang"`
+	IsAMP          bool   `json:"is_amp"`
+	// Hreflang keeps both sources apart (html | http) where Canonical merges
+	// them: a page legitimately declares alternates in both places at once.
+	Hreflang         []Hreflang   `json:"hreflang"`
+	AMPLinks         []string     `json:"amp_links"`
+	MobileAlternates []string     `json:"mobile_alternates"`
+	Head             HeadValidity `json:"head"`
+	// Readability: WordCount over the content area, TextRatio the share of page
+	// bytes that are body text, and the Flesch reading-ease inputs and score.
+	WordCount           int     `json:"word_count"`
+	TextRatio           float64 `json:"text_ratio"`
+	AvgWordsPerSentence float64 `json:"avg_words_per_sentence"`
+	Flesch              float64 `json:"flesch"`
+	// ContentHash is the MD5 of the raw response body — the key the identical-
+	// content short-circuit matched on, and a consumer's cheapest change check.
+	ContentHash string               `json:"content_hash"`
 	ContentText string               `json:"content_text"`
 	Structured  *structured.PageData `json:"structured,omitempty"`
-	Links       []Link               `json:"links"`
+	// JSDiff is the raw-vs-rendered comparison a JavaScript-rendering crawl
+	// stores; absent on a crawl that did not render, like Structured on a page
+	// with none.
+	JSDiff *crawler.JSDiff `json:"jsdiff,omitempty"`
+	// CustomResults are the values the crawl's custom_search / custom_extraction
+	// / custom_js config asked for, by name. Always an array: a crawl with no
+	// custom config has none, and [] says exactly that.
+	CustomResults []CustomResult `json:"custom_results"`
+	Links         []Link         `json:"links"`
+	// HTML and RenderedHTML are the stored page sources, present on every line
+	// when the bundle is Full and the header's Stored says the crawl kept them,
+	// and absent otherwise — the one place a key's presence varies, because ""
+	// cannot distinguish "not stored for this page" from "not carried". They
+	// come last so the rest of a record is readable before the wall of markup.
+	HTML         *string `json:"html,omitempty"`
+	RenderedHTML *string `json:"rendered_html,omitempty"`
+}
+
+// Hreflang is one hreflang annotation with its source (html | http).
+type Hreflang struct {
+	Lang   string `json:"lang"`
+	URL    string `json:"url"`
+	Source string `json:"source"`
+}
+
+// HeadValidity is the Google-parseability check over <head>: the elements
+// found in it that do not belong there, and whether it was missing or
+// duplicated.
+type HeadValidity struct {
+	InvalidElements []string `json:"invalid_elements"`
+	Missing         bool     `json:"missing"`
+	Multiple        bool     `json:"multiple"`
+}
+
+// CustomResult is one custom search / extraction / JS value, keyed by the
+// configured name. Kind is search | extraction | js. Sorted by (kind, name).
+type CustomResult struct {
+	Kind  string `json:"kind"`
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // Link is one edge nested under its source page. It carries the EVIDENCE a
@@ -181,11 +319,18 @@ type Page struct {
 // is content or boilerplate is a tuned judgement over a corpus, and a verdict
 // baked into an export is a verdict that needs a re-crawl to change.
 type Link struct {
-	URL      string `json:"url"`
-	Anchor   string `json:"anchor"`
+	URL string `json:"url"`
+	// Raw is the href exactly as written, before resolution and normalisation.
+	Raw    string `json:"raw"`
+	Anchor string `json:"anchor"`
+	// Alt, Width and Height belong to image links and Lang to hreflang links;
+	// like Origin they are omitted where the link type cannot carry them.
+	Alt      string `json:"alt,omitempty"`
 	Rel      string `json:"rel"`
+	Target   string `json:"target"`
 	Nofollow bool   `json:"nofollow"`
 	Type     string `json:"type"`
+	PathType string `json:"path_type"`
 	Position string `json:"position"`
 	// ElemPath is the pure-positional SF link path; PositionPath is the
 	// id/class-annotated chain the position rules matched. Both are empty when
@@ -193,16 +338,36 @@ type Link struct {
 	// on crawls made before it was retained.
 	ElemPath     string `json:"elem_path"`
 	PositionPath string `json:"position_path"`
+	Lang         string `json:"lang,omitempty"`
+	Width        string `json:"width,omitempty"`
+	Height       string `json:"height,omitempty"`
 	// Origin is the JS-rendering provenance (html | rendered | xhr); absent on a
 	// crawl that did not render.
 	Origin string `json:"origin,omitempty"`
 }
 
-// pageColumns is the single row shape the count and the stream agree on.
+// Blob kinds as the crawler's BlobSink names them.
+const (
+	blobHTML         = "html"
+	blobRenderedHTML = "rendered_html"
+)
+
+// pageColumns is the single row shape the stream decodes. The custom results
+// and the two blob paths are correlated subqueries rather than per-page
+// round trips, so the whole crawl is still ONE cursor: custom_results is
+// aggregated into a JSON array (sorted on decode — SQLite does not promise an
+// aggregate's order), and each blobs lookup is a primary-key probe.
 const pageColumns = `url, scope, state, COALESCE(depth, ?), status_code, status,
 	content_type, COALESCE(http_version, ''), response_time_ms, size, fetch_error,
 	redirect_url, redirect_type, indexable, indexability_status,
-	headers, structured, facts`
+	matched_robots_line, COALESCE(proxy, ''),
+	inlinks, unique_inlinks, unique_outlinks, link_score, COALESCE(discovered_from, ''), outside_start_folder,
+	COALESCE(duplicate_of, ''), closest_similarity, near_dup_count,
+	headers, structured, jsdiff, facts,
+	COALESCE((SELECT json_group_array(json_object('kind', kind, 'name', name, 'value', value))
+		FROM custom_results WHERE custom_results.url = pages.url), '[]'),
+	COALESCE((SELECT path FROM blobs WHERE blobs.url = pages.url AND blobs.kind = '` + blobHTML + `'), ''),
+	COALESCE((SELECT path FROM blobs WHERE blobs.url = pages.url AND blobs.kind = '` + blobRenderedHTML + `'), '')`
 
 // Validate reports whether the scope and link types are ones this bundle can
 // emit. Callers that distinguish a bad request from a failed one (the CLI's
@@ -234,7 +399,11 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	digest, err := configDigest(st)
+	cfgYAML, err := st.Meta("config")
+	if err != nil {
+		return err
+	}
+	stored, err := storedAssets(cfgYAML)
 	if err != nil {
 		return err
 	}
@@ -268,9 +437,9 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 	}
 	bw := bufio.NewWriterSize(out, 64<<10)
 	enc := json.NewEncoder(bw)
-	// Page text and JSON-LD are full of <, > and &. Go escapes those to the
-	// six-byte \u003c form by default, which bloats the stream for no benefit;
-	// the result is valid JSON either way.
+	// Page text, HTML and JSON-LD are full of <, > and &. Go escapes those to
+	// the six-byte < form by default, which bloats the stream for no
+	// benefit; the result is valid JSON either way.
 	enc.SetEscapeHTML(false)
 
 	if err := enc.Encode(Header{
@@ -286,14 +455,17 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 		LinkTypes:        linkTypes,
 		Pages:            pages,
 		StatusCounts:     counts,
+		Stored:           stored,
+		Full:             opts.Full,
 		Crawled:          info.Crawled,
 		Total:            info.Total,
-		ConfigDigest:     digest,
+		ConfigDigest:     configDigest(cfgYAML),
 	}); err != nil {
 		return err
 	}
 
-	if err := streamPages(tx, scope, linkTypes, func(p *Page) error {
+	s := &stream{tx: tx, scope: scope, want: linkTypeSet(linkTypes), full: opts.Full, stored: stored, assetsDir: st.AssetsDir()}
+	if err := s.pages(func(p *Page) error {
 		return enc.Encode(p)
 	}); err != nil {
 		return err
@@ -309,44 +481,59 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 	return nil // the deferred Rollback closes the read-only transaction
 }
 
-// streamPages scans the pages table one row at a time — decode a row, hand it
-// over, let it go. This is the shape store.StreamContentText already uses, and
-// the reason the bundle's peak RAM is one page record rather than the whole
-// crawl. Do not replace it with a LoadPages map.
-func streamPages(tx *sql.Tx, scope string, linkTypes []string, fn func(*Page) error) error {
-	where, args := scopeFilter(scope)
+// stream is one pass over the pages table.
+type stream struct {
+	tx        *sql.Tx
+	scope     string
+	want      map[string]bool // link types to keep; nil keeps every type
+	full      bool            // carry the stored sources Stored says exist
+	stored    Stored
+	assetsDir string
+}
+
+// pages scans the pages table one row at a time — decode a row, hand it over,
+// let it go. This is the shape store.StreamContentText already uses, and the
+// reason the bundle's peak RAM is one page record rather than the whole crawl.
+// Do not replace it with a LoadPages map.
+func (s *stream) pages(fn func(*Page) error) error {
+	where, args := scopeFilter(s.scope)
 	// One placeholder list serves the whole statement, in SQL order: the `?` in
 	// pageColumns' COALESCE(depth, ?) comes before the scope filter's, so
 	// NoDepth is bound first.
 	q := `SELECT ` + pageColumns + ` FROM pages` + where + ` ORDER BY url`
-	rows, err := tx.Query(q, append([]any{crawler.NoDepth}, args...)...)
+	rows, err := s.tx.Query(q, append([]any{crawler.NoDepth}, args...)...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
-	want := linkTypeSet(linkTypes)
 	for rows.Next() {
 		var p Page
-		var depth, indexable int
-		var headersJSON, structuredJSON, factsJSON []byte
+		var depth, indexable, outside int
+		var headersJSON, structuredJSON, jsdiffJSON, factsJSON, customJSON []byte
+		var htmlPath, renderedPath string
 		if err := rows.Scan(&p.URL, &p.Scope, &p.State, &depth, &p.StatusCode, &p.Status,
 			&p.ContentType, &p.HTTPVersion, &p.ResponseTimeMs, &p.Size, &p.FetchError,
 			&p.RedirectURL, &p.RedirectType, &indexable, &p.IndexabilityStatus,
-			&headersJSON, &structuredJSON, &factsJSON); err != nil {
+			&p.MatchedRobotsLine, &p.Proxy,
+			&p.Inlinks, &p.UniqueInlinks, &p.UniqueOutlinks, &p.LinkScore, &p.DiscoveredFrom, &outside,
+			&p.DuplicateOf, &p.ClosestSimilarity, &p.NearDupCount,
+			&headersJSON, &structuredJSON, &jsdiffJSON, &factsJSON, &customJSON,
+			&htmlPath, &renderedPath); err != nil {
 			return err
 		}
 		p.Indexable = indexable == 1
+		p.OutsideStartFolder = outside == 1
 		if depth != crawler.NoDepth {
 			d := depth
 			p.Depth = &d
 		}
+		p.Headers = map[string]string{}
 		if len(headersJSON) > 0 {
-			var headers map[string]string
-			if err := json.Unmarshal(headersJSON, &headers); err != nil {
+			if err := json.Unmarshal(headersJSON, &p.Headers); err != nil {
 				return fmt.Errorf("%s: headers: %w", p.URL, err)
 			}
-			p.LastModified = headerValue(headers, "Last-Modified")
+			p.LastModified = headerValue(p.Headers, "Last-Modified")
 		}
 		if len(structuredJSON) > 0 {
 			p.Structured = &structured.PageData{}
@@ -354,22 +541,49 @@ func streamPages(tx *sql.Tx, scope string, linkTypes []string, fn func(*Page) er
 				return fmt.Errorf("%s: structured: %w", p.URL, err)
 			}
 		}
+		if len(jsdiffJSON) > 0 {
+			p.JSDiff = &crawler.JSDiff{}
+			if err := json.Unmarshal(jsdiffJSON, p.JSDiff); err != nil {
+				return fmt.Errorf("%s: jsdiff: %w", p.URL, err)
+			}
+		}
+		if err := json.Unmarshal(customJSON, &p.CustomResults); err != nil {
+			return fmt.Errorf("%s: custom_results: %w", p.URL, err)
+		}
+		if p.CustomResults == nil {
+			p.CustomResults = []CustomResult{}
+		}
+		slices.SortFunc(p.CustomResults, func(a, b CustomResult) int {
+			if c := strings.Compare(a.Kind, b.Kind); c != 0 {
+				return c
+			}
+			return strings.Compare(a.Name, b.Name)
+		})
 		// Links come from this row's own facts rather than a per-page query
 		// against the links table: same values, no second round trip, and
 		// Facts.Links is in document order where a links-table scan would need an
 		// ordering column it does not have.
+		var f parse.Facts
 		if len(factsJSON) > 0 {
-			var f parse.Facts
 			if err := json.Unmarshal(factsJSON, &f); err != nil {
 				return fmt.Errorf("%s: facts: %w", p.URL, err)
 			}
-			fillFromFacts(&p, &f, want)
-		} else {
-			// Non-HTML (PDFs, images) and every external page have no Facts. These
-			// rows still matter to a consumer — a link to a crawled PDF is a link
-			// to something the crawl found — so they are emitted with the
-			// Facts-derived fields empty rather than filtered out.
-			p.H1, p.MetaRobots, p.XRobotsTag, p.Links = []string{}, []string{}, []string{}, []Link{}
+		}
+		// Non-HTML (PDFs, images) and every external page have no Facts. These
+		// rows still matter to a consumer — a link to a crawled PDF is a link to
+		// something the crawl found — so they are emitted with the Facts-derived
+		// fields empty rather than filtered out; fillFromFacts over the zero
+		// Facts keeps every array an array.
+		fillFromFacts(&p, &f, s.want)
+		if s.full && s.stored.HTML {
+			if p.HTML, err = s.readBlob(p.URL, blobHTML, htmlPath); err != nil {
+				return err
+			}
+		}
+		if s.full && s.stored.RenderedHTML {
+			if p.RenderedHTML, err = s.readBlob(p.URL, blobRenderedHTML, renderedPath); err != nil {
+				return err
+			}
 		}
 		if err := fn(&p); err != nil {
 			return err
@@ -378,17 +592,64 @@ func streamPages(tx *sql.Tx, scope string, linkTypes []string, fn func(*Page) er
 	return rows.Err()
 }
 
+// readBlob returns one stored page source: "" (never nil) when the page has no
+// blobs row, the file's contents otherwise. The blobs table records the path as
+// it was at crawl time; a store that has moved since still has the file under
+// its own assets dir by name, so that is tried before a missing file is an
+// error — a recorded blob whose file is gone is corruption, not an empty page.
+func (s *stream) readBlob(url, kind, path string) (*string, error) {
+	if path == "" {
+		return new(string), nil
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		data, err = os.ReadFile(filepath.Join(s.assetsDir, filepath.Base(path)))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: stored %s: %w", url, kind, err)
+	}
+	str := string(data)
+	return &str, nil
+}
+
 func fillFromFacts(p *Page, f *parse.Facts, want map[string]bool) {
 	p.Title = first(f.Titles)
 	p.MetaDescription = first(f.Descriptions)
+	p.MetaKeywords = nonNil(f.Keywords)
 	p.H1 = nonNil(f.H1s)
-	p.Canonical = first(f.CanonicalHTML)
-	if p.Canonical == "" {
-		p.Canonical = first(f.CanonicalHTTP)
+	p.H2 = nonNil(f.H2s)
+	p.HeadingLevels = f.HeadingLevels
+	if p.HeadingLevels == nil {
+		p.HeadingLevels = []int{}
 	}
+	p.Canonical = firstOf(f.CanonicalHTML, f.CanonicalHTTP)
+	p.RelNext = firstOf(f.NextHTML, f.NextHTTP)
+	p.RelPrev = firstOf(f.PrevHTML, f.PrevHTTP)
 	p.MetaRobots = nonNil(f.MetaRobots)
 	p.XRobotsTag = nonNil(f.XRobotsTag)
+	p.MetaRefresh = f.MetaRefresh
+	p.MetaRefreshURL = f.MetaRefreshURL
+	p.Lang = f.Lang
+	p.IsAMP = f.IsAMP
+	p.Hreflang = make([]Hreflang, 0, len(f.HreflangHTML)+len(f.HreflangHTTP))
+	for _, h := range f.HreflangHTML {
+		p.Hreflang = append(p.Hreflang, Hreflang{Lang: h.Lang, URL: h.URL, Source: "html"})
+	}
+	for _, h := range f.HreflangHTTP {
+		p.Hreflang = append(p.Hreflang, Hreflang{Lang: h.Lang, URL: h.URL, Source: "http"})
+	}
+	p.AMPLinks = nonNil(f.AMPLinks)
+	p.MobileAlternates = nonNil(f.MobileAlternates)
+	p.Head = HeadValidity{
+		InvalidElements: nonNil(f.Head.InvalidElementsInHead),
+		Missing:         f.Head.MissingHead,
+		Multiple:        f.Head.MultipleHead,
+	}
 	p.WordCount = f.WordCount
+	p.TextRatio = f.TextRatio
+	p.AvgWordsPerSentence = f.AvgWordsPerSentence
+	p.Flesch = f.Flesch
+	p.ContentHash = f.Hash
 	p.ContentText = f.ContentText
 
 	p.Links = []Link{}
@@ -397,11 +658,26 @@ func fillFromFacts(p *Page, f *parse.Facts, want map[string]bool) {
 			continue
 		}
 		p.Links = append(p.Links, Link{
-			URL: l.URL, Anchor: l.Anchor, Rel: l.Rel, Nofollow: l.Nofollow,
-			Type: string(l.Type), Position: l.Position,
-			ElemPath: l.ElemPath, PositionPath: l.PositionPath, Origin: l.Origin,
+			URL: l.URL, Raw: l.Raw, Anchor: l.Anchor, Alt: l.Alt, Rel: l.Rel, Target: l.Target,
+			Nofollow: l.Nofollow, Type: string(l.Type), PathType: l.PathType, Position: l.Position,
+			ElemPath: l.ElemPath, PositionPath: l.PositionPath,
+			Lang: l.Lang, Width: l.Width, Height: l.Height, Origin: l.Origin,
 		})
 	}
+}
+
+// storedAssets reads which page assets the crawl kept from its frozen config —
+// the same bytes the digest hashes, decoded the way resume decodes them. The
+// config decides, not the files: see Header.Stored.
+func storedAssets(cfgYAML string) (Stored, error) {
+	cfg, err := config.Load([]byte(cfgYAML))
+	if err != nil {
+		return Stored{}, fmt.Errorf("frozen config: %w", err)
+	}
+	return Stored{
+		HTML:         cfg.Extraction.StoreHTML,
+		RenderedHTML: cfg.Extraction.StoreRenderedHTML && cfg.Rendering.Mode == "javascript",
+	}, nil
 }
 
 // scopeFilter renders the page predicate for a scope. "all" filters nothing.
@@ -470,13 +746,9 @@ func normalizeLinkTypes(types []string) ([]string, error) {
 // configDigest hashes the crawl's frozen config YAML. The exact bytes are
 // frozen at crawl start and never rewritten, so the digest is stable for the
 // life of the crawl and comparable across crawls.
-func configDigest(st *store.Crawl) (string, error) {
-	cfg, err := st.Meta("config")
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256([]byte(cfg))
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
+func configDigest(cfgYAML string) string {
+	sum := sha256.Sum256([]byte(cfgYAML))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // headerValue looks a response header up case-insensitively: the stored keys
@@ -515,4 +787,12 @@ func first(values []string) string {
 		return values[0]
 	}
 	return ""
+}
+
+// firstOf is the canonicals-tab rule: the HTML value, else the HTTP header's.
+func firstOf(fromHTML, fromHTTP []string) string {
+	if v := first(fromHTML); v != "" {
+		return v
+	}
+	return first(fromHTTP)
 }
