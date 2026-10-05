@@ -31,7 +31,10 @@ func mkStoredCrawl(t *testing.T, dir, seed string, mutate func(*config.Config)) 
 // values elsewhere) and emit no override, so the selected base (last crawl
 // setup, app settings, or a profile) shows through unmangled.
 func TestStartRequestUntouchedKnobs(t *testing.T) {
-	spec := StartRequest{Mode: "spider", URL: "https://ex.com", ConfigSource: "last", Rate: -1}.toSpec()
+	spec, err := StartRequest{Mode: "spider", URL: "https://ex.com", ConfigSource: "last", Rate: -1}.toSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if spec.ConfigSource != "last" {
 		t.Errorf("configSource lost in toSpec: %q", spec.ConfigSource)
 	}
@@ -40,7 +43,9 @@ func TestStartRequestUntouchedKnobs(t *testing.T) {
 	}
 
 	// touched knobs still override absolutely — including rate 0 (= unlimited)
-	spec = StartRequest{Mode: "spider", URL: "https://ex.com", Rate: 0, Threads: 2}.toSpec()
+	if spec, err = (StartRequest{Mode: "spider", URL: "https://ex.com", Rate: 0, Threads: 2}).toSpec(); err != nil {
+		t.Fatal(err)
+	}
 	if got := spec.Config["speed.max_urls_per_sec"]; got != float64(0) {
 		t.Errorf("rate 0 must stay an explicit unlimited override, got %v", got)
 	}

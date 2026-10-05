@@ -158,21 +158,70 @@ func BuildConfig(storeDir string, spec queue.JobSpec) (*config.Config, error) {
 			cfg.Robots.Mode = "ignore"
 		}
 	}
-	for key, value := range spec.Config {
-		// JSON is valid YAML, so encode each value as JSON and reuse the config
-		// schema's typed Set (same path as the CLI's --set).
-		enc, err := json.Marshal(value)
-		if err != nil {
-			return nil, fmt.Errorf("config[%s]: %w", key, err)
-		}
-		if err := cfg.Set(key + "=" + string(enc)); err != nil {
-			return nil, err
-		}
+	if err := ApplyOverrides(cfg, spec.Config); err != nil {
+		return nil, err
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// ApplyOverrides layers dotted-path config overrides onto cfg. JSON is valid
+// YAML, so each value is encoded as JSON and set through the config schema's
+// typed Set — the path the CLI's --set takes. Keys apply in sorted order, so
+// overlapping paths resolve the same way every time.
+func ApplyOverrides(cfg *config.Config, overrides map[string]any) error {
+	keys := make([]string, 0, len(overrides))
+	for key := range overrides {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		enc, err := json.Marshal(overrides[key])
+		if err != nil {
+			return fmt.Errorf("config[%s]: %w", key, err)
+		}
+		if err := cfg.Set(key + "=" + string(enc)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Site-checks choices: the per-crawl selector the desktop's setup card (New
+// Crawl and "Crawl all") and `crawl --site-checks` share.
+const (
+	SiteChecksAuto = "auto" // the site_checks.enabled heuristic: full-domain crawls only
+	SiteChecksAll  = "all"  // every check, on any crawl
+	SiteChecksOff  = "off"  // no checks
+)
+
+// SiteChecksOverrides maps a per-crawl site-checks choice onto dotted-path
+// config overrides. It is the one mapping every surface uses — the desktop
+// emits the overrides into its job spec, the CLI applies them to its config —
+// so the two cannot drift. "all" sets every check as well as the gate:
+// forcing the gate alone would leave which checks run to the base config, and
+// "all" would mean something different over every base. The registry edits a
+// base carries (ai_bots.bots, ai_bots.skip) are left alone; auto and off move
+// only the gate.
+func SiteChecksOverrides(choice string) (map[string]any, error) {
+	switch choice {
+	case SiteChecksAuto:
+		return map[string]any{"site_checks.enabled": "auto"}, nil
+	case SiteChecksAll:
+		return map[string]any{
+			"site_checks.enabled":            "always",
+			"site_checks.robots":             true,
+			"site_checks.sitemap":            true,
+			"site_checks.ai_bots.check":      true,
+			"site_checks.ai_bots.live_probe": true,
+			"site_checks.render_diff":        true,
+		}, nil
+	case SiteChecksOff:
+		return map[string]any{"site_checks.enabled": "never"}, nil
+	}
+	return nil, fmt.Errorf("unknown site checks %q (%s, %s or %s)", choice, SiteChecksAuto, SiteChecksAll, SiteChecksOff)
 }
 
 // FreezeSpec validates a job spec for enqueue and freezes its effective config

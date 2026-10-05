@@ -59,7 +59,10 @@ func (a *ProjectApp) CrawlAll(projectID string, req StartRequest) (int, error) {
 	for _, m := range members {
 		// members are always spider crawls of their domain root; only the
 		// request's setup source, profile and touched knobs carry over
-		spec := req.toSpec()
+		spec, err := req.toSpec()
+		if err != nil {
+			return 0, err
+		}
 		spec.Mode, spec.URLs, spec.SitemapURL = "", nil, ""
 		spec.URL = "https://" + m.Domain
 		frozen, err := runner.FreezeSpec(a.storeDir, spec)

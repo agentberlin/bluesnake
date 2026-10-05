@@ -8,6 +8,7 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/runner"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
@@ -192,29 +193,45 @@ func TestOverviewSiteHealth(t *testing.T) {
 
 // The New Crawl form's site-checks selector is absolute like every other
 // quick-config field: Auto/All/Off each freeze an explicit override into the
-// crawl; only non-form callers (empty value) defer to the profile. "All"
-// forces the whole family on, render diff included.
+// crawl; only non-form callers (empty value) defer to the profile. The values
+// map through runner.SiteChecksOverrides — the one mapping `crawl
+// --site-checks` uses too — so the form and the CLI cannot drift; "All"
+// forces the whole family on, render diff and live probes included.
 func TestStartRequestSiteChecks(t *testing.T) {
-	cases := []struct {
-		in         string
-		enabled    any
-		renderDiff any
-	}{
-		{"auto", "auto", nil},
-		{"all", "always", true},
-		{"off", "never", nil},
-		{"", nil, nil},
-	}
-	for _, tt := range cases {
-		spec := StartRequest{Mode: "spider", URL: "https://ex.com", SiteChecks: tt.in}.toSpec()
-		if got := spec.Config["site_checks.enabled"]; got != tt.enabled {
-			t.Errorf("%q: enabled override = %v, want %v", tt.in, got, tt.enabled)
+	for _, choice := range []string{runner.SiteChecksAuto, runner.SiteChecksAll, runner.SiteChecksOff} {
+		spec, err := StartRequest{Mode: "spider", URL: "https://ex.com", SiteChecks: choice}.toSpec()
+		if err != nil {
+			t.Fatalf("%q: %v", choice, err)
 		}
-		if got := spec.Config["site_checks.render_diff"]; got != tt.renderDiff {
-			t.Errorf("%q: render_diff override = %v, want %v", tt.in, got, tt.renderDiff)
+		want, err := runner.SiteChecksOverrides(choice)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for key, value := range want {
+			if got := spec.Config[key]; got != value {
+				t.Errorf("%q: %s = %v, want %v", choice, key, got, value)
+			}
 		}
 	}
-	// a mistyped value flows into config validation and is rejected at enqueue
+	all, err := StartRequest{Mode: "spider", URL: "https://ex.com", SiteChecks: "all"}.toSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"site_checks.enabled", "site_checks.ai_bots.live_probe", "site_checks.render_diff"} {
+		if all.Config[key] == nil {
+			t.Errorf("all: no %s override — all must not depend on the base's defaults", key)
+		}
+	}
+	untouched, err := StartRequest{Mode: "spider", URL: "https://ex.com"}.toSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key := range untouched.Config {
+		if strings.HasPrefix(key, "site_checks.") {
+			t.Errorf("an untouched selector emitted %s", key)
+		}
+	}
+	// a mistyped value is rejected at enqueue, naming the three choices
 	a := testApp(t)
 	if _, err := a.StartCrawl(StartRequest{Mode: "spider", URL: "https://ex.com", SiteChecks: "nonsense"}); err == nil {
 		t.Error("invalid site-checks value accepted")
