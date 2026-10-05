@@ -104,8 +104,11 @@ func TestMigrationAddsLastmodToAnExistingDatabase(t *testing.T) {
 	}
 	defer db.Close()
 	// A crawl DB as it looked at v7: sitemap_entries without lastmod. Only the
-	// steps above v7 run, and v8 ALTERs this table alone.
+	// steps above v7 run: v8 ALTERs this table, and v9 rewrites pages' facts.
 	if _, err := db.Exec(`CREATE TABLE sitemap_entries(sitemap TEXT, url TEXT, PRIMARY KEY(sitemap, url))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE pages(url TEXT PRIMARY KEY, facts JSON)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO sitemap_entries(sitemap, url) VALUES(?, ?)`,
@@ -131,8 +134,8 @@ func TestMigrationAddsLastmodToAnExistingDatabase(t *testing.T) {
 		t.Error("legacy row gained a lastmod it was never given")
 	}
 	var v int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil || v != 8 {
-		t.Errorf("user_version = %d (err %v), want 8", v, err)
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil || v != 9 {
+		t.Errorf("user_version = %d (err %v), want 9", v, err)
 	}
 	if err := upgrade(db, crawlMigrations, minCrawlVersion, false); err != nil {
 		t.Errorf("re-upgrade: %v", err)

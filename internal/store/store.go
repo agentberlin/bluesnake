@@ -448,7 +448,7 @@ type migration struct {
 // of existing tables. Every step through v5 was retired once all installs had
 // reached v5 (DESIGN.md §5.3 "Retiring a migration"), and the minCrawlVersion
 // floor below refuses anything older, so the live steps start at {6}. Append the
-// next schema change as {9, …}; its apply func can reuse addColumn/columnExists.
+// next schema change as {10, …}; its apply func can reuse addColumn/columnExists.
 var crawlMigrations = []migration{
 	{6, "pages.proxy", func(tx *sql.Tx) error {
 		// Which egress fetched each page. Without it, a crawl that a WAF
@@ -468,6 +468,7 @@ var crawlMigrations = []migration{
 		// fills it in (SitemapEntry).
 		return addColumn(tx, "sitemap_entries", "lastmod TEXT")
 	}},
+	{9, "facts.headings", migrateHeadings},
 }
 
 // registryMigrations is the ladder for the single shared registry DB. Same
