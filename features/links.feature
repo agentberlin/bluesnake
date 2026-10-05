@@ -127,6 +127,38 @@ Feature: Link extraction
     And the page is re-parsed
     Then the page has 3 links of type "image"
 
+  # A <picture>'s <source> names its image in srcset, and has no alt of its
+  # own: the picture's alternative text is its <img>'s.
+  Scenario: Picture sources yield their srcset candidates, with their img's alt
+    Given a page at URL "https://ex.com/s" with HTML:
+      """
+      <html><body><picture>
+        <source type="image/webp" srcset="/cat.webp 1x, /cat@2x.webp 2x">
+        <img src="/cat.jpg" alt="A cat">
+      </picture></body></html>
+      """
+    Then the page has 1 links of type "image"
+    Given the parse config override "advanced.extract_srcset=true"
+    And the page is re-parsed
+    Then the page has 3 links of type "image"
+    And a link of type "image" to "https://ex.com/cat@2x.webp" exists
+    And the link to "https://ex.com/cat@2x.webp" has alt "A cat"
+
+  # Consent managers defer an embed by parking its URL in data-src and
+  # leaving src empty or about:blank. A real src always wins.
+  Scenario: A deferred iframe is read from data-src, with its title
+    Given a page at URL "https://ex.com/v" with HTML:
+      """
+      <html><body>
+        <iframe src="about:blank" data-src="https://www.youtube.com/embed/abc" title="How to crawl a site"></iframe>
+        <iframe src="/live" data-src="/deferred"></iframe>
+      </body></html>
+      """
+    Then a link of type "iframe" to "https://www.youtube.com/embed/abc" exists
+    And the link to "https://www.youtube.com/embed/abc" has title "How to crawl a site"
+    And a link of type "iframe" to "https://ex.com/live" exists
+    And the page has 2 links of type "iframe"
+
   Scenario: AMP links are extracted
     Given a page at URL "https://ex.com/article" with HTML:
       """

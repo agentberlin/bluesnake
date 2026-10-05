@@ -59,6 +59,8 @@ func (w *world) registerParseSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the link to "([^"]*)" has path type "([^"]*)"$`, w.checkLinkPathType)
 	sc.Step(`^the link to "([^"]*)" has target "([^"]*)"$`, w.checkLinkTarget)
 	sc.Step(`^the link to "([^"]*)" has rel "([^"]*)"$`, w.checkLinkRel)
+	sc.Step(`^the link to "([^"]*)" has alt "([^"]*)"$`, w.checkLinkAlt)
+	sc.Step(`^the link to "([^"]*)" has title "([^"]*)"$`, w.checkLinkTitle)
 	sc.Step(`^the page has (\d+) links? of type "([^"]*)"$`, w.checkLinkTypeCount)
 }
 
@@ -436,6 +438,28 @@ func (w *world) checkLinkRel(url, want string) error {
 	}
 	if l.Rel != want {
 		return fmt.Errorf("rel = %q, want %q", l.Rel, want)
+	}
+	return nil
+}
+
+func (w *world) checkLinkAlt(url, want string) error {
+	l, err := w.mustFindLink(url)
+	if err != nil {
+		return err
+	}
+	if l.Alt != want {
+		return fmt.Errorf("alt = %q, want %q", l.Alt, want)
+	}
+	return nil
+}
+
+func (w *world) checkLinkTitle(url, want string) error {
+	l, err := w.mustFindLink(url)
+	if err != nil {
+		return err
+	}
+	if l.Title != want {
+		return fmt.Errorf("title = %q, want %q", l.Title, want)
 	}
 	return nil
 }
