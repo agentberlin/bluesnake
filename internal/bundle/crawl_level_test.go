@@ -1,12 +1,14 @@
 package bundle
 
 // Crawl-level stored data — the site-check reports and the llms.txt audit —
-// rides in the header, and each page carries the sitemap entries that list it.
-// Each is a stored value the crawl already kept, so the bundle's completeness
-// rule (an omission is a bug) covers it.
+// rides on lines of its own between the header and the pages, counted in the
+// header, and each page carries the sitemap entries that list it. Each is a
+// stored value the crawl already kept, so the bundle's completeness rule (an
+// omission is a bug) covers it.
 
 import (
 	"encoding/json"
+	"io"
 	"reflect"
 	"slices"
 	"strings"
@@ -36,16 +38,23 @@ func storedCrawl(t *testing.T) *store.Crawl {
 	return c
 }
 
-// rawHeader returns the bundle's first line, as a consumer reads it off the wire.
-func rawHeader(raw []byte) string {
-	line, _, _ := strings.Cut(string(raw), "\n")
-	return line
+// rawLines splits a bundle into its lines, as a consumer reads them off the wire.
+func rawLines(raw []byte) []string {
+	return strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 }
 
-// Every report kind the site-check pass stores comes back out of the header
-// exactly as stored: written through the sink, bundled, then decoded into the
-// check's own report type and compared with what went in.
-func TestHeaderCarriesEachSiteCheckReportVerbatim(t *testing.T) {
+// crawlLevelOf bundles a crawl and returns its header and crawl-level records.
+func crawlLevelOf(t *testing.T, st *store.Crawl, info store.Info) (Header, []SiteCheck, []LlmsTxt, []byte) {
+	t.Helper()
+	_, _, raw := bundleOf(t, st, info, Options{})
+	h, checks, files, _ := splitBundle(t, raw)
+	return h, checks, files, raw
+}
+
+// Every report kind the site-check pass stores comes back out on a line of its
+// own exactly as stored: written through the sink, bundled, then decoded into
+// the check's own report type and compared with what went in.
+func TestSiteCheckRecordCarriesEachReportVerbatim(t *testing.T) {
 	for _, tt := range []struct {
 		kind, subject string
 		report        any
@@ -86,11 +95,16 @@ func TestHeaderCarriesEachSiteCheckReportVerbatim(t *testing.T) {
 			if err := c.SiteCheck(crawler.SiteCheckRecord{Kind: tt.kind, Subject: tt.subject, Report: data}); err != nil {
 				t.Fatal(err)
 			}
-			h, _, _ := bundleOf(t, c, store.Info{ID: c.ID}, Options{})
-			if len(h.SiteChecks) != 1 {
-				t.Fatalf("site_checks = %+v, want the one stored report", h.SiteChecks)
+			h, checks, _, raw := crawlLevelOf(t, c, store.Info{ID: c.ID})
+			if h.SiteChecks != 1 || len(checks) != 1 {
+				t.Fatalf("header counts %d site checks, records %+v; want the one stored report", h.SiteChecks, checks)
 			}
-			got := h.SiteChecks[0]
+			// The line names its kind first, so a reader can tell it from a page
+			// before decoding the rest.
+			if want := `{"record":"site_check","kind":"` + tt.kind + `",`; !strings.HasPrefix(rawLines(raw)[1], want) {
+				t.Errorf("line 2 = %.80s…, want it to start %s", rawLines(raw)[1], want)
+			}
+			got := checks[0]
 			if got.Kind != tt.kind || got.Subject != tt.subject {
 				t.Errorf("site check = %s %s, want %s %s", got.Kind, got.Subject, tt.kind, tt.subject)
 			}
@@ -113,10 +127,10 @@ func TestHeaderCarriesEachSiteCheckReportVerbatim(t *testing.T) {
 // fetching it again. A real crawl here, not a hand-stored row.
 func TestCrawledRobotsReportCarriesTheFileBody(t *testing.T) {
 	st, info := crawledFixture(t, nil)
-	h, _, _ := bundleOf(t, st, info, Options{})
+	_, checks, _, _ := crawlLevelOf(t, st, info)
 	var kinds []string
 	var robots *sitecheck.RobotsReport
-	for _, sc := range h.SiteChecks {
+	for _, sc := range checks {
 		kinds = append(kinds, sc.Kind)
 		if sc.Kind == sitecheck.KindRobots {
 			robots = &sitecheck.RobotsReport{}
@@ -138,7 +152,7 @@ func TestCrawledRobotsReportCarriesTheFileBody(t *testing.T) {
 
 // Sorted by kind, then subject, so two bundles of one crawl stay
 // byte-identical whatever order the pass stored its reports in.
-func TestHeaderSiteChecksSortByKindThenSubject(t *testing.T) {
+func TestSiteCheckRecordsSortByKindThenSubject(t *testing.T) {
 	c := storedCrawl(t)
 	for _, r := range []crawler.SiteCheckRecord{
 		{Kind: "sitemap", Subject: "https://b.test", Report: []byte(`{}`)},
@@ -150,9 +164,9 @@ func TestHeaderSiteChecksSortByKindThenSubject(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	h, _, _ := bundleOf(t, c, store.Info{ID: c.ID}, Options{})
+	_, checks, _, _ := crawlLevelOf(t, c, store.Info{ID: c.ID})
 	var got []string
-	for _, sc := range h.SiteChecks {
+	for _, sc := range checks {
 		got = append(got, sc.Kind+" "+sc.Subject)
 	}
 	want := []string{"ai_bots https://ex.test/", "robots https://ex.test/robots.txt",
@@ -162,25 +176,98 @@ func TestHeaderSiteChecksSortByKindThenSubject(t *testing.T) {
 	}
 }
 
+// The site checks come first, then the llms.txt files, then the pages — every
+// crawl-level record a few lines in, so a reader after only those stops early
+// and a reader after only the pages skips a counted number of lines.
+func TestCrawlLevelRecordsFollowTheHeaderBeforeThePages(t *testing.T) {
+	c := storedCrawl(t)
+	for _, r := range []crawler.SiteCheckRecord{
+		{Kind: "sitemap", Subject: "https://ex.test", Report: []byte(`{}`)},
+		{Kind: "robots", Subject: "https://ex.test/robots.txt", Report: []byte(`{}`)},
+	} {
+		if err := c.SiteCheck(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, u := range []string{"https://ex.test/llms.txt", "https://ex.test/llms-full.txt"} {
+		if err := c.LlmsTxtFile(crawler.LlmsTxtRecord{URL: u, Kind: "llms_txt"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, _, _, raw := crawlLevelOf(t, c, store.Info{ID: c.ID})
+	if h.SiteChecks != 2 || h.LlmsTxt != 2 || h.Pages != 1 {
+		t.Fatalf("header counts %d site checks, %d llms.txt files, %d pages; want 2, 2, 1", h.SiteChecks, h.LlmsTxt, h.Pages)
+	}
+	var got []string
+	for _, line := range rawLines(raw)[1:] {
+		var rec struct{ Record, Kind, Subject, URL string }
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, strings.TrimSpace(rec.Record+" "+rec.Kind+" "+rec.Subject+rec.URL))
+	}
+	want := []string{
+		"site_check robots https://ex.test/robots.txt",
+		"site_check sitemap https://ex.test",
+		"llms_txt llms_txt https://ex.test/llms-full.txt",
+		"llms_txt llms_txt https://ex.test/llms.txt",
+		"https://ex.test/", // a page names no record kind
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("lines after the header:\n got %q\nwant %q", got, want)
+	}
+}
+
 // A row exists exactly when a check ran, so a crawl that ran none — and
-// fetched no llms.txt — carries empty arrays, never null or a missing key.
-func TestHeaderCarriesEmptyArraysWhenNothingRan(t *testing.T) {
+// fetched no llms.txt — counts 0 of each, and its pages follow the header.
+func TestNothingRanCountsZeroAndGoesStraightToThePages(t *testing.T) {
 	st, info := crawledFixture(t, func(c *config.Config) {
 		c.SiteChecks.Enabled = "never"
 		c.LlmsTxt.Check = false
 	})
 	_, _, raw := bundleOf(t, st, info, Options{})
-	line := rawHeader(raw)
-	for _, want := range []string{`"site_checks":[]`, `"llms_txt":[]`} {
-		if !strings.Contains(line, want) {
-			t.Errorf("header does not contain %s:\n%s", want, line)
+	lines := rawLines(raw)
+	for _, want := range []string{`"site_checks":0`, `"llms_txt":0`} {
+		if !strings.Contains(lines[0], want) {
+			t.Errorf("header does not contain %s:\n%s", want, lines[0])
 		}
+	}
+	if !strings.HasPrefix(lines[1], `{"url":`) {
+		t.Errorf("line 2 is not a page:\n%.200s", lines[1])
+	}
+}
+
+// Line 1 stays cheap to read whatever the crawl-level data weighs: the bodies
+// it used to carry are on their own lines, and the header only counts them.
+func TestHeaderStaysSmallBesideLargeCrawlLevelData(t *testing.T) {
+	c := storedCrawl(t)
+	robots, err := json.Marshal(&sitecheck.RobotsReport{
+		URL: "https://ex.test/robots.txt", Status: 200, Found: true,
+		Body: strings.Repeat("Disallow: /private\n", 500<<10/19), // ~500 KiB, the cap
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SiteCheck(crawler.SiteCheckRecord{Kind: sitecheck.KindRobots, Subject: "https://ex.test/robots.txt", Report: robots}); err != nil {
+		t.Fatal(err)
+	}
+	full := strings.Repeat("All the docs, inlined. ", 1<<20/23) // ~1 MiB
+	if err := c.LlmsTxtFile(crawler.LlmsTxtRecord{URL: "https://ex.test/llms-full.txt", Kind: "llms_full_txt",
+		Status: 200, Found: true, Content: []byte(full)}); err != nil {
+		t.Fatal(err)
+	}
+	h, checks, files, raw := crawlLevelOf(t, c, store.Info{ID: c.ID})
+	if header := rawLines(raw)[0]; len(header) > 4<<10 {
+		t.Errorf("header is %d bytes, want a few KB at most:\n%.300s…", len(header), header)
+	}
+	if h.SiteChecks != 1 || h.LlmsTxt != 1 || len(checks) != 1 || len(files) != 1 || files[0].Content != full {
+		t.Errorf("records = %d site checks, %d llms.txt files; want both whole on their own lines", len(checks), len(files))
 	}
 }
 
 // The llms.txt audit's files come out with every stored column, the raw body
 // included, and each file nests the curated links it listed.
-func TestHeaderCarriesTheLlmsTxtFilesAndTheirLinks(t *testing.T) {
+func TestLlmsTxtRecordsCarryTheFilesAndTheirLinks(t *testing.T) {
 	c := storedCrawl(t)
 	body := "# Ex\n\n> The example site.\n\n## Docs\n\n- [Guide](/guide): how to\n- [API](/api)\n"
 	for _, rec := range []crawler.LlmsTxtRecord{
@@ -201,19 +288,19 @@ func TestHeaderCarriesTheLlmsTxtFilesAndTheirLinks(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	h, _, _ := bundleOf(t, c, store.Info{ID: c.ID}, Options{})
+	_, _, files, _ := crawlLevelOf(t, c, store.Info{ID: c.ID})
 	want := []LlmsTxt{
 		// Sorted by URL: llms-full.txt before llms.txt.
-		{URL: "https://ex.test/llms-full.txt", Kind: "llms_full_txt", Status: 404,
+		{Record: RecordLlmsTxt, URL: "https://ex.test/llms-full.txt", Kind: "llms_full_txt", Status: 404,
 			Content: "not found", Links: []LlmsTxtLink{}},
-		{URL: "https://ex.test/llms.txt", Kind: "llms_txt", Status: 200, Found: true,
+		{Record: RecordLlmsTxt, URL: "https://ex.test/llms.txt", Kind: "llms_txt", Status: 200, Found: true,
 			Title: "Ex", Summary: "The example site.", Content: body, Links: []LlmsTxtLink{
 				{URL: "https://ex.test/api", Section: "Docs", Anchor: "API"},
 				{URL: "https://ex.test/guide", Section: "Docs", Anchor: "Guide"},
 			}},
 	}
-	if !reflect.DeepEqual(h.LlmsTxt, want) {
-		t.Errorf("llms_txt = %+v\nwant %+v", h.LlmsTxt, want)
+	if !reflect.DeepEqual(files, want) {
+		t.Errorf("llms_txt records = %+v\nwant %+v", files, want)
 	}
 }
 
@@ -318,19 +405,15 @@ func fmtBool(b *bool) string {
 }
 
 // A report is carried verbatim, so a stored row that is not JSON fails the
-// bundle naming the row, rather than surfacing as an encoder error mid-stream.
+// bundle naming the row, rather than surfacing as an encoder error.
 func TestCorruptSiteCheckReportFailsNamingTheRow(t *testing.T) {
 	c := storedCrawl(t)
 	if _, err := c.DB().Exec(`INSERT INTO site_checks(kind, subject, report) VALUES(?, ?, ?)`,
 		"robots", "https://ex.test/robots.txt", "{truncated"); err != nil {
 		t.Fatal(err)
 	}
-	var buf strings.Builder
-	err := Write(c, store.Info{ID: c.ID}, Options{}, &buf)
+	err := Write(c, store.Info{ID: c.ID}, Options{}, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "site check robots https://ex.test/robots.txt") {
 		t.Errorf("Write = %v, want an error naming the corrupt report", err)
-	}
-	if buf.Len() != 0 {
-		t.Errorf("a failed bundle wrote %d bytes before failing", buf.Len())
 	}
 }

@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +12,8 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/runner"
+	"github.com/agentberlin/bluesnake/internal/sitecheck"
+	"github.com/agentberlin/bluesnake/internal/store"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -22,6 +26,11 @@ import (
 // watching a terminal (progress_bar.go). stdout is exactly what it is without
 // the flag, so the summary and the "Crawl ID:" line stay where scripts already
 // parse them.
+//
+// `tools aibots` streams its check's progress the same way (`--progress json`
+// only: it has no panel to draw), from the counters the check keeps
+// (sitecheck.AIBotsProgress) rather than an executor's snapshot, in a record
+// of its own.
 
 const (
 	progressNone = "none"
@@ -37,11 +46,13 @@ const (
 	barRedrawInterval = time.Second
 )
 
-// progressOpts are the --progress flags shared by crawl, list and resume.
+// progressOpts are the --progress flags shared by crawl, list, resume and
+// tools aibots.
 type progressOpts struct {
 	mode        string
 	interval    time.Duration
 	intervalSet bool // --progress-interval given explicitly
+	jsonOnly    bool // the command has no bar to draw
 }
 
 func (p *progressOpts) register(cmd *cobra.Command) {
@@ -51,22 +62,35 @@ func (p *progressOpts) register(cmd *cobra.Command) {
 		"how often --progress reports (minimum 1s); a bar on a terminal redraws every second unless this is set")
 }
 
+// registerJSON registers the flags for a command whose progress is JSON Lines
+// only, described by usage; --progress bar is a config error there.
+func (p *progressOpts) registerJSON(cmd *cobra.Command, usage string) {
+	p.jsonOnly = true
+	cmd.Flags().StringVar(&p.mode, "progress", progressNone, usage)
+	cmd.Flags().DurationVar(&p.interval, "progress-interval", defaultProgressInterval,
+		"how often --progress reports (minimum 1s)")
+}
+
 // validate rejects unusable --progress flags before anything runs or prints,
 // as a config error (exit 2).
 func (p *progressOpts) validate(cmd *cobra.Command) error {
+	modes := "bar or json"
+	if p.jsonOnly {
+		modes = "json"
+	}
 	var err error
 	p.intervalSet = cmd.Flags().Changed("progress-interval")
-	switch p.mode {
-	case progressNone:
+	switch {
+	case p.mode == progressNone:
 		if p.intervalSet {
-			err = fmt.Errorf("--progress-interval needs --progress bar or json")
+			err = fmt.Errorf("--progress-interval needs --progress %s", modes)
 		}
-	case progressBar, progressJSON:
+	case p.mode == progressJSON || p.mode == progressBar && !p.jsonOnly:
 		if p.interval < minProgressInterval {
 			err = fmt.Errorf("--progress-interval must be at least %s, got %s", minProgressInterval, p.interval)
 		}
 	default:
-		err = fmt.Errorf("invalid --progress %q (want none, bar or json)", p.mode)
+		err = fmt.Errorf("invalid --progress %q (want none or %s)", p.mode, modes)
 	}
 	if err != nil {
 		return exitErr{2, err}
@@ -165,66 +189,100 @@ type progressOutput interface {
 	write(progressReading)
 }
 
-// progressFeed writes one crawl's progress. The CLI observer drives it from
-// the executor's callbacks (start on OnStart, finish on OnDone); a single feed
-// goroutine does every write, so lines never interleave, and wait lets the
-// command print its summary only after the final reading is out.
-type progressFeed struct {
-	out      progressOutput
+// feedLoop is a progress feed's ticker, shared by the crawl feed and the
+// AI-bot check's: one goroutine writes a reading as soon as the run starts,
+// one per interval, and the final reading, so lines never interleave and
+// nothing is written after the final one; wait lets a command print what
+// comes next only once the final reading is out.
+type feedLoop[R any] struct {
 	interval time.Duration
+	final    chan R        // the terminal reading; buffered so finish never blocks
+	done     chan struct{} // closed once the final reading is written; nil until start
+}
+
+func newFeedLoop[R any](interval time.Duration) feedLoop[R] {
+	return feedLoop[R]{interval: interval, final: make(chan R, 1)}
+}
+
+// start runs the loop: read is taken right away, then once per interval, and
+// each reading it returns ok is written.
+func (l *feedLoop[R]) start(read func() (R, bool), write func(R)) {
+	l.done = make(chan struct{})
+	go l.run(read, write)
+}
+
+func (l *feedLoop[R]) run(read func() (R, bool), write func(R)) {
+	defer close(l.done)
+	tick := func() {
+		if r, ok := read(); ok {
+			write(r)
+		}
+	}
+	tick()
+	t := time.NewTicker(l.interval)
+	defer t.Stop()
+	for {
+		select {
+		case r := <-l.final:
+			write(r)
+			return
+		case <-t.C:
+			// the final reading wins a tie, so nothing is ever written after it
+			select {
+			case r := <-l.final:
+				write(r)
+				return
+			default:
+				tick()
+			}
+		}
+	}
+}
+
+func (l *feedLoop[R]) started() bool { return l.done != nil }
+
+// finish hands the started loop its final reading. It never blocks.
+func (l *feedLoop[R]) finish(r R) { l.final <- r }
+
+// wait blocks until the final reading is written; a no-op when the loop never
+// started.
+func (l *feedLoop[R]) wait() {
+	if l.done != nil {
+		<-l.done
+	}
+}
+
+// progressFeed writes one crawl's progress. The CLI observer drives it from
+// the executor's callbacks (start on OnStart, finish on OnDone).
+type progressFeed struct {
+	loop     feedLoop[progressReading]
+	out      progressOutput
 	snapshot func(crawlID string) (runner.Snapshot, bool)
 	pages    *pageStats // the bar's per-page tallies; nil for JSON
-
-	final chan progressReading // the terminal reading; buffered so finish never blocks
-	done  chan struct{}        // closed once the final reading is written; nil until start
 }
 
 // newProgressFeed returns a feed writing JSON Lines records to w.
 func newProgressFeed(w io.Writer, interval time.Duration, snapshot func(string) (runner.Snapshot, bool)) *progressFeed {
-	return &progressFeed{out: jsonOutput{w}, interval: interval, snapshot: snapshot, final: make(chan progressReading, 1)}
+	return &progressFeed{loop: newFeedLoop[progressReading](interval), out: jsonOutput{w}, snapshot: snapshot}
 }
 
 // start begins the feed for a crawl that has just started: a line right away,
 // so a consumer learns the crawl id without waiting an interval, then one per
 // interval.
 func (f *progressFeed) start(crawlID string) {
-	f.done = make(chan struct{})
-	go f.run(crawlID)
+	f.loop.start(func() (progressReading, bool) { return f.read(crawlID) }, f.out.write)
 }
 
-func (f *progressFeed) run(crawlID string) {
-	defer close(f.done)
-	f.tick(crawlID)
-	t := time.NewTicker(f.interval)
-	defer t.Stop()
-	for {
-		select {
-		case r := <-f.final:
-			f.out.write(r)
-			return
-		case <-t.C:
-			// the final reading wins a tie, so nothing is ever written after it
-			select {
-			case r := <-f.final:
-				f.out.write(r)
-				return
-			default:
-				f.tick(crawlID)
-			}
-		}
-	}
-}
-
-func (f *progressFeed) tick(crawlID string) {
+func (f *progressFeed) read(crawlID string) (progressReading, bool) {
 	s, ok := f.snapshot(crawlID)
 	if !ok {
-		return
+		return progressReading{}, false
 	}
 	state := "running"
 	if s.Finalizing {
 		state = "finalizing"
 	}
-	f.out.write(progressReading{snap: s, state: state})
+	return progressReading{snap: s, state: state}, true
 }
 
 // page hands the feed a page the crawl has processed, for an output that
@@ -241,7 +299,7 @@ func (f *progressFeed) page(rec *crawler.PageRecord) {
 // crawl (it deregisters after OnDone returns), and never blocks, per the
 // Observer contract. A crawl that never started has no feed to finish.
 func (f *progressFeed) finish(out runner.Outcome) {
-	if f.done == nil {
+	if !f.loop.started() {
 		return
 	}
 	s, _ := f.snapshot(out.CrawlID)
@@ -249,32 +307,129 @@ func (f *progressFeed) finish(out runner.Outcome) {
 	if out.Err != nil {
 		r.err = out.Err.Error()
 	}
-	f.final <- r
+	f.loop.finish(r)
 }
 
 // wait blocks until the final line is written; a no-op when the feed never
 // started.
-func (f *progressFeed) wait() {
-	if f.done != nil {
-		<-f.done
-	}
-}
+func (f *progressFeed) wait() { f.loop.wait() }
 
 // jsonOutput writes each reading as a JSON Lines record.
 type jsonOutput struct{ w io.Writer }
 
-// write stamps and emits one record in a single Write, so a line is never
-// split across writes even when stderr is a pipe shared with other output.
-// Only the feed goroutine writes, so the stamps never go backwards.
 func (o jsonOutput) write(r progressReading) {
 	l := newProgressLine(r.snap, r.state)
 	l.Error = r.err
-	l.Time = time.Now().UTC().Format(time.RFC3339)
+	l.Time = progressTime()
+	writeJSONLine(o.w, l)
+}
+
+// progressTime stamps a record as it is written. Only a feed's goroutine
+// writes, so the stamps never go backwards.
+func progressTime() string { return time.Now().UTC().Format(time.RFC3339) }
+
+// writeJSONLine emits one record in a single Write, so a line is never split
+// across writes even when stderr is a pipe shared with other output.
+func writeJSONLine(w io.Writer, record any) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false) // keep URLs readable: & stays &
-	if err := enc.Encode(l); err != nil {
-		return // unreachable: the record is plain strings and numbers
+	if err := enc.Encode(record); err != nil {
+		return // unreachable: a record is plain strings and numbers
 	}
-	o.w.Write(buf.Bytes())
+	w.Write(buf.Bytes())
+}
+
+// aibotsFeed writes `tools aibots` progress: a record when the check starts —
+// once its site and URLs are valid, with the run's size already counted — one
+// per interval, and a final one carrying how the check ended.
+type aibotsFeed struct {
+	loop  feedLoop[aibotsProgressLine]
+	w     io.Writer
+	prog  sitecheck.AIBotsProgress
+	site  string
+	began time.Time
+}
+
+// aibotsProgressLine is one record of the check's feed. It shares the crawl
+// record's names where the meaning is the same and carries none of its crawl
+// fields. The check has nothing to fail once it has started — a bad site or
+// URL list is rejected before the first record — so it has no error field.
+type aibotsProgressLine struct {
+	Type         string `json:"type"`          // always "progress"
+	Time         string `json:"time"`          // RFC 3339, UTC, stamped when written
+	Site         string `json:"site"`          // the site root the check runs against
+	State        string `json:"state"`         // running | completed | interrupted
+	ElapsedSec   int    `json:"elapsed_sec"`   // since the check started
+	PagesTotal   int    `json:"pages_total"`   // after repeats are dropped; 1 for the root check
+	PagesDone    int    `json:"pages_done"`    // control fetch and every probe finished, errors included
+	FetchesTotal int    `json:"fetches_total"` // control + one per fetcher bot, per page; 0 without --live
+	FetchesDone  int    `json:"fetches_done"`  // errors included
+}
+
+// aibotsFeed returns the check's feed, writing to w; nil when progress is off.
+func (p *progressOpts) aibotsFeed(w io.Writer) *aibotsFeed {
+	if p.mode != progressJSON {
+		return nil
+	}
+	f := &aibotsFeed{loop: newFeedLoop[aibotsProgressLine](p.interval), w: w}
+	f.prog.OnStart = f.start
+	return f
+}
+
+// counters returns what the check counts into; nil (count nothing) without a
+// feed.
+func (f *aibotsFeed) counters() *sitecheck.AIBotsProgress {
+	if f == nil {
+		return nil
+	}
+	return &f.prog
+}
+
+// start is the check's OnStart, called once before its first fetch.
+func (f *aibotsFeed) start(site string) {
+	f.site, f.began = site, time.Now()
+	f.loop.start(func() (aibotsProgressLine, bool) { return f.read("running"), true }, f.write)
+}
+
+func (f *aibotsFeed) read(state string) aibotsProgressLine {
+	c := f.prog.Counts()
+	return aibotsProgressLine{
+		Type: "progress", Site: f.site, State: state, ElapsedSec: int(time.Since(f.began).Seconds()),
+		PagesTotal: c.PagesTotal, PagesDone: c.PagesDone, FetchesTotal: c.FetchesTotal, FetchesDone: c.FetchesDone,
+	}
+}
+
+func (f *aibotsFeed) write(l aibotsProgressLine) {
+	l.Time = progressTime()
+	writeJSONLine(f.w, l)
+}
+
+// end writes the final record for a check that has returned and maps how it
+// ended onto the exit codes. A check rejected before it started (a bad site or
+// URL list) is a config error, with no record written. With a feed, a check
+// whose context ended — Ctrl-C — was interrupted (exit 3): its final record
+// says so and its report, made of cut-short fetches, is not written.
+func (f *aibotsFeed) end(ctx context.Context, err error) error {
+	if f != nil && ctx.Err() != nil {
+		f.finish(store.StatusInterrupted)
+		return exitErr{3, errors.New("interrupted")}
+	}
+	if err != nil {
+		return exitErr{2, err}
+	}
+	if f != nil {
+		f.finish(store.StatusCompleted)
+	}
+	return nil
+}
+
+// finish writes the final record and waits for it, so the report the command
+// prints next never lands before it.
+func (f *aibotsFeed) finish(state string) {
+	if !f.loop.started() {
+		return
+	}
+	f.loop.finish(f.read(state))
+	f.loop.wait()
 }

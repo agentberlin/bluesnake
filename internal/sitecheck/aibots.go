@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"sync"
+	"sync/atomic"
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/fetch"
@@ -190,6 +191,74 @@ type AIBotOptions struct {
 	Live  bool     // probe each audited URL once per fetcher bot (plus one control fetch)
 	Extra []Bot    // registry extensions/overrides (matched by Name)
 	Skip  []string // registry names to exclude
+	// Progress, when set, counts the standalone audit's work as it finishes,
+	// for a surface reporting live progress. Nil counts nothing.
+	Progress *AIBotsProgress
+}
+
+// AIBotsProgress is a standalone AI-bot audit's live counters (AIBots and
+// AIBotsURLs; `tools aibots --progress`). Once the audit's URLs are valid it
+// sets the totals and calls OnStart, before its first fetch; then it counts
+// each fetch and each page as it finishes, failed fetches included. A page is
+// done when its control fetch and every probe have finished — without Live,
+// when its robots verdicts are. The robots.txt fetch is not counted. Counts
+// may be read from any goroutine at any time.
+type AIBotsProgress struct {
+	// OnStart, when set, is called once with the site root, the totals in
+	// place, so a first reading already carries the run's size.
+	OnStart func(site string)
+
+	pagesTotal, pagesDone, fetchesTotal, fetchesDone atomic.Int64
+}
+
+// AIBotsCounts is one reading of an audit's progress.
+type AIBotsCounts struct {
+	PagesTotal   int
+	PagesDone    int
+	FetchesTotal int // each page's control fetch plus one per fetcher bot; 0 without Live
+	FetchesDone  int
+}
+
+// Counts reads the counters. Each only grows, so a later reading never shows
+// less done than an earlier one.
+func (p *AIBotsProgress) Counts() AIBotsCounts {
+	return AIBotsCounts{
+		PagesTotal: int(p.pagesTotal.Load()), PagesDone: int(p.pagesDone.Load()),
+		FetchesTotal: int(p.fetchesTotal.Load()), FetchesDone: int(p.fetchesDone.Load()),
+	}
+}
+
+// start sets the totals for pages audited with bots and announces the run.
+func (p *AIBotsProgress) start(site string, pages int, bots []Bot, live bool) {
+	if p == nil {
+		return
+	}
+	perPage := 0
+	if live {
+		perPage = 1 // the control fetch
+		for _, b := range bots {
+			if !b.TokenOnly() {
+				perPage++
+			}
+		}
+	}
+	p.pagesTotal.Store(int64(pages))
+	p.fetchesTotal.Store(int64(pages * perPage))
+	if p.OnStart != nil {
+		p.OnStart(site)
+	}
+}
+
+func (p *AIBotsProgress) fetchDone() {
+	if p != nil {
+		p.fetchesDone.Add(1)
+	}
+}
+
+func (p *AIBotsProgress) pageDone() {
+	if p != nil {
+		p.pagesDone.Add(1)
+	}
 }
 
 // AIBotOptionsFromConfig maps the site_checks.ai_bots config block onto check
@@ -256,6 +325,7 @@ func (c *Checker) AIBots(ctx context.Context, site string, opts AIBotOptions) (*
 	if err != nil {
 		return nil, err
 	}
+	opts.Progress.start(root, 1, assembleBots(opts), opts.Live)
 	rf := FetchRobots(ctx, capped{c}, root)
 	return c.EvaluateAIBots(ctx, root, robots.Parse(rf.Body), rf.Found(), opts), nil
 }
@@ -264,18 +334,21 @@ func (c *Checker) AIBots(ctx context.Context, site string, opts AIBotOptions) (*
 // pass reuses its single fetch; custom robots overrides pass their file).
 // Live probes still fetch the site root.
 func (c *Checker) EvaluateAIBots(ctx context.Context, root string, f *robots.File, robotsFound bool, opts AIBotOptions) *AIBotsReport {
-	rep := auditURL(ctx, capped{c}, f, root+"/", assembleBots(opts), opts.Live)
+	rep := auditURL(ctx, capped{c}, f, root+"/", assembleBots(opts), opts.Live, opts.Progress)
 	rep.Site, rep.RobotsFound = root, robotsFound
 	return rep
 }
 
 // auditURL is the per-URL audit the site check and the URL-list tool share:
 // every bot's robots verdict for u and, when live, one control fetch with
-// the configured User-Agent followed by one probe per fetcher bot.
-func auditURL(ctx context.Context, client Fetcher, f *robots.File, u string, bots []Bot, live bool) *AIBotsReport {
+// the configured User-Agent followed by one probe per fetcher bot. prog, when
+// set, counts each fetch and then the page as they finish.
+func auditURL(ctx context.Context, client Fetcher, f *robots.File, u string, bots []Bot, live bool, prog *AIBotsProgress) *AIBotsReport {
+	defer prog.pageDone()
 	rep := &AIBotsReport{URL: u, Live: live, Caveat: AIBotCaveat}
 	if live {
 		res := client.Fetch(ctx, u)
+		prog.fetchDone()
 		rep.ControlStatus, rep.ControlError = res.StatusCode, res.FetchError
 	}
 	for _, bot := range bots {
@@ -290,6 +363,7 @@ func auditURL(ctx context.Context, client Fetcher, f *robots.File, u string, bot
 		if live && !bot.TokenOnly() {
 			r.Probed = true
 			res := client.FetchWith(ctx, u, fetch.Override{UserAgent: bot.UserAgent})
+			prog.fetchDone()
 			r.LiveStatus, r.LiveError = res.StatusCode, res.FetchError
 			r.BlockedLive = blockedLive(r.BotVerdict, rep.ControlStatus, rep.ControlError)
 		}
@@ -364,10 +438,11 @@ func (c *Checker) AIBotsURLs(ctx context.Context, site string, urls []string, op
 	if err != nil {
 		return nil, err
 	}
+	bots := assembleBots(opts)
+	opts.Progress.start(root, len(pages), bots, opts.Live)
 	client := c.paced()
 	rf := FetchRobots(ctx, client, root)
 	f := robots.Parse(rf.Body)
-	bots := assembleBots(opts)
 	rep := &AIBotsURLsReport{
 		Site: root, Live: opts.Live, Bots: bots, Caveat: AIBotCaveat,
 		Robots: AIBotsRobotsTxt{
@@ -382,7 +457,7 @@ func (c *Checker) AIBotsURLs(ctx context.Context, site string, urls []string, op
 	for range min(max(c.cfg.Speed.MaxThreads, 1), len(pages)) {
 		wg.Go(func() {
 			for i := range work {
-				page := auditURL(ctx, client, f, pages[i], bots, opts.Live)
+				page := auditURL(ctx, client, f, pages[i], bots, opts.Live, opts.Progress)
 				res := AIBotsURLAudit{URL: page.URL, ControlStatus: page.ControlStatus, ControlError: page.ControlError}
 				for _, b := range page.Bots {
 					res.Bots = append(res.Bots, NamedBotVerdict{Name: b.Name, BotVerdict: b.BotVerdict})

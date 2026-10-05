@@ -153,6 +153,8 @@ Named profiles (the configs the desktop app manages; the default one is presente
 
 Crawl UX (headless but informative): `crawl`, `list` and `resume` take `--progress none|bar|json`. The default `none` leaves the output exactly as it is. `bar` is for a person at a terminal, and answers "is this crawl going well?": a small stderr panel, redrawn in place every second, with a bar whose filled part is split by status class (the same six buckets as `json` below, in colour), crawled/total (total = discovered, capped at `limits.max_urls`), what is left and an ETA (from this run's average rate, so a resume's earlier pages don't inflate it); a row per bucket with its count, share and, for the four status classes, its individual status codes (`404 ×110 · 403 ×8`; the snapshot's `StatusCodes`, seeded on resume like the classes), with the latest fetch error on the no-response row; and a last-minute line — the same split for just the last minute, its rate, average response time and page size, flagged when a whole minute passes without a page — so a crawl turning into 403s or timeouts shows as it happens. `NO_COLOR` drops the colours. When the terminal is too small for the panel, or stderr is not a terminal (or is `TERM=dumb`), each reading is one line instead (bar, crawled/total, left, rate, ETA, then the non-empty buckets), printed once per `--progress-interval` off a terminal. `json` streams the executor's live snapshot (the `runner.Snapshot` the desktop and MCP read) to stderr as JSON Lines, one object per line with `"type":"progress"`: a record when the crawl starts, one every `--progress-interval` (default 10s, minimum 1s) and a final record with the terminal state. Fields: `crawl_id`, `seed`, `time`, `state` (`running`, then `finalizing`, then `completed` or `interrupted`), `elapsed_sec`, `processed`, `discovered` (queued URLs included), `queued`, `urls_per_sec`, `status_2xx`…`status_5xx`, `blocked_by_robots`, `no_response` (a fetch error, or a response with no status class — below 200; the six partition `processed`, and a bundle header's `status_counts` classifies the same way, §5.13), `indexable`, `site_checks` (while the pass is part of the crawl) and `error` (final record only). `finalizing` covers the post-crawl analysis, when the counters stop moving but the crawl is not stalled. A resumed crawl's counters, status breakdown included, cover every session. stdout is untouched, so the summary and the `Crawl ID:` line parse as before.
 
+`tools aibots` takes `--progress none|json` and `--progress-interval` with the same rules (no `bar`: the check has no panel to draw), for the URL-list check that can run for minutes at a paced speed. Its records are its own, sharing the crawl feed's `type`, `time`, `state` and `elapsed_sec` and none of its crawl fields: `site` (the root the check runs against), `pages_total` (after repeats are dropped; 1 for the root check), `pages_done` (a page's control fetch and every probe finished, errors included; without `--live`, its verdicts done), `fetches_total` (each page's control fetch plus one per fetcher bot, 0 without `--live`; the robots.txt fetch is not counted) and `fetches_done` (errors included). The first record comes once the site and URLs are valid — a rejected check exits 2 with none written — and already carries the totals, so a reader knows the run's size and can work out the time left without knowing the bot roster. The final record is `completed`, or `interrupted` when Ctrl-C ends the check, which then writes no report (its fetches were cut short) and exits 3. The counts are the check's own (`sitecheck.AIBotsProgress`, through `AIBotOptions.Progress`), not an executor snapshot; the feed's ticker and writer are the crawl feed's. stdout is untouched.
+
 Exit codes contract: `0` ok, `1` crawl error, `2` config error, `3` interrupted (resumable). A failing command prints its error once, on stderr, as `Error: <message>`. An interrupted crawl prints only its resume hint.
 
 `Ctrl-C` = graceful pause (frontier + state committed; prints `bluesnake resume <id>` hint). Second `Ctrl-C` = hard stop (still safe by WAL).
@@ -569,8 +571,9 @@ and Google-GeminiNotebook): robots.txt cannot address it, so it is probed live
 and always robots-allowed. `tools aibots --urls-file` runs the same per-URL
 audit (`sitecheck.AIBotsURLs`) on a list of pages on one host — one robots.txt
 fetch, the bot definitions once, then each page's control fetch and verdicts
-— for callers checking a brand's priority pages rather than its root; the
-crawl pass stays site-level and fixed-cost. *JS render
+— for callers checking a brand's priority pages rather than its root, with
+`--progress json` to follow it (§3); the crawl pass stays site-level and
+fixed-cost. *JS render
 diff* (one URL raw vs Chrome-rendered over `parse.Facts`; the full per-field
 diff lives in the report, while findings are three site-level IDs of their
 own — `js_dependent_content`, `js_dependent_links`,
@@ -740,7 +743,8 @@ admitted), while the desktop enqueues and shows the wait in its queue view.
 ### 5.13 Crawl bundle — the whole-crawl machine export
 
 `bluesnake bundle <crawl-id>` writes a crawl as **one** file: gzipped JSON
-Lines, a header record followed by one record per page. A page record nests what
+Lines, a header record, then the crawl-level records (a line per site-check
+report and per llms.txt file), then one record per page. A page record nests what
 the flat tab exports cannot carry — the content-area text, the structured-data
 block (schema.org types AND the raw JSON-LD bodies), and the page's link edges
 with their anchor, position, element path and position path.
@@ -806,21 +810,25 @@ the bundle is the machine surface.
 
 Three properties are contractual, each with a test that fails if it is lost:
 
-- **Versioned and counted.** The header's `format` (`bluesnake.pages/2`) is what
+- **Versioned and counted.** The header's `format` (`bluesnake.pages/3`) is what
   a consumer pins on so it can refuse a shape it does not understand instead of
   silently misreading it — the failure mode of every CSV column rename. Its
-  `pages` is the exact number of lines that follow, counted inside the same
-  transaction that streams them, so a short read means a truncated transfer.
-  The major bumps only on a non-additive change; a new field does not bump it.
-  `/2` replaced a page's `h1`, `h2` and `heading_levels` arrays with the one
-  `headings` record; the fields noted below as added within `/1` are in `/2`
-  unchanged.
+  `site_checks`, `llms_txt` and `pages` count every line that follows, inside
+  the same transaction that streams them, so a short read means a truncated
+  transfer. The major bumps only on a non-additive change; a new field does not
+  bump it. `/2` replaced a page's `h1`, `h2` and `heading_levels` arrays with
+  the one `headings` record. `/3` moved the site-check reports and llms.txt
+  files out of the header onto lines of their own and left counts in their
+  place: a line after the header is no longer always a page, so a `/2` reader
+  would take a site check for one. The fields noted below as added within `/1`
+  are in `/3` unchanged.
 - **Streamed.** One `sql.Rows` scan over `pages`: decode a row, write a line,
   let it go — the shape `StreamContentText` already uses, with links read from
   that row's own `facts`. Peak RAM is one page record regardless of crawl size.
   `LoadPages` is exactly what this must not do (MEMORY-SCALING.md §4 regime 3 /
   Phase 2), and `TestBundleRAMFlatOnPageCount` is the gate, carrying the
-  detector arm that proves it can still see the failure mode.
+  detector arm that proves it can still see the failure mode. The crawl-level
+  records are written the same way, one row at a time.
 - **Deterministic.** Pages ordered by URL, links left in document order, no
   wall-clock value in a page record, so two bundles of one unchanged crawl are
   byte-identical and can be diffed.
@@ -839,19 +847,28 @@ sum to `pages`. All six keys are always present, zeros included; the field was
 added within `bluesnake.pages/1`, so a bundle without it is an older bundle and
 means "no breakdown", not zeros.
 
-The header carries the crawl-level stored data too. `site_checks` is the
-site-check pass's reports, `[{kind, subject, report}]` sorted by kind then
-subject, each report the stored JSON verbatim: the robots report includes the
-robots.txt body the crawl obeyed (capped at Google's 500 KiB), the ai_bots
-report each bot's robots verdict and its live probe of the site root against
-a control fetch. `llms_txt` is the llms.txt audit's files (every stored column,
-the raw body included), each nesting the curated links it listed. Both follow
-the data, not the config: a row exists exactly when a check ran or a file was
-fetched, so `[]` means none ran, and `config_digest` still records what was
-asked for. Reports only — their findings are issues — and no `checked_at`, a
-wall-clock value the reports don't need. Both are header-only, so the
-streaming RAM gate is unaffected, and both were added within
-`bluesnake.pages/1`.
+The crawl-level stored data rides on lines of its own, right after the header
+and before the pages, with its counts in the header (`site_checks`,
+`llms_txt`). First a line per site-check report, sorted by kind then subject —
+`{"record":"site_check", kind, subject, report}`, the report the stored JSON
+verbatim: the robots report includes the robots.txt body the crawl obeyed
+(capped at Google's 500 KiB), the ai_bots report each bot's robots verdict and
+its live probe of the site root against a control fetch. Then a line per
+llms.txt file, sorted by URL — `{"record":"llms_txt", …}` with every stored
+column, the raw body included, nesting the curated links it listed. A page line
+has no `record`. Both follow the data, not the config: a row exists exactly
+when a check ran or a file was fetched, so a count of 0 means none ran, and
+`config_digest` still records what was asked for. Reports only — their findings
+are issues — and no `checked_at`, a wall-clock value the reports don't need.
+They are not in the header because line 1 must stay cheap to read: consumers
+read it alone, bounded, to name a crawl or refuse a file that is not a bundle,
+and the robots.txt body and an llms-full.txt (fetched like a page, so up to
+`limits.max_page_size_kb`) once made it reach about 100 MiB. They come before
+the pages, not after, so a reader after only them stops a few lines in rather
+than behind every page, and a reader after only the pages skips a counted
+number of lines. One file, not a sidecar: a crawl travels as one file. (A list
+crawl's header still names every listed URL in `seeds`, so a large list crawl
+still has a large line 1.)
 
 It also carries `config_digest`, a hash of the crawl's frozen config:
 the link-position rules are configurable, so `position` is only interpretable

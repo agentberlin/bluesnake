@@ -548,6 +548,81 @@ func TestAIBotsURLsCancelledWhilePaced(t *testing.T) {
 	}
 }
 
+// The progress counters a surface reads while the audit runs: the totals are
+// in place when OnStart fires, before the first fetch (robots.txt included),
+// and each page and fetch counts once it finishes, failed fetches included.
+func TestAIBotsURLsProgress(t *testing.T) {
+	var requests atomic.Int32
+	s := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if strings.Contains(r.Header.Get("User-Agent"), "ClaudeBot") {
+			conn, _, err := w.(http.Hijacker).Hijack() // no response at all: a fetch error
+			if err == nil {
+				conn.Close()
+			}
+			return
+		}
+		fmt.Fprint(w, "<html></html>")
+	})
+	urls := []string{s.URL + "/a", s.URL + "/b", s.URL + "/a"} // the repeat is dropped
+	var starts []string
+	var atStart AIBotsCounts
+	var requestsAtStart int32
+	prog := &AIBotsProgress{}
+	prog.OnStart = func(site string) {
+		starts = append(starts, site)
+		atStart, requestsAtStart = prog.Counts(), requests.Load()
+	}
+	// GPTBot and ClaudeBot fetch; Googlebot is token-only and never does.
+	rep, err := newChecker(t).AIBotsURLs(context.Background(), s.URL, urls, AIBotOptions{
+		Live: true, Skip: onlyBots("GPTBot", "ClaudeBot", "Googlebot"), Progress: prog,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(starts) != 1 || starts[0] != s.URL || requestsAtStart != 0 {
+		t.Errorf("OnStart calls = %v after %d requests, want one, for %s, before any fetch", starts, requestsAtStart, s.URL)
+	}
+	if want := (AIBotsCounts{PagesTotal: 2, FetchesTotal: 6}); atStart != want {
+		t.Errorf("counts at start = %+v, want %+v", atStart, want)
+	}
+	if want := (AIBotsCounts{PagesTotal: 2, PagesDone: 2, FetchesTotal: 6, FetchesDone: 6}); prog.Counts() != want {
+		t.Errorf("counts at the end = %+v, want %+v", prog.Counts(), want)
+	}
+	for _, page := range rep.URLs {
+		for _, v := range page.Bots {
+			if v.Name == "ClaudeBot" && v.LiveError == "" {
+				t.Errorf("ClaudeBot on %s = %+v, want the failed fetch that was counted", page.URL, v)
+			}
+		}
+	}
+
+	// Without --live only robots.txt is fetched: no fetches to count, and the
+	// pages still finish.
+	prog = &AIBotsProgress{}
+	if _, err := newChecker(t).AIBotsURLs(context.Background(), s.URL, urls, AIBotOptions{Progress: prog}); err != nil {
+		t.Fatal(err)
+	}
+	if want := (AIBotsCounts{PagesTotal: 2, PagesDone: 2}); prog.Counts() != want {
+		t.Errorf("counts without live = %+v, want %+v", prog.Counts(), want)
+	}
+}
+
+// The root check is one page.
+func TestAIBotsProgressRoot(t *testing.T) {
+	s := serve(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "<html></html>") })
+	var site string
+	prog := &AIBotsProgress{OnStart: func(root string) { site = root }}
+	if _, err := newChecker(t).AIBots(context.Background(), s.URL+"/deep/page", AIBotOptions{
+		Live: true, Skip: onlyBots("GPTBot", "Googlebot"), Progress: prog,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if want := (AIBotsCounts{PagesTotal: 1, PagesDone: 1, FetchesTotal: 2, FetchesDone: 2}); site != s.URL || prog.Counts() != want {
+		t.Errorf("site %q, counts %+v; want %s, %+v", site, prog.Counts(), s.URL, want)
+	}
+}
+
 func TestRateGate(t *testing.T) {
 	var nilGate *rateGate
 	if !nilGate.wait(context.Background()) {

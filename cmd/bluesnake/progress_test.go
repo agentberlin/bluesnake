@@ -15,12 +15,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/agentberlin/bluesnake/internal/runner"
+	"github.com/agentberlin/bluesnake/internal/sitecheck"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
@@ -388,7 +390,8 @@ func TestListProgress(t *testing.T) {
 }
 
 // TestProgressFlagValidation: unusable --progress flags are config errors
-// (exit 2) on every crawl command, rejected before anything reaches stdout.
+// (exit 2) on every command that takes them, rejected before anything reaches
+// stdout.
 func TestProgressFlagValidation(t *testing.T) {
 	dir := t.TempDir()
 	cases := [][]string{
@@ -399,9 +402,10 @@ func TestProgressFlagValidation(t *testing.T) {
 		{"--progress", "none", "--progress-interval", "30s"},
 	}
 	cmds := map[string][]string{
-		"crawl":  {"crawl", "https://e.com/", "--store-dir", dir},
-		"list":   {"list", "--sitemap", "https://e.com/sitemap.xml", "--store-dir", dir},
-		"resume": {"resume", "no-such-crawl", "--store-dir", dir},
+		"crawl":        {"crawl", "https://e.com/", "--store-dir", dir},
+		"list":         {"list", "--sitemap", "https://e.com/sitemap.xml", "--store-dir", dir},
+		"resume":       {"resume", "no-such-crawl", "--store-dir", dir},
+		"tools aibots": {"tools", "aibots", "https://e.com/", "--live=false"},
 	}
 	for name, base := range cmds {
 		for _, flags := range cases {
@@ -574,5 +578,197 @@ func TestCrawlProgressBar(t *testing.T) {
 	}
 	if last := lines[len(lines)-1]; !strings.Contains(last, "100%  3/3  done in ") || !strings.HasSuffix(last, "  ·  2xx 3") {
 		t.Errorf("final line = %q, want the completed crawl's 3/3, all of them 2xx", last)
+	}
+}
+
+// skipAllBut lists every registry bot but the named ones, for --skip: a test's
+// fetch count stays small and known.
+func skipAllBut(keep ...string) string {
+	var skip []string
+	for _, b := range sitecheck.DefaultBots() {
+		if !slices.Contains(keep, b.Name) {
+			skip = append(skip, b.Name)
+		}
+	}
+	return strings.Join(skip, ",")
+}
+
+// slowPagesSite answers robots.txt at once and every page request after delay,
+// so a check of a few pages spans a progress interval.
+func slowPagesSite(t *testing.T, delay time.Duration) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/robots.txt" {
+			fmt.Fprint(w, "User-agent: GPTBot\nDisallow: /p0\n")
+			return
+		}
+		time.Sleep(delay)
+		fmt.Fprint(w, "<html></html>")
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestToolsAIBotsProgressJSON pins the check's feed end to end: a record when
+// the check starts that already carries the run's size, one per interval, a
+// final one with every page and fetch done, counts that never go down, the
+// check's own fields and none of the crawl's — and stdout byte for byte what
+// it is without the flag.
+func TestToolsAIBotsProgressJSON(t *testing.T) {
+	srv := slowPagesSite(t, 120*time.Millisecond)
+	file := writeURLs(t, srv.URL+"/p0", srv.URL+"/p1", srv.URL+"/p2", srv.URL+"/p3", srv.URL+"/p1")
+	// 4 pages (the repeat dropped) × (control + GPTBot + ClaudeBot; Googlebot
+	// is token-only) one at a time: ~1.4s, past the 1s interval.
+	args := []string{"tools", "aibots", srv.URL, "--urls-file", file, "--json",
+		"--skip", skipAllBut("GPTBot", "ClaudeBot", "Googlebot"), "--set", "speed.max_threads=1"}
+
+	plainOut, plainErr, code := runSplitT(t, args...)
+	if code != 0 || plainErr != "" {
+		t.Fatalf("plain check: exit %d, stderr %q", code, plainErr)
+	}
+	out, stderr, code := runSplitT(t, append(args, "--progress", "json", "--progress-interval", "1s")...)
+	if code != 0 {
+		t.Fatalf("progress check: exit %d\n%s%s", code, out, stderr)
+	}
+	if out != plainOut {
+		t.Errorf("stdout changed by --progress json:\n--- with\n%s--- without\n%s", out, plainOut)
+	}
+	recs, other := progressRecords(t, stderr)
+	if len(other) != 0 {
+		t.Errorf("stderr carries non-progress lines: %q", other)
+	}
+	if len(recs) < 3 {
+		t.Fatalf("got %d records, want start + at least one interval + final:\n%s", len(recs), stderr)
+	}
+	first, last := recs[0], recs[len(recs)-1]
+	if first["state"] != "running" || num(t, first, "pages_total") != 4 || num(t, first, "fetches_total") != 12 ||
+		num(t, first, "pages_done") != 0 || num(t, first, "fetches_done") != 0 {
+		t.Errorf("start record = %v, want running with 4 pages and 12 fetches to do", first)
+	}
+	for i, r := range recs {
+		if r["site"] != srv.URL {
+			t.Errorf("record %d site = %v, want %s", i, r["site"], srv.URL)
+		}
+		if _, err := time.Parse(time.RFC3339, fmt.Sprint(r["time"])); err != nil {
+			t.Errorf("record %d time %v is not RFC 3339: %v", i, r["time"], err)
+		}
+		num(t, r, "elapsed_sec")
+		for _, key := range []string{"crawl_id", "seed", "processed", "discovered", "error"} {
+			if _, has := r[key]; has {
+				t.Errorf("record %d carries %q: %v", i, key, r)
+			}
+		}
+		if i == 0 {
+			continue
+		}
+		for _, key := range []string{"pages_done", "fetches_done", "elapsed_sec"} {
+			if num(t, r, key) < num(t, recs[i-1], key) {
+				t.Errorf("%s went backwards at record %d:\n%s", key, i, stderr)
+			}
+		}
+		if i < len(recs)-1 && r["state"] != "running" {
+			t.Errorf("interim record %d state = %v, want running", i, r["state"])
+		}
+	}
+	if last["state"] != store.StatusCompleted || num(t, last, "pages_done") != 4 || num(t, last, "fetches_done") != 12 {
+		t.Errorf("final record = %v, want completed with every page and fetch done", last)
+	}
+}
+
+// Without --live there is nothing to fetch per page, and without --urls-file
+// the root is the one page: the pages still finish.
+func TestToolsAIBotsProgressNoLive(t *testing.T) {
+	srv := slowPagesSite(t, 0)
+	for name, extra := range map[string][]string{
+		"root":      nil,
+		"urls file": {"--urls-file", writeURLs(t, srv.URL+"/p0", srv.URL+"/p1")},
+	} {
+		args := append([]string{"tools", "aibots", srv.URL, "--live=false", "--progress", "json"}, extra...)
+		_, stderr, code := runSplitT(t, args...)
+		recs, other := progressRecords(t, stderr)
+		if code != 0 || len(other) != 0 || len(recs) < 2 {
+			t.Fatalf("%s: exit %d, stderr:\n%s", name, code, stderr)
+		}
+		pages := max(len(extra), 1) // two URLs, or the root
+		first, last := recs[0], recs[len(recs)-1]
+		if num(t, first, "pages_total") != pages || num(t, first, "fetches_total") != 0 {
+			t.Errorf("%s: start record = %v, want %d pages and no fetches", name, first, pages)
+		}
+		if last["state"] != store.StatusCompleted || num(t, last, "pages_done") != pages || num(t, last, "fetches_done") != 0 {
+			t.Errorf("%s: final record = %v, want completed with %d pages done", name, last, pages)
+		}
+	}
+}
+
+// A check that is rejected never starts: no progress line, exit 2 — a URL on
+// another host, and --progress bar, which the check has no panel for.
+func TestToolsAIBotsProgressRejected(t *testing.T) {
+	srv := slowPagesSite(t, 0)
+	for name, args := range map[string][]string{
+		"URL on another host": {"--urls-file", writeURLs(t, srv.URL+"/a", "https://elsewhere.example/b"), "--progress", "json"},
+		"--progress bar":      {"--progress", "bar"},
+	} {
+		out, stderr, code := runSplitT(t, append([]string{"tools", "aibots", srv.URL, "--live=false"}, args...)...)
+		if code != 2 || out != "" || strings.Contains(stderr, `"type":"progress"`) {
+			t.Errorf("%s: exit %d, stdout %q, stderr %q; want exit 2 and no line", name, code, out, stderr)
+		}
+	}
+}
+
+// TestToolsAIBotsProgressInterrupted: an interrupt ends the check with a final
+// interrupted record and exit 3, and no report, since its fetches were cut
+// short.
+func TestToolsAIBotsProgressInterrupted(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/robots.txt" {
+			return
+		}
+		select { // every page fetch is held until the check is cancelled
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) }) // runs before srv.Close
+	file := writeURLs(t, srv.URL+"/a", srv.URL+"/b")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stderr syncBuffer
+	type result struct {
+		out  string
+		code int
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, code := runSplit(ctx, &stderr, "tools", "aibots", srv.URL, "--urls-file", file, "--json",
+			"--skip", skipAllBut("GPTBot"), "--progress", "json")
+		done <- result{out, code}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(stderr.String(), `"type":"progress"`) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no start record within 10s; stderr:\n%s", stderr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+
+	var res result
+	select {
+	case res = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("interrupted check did not exit")
+	}
+	if res.code != 3 || res.out != "" {
+		t.Errorf("exit = %d, stdout = %q; want 3 and no report", res.code, res.out)
+	}
+	recs, _ := progressRecords(t, stderr.String())
+	if len(recs) < 2 {
+		t.Fatalf("got %d records, want start + final:\n%s", len(recs), stderr.String())
+	}
+	if last := recs[len(recs)-1]; last["state"] != store.StatusInterrupted {
+		t.Errorf("final record = %v, want interrupted", last)
 	}
 }

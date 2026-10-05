@@ -10,7 +10,8 @@ import (
 	"testing"
 )
 
-// bundleLines runs `bluesnake bundle` and splits the JSONL output.
+// bundleLines runs `bluesnake bundle` and splits the JSONL output into the
+// header and the pages, skipping the crawl-level records the header counts.
 func bundleLines(t *testing.T, args ...string) (map[string]any, []map[string]any) {
 	t.Helper()
 	out, code := runCmd(t, args...)
@@ -22,8 +23,10 @@ func bundleLines(t *testing.T, args ...string) (map[string]any, []map[string]any
 	if err := json.Unmarshal([]byte(lines[0]), &header); err != nil {
 		t.Fatalf("line 1 is not JSON: %v\n%s", err, lines[0])
 	}
+	checks, _ := header["site_checks"].(float64)
+	llms, _ := header["llms_txt"].(float64)
 	var pages []map[string]any
-	for _, l := range lines[1:] {
+	for _, l := range lines[1+int(checks)+int(llms):] {
 		var p map[string]any
 		if err := json.Unmarshal([]byte(l), &p); err != nil {
 			t.Fatalf("page line is not JSON: %v\n%s", err, l)
@@ -37,7 +40,7 @@ func TestBundleCmd_HeaderCountAndPageText(t *testing.T) {
 	dir, id := completedCrawl(t)
 	header, pages := bundleLines(t, "bundle", id, "--store-dir", dir)
 
-	if header["format"] != "bluesnake.pages/2" {
+	if header["format"] != "bluesnake.pages/3" {
 		t.Errorf("format = %v", header["format"])
 	}
 	if header["crawl_id"] != id {

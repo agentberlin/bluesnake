@@ -59,6 +59,9 @@ func (w *world) stderrLastLineContains(substr string) error {
 }
 
 func (w *world) stdoutContains(substr string) error {
+	if w.server != nil {
+		substr = strings.ReplaceAll(substr, "<serverurl>", w.server.URL)
+	}
 	if !strings.Contains(w.stdout, substr) {
 		return fmt.Errorf("stdout does not contain %q:\n%s", substr, w.stdout)
 	}
@@ -141,6 +144,9 @@ func (w *world) progressRecordField(which, key, want string) error {
 	v, ok := rec[key]
 	if !ok {
 		return fmt.Errorf("%s progress record has no %q: %v", which, key, rec)
+	}
+	if w.server != nil {
+		want = strings.ReplaceAll(want, "<serverurl>", w.server.URL)
 	}
 	if got := fmt.Sprint(v); got != want {
 		return fmt.Errorf("%s progress record %q = %s, want %s\nstderr:\n%s", which, key, got, want, w.stderr)
