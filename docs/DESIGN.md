@@ -743,7 +743,8 @@ admitted), while the desktop enqueues and shows the wait in its queue view.
 ### 5.13 Crawl bundle — the whole-crawl machine export
 
 `bluesnake bundle <crawl-id>` writes a crawl as **one** file: gzipped JSON
-Lines, a header record followed by one record per page. A page record nests what
+Lines, a header record, then the crawl-level records (a line per site-check
+report and per llms.txt file), then one record per page. A page record nests what
 the flat tab exports cannot carry — the content-area text, the structured-data
 block (schema.org types AND the raw JSON-LD bodies), and the page's link edges
 with their anchor, position, element path and position path.
@@ -809,21 +810,25 @@ the bundle is the machine surface.
 
 Three properties are contractual, each with a test that fails if it is lost:
 
-- **Versioned and counted.** The header's `format` (`bluesnake.pages/2`) is what
+- **Versioned and counted.** The header's `format` (`bluesnake.pages/3`) is what
   a consumer pins on so it can refuse a shape it does not understand instead of
   silently misreading it — the failure mode of every CSV column rename. Its
-  `pages` is the exact number of lines that follow, counted inside the same
-  transaction that streams them, so a short read means a truncated transfer.
-  The major bumps only on a non-additive change; a new field does not bump it.
-  `/2` replaced a page's `h1`, `h2` and `heading_levels` arrays with the one
-  `headings` record; the fields noted below as added within `/1` are in `/2`
-  unchanged.
+  `site_checks`, `llms_txt` and `pages` count every line that follows, inside
+  the same transaction that streams them, so a short read means a truncated
+  transfer. The major bumps only on a non-additive change; a new field does not
+  bump it. `/2` replaced a page's `h1`, `h2` and `heading_levels` arrays with
+  the one `headings` record. `/3` moved the site-check reports and llms.txt
+  files out of the header onto lines of their own and left counts in their
+  place: a line after the header is no longer always a page, so a `/2` reader
+  would take a site check for one. The fields noted below as added within `/1`
+  are in `/3` unchanged.
 - **Streamed.** One `sql.Rows` scan over `pages`: decode a row, write a line,
   let it go — the shape `StreamContentText` already uses, with links read from
   that row's own `facts`. Peak RAM is one page record regardless of crawl size.
   `LoadPages` is exactly what this must not do (MEMORY-SCALING.md §4 regime 3 /
   Phase 2), and `TestBundleRAMFlatOnPageCount` is the gate, carrying the
-  detector arm that proves it can still see the failure mode.
+  detector arm that proves it can still see the failure mode. The crawl-level
+  records are written the same way, one row at a time.
 - **Deterministic.** Pages ordered by URL, links left in document order, no
   wall-clock value in a page record, so two bundles of one unchanged crawl are
   byte-identical and can be diffed.
@@ -842,19 +847,28 @@ sum to `pages`. All six keys are always present, zeros included; the field was
 added within `bluesnake.pages/1`, so a bundle without it is an older bundle and
 means "no breakdown", not zeros.
 
-The header carries the crawl-level stored data too. `site_checks` is the
-site-check pass's reports, `[{kind, subject, report}]` sorted by kind then
-subject, each report the stored JSON verbatim: the robots report includes the
-robots.txt body the crawl obeyed (capped at Google's 500 KiB), the ai_bots
-report each bot's robots verdict and its live probe of the site root against
-a control fetch. `llms_txt` is the llms.txt audit's files (every stored column,
-the raw body included), each nesting the curated links it listed. Both follow
-the data, not the config: a row exists exactly when a check ran or a file was
-fetched, so `[]` means none ran, and `config_digest` still records what was
-asked for. Reports only — their findings are issues — and no `checked_at`, a
-wall-clock value the reports don't need. Both are header-only, so the
-streaming RAM gate is unaffected, and both were added within
-`bluesnake.pages/1`.
+The crawl-level stored data rides on lines of its own, right after the header
+and before the pages, with its counts in the header (`site_checks`,
+`llms_txt`). First a line per site-check report, sorted by kind then subject —
+`{"record":"site_check", kind, subject, report}`, the report the stored JSON
+verbatim: the robots report includes the robots.txt body the crawl obeyed
+(capped at Google's 500 KiB), the ai_bots report each bot's robots verdict and
+its live probe of the site root against a control fetch. Then a line per
+llms.txt file, sorted by URL — `{"record":"llms_txt", …}` with every stored
+column, the raw body included, nesting the curated links it listed. A page line
+has no `record`. Both follow the data, not the config: a row exists exactly
+when a check ran or a file was fetched, so a count of 0 means none ran, and
+`config_digest` still records what was asked for. Reports only — their findings
+are issues — and no `checked_at`, a wall-clock value the reports don't need.
+They are not in the header because line 1 must stay cheap to read: consumers
+read it alone, bounded, to name a crawl or refuse a file that is not a bundle,
+and the robots.txt body and an llms-full.txt (fetched like a page, so up to
+`limits.max_page_size_kb`) once made it reach about 100 MiB. They come before
+the pages, not after, so a reader after only them stops a few lines in rather
+than behind every page, and a reader after only the pages skips a counted
+number of lines. One file, not a sidecar: a crawl travels as one file. (A list
+crawl's header still names every listed URL in `seeds`, so a large list crawl
+still has a large line 1.)
 
 It also carries `config_digest`, a hash of the crawl's frozen config:
 the link-position rules are configurable, so `position` is only interpretable

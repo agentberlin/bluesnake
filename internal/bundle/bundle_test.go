@@ -106,20 +106,50 @@ func bundleOf(t *testing.T, st *store.Crawl, info store.Info, opts Options) (Hea
 		t.Fatalf("Write: %v", err)
 	}
 	raw := buf.Bytes()
+	h, _, _, pages := splitBundle(t, raw)
+	return h, pages, raw
+}
+
+// splitBundle reads a bundle the way a consumer does: the header, then as many
+// site-check and then llms.txt records as it counts, each naming its kind, then
+// the pages, none of which names a record kind.
+func splitBundle(t *testing.T, raw []byte) (Header, []SiteCheck, []LlmsTxt, []Page) {
+	t.Helper()
 	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
 	var h Header
 	if err := json.Unmarshal([]byte(lines[0]), &h); err != nil {
 		t.Fatalf("header line is not JSON: %v\n%s", err, lines[0])
 	}
+	lines = lines[1:]
+	if len(lines) < h.SiteChecks+h.LlmsTxt {
+		t.Fatalf("header counts %d site checks and %d llms.txt files, but %d lines follow",
+			h.SiteChecks, h.LlmsTxt, len(lines))
+	}
+	checks := make([]SiteCheck, h.SiteChecks)
+	for i := range checks {
+		if err := json.Unmarshal([]byte(lines[i]), &checks[i]); err != nil || checks[i].Record != RecordSiteCheck {
+			t.Fatalf("line %d is not a site-check record (%v):\n%s", i+2, err, lines[i])
+		}
+	}
+	lines = lines[h.SiteChecks:]
+	files := make([]LlmsTxt, h.LlmsTxt)
+	for i := range files {
+		if err := json.Unmarshal([]byte(lines[i]), &files[i]); err != nil || files[i].Record != RecordLlmsTxt {
+			t.Fatalf("line %d is not an llms.txt record (%v):\n%s", h.SiteChecks+i+2, err, lines[i])
+		}
+	}
 	var pages []Page
-	for _, line := range lines[1:] {
+	for _, line := range lines[h.LlmsTxt:] {
+		if strings.HasPrefix(line, `{"record":`) {
+			t.Fatalf("a crawl-level record the header does not count, among the pages:\n%s", line)
+		}
 		var p Page
 		if err := json.Unmarshal([]byte(line), &p); err != nil {
 			t.Fatalf("page line is not JSON: %v\n%s", err, line)
 		}
 		pages = append(pages, p)
 	}
-	return h, pages, raw
+	return h, checks, files, pages
 }
 
 func pageByPath(pages []Page, suffix string) *Page {
@@ -855,10 +885,13 @@ func TestUnfinishedCrawlHasEmptyFinishedAt(t *testing.T) {
 }
 
 // pageLines splits a raw bundle into its page lines (everything after the
-// header), for assertions about what a record does NOT carry.
+// header and the crawl-level records it counts), for assertions about what a
+// record does NOT carry.
 func pageLines(raw []byte) []string {
 	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-	return lines[1:]
+	var h Header
+	json.Unmarshal([]byte(lines[0]), &h)
+	return lines[1+h.SiteChecks+h.LlmsTxt:]
 }
 
 // A Full bundle of a crawl that kept its sources (extraction.store_html)

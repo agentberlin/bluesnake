@@ -1,9 +1,10 @@
 package acceptance
 
 // Steps for features/bundle.feature. The bundle is read back exactly as a
-// consumer would: parse line 1 as the header, every later line as a page, and
-// assert against the decoded records rather than the raw text — so a scenario
-// fails on a changed MEANING, not on a changed byte.
+// consumer would: parse line 1 as the header, then as many site-check and
+// llms.txt records as it counts, then every later line as a page, and assert
+// against the decoded records rather than the raw text — so a scenario fails
+// on a changed MEANING, not on a changed byte.
 
 import (
 	"bytes"
@@ -46,37 +47,66 @@ func (w *world) registerBundleSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the bundle page "([^"]*)" has a null "([^"]*)"$`, w.bundlePageFieldNull)
 	sc.Step(`^the bundle page "([^"]*)" is listed in sitemap "([^"]*)" with lastmod "([^"]*)"$`, w.bundlePageInSitemap)
 	sc.Step(`^the bundle page "([^"]*)" is listed in no sitemap$`, w.bundlePageInNoSitemap)
-	sc.Step(`^the bundle header has an? "([^"]*)" site check whose report "([^"]*)" contains "([^"]*)"$`, w.bundleSiteCheckReportContains)
-	sc.Step(`^the bundle header has no site checks$`, w.bundleNoSiteChecks)
+	sc.Step(`^the bundle has an? "([^"]*)" site check whose report "([^"]*)" contains "([^"]*)"$`, w.bundleSiteCheckReportContains)
+	sc.Step(`^the bundle has no site checks$`, w.bundleNoSiteChecks)
 	sc.Step(`^the bundle contains (an|no) external page$`, w.bundleExternalPages)
 	sc.Step(`^the bundle contains (a|no) link of type "([^"]*)"$`, w.bundleLinksOfType)
 	sc.Step(`^the file "([^"]*)" in the store dir is a gzip stream containing "([^"]*)"$`, w.storeFileGzipContains)
 	sc.Step(`^the files "([^"]*)" and "([^"]*)" in the store dir are identical$`, w.storeFilesIdentical)
 }
 
-// readBundle decodes the bundle written to the store dir.
+// readBundle decodes the bundle written to the store dir: its header and pages.
 func (w *world) readBundle() (bundle.Header, []bundle.Page, error) {
+	h, _, pages, err := w.readBundleRecords()
+	return h, pages, err
+}
+
+// readBundleRecords decodes the bundle with its site-check records. A counted
+// line that is not a record of its kind, or a record among the pages, is a
+// failure: the header's counts are how a consumer finds the pages.
+func (w *world) readBundleRecords() (bundle.Header, []bundle.SiteCheck, []bundle.Page, error) {
 	var h bundle.Header
 	data, err := os.ReadFile(filepath.Join(w.storeDirPath(), bundleFile))
 	if err != nil {
-		return h, nil, err
+		return h, nil, nil, err
 	}
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	if len(lines) == 0 || lines[0] == "" {
-		return h, nil, fmt.Errorf("bundle is empty")
+		return h, nil, nil, fmt.Errorf("bundle is empty")
 	}
 	if err := json.Unmarshal([]byte(lines[0]), &h); err != nil {
-		return h, nil, fmt.Errorf("header line is not JSON: %w\n%s", err, lines[0])
+		return h, nil, nil, fmt.Errorf("header line is not JSON: %w\n%s", err, lines[0])
 	}
-	pages := make([]bundle.Page, 0, len(lines)-1)
-	for _, line := range lines[1:] {
+	lines = lines[1:]
+	if len(lines) < h.SiteChecks+h.LlmsTxt {
+		return h, nil, nil, fmt.Errorf("header counts %d site checks and %d llms.txt files, but %d lines follow",
+			h.SiteChecks, h.LlmsTxt, len(lines))
+	}
+	checks := make([]bundle.SiteCheck, h.SiteChecks)
+	for i := range checks {
+		if err := json.Unmarshal([]byte(lines[i]), &checks[i]); err != nil || checks[i].Record != bundle.RecordSiteCheck {
+			return h, nil, nil, fmt.Errorf("counted line %d is not a site-check record (%v):\n%s", i+2, err, lines[i])
+		}
+	}
+	for i, line := range lines[h.SiteChecks : h.SiteChecks+h.LlmsTxt] {
+		var f bundle.LlmsTxt
+		if err := json.Unmarshal([]byte(line), &f); err != nil || f.Record != bundle.RecordLlmsTxt {
+			return h, nil, nil, fmt.Errorf("counted line %d is not an llms.txt record (%v):\n%s", h.SiteChecks+i+2, err, line)
+		}
+	}
+	lines = lines[h.SiteChecks+h.LlmsTxt:]
+	pages := make([]bundle.Page, 0, len(lines))
+	for _, line := range lines {
+		if strings.HasPrefix(line, `{"record":`) {
+			return h, nil, nil, fmt.Errorf("a crawl-level record the header does not count, among the pages:\n%s", line)
+		}
 		var p bundle.Page
 		if err := json.Unmarshal([]byte(line), &p); err != nil {
-			return h, nil, fmt.Errorf("page line is not JSON: %w\n%s", err, line)
+			return h, nil, nil, fmt.Errorf("page line is not JSON: %w\n%s", err, line)
 		}
 		pages = append(pages, p)
 	}
-	return h, pages, nil
+	return h, checks, pages, nil
 }
 
 // bundlePage finds the record for a fixture path on the scenario's test server.
@@ -561,16 +591,16 @@ func (w *world) bundlePageInNoSitemap(path string) error {
 	return nil
 }
 
-// bundleSiteCheckReportContains finds a site-check report by kind and reads one
+// bundleSiteCheckReportContains finds a site-check record by kind and reads one
 // top-level report field, as a consumer decoding the stored JSON would.
 func (w *world) bundleSiteCheckReportContains(kind, field, want string) error {
-	h, _, err := w.readBundle()
+	_, checks, _, err := w.readBundleRecords()
 	if err != nil {
 		return err
 	}
 	want = strings.ReplaceAll(want, "<serverurl>", w.ensureServer().URL)
 	var kinds []string
-	for _, sc := range h.SiteChecks {
+	for _, sc := range checks {
 		kinds = append(kinds, sc.Kind)
 		if sc.Kind != kind {
 			continue
@@ -588,19 +618,26 @@ func (w *world) bundleSiteCheckReportContains(kind, field, want string) error {
 		}
 		return nil
 	}
-	return fmt.Errorf("header has no %q site check; got %v", kind, kinds)
+	return fmt.Errorf("bundle has no %q site check; got %v", kind, kinds)
 }
 
-// bundleNoSiteChecks reads the raw header line: the key must be on the wire as
-// an empty array, not missing, since a missing key means an older bundle.
+// bundleNoSiteChecks reads the raw header line — the count must be on the wire
+// as 0, not missing — and finds no site-check record after it.
 func (w *world) bundleNoSiteChecks() error {
 	data, err := os.ReadFile(filepath.Join(w.storeDirPath(), bundleFile))
 	if err != nil {
 		return err
 	}
 	line, _, _ := strings.Cut(string(data), "\n")
-	if !strings.Contains(line, `"site_checks":[]`) {
-		return fmt.Errorf("header does not carry an empty site_checks array:\n%s", line)
+	if !strings.Contains(line, `"site_checks":0`) {
+		return fmt.Errorf("header does not count 0 site checks:\n%s", line)
+	}
+	_, checks, _, err := w.readBundleRecords()
+	if err != nil {
+		return err
+	}
+	if len(checks) != 0 {
+		return fmt.Errorf("bundle carries %d site-check records", len(checks))
 	}
 	return nil
 }

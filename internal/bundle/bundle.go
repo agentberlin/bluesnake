@@ -1,5 +1,6 @@
 // Package bundle writes a stored crawl as one self-describing, streamable file:
-// gzipped JSON Lines, a header record followed by one record per page, each
+// gzipped JSON Lines, a header record, then the crawl-level records (the
+// site-check reports and the llms.txt files), then one record per page, each
 // page carrying its own text, structured data and nested link edges.
 //
 // It exists because the tab exports cannot carry a page. They are Screaming
@@ -32,7 +33,8 @@
 //     the finalize peak; a bundle of a multi-million-page crawl must not
 //     reintroduce it. Peak RAM is one page record regardless of crawl size,
 //     pinned by TestBundleRAMFlatOnPageCount. Stored HTML follows the same
-//     rule: one page's file is read, written and dropped before the next.
+//     rule: one page's file is read, written and dropped before the next, and
+//     so do the crawl-level records, one row at a time.
 //   - It is DETERMINISTIC. Two bundles of one unchanged crawl are byte-
 //     identical: pages ordered by URL, links left in Facts.Links (document)
 //     order, custom results sorted, map keys sorted by the encoder, and no
@@ -41,8 +43,9 @@
 //   - It is VERSIONED and COUNTED. A consumer must be able to refuse a format
 //     it does not understand rather than silently misread it (the failure mode
 //     of every CSV column rename), and must be able to tell a truncated
-//     transfer from a small crawl. The header's `format` and `pages` are those
-//     two checks.
+//     transfer from a small crawl. The header's `format` and its counts of
+//     every line that follows — `site_checks`, `llms_txt` and `pages` — are
+//     those two checks.
 package bundle
 
 import (
@@ -75,8 +78,17 @@ import (
 // for any change that is NOT purely additive — a removed or retyped field, a
 // changed meaning — because that is what consumers pin on. Adding a field does
 // not bump it, so a reader that ignores unknown keys keeps working. /2 replaced
-// a page's h1, h2 and heading_levels with one headings record.
-const Format = "bluesnake.pages/2"
+// a page's h1, h2 and heading_levels with one headings record; /3 moved the
+// site-check reports and llms.txt files out of the header onto lines of their
+// own, so a line after the header is no longer always a page.
+const Format = "bluesnake.pages/3"
+
+// Record kinds: the `record` field a crawl-level line names itself by. A page
+// line has no such field.
+const (
+	RecordSiteCheck = "site_check"
+	RecordLlmsTxt   = "llms_txt"
+)
 
 // Scope values for Options.Scope.
 const (
@@ -112,7 +124,9 @@ type Options struct {
 }
 
 // Header is the bundle's first line: everything needed to know what the stream
-// is, that it arrived whole, and what the values in it mean.
+// is, that it arrived whole, and what the values in it mean. Every record is a
+// line of its own after it, so it stays cheap to read alone — save for a list
+// crawl's Seeds, which name every listed URL.
 type Header struct {
 	Format           string   `json:"format"`
 	BluesnakeVersion string   `json:"bluesnake_version"`
@@ -129,8 +143,9 @@ type Header struct {
 	// LinkTypes echoes the filter that produced this stream, so an absent link
 	// type is distinguishable from a page that had none.
 	LinkTypes []string `json:"link_types"`
-	// Pages is the EXACT number of page lines that follow, counted before the
-	// stream opens. A consumer that reads fewer has a truncated file.
+	// Pages is the EXACT number of page lines that follow the crawl-level
+	// records, counted before the stream opens. A consumer that reads fewer has
+	// a truncated file.
 	Pages int `json:"pages"`
 	// StatusCounts breaks those same lines down by outcome, so a consumer can
 	// describe a crawl without reading its pages. It is counted in the statement
@@ -154,37 +169,40 @@ type Header struct {
 	// produced it; the digest is how a consumer notices a corpus built under two
 	// different rule sets.
 	ConfigDigest string `json:"config_digest"`
-	// SiteChecks and LlmsTxt are the crawl-level stored data: the site-check
-	// pass's reports (DESIGN.md §5.10) and the llms.txt audit's files. They
-	// follow the data, not the config — a row exists exactly when a check ran
-	// or a file was fetched, so [] means nothing ran, and the frozen config
-	// (ConfigDigest) still records what was asked for. Reports only: their
-	// findings are issues, which the bundle leaves out as verdicts. Both come
-	// last because they are the header's bulk (the robots.txt body, the
-	// llms.txt files). Added within bluesnake.pages/1: absent on an older
-	// bundle, which means "not carried", not "none ran".
-	SiteChecks []SiteCheck `json:"site_checks"`
-	LlmsTxt    []LlmsTxt   `json:"llms_txt"`
+	// SiteChecks and LlmsTxt count the crawl-level records that follow the
+	// header, before the pages: the site-check pass's reports (DESIGN.md
+	// §5.10), then the llms.txt audit's files. They follow the data, not the
+	// config — a row exists exactly when a check ran or a file was fetched, so
+	// 0 means none ran, and the frozen config (ConfigDigest) still records what
+	// was asked for. They are counted in the transaction that streams them, so
+	// they describe exactly the lines that follow.
+	SiteChecks int `json:"site_checks"`
+	LlmsTxt    int `json:"llms_txt"`
 }
 
-// SiteCheck is one stored site-check report: the check kind (robots | sitemap
-// | ai_bots | render_diff), the URL it audited, and the report exactly as the
-// pass stored it — the robots report carries the robots.txt body the crawl
-// obeyed (capped at the 500 KiB Google reads), the ai_bots report each bot's
-// robots verdict and, when probed, its live fetch of the site root beside a
-// control fetch. Sorted by (kind, subject). The stored checked_at is left out:
-// it is a wall-clock value the report does not need.
+// SiteCheck is one stored site-check report, on a line of its own: the check
+// kind (robots | sitemap | ai_bots | render_diff), the URL it audited, and the
+// report exactly as the pass stored it — the robots report carries the
+// robots.txt body the crawl obeyed (capped at the 500 KiB Google reads), the
+// ai_bots report each bot's robots verdict and, when probed, its live fetch of
+// the site root beside a control fetch. Sorted by (kind, subject). Reports
+// only: their findings are issues, which the bundle leaves out as verdicts.
+// The stored checked_at is left out: it is a wall-clock value the report does
+// not need.
 type SiteCheck struct {
+	Record  string          `json:"record"` // always RecordSiteCheck
 	Kind    string          `json:"kind"`
 	Subject string          `json:"subject"`
 	Report  json.RawMessage `json:"report"`
 }
 
-// LlmsTxt is one fetched /llms.txt or /llms-full.txt with its structural
-// validation and its raw body — stored on a miss too, where it is whatever the
-// server returned — and the curated links it listed. Sorted by URL, links by
-// URL; Links is always an array (only llms.txt carries a link index).
+// LlmsTxt is one fetched /llms.txt or /llms-full.txt, on a line of its own,
+// with its structural validation and its raw body — stored on a miss too,
+// where it is whatever the server returned — and the curated links it listed.
+// Sorted by URL, after the site checks; links sorted by URL. Links is always
+// an array (only llms.txt carries a link index).
 type LlmsTxt struct {
+	Record    string        `json:"record"` // always RecordLlmsTxt
 	URL       string        `json:"url"`
 	Kind      string        `json:"kind"` // llms_txt | llms_full_txt
 	Status    int           `json:"status"`
@@ -517,11 +535,11 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 		return err
 	}
 
-	// The count and the stream run in ONE transaction so the header's `pages` is
-	// the exact number of lines that follow — the consumer's truncation check is
-	// only worth having if it cannot race a concurrent write. The status
-	// breakdown is counted in the same statement, over the same scope filter, so
-	// it describes exactly those lines too.
+	// The counts and the stream run in ONE transaction so the header's counts
+	// are the exact number of lines that follow — the consumer's truncation
+	// check is only worth having if it cannot race a concurrent write. The
+	// status breakdown is counted in the same statement as the pages, over the
+	// same scope filter, so it describes exactly those lines too.
 	tx, err := st.DB().Begin()
 	if err != nil {
 		return err
@@ -537,14 +555,8 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 		Status2xx: sc.S2xx, Status3xx: sc.S3xx, Status4xx: sc.S4xx, Status5xx: sc.S5xx,
 		BlockedByRobots: sc.Blocked, NoResponse: sc.NoResponse,
 	}
-	// The crawl-level rows are read in the same transaction too, so the header
-	// describes one snapshot of the crawl.
-	checks, err := siteChecks(tx)
-	if err != nil {
-		return err
-	}
-	llms, err := llmsTxt(tx)
-	if err != nil {
+	var checks, llms int
+	if err := tx.QueryRow(`SELECT (SELECT COUNT(*) FROM site_checks), (SELECT COUNT(*) FROM llmstxt)`).Scan(&checks, &llms); err != nil {
 		return err
 	}
 
@@ -585,6 +597,14 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 		return err
 	}
 
+	// The crawl-level records come first: a reader after only those stops a
+	// few lines in, rather than behind every page.
+	if err := siteChecks(tx, func(sc *SiteCheck) error { return enc.Encode(sc) }); err != nil {
+		return err
+	}
+	if err := llmsTxt(tx, func(f *LlmsTxt) error { return enc.Encode(f) }); err != nil {
+		return err
+	}
 	s := &stream{tx: tx, scope: scope, want: linkTypeSet(linkTypes), full: opts.Full, stored: stored, assetsDir: st.AssetsDir()}
 	if err := s.pages(func(p *Page) error {
 		return enc.Encode(p)
@@ -806,74 +826,68 @@ func fillFromFacts(p *Page, f *parse.Facts, want map[string]bool) {
 	}
 }
 
-// siteChecks reads the stored site-check reports, sorted by (kind, subject):
-// SQLite's binary collation is Go's string order, so the header is as
-// deterministic as the page lines. [] when the pass never ran.
-func siteChecks(tx *sql.Tx) ([]SiteCheck, error) {
+// siteChecks streams the stored site-check reports one row at a time, sorted
+// by (kind, subject): SQLite's binary collation is Go's string order, so these
+// lines are as deterministic as the page lines.
+func siteChecks(tx *sql.Tx, fn func(*SiteCheck) error) error {
 	rows, err := tx.Query(`SELECT kind, subject, report FROM site_checks ORDER BY kind, subject`)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
-	checks := []SiteCheck{}
 	for rows.Next() {
-		var sc SiteCheck
+		sc := SiteCheck{Record: RecordSiteCheck}
 		var report string
 		if err := rows.Scan(&sc.Kind, &sc.Subject, &report); err != nil {
-			return nil, err
+			return err
 		}
 		// Verbatim, so validated rather than decoded: a corrupt row must fail
 		// here, naming itself, not deep inside the encoder.
 		if !json.Valid([]byte(report)) {
-			return nil, fmt.Errorf("site check %s %s: stored report is not JSON", sc.Kind, sc.Subject)
+			return fmt.Errorf("site check %s %s: stored report is not JSON", sc.Kind, sc.Subject)
 		}
 		sc.Report = json.RawMessage(report)
-		checks = append(checks, sc)
+		if err := fn(&sc); err != nil {
+			return err
+		}
 	}
-	return checks, rows.Err()
+	return rows.Err()
 }
 
-// llmsTxt reads the stored llms.txt files, sorted by URL, each with the
-// curated links it listed, sorted by URL. [] when no file was fetched.
-func llmsTxt(tx *sql.Tx) ([]LlmsTxt, error) {
-	rows, err := tx.Query(`SELECT url, kind, status, found, title, summary, malformed, COALESCE(content, '')
+// llmsTxt streams the stored llms.txt files one row at a time, sorted by URL,
+// each with the curated links it listed. The links are a correlated subquery
+// aggregated into a JSON array, as a page's custom results are, so this is one
+// cursor; they are sorted by URL on decode, since SQLite does not promise an
+// aggregate's order, and (src, url) is their key.
+func llmsTxt(tx *sql.Tx, fn func(*LlmsTxt) error) error {
+	rows, err := tx.Query(`SELECT url, kind, status, found, title, summary, malformed, COALESCE(content, ''),
+		COALESCE((SELECT json_group_array(json_object('url', l.url, 'section', l.section, 'anchor', l.anchor))
+			FROM llmstxt_links l WHERE l.src = llmstxt.url), '[]')
 		FROM llmstxt ORDER BY url`)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
-	files := []LlmsTxt{}
-	index := map[string]int{}
 	for rows.Next() {
-		f := LlmsTxt{Links: []LlmsTxtLink{}}
+		f := LlmsTxt{Record: RecordLlmsTxt}
 		var found, malformed int
-		if err := rows.Scan(&f.URL, &f.Kind, &f.Status, &found, &f.Title, &f.Summary, &malformed, &f.Content); err != nil {
-			return nil, err
+		var links []byte
+		if err := rows.Scan(&f.URL, &f.Kind, &f.Status, &found, &f.Title, &f.Summary, &malformed, &f.Content, &links); err != nil {
+			return err
 		}
 		f.Found, f.Malformed = found == 1, malformed == 1
-		index[f.URL] = len(files)
-		files = append(files, f)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	lrows, err := tx.Query(`SELECT src, url, section, anchor FROM llmstxt_links ORDER BY src, url`)
-	if err != nil {
-		return nil, err
-	}
-	defer lrows.Close()
-	for lrows.Next() {
-		var src string
-		var l LlmsTxtLink
-		if err := lrows.Scan(&src, &l.URL, &l.Section, &l.Anchor); err != nil {
-			return nil, err
+		if err := json.Unmarshal(links, &f.Links); err != nil {
+			return fmt.Errorf("llms.txt %s: links: %w", f.URL, err)
 		}
-		// A link is recorded only after its file, so its src always has a row.
-		if i, ok := index[src]; ok {
-			files[i].Links = append(files[i].Links, l)
+		if f.Links == nil {
+			f.Links = []LlmsTxtLink{}
+		}
+		slices.SortFunc(f.Links, func(a, b LlmsTxtLink) int { return strings.Compare(a.URL, b.URL) })
+		if err := fn(&f); err != nil {
+			return err
 		}
 	}
-	return files, lrows.Err()
+	return rows.Err()
 }
 
 // storedAssets reads which page assets the crawl kept from its frozen config —

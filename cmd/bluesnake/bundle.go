@@ -21,9 +21,9 @@ func newBundleCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bundle <crawl-id>",
 		Short: "Export a whole crawl as one streamable JSON Lines file (page text, structured data, link graph; --full adds stored HTML)",
-		Long: "Write a stored crawl as JSON Lines: one header record describing the crawl —\n" +
-			"its site-check reports (robots.txt, sitemaps, AI-bot access) and llms.txt files\n" +
-			"included — then one record per page carrying everything the crawl stored about\n" +
+		Long: "Write a stored crawl as JSON Lines: one header record describing the crawl,\n" +
+			"then a record per site-check report (robots.txt, sitemaps, AI-bot access) and\n" +
+			"per llms.txt file, then one record per page carrying everything the crawl stored about\n" +
 			"it: its text, response headers, structured data (including the raw JSON-LD\n" +
 			"blocks), the author evidence it shows, custom search/extraction values, the\n" +
 			"sitemaps that list it, link-graph metrics and its nested link edges.\n" +

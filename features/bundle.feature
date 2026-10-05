@@ -1,6 +1,7 @@
 Feature: Crawl bundle export
   A whole crawl exports as one self-describing, streamable JSON Lines file:
-  a header record describing the crawl, then one record per page carrying
+  a header record describing the crawl, then a record per site-check report
+  and per llms.txt file, then one record per page carrying
   everything the crawl stored about it — its body text, response headers,
   structured data (including the raw JSON-LD blocks), custom search and
   extraction values, link-graph metrics, its nested link edges and, with
@@ -37,7 +38,7 @@ Feature: Crawl bundle export
     When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
     And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
     Then the exit code is 0
-    And the bundle header has "format" equal to "bluesnake.pages/2"
+    And the bundle header has "format" equal to "bluesnake.pages/3"
     And the bundle header carries "bluesnake_version"
     And the bundle header carries "crawl_id"
     And the bundle header carries "config_digest"
@@ -143,11 +144,12 @@ Feature: Crawl bundle export
     And the bundle page "/about" has "inlinks" equal to "1"
     And the bundle page "/about" has "discovered_from" equal to "<serverurl>/"
 
-  # The site-check pass's reports are stored data, so they ride in the header:
+  # The site-check pass's reports are stored data, so they ride along, each on
+  # a line of its own between the header and the pages, counted in the header:
   # the robots.txt the crawl obeyed, verbatim inside the robots report, and the
   # AI-bot verdicts, the search engines' crawlers among them. Their findings are
   # issues — verdicts — and stay out.
-  Scenario: The header carries the site-check reports, robots.txt body included
+  Scenario: The bundle carries the site-check reports, robots.txt body included
     Given a robots.txt file:
       """
       User-agent: GPTBot
@@ -160,16 +162,17 @@ Feature: Crawl bundle export
     When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
     And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
     Then the exit code is 0
-    And the bundle header has a "robots" site check whose report "body" contains "Disallow: /private"
-    And the bundle header has an "ai_bots" site check whose report "bots" contains "Googlebot"
+    And the bundle has a "robots" site check whose report "body" contains "Disallow: /private"
+    And the bundle has an "ai_bots" site check whose report "bots" contains "Googlebot"
+    And the bundle page count matches the header
 
   # A report row exists exactly when a check ran, so a crawl run with the checks
-  # off carries an empty array rather than leaving the key out.
+  # off counts 0 of them rather than leaving the count out.
   Scenario: A crawl run with --site-checks off carries no site-check reports
     When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet --site-checks off"
     And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
     Then the exit code is 0
-    And the bundle header has no site checks
+    And the bundle has no site checks
 
   # Each page carries the sitemap entries that list it, with the lastmod each
   # gave it as written: honest last-updated dates, sitemap coverage (pages no
