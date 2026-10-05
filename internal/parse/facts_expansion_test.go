@@ -1,6 +1,9 @@
 package parse
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // The 2026-06 catalogue tranche needs three new parse-level facts: the
 // alt-attribute-present/empty distinction on image links (SF splits Missing
@@ -38,49 +41,31 @@ func TestImageNoAltAttr(t *testing.T) {
 }
 
 func TestH1AltTextFallback(t *testing.T) {
-	// image-only h1: the alt text becomes the h1 (Screaming Frog behaviour)
-	// and the page is marked as having an alt-text h1
-	f := parseHTML(t, "https://ex.com/p", `<html><body>
-		<h1><img src="/logo.png" alt="Company Logo"></h1>
-	</body></html>`, nil, nil)
-	if len(f.H1s) != 1 || f.H1s[0] != "Company Logo" {
-		t.Errorf("H1s = %v, want the image alt text extracted as the h1", f.H1s)
-	}
-	if !f.H1AltText {
-		t.Error("H1AltText not set for an image-only h1")
-	}
-
-	// real text wins: the image alt must not replace it
-	f = parseHTML(t, "https://ex.com/p", `<html><body>
-		<h1>Real heading <img src="/i.png" alt="decoration"></h1>
-	</body></html>`, nil, nil)
-	if len(f.H1s) != 1 || f.H1s[0] != "Real heading" {
-		t.Errorf("H1s = %v, want the element text untouched", f.H1s)
-	}
-	if f.H1AltText {
-		t.Error("H1AltText set although the h1 has its own text")
-	}
-
-	// empty alt on an image-only h1: stays a missing h1, not an alt-text h1
-	f = parseHTML(t, "https://ex.com/p", `<html><body>
-		<h1><img src="/i.png" alt=""></h1>
-	</body></html>`, nil, nil)
-	if len(f.H1s) != 1 || f.H1s[0] != "" {
-		t.Errorf("H1s = %v, want one empty h1", f.H1s)
-	}
-	if f.H1AltText {
-		t.Error("H1AltText set although the image alt is empty")
-	}
-
-	// the fallback is h1-only: an image-only h2 stays empty
-	f = parseHTML(t, "https://ex.com/p", `<html><body>
-		<h1>Fine</h1><h2><img src="/i.png" alt="not a heading"></h2>
-	</body></html>`, nil, nil)
-	if len(f.H2s) != 1 || f.H2s[0] != "" {
-		t.Errorf("H2s = %v, want one empty h2 (no alt fallback)", f.H2s)
-	}
-	if f.H1AltText {
-		t.Error("H1AltText set by an h2")
+	for _, tt := range []struct {
+		name, body string
+		want       []Heading
+	}{
+		// image-only h1: the alt text becomes the h1 (Screaming Frog
+		// behaviour), and that heading is marked as taken from an alt
+		{"image-only h1", `<h1><img src="/logo.png" alt="Company Logo"></h1>`,
+			[]Heading{{Level: 1, Text: "Company Logo", FromAlt: true}}},
+		// real text wins: the image alt must not replace it
+		{"h1 with text", `<h1>Real heading <img src="/i.png" alt="decoration"></h1>`,
+			[]Heading{{Level: 1, Text: "Real heading"}}},
+		// empty alt on an image-only h1: stays a missing h1, not an alt-text h1
+		{"empty alt", `<h1><img src="/i.png" alt=""></h1>`,
+			[]Heading{{Level: 1}}},
+		// the fallback is h1-only: an image-only h2 stays empty
+		{"image-only h2", `<h1>Fine</h1><h2><img src="/i.png" alt="not a heading"></h2>`,
+			[]Heading{{Level: 1, Text: "Fine"}, {Level: 2}}},
+		// the mark is on the heading that fell back, not on the page's first h1
+		{"second h1", `<h1>Fine</h1><h1><img src="/logo.png" alt="Logo"></h1>`,
+			[]Heading{{Level: 1, Text: "Fine"}, {Level: 1, Text: "Logo", FromAlt: true}}},
+	} {
+		f := parseHTML(t, "https://ex.com/p", `<html><body>`+tt.body+`</body></html>`, nil, nil)
+		if !slices.Equal(f.Headings, tt.want) {
+			t.Errorf("%s: headings = %+v, want %+v", tt.name, f.Headings, tt.want)
+		}
 	}
 }
 

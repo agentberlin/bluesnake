@@ -91,7 +91,7 @@ func diffFacts(rep *RenderDiffReport, raw, rendered *parse.Facts, consoleErrors 
 	rep.RawTitle, rep.RenderedTitle = first(raw.Titles), first(rendered.Titles)
 	rep.TitleChanged = rep.RawTitle != rep.RenderedTitle
 	rep.DescriptionChanged = first(raw.Descriptions) != first(rendered.Descriptions)
-	rep.H1Changed = first(raw.H1s) != first(rendered.H1s)
+	rep.H1Changed = first(raw.HeadingTexts(1)) != first(rendered.HeadingTexts(1))
 	rep.RawCanonical, rep.RenderedCanonical = first(raw.CanonicalHTML), first(rendered.CanonicalHTML)
 	rep.CanonicalChanged = rep.RawCanonical != rep.RenderedCanonical
 	rep.NoindexOnlyRaw = hasNoindex(raw.MetaRobots) && !hasNoindex(rendered.MetaRobots)

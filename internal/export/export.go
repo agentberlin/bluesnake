@@ -147,7 +147,7 @@ func tabRow(name string, rec *crawler.PageRecord) ([]string, bool) {
 		title, desc, h1, canonical := "", "", "", ""
 		wordCount := 0
 		if f != nil {
-			title, desc, h1 = first(f.Titles), first(f.Descriptions), first(f.H1s)
+			title, desc, h1 = first(f.Titles), first(f.Descriptions), first(f.HeadingTexts(1))
 			canonical = first(f.CanonicalHTML)
 			wordCount = f.WordCount
 		}
@@ -182,8 +182,9 @@ func tabRow(name string, rec *crawler.PageRecord) ([]string, bool) {
 		if f == nil {
 			return nil, false
 		}
-		return []string{rec.URL, first(f.H1s), itoa(len([]rune(first(f.H1s)))),
-			itoa(len(f.H1s)), rec.IndexabilityStatus}, true
+		h1s := f.HeadingTexts(1)
+		return []string{rec.URL, first(h1s), itoa(len([]rune(first(h1s)))),
+			itoa(len(h1s)), rec.IndexabilityStatus}, true
 	case "canonicals":
 		if f == nil {
 			return nil, false

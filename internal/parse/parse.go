@@ -105,6 +105,16 @@ type Hreflang struct {
 	URL  string
 }
 
+// Heading is one h1–h6 element: its level and collapsed text. An h1 with no
+// text of its own takes its first image's alt as its text, as Screaming Frog
+// does, and is marked FromAlt (the "Alt Text in h1" check); no other level
+// falls back.
+type Heading struct {
+	Level   int
+	Text    string
+	FromAlt bool
+}
+
 // Form is one form on the page (security checks).
 type Form struct {
 	Action string // resolved; the page itself when the action attribute is absent
@@ -131,10 +141,9 @@ type Facts struct {
 
 	Keywords []string
 
-	H1s           []string
-	H2s           []string
-	HeadingLevels []int // document order of h1..h6 levels
-	H1AltText     bool  // an h1's text came from an image alt attribute
+	// Headings is every h1–h6 in document order: the one heading record.
+	// HeadingTexts and HeadingLevels are the per-level views the checks read.
+	Headings []Heading
 
 	MetaRobots            []string
 	MetaRobotsOutsideHead int
@@ -207,6 +216,28 @@ type Facts struct {
 // marker SF and this knob act on.)
 func (f *Facts) IsPaginated() bool {
 	return f != nil && (len(f.PrevHTML) > 0 || len(f.PrevHTTP) > 0)
+}
+
+// HeadingTexts returns the text of every heading at level, in document order:
+// HeadingTexts(1) is the page's h1s.
+func (f *Facts) HeadingTexts(level int) []string {
+	var texts []string
+	for _, h := range f.Headings {
+		if h.Level == level {
+			texts = append(texts, h.Text)
+		}
+	}
+	return texts
+}
+
+// HeadingLevels returns the level of every heading, in document order — the
+// outline the heading-order checks walk.
+func (f *Facts) HeadingLevels() []int {
+	levels := make([]int, 0, len(f.Headings))
+	for _, h := range f.Headings {
+		levels = append(levels, h.Level)
+	}
+	return levels
 }
 
 type parser struct {
@@ -347,23 +378,15 @@ func (p *parser) handleElement(n *html.Node, path string) {
 	case "link":
 		p.handleLinkElement(n, path)
 	case "h1", "h2", "h3", "h4", "h5", "h6":
-		level := int(n.Data[1] - '0')
-		f.HeadingLevels = append(f.HeadingLevels, level)
-		text := collapseSpace(subtreeText(n))
-		switch n.Data {
-		case "h1":
-			// image-only h1: Screaming Frog extracts the image alt as the
-			// h1 text and flags the page (h1 "Alt Text in h1" filter)
-			if text == "" {
-				if alt := collapseSpace(firstImgAlt(n)); alt != "" {
-					text = alt
-					f.H1AltText = true
-				}
+		h := Heading{Level: int(n.Data[1] - '0'), Text: collapseSpace(subtreeText(n))}
+		// image-only h1: Screaming Frog extracts the image alt as the h1
+		// text and flags the page (h1 "Alt Text in h1" filter)
+		if h.Level == 1 && h.Text == "" {
+			if alt := collapseSpace(firstImgAlt(n)); alt != "" {
+				h.Text, h.FromAlt = alt, true
 			}
-			f.H1s = append(f.H1s, text)
-		case "h2":
-			f.H2s = append(f.H2s, text)
 		}
+		f.Headings = append(f.Headings, h)
 	case "a", "area":
 		p.handleAnchor(n, path)
 	case "img":

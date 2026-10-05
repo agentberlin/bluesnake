@@ -1205,8 +1205,9 @@ func (c *Crawl) MaxEdgeSeq() (int64, error) {
 // nuance: the multi-clause eligibility gate (crawled ∧ internal ∧ HTML ∧ — when
 // configured — indexable ∧ not-paginated, the last via json_array_length of the
 // rel=prev arrays, so no precomputed column is needed), the H1/H2 "either of the
-// first two" matching (json_each with index < 2, which also makes a page whose two
-// h1s are identical its own duplicate), and the per-(url,key) detail rows.
+// first two" matching (the first two Headings at the level, numbered in document
+// order, which also makes a page whose two h1s are identical its own duplicate),
+// and the per-(url,key) detail rows.
 func (c *Crawl) DuplicateIssues(ignoreNonIndexable, ignorePaginated bool) ([]issues.Occurrence, error) {
 	elig := `state = 'crawled' AND scope = 'internal' AND facts IS NOT NULL
 		AND (content_type LIKE '%text/html%' OR content_type LIKE '%application/xhtml%')`
@@ -1253,19 +1254,23 @@ func (c *Crawl) DuplicateIssues(ignoreNonIndexable, ignorePaginated bool) ([]iss
 		return nil, err
 	}
 
-	// either-of-first-2 duplicates: h1, h2 (each of the first two values is a key)
-	either := func(arrayPath, issueID string) error {
+	// either-of-first-2 duplicates: h1, h2 (each of the first two headings at
+	// the level is a key)
+	either := func(level int, issueID string) error {
 		q := fmt.Sprintf(`WITH e AS (SELECT url, facts FROM pages WHERE %s),
-			keys AS (SELECT e.url AS url, je.value AS k FROM e, json_each(e.facts, '%s') je
-			         WHERE je.key < 2 AND je.value IS NOT NULL AND je.value != '')
+			hs AS (SELECT e.url AS url, json_extract(je.value, '$.Text') AS k,
+			              ROW_NUMBER() OVER (PARTITION BY e.url ORDER BY je.key) AS n
+			       FROM e, json_each(e.facts, '$.Headings') je
+			       WHERE json_extract(je.value, '$.Level') = %d),
+			keys AS (SELECT url, k FROM hs WHERE n <= 2 AND k IS NOT NULL AND k != '')
 			SELECT url, k FROM keys WHERE k IN (SELECT k FROM keys GROUP BY k HAVING COUNT(*) >= 2)`,
-			elig, arrayPath)
+			elig, level)
 		return scan(q, issueID)
 	}
-	if err := either(`$.H1s`, "h1_duplicate"); err != nil {
+	if err := either(1, "h1_duplicate"); err != nil {
 		return nil, err
 	}
-	if err := either(`$.H2s`, "h2_duplicate"); err != nil {
+	if err := either(2, "h2_duplicate"); err != nil {
 		return nil, err
 	}
 	return occs, nil

@@ -105,19 +105,19 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex, *LlmsTxtData, 
 		p.Facts = &parse.Facts{
 			Titles:       []string{"Duplicate Title Coverage Page Here"},
 			Descriptions: []string{"A duplicated meta description that is comfortably over the seventy character minimum threshold."},
-			H1s:          []string{"dup heading"}, H2s: []string{"dup subheading"},
-			HeadingLevels: []int{1, 2},
-			Hash:          "dup-hash",
+			Headings:     []parse.Heading{{Level: 1, Text: "dup heading"}, {Level: 2, Text: "dup subheading"}},
+			Hash:         "dup-hash",
 		}
 		_ = i
 	}
 	long := add(covPage(ks + "/t-long"))
 	long.Facts = &parse.Facts{
-		Titles:        []string{strings.Repeat("long title ", 7)}, // 77 chars
-		Descriptions:  []string{strings.Repeat("long desc ", 17)}, // 170 chars
-		H1s:           []string{strings.Repeat("long h1 ", 10)},   // 80 chars
-		H2s:           []string{strings.Repeat("long h2 ", 10)},   // 80 chars
-		HeadingLevels: []int{1, 2},
+		Titles:       []string{strings.Repeat("long title ", 7)}, // 77 chars
+		Descriptions: []string{strings.Repeat("long desc ", 17)}, // 170 chars
+		Headings: []parse.Heading{
+			{Level: 1, Text: strings.Repeat("long h1 ", 10)}, // 80 chars
+			{Level: 2, Text: strings.Repeat("long h2 ", 10)}, // 80 chars
+		},
 	}
 	short := add(covPage(ks + "/t-short"))
 	short.Facts = &parse.Facts{Titles: []string{"Tiny"}, Descriptions: []string{"short"}}
@@ -140,24 +140,20 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex, *LlmsTxtData, 
 		},
 		DescriptionsOutsideHead: 1,
 		Keywords:                []string{"a", "b"},
-		H1s:                     []string{"one", "two"}, HeadingLevels: []int{2, 1},
-		H2s: []string{"x", "y"},
+		Headings:                []parse.Heading{{Level: 2, Text: "x"}, {Level: 1, Text: "one"}, {Level: 1, Text: "two"}, {Level: 2, Text: "y"}},
 	}
 	same := add(covPage(ks + "/t-same"))
-	same.Facts = &parse.Facts{Titles: []string{"Same Text Here On Title And H1"}, H1s: []string{"same text here on title and h1"}, HeadingLevels: []int{1}}
+	same.Facts = &parse.Facts{Titles: []string{"Same Text Here On Title And H1"}, Headings: []parse.Heading{{Level: 1, Text: "same text here on title and h1"}}}
 	altH1 := add(covPage(ks + "/t-alt-h1"))
 	altH1.Facts = &parse.Facts{
-		Titles:        []string{"A Page Whose H1 Is An Image Alt"},
-		H1s:           []string{"Company Logo"},
-		H1AltText:     true,
-		HeadingLevels: []int{1},
+		Titles:   []string{"A Page Whose H1 Is An Image Alt"},
+		Headings: []parse.Heading{{Level: 1, Text: "Company Logo", FromAlt: true}},
 	}
 	skipped := add(covPage(ks + "/t-skipped")) // h1 > h3 > h2: first h2 follows a deeper heading
 	skipped.Facts = &parse.Facts{
 		Titles:       []string{"A Page With Non-Sequential Headings"},
 		Descriptions: []string{"This page exists to exercise the non-sequential h2 check with a heading order of h1, h3, h2."},
-		H1s:          []string{"top heading"}, H2s: []string{"late subheading"},
-		HeadingLevels: []int{1, 3, 2},
+		Headings:     []parse.Heading{{Level: 1, Text: "top heading"}, {Level: 3}, {Level: 2, Text: "late subheading"}},
 	}
 
 	// --- content ---
@@ -500,12 +496,10 @@ func healthyPages() map[string]*crawler.PageRecord {
 		p.Depth = depth
 		p.Headers = headers()
 		p.Facts = &parse.Facts{
-			Titles:        []string{title},
-			Descriptions:  []string{desc},
-			H1s:           []string{h1},
-			H2s:           []string{h1 + " subheading"},
-			HeadingLevels: []int{1, 2},
-			HasViewport:   true, HasCharset: true, Lang: "en",
+			Titles:       []string{title},
+			Descriptions: []string{desc},
+			Headings:     []parse.Heading{{Level: 1, Text: h1}, {Level: 2, Text: h1 + " subheading"}},
+			HasViewport:  true, HasCharset: true, Lang: "en",
 			CanonicalHTML: []string{url},
 			WordCount:     500, Flesch: 65,
 			ContentText: "plenty of perfectly readable healthy text that mentions nothing alarming at all",

@@ -1089,7 +1089,7 @@ func TestPageCarriesTheRestOfTheFacts(t *testing.T) {
 	if err := c.Page(&crawler.PageRecord{
 		URL: "https://ex.test/", Scope: "internal", State: crawler.StateCrawled, StatusCode: 200,
 		Facts: &parse.Facts{
-			Keywords: []string{"alpha, bravo"}, H2s: []string{"Sub one", "Sub two"}, HeadingLevels: []int{1, 2, 2},
+			Keywords: []string{"alpha, bravo"}, Headings: []parse.Heading{{Level: 1}, {Level: 2, Text: "Sub one"}, {Level: 2, Text: "Sub two"}},
 			NextHTTP: []string{"https://ex.test/?page=2"}, PrevHTML: []string{"https://ex.test/?page=0"},
 			MetaRefresh: "5; url=/x", MetaRefreshURL: "https://ex.test/x",
 			HreflangHTML: []parse.Hreflang{{Lang: "en", URL: "https://ex.test/"}},

@@ -43,6 +43,25 @@ Feature: On-page element extraction
     And the page has 2 h2s
     And the first heading level is 2
 
+  Scenario: Every heading is one record, with its level and text
+    Given a page at URL "https://ex.com/p" with HTML:
+      """
+      <html><body>
+        <h1><img src="/logo.png" alt="Company Logo"></h1>
+        <h2>Overview</h2>
+        <h3>Detail</h3>
+        <h6>Fine print</h6>
+        <h2><img src="/icon.png" alt="Not an h2"></h2>
+      </body></html>
+      """
+    Then the page has headings:
+      | level | text         | from_alt |
+      | 1     | Company Logo | true     |
+      | 2     | Overview     | false    |
+      | 3     | Detail       | false    |
+      | 6     | Fine print   | false    |
+      | 2     |              | false    |
+
   Scenario: Directives from meta robots and X-Robots-Tag header
     Given the response header "X-Robots-Tag" is "noarchive"
     And a page at URL "https://ex.com/p" with HTML:

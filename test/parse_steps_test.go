@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/agentberlin/bluesnake/internal/config"
@@ -31,6 +32,7 @@ func (w *world) registerParseSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the page has (\d+) h1s? and h1 1 is "([^"]*)"$`, w.checkH1s)
 	sc.Step(`^the page has (\d+) h2s$`, w.checkH2s)
 	sc.Step(`^the first heading level is (\d+)$`, w.checkFirstHeadingLevel)
+	sc.Step(`^the page has headings:$`, w.checkHeadings)
 	sc.Step(`^meta robots 1 is "([^"]*)"$`, w.checkMetaRobots)
 	sc.Step(`^the x-robots-tag directives include "([^"]*)"$`, w.checkXRobots)
 	sc.Step(`^the HTML canonical is "([^"]*)"$`, w.checkHTMLCanonical)
@@ -187,19 +189,19 @@ func (w *world) checkMultipleBody() error {
 }
 
 func (w *world) checkH1s(count int, first string) error {
-	return checkCountAndFirst("h1", w.facts.H1s, count, first)
+	return checkCountAndFirst("h1", w.facts.HeadingTexts(1), count, first)
 }
 
 func (w *world) checkH2s(count int) error {
-	if len(w.facts.H2s) != count {
-		return fmt.Errorf("h2s = %v, want %d", w.facts.H2s, count)
+	if h2s := w.facts.HeadingTexts(2); len(h2s) != count {
+		return fmt.Errorf("h2s = %v, want %d", h2s, count)
 	}
 	return nil
 }
 
 func (w *world) checkFirstHeadingLevel(level int) error {
-	if len(w.facts.HeadingLevels) == 0 || w.facts.HeadingLevels[0] != level {
-		return fmt.Errorf("heading levels = %v, want first %d", w.facts.HeadingLevels, level)
+	if levels := w.facts.HeadingLevels(); len(levels) == 0 || levels[0] != level {
+		return fmt.Errorf("heading levels = %v, want first %d", levels, level)
 	}
 	return nil
 }
@@ -460,6 +462,38 @@ func (w *world) checkLinkTitle(url, want string) error {
 	}
 	if l.Title != want {
 		return fmt.Errorf("title = %q, want %q", l.Title, want)
+	}
+	return nil
+}
+
+// headingsTable reads a level | text | from_alt table (the first row is the
+// header) as the heading record it describes.
+func headingsTable(table *godog.Table) ([]parse.Heading, error) {
+	var hs []parse.Heading
+	for i, row := range table.Rows {
+		if len(row.Cells) != 3 {
+			return nil, fmt.Errorf("heading rows need 3 cells (level | text | from_alt)")
+		}
+		if i == 0 {
+			continue
+		}
+		level, err := strconv.Atoi(row.Cells[0].Value)
+		if err != nil {
+			return nil, fmt.Errorf("heading level %q: %w", row.Cells[0].Value, err)
+		}
+		hs = append(hs, parse.Heading{Level: level, Text: row.Cells[1].Value, FromAlt: row.Cells[2].Value == "true"})
+	}
+	return hs, nil
+}
+
+// checkHeadings compares the page's heading record, in order, with a table.
+func (w *world) checkHeadings(table *godog.Table) error {
+	want, err := headingsTable(table)
+	if err != nil {
+		return err
+	}
+	if !slices.Equal(w.facts.Headings, want) {
+		return fmt.Errorf("headings = %+v, want %+v", w.facts.Headings, want)
 	}
 	return nil
 }

@@ -13,8 +13,8 @@ import (
 // expansion check under scrutiny.
 func expansionFacts() *parse.Facts {
 	return &parse.Facts{
-		Titles: []string{"a reasonable length page title here"},
-		H1s:    []string{"h"}, H2s: []string{"x"}, HeadingLevels: []int{1},
+		Titles:      []string{"a reasonable length page title here"},
+		Headings:    []parse.Heading{{Level: 1, Text: "h"}, {Level: 2, Text: "x"}},
 		HasViewport: true, HasCharset: true, Lang: "en",
 	}
 }

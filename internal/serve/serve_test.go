@@ -54,7 +54,7 @@ func servedStore(t *testing.T) (dir, id string) {
 		{URL: "https://ex.com/", Scope: "internal", State: crawler.StateCrawled,
 			StatusCode: 200, Status: "OK", ContentType: "text/html", Indexable: true,
 			Facts: &parse.Facts{Titles: []string{"Home"}, Descriptions: []string{"d"},
-				H1s: []string{"H"}, WordCount: 100}},
+				Headings: []parse.Heading{{Level: 1, Text: "H"}}, WordCount: 100}},
 		{URL: "https://ex.com/a", Scope: "internal", State: crawler.StateCrawled,
 			StatusCode: 404, Status: "Not Found", ContentType: "text/html"},
 	}

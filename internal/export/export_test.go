@@ -28,7 +28,7 @@ func seededStore(t *testing.T) *store.Crawl {
 		{URL: "https://ex.com/", Scope: "internal", State: crawler.StateCrawled,
 			StatusCode: 200, Status: "OK", ContentType: "text/html", Indexable: true,
 			Facts: &parse.Facts{Titles: []string{"Home"}, Descriptions: []string{"d"},
-				H1s: []string{"H"}, WordCount: 100,
+				Headings: []parse.Heading{{Level: 1, Text: "H"}}, WordCount: 100,
 				HreflangHTML: []parse.Hreflang{{Lang: "de", URL: "https://ex.com/de"}},
 				Links:        []parse.Link{{Type: parse.Hyperlink, URL: "https://ex.com/a", Anchor: "a"}},
 			}},
@@ -143,7 +143,7 @@ func TestIssuesExportListsEveryDetail(t *testing.T) {
 		"https://ex.com/recipe": {
 			URL: "https://ex.com/recipe", Scope: "internal", State: crawler.StateCrawled,
 			StatusCode: 200, Status: "OK", ContentType: "text/html", Indexable: true,
-			Facts: &parse.Facts{Titles: []string{"Recipe"}, H1s: []string{"Recipe"}},
+			Facts: &parse.Facts{Titles: []string{"Recipe"}, Headings: []parse.Heading{{Level: 1, Text: "Recipe"}}},
 			StructuredData: &structured.PageData{
 				Formats: []string{"jsonld"}, Types: []string{"Recipe"},
 				Errors: []string{

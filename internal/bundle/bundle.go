@@ -740,12 +740,9 @@ func fillFromFacts(p *Page, f *parse.Facts, want map[string]bool) {
 	for _, a := range f.Authors {
 		p.Authors = append(p.Authors, Author{Source: a.Source, Name: a.Name, URL: a.URL})
 	}
-	p.H1 = nonNil(f.H1s)
-	p.H2 = nonNil(f.H2s)
-	p.HeadingLevels = f.HeadingLevels
-	if p.HeadingLevels == nil {
-		p.HeadingLevels = []int{}
-	}
+	p.H1 = nonNil(f.HeadingTexts(1))
+	p.H2 = nonNil(f.HeadingTexts(2))
+	p.HeadingLevels = f.HeadingLevels()
 	p.Canonical = firstOf(f.CanonicalHTML, f.CanonicalHTTP)
 	p.RelNext = firstOf(f.NextHTML, f.NextHTTP)
 	p.RelPrev = firstOf(f.PrevHTML, f.PrevHTTP)
