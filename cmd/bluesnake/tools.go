@@ -27,6 +27,7 @@ func newToolsCmd() *cobra.Command {
 			"`bluesnake tools list` enumerates them. The same checks run automatically\n" +
 			"during full-domain crawls (site_checks config) and surface as issues.",
 	}
+	toolsCmd.PersistentFlags().StringArray("set", nil, "dotted-path config override over the built-in defaults (key.path=value), repeatable")
 	toolsCmd.AddCommand(newToolsListCmd(), newToolsRobotsCmd(), newToolsSitemapCmd(),
 		newToolsAIBotsCmd(), newToolsRenderCmd(), newToolsLlmsCmd(),
 		newToolsStructuredCmd(), newToolsSerpCmd())
@@ -43,7 +44,7 @@ func newToolsStructuredCmd() *cobra.Command {
 			"recommended ones warnings — the same engine a crawl runs per page.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			chk, err := newToolChecker()
+			chk, err := newToolChecker(cmd)
 			if err != nil {
 				return err
 			}
@@ -85,7 +86,7 @@ func newToolsSerpCmd() *cobra.Command {
 			"title and meta description; --title/--description override for editing.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			chk, err := newToolChecker()
+			chk, err := newToolChecker(cmd)
 			if err != nil {
 				return err
 			}
@@ -140,7 +141,7 @@ func newToolsRenderCmd() *cobra.Command {
 			"what non-rendering consumers (text crawlers, most AI bots) miss.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			chk, err := newToolChecker()
+			chk, err := newToolChecker(cmd)
 			if err != nil {
 				return err
 			}
@@ -197,7 +198,7 @@ func newToolsLlmsCmd() *cobra.Command {
 		Short: "Validate a site's /llms.txt and /llms-full.txt (llmstxt.org)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			chk, err := newToolChecker()
+			chk, err := newToolChecker(cmd)
 			if err != nil {
 				return err
 			}
@@ -230,6 +231,7 @@ func newToolsLlmsCmd() *cobra.Command {
 func newToolsAIBotsCmd() *cobra.Command {
 	var live bool
 	var skip []string
+	var urlsFile string
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "aibots <site>",
@@ -237,14 +239,34 @@ func newToolsAIBotsCmd() *cobra.Command {
 		Long: "Evaluates robots.txt for every AI crawler in the registry (GPTBot,\n" +
 			"ClaudeBot, PerplexityBot, ...) and, with --live, probes the site root\n" +
 			"once per fetcher bot with that bot's User-Agent against a control fetch —\n" +
-			"catching WAF/CDN-level blocks robots.txt testing cannot see.",
+			"catching WAF/CDN-level blocks robots.txt testing cannot see.\n\n" +
+			"--urls-file runs the same check on each listed page instead of the root\n" +
+			"(read the way `bluesnake list` reads its input; '-' for stdin). Every URL\n" +
+			"must be on <site>'s host. Pages run up to speed.max_threads at a time and\n" +
+			"fetches are paced to speed.max_urls_per_sec — set either with --set.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			chk, err := newToolChecker()
+			chk, err := newToolChecker(cmd)
 			if err != nil {
 				return err
 			}
-			rep, err := chk.AIBots(cmd.Context(), args[0], sitecheck.AIBotOptions{Live: live, Skip: skip})
+			opts := sitecheck.AIBotOptions{Live: live, Skip: skip}
+			if urlsFile != "" {
+				urls, err := readURLList(cmd, urlsFile)
+				if err != nil {
+					return exitErr{2, err}
+				}
+				rep, err := chk.AIBotsURLs(cmd.Context(), args[0], urls, opts)
+				if err != nil {
+					return exitErr{2, err}
+				}
+				if asJSON {
+					return emitToolJSON(cmd.OutOrStdout(), rep)
+				}
+				printAIBotsURLs(cmd.OutOrStdout(), rep)
+				return nil
+			}
+			rep, err := chk.AIBots(cmd.Context(), args[0], opts)
 			if err != nil {
 				return exitErr{2, err}
 			}
@@ -256,37 +278,86 @@ func newToolsAIBotsCmd() *cobra.Command {
 				fmt.Fprintf(out, "control fetch  %s  (status %d)\n", rep.URL, rep.ControlStatus)
 			}
 			for _, b := range rep.Bots {
-				robotsCol := "allowed"
-				if !b.RobotsAllowed {
-					robotsCol = fmt.Sprintf("BLOCKED (line %d: %s)", b.RobotsLine, b.RobotsRule)
-				}
-				liveCol := "-"
-				switch {
-				case b.TokenOnly():
-					liveCol = "control token (never fetches)"
-				case b.Probed && b.LiveError != "":
-					liveCol = b.LiveError
-				case b.Probed && b.BlockedLive:
-					liveCol = fmt.Sprintf("BLOCKED (status %d)", b.LiveStatus)
-				case b.Probed:
-					liveCol = fmt.Sprintf("status %d", b.LiveStatus)
-				}
-				note := ""
-				if !b.RespectsRobots {
-					note = "  [does not honour robots.txt]"
-				}
-				fmt.Fprintf(out, "%-22s %-12s robots: %-40s live: %s%s\n",
-					b.Name, b.Operator, robotsCol, liveCol, note)
+				printAIBotRow(out, "", b)
 			}
 			fmt.Fprintln(out, "note: "+rep.Caveat)
 			printFindings(out, rep.Findings())
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&live, "live", true, "probe the site root with each fetcher bot's User-Agent")
+	cmd.Flags().BoolVar(&live, "live", true, "probe the site root (or each listed URL) with each fetcher bot's User-Agent")
 	cmd.Flags().StringSliceVar(&skip, "skip", nil, "registry bot names to exclude")
+	cmd.Flags().StringVar(&urlsFile, "urls-file", "", "check these pages of the site instead of its root ('-' for stdin)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the full report as JSON")
 	return cmd
+}
+
+// printAIBotsURLs renders the URL-list report: the robots.txt, then per page
+// its control fetch and the bots it turns away — the full per-bot table per
+// page would bury them.
+func printAIBotsURLs(out io.Writer, rep *sitecheck.AIBotsURLsReport) {
+	if rb := rep.Robots; rb.FetchError != "" {
+		fmt.Fprintf(out, "robots.txt  %s  (unreachable: %s)\n", rb.URL, rb.FetchError)
+	} else {
+		fmt.Fprintf(out, "robots.txt  %s  (status %d)\n", rb.URL, rb.Status)
+	}
+	defs := make(map[string]sitecheck.Bot, len(rep.Bots))
+	for _, b := range rep.Bots {
+		defs[b.Name] = b
+	}
+	for _, u := range rep.URLs {
+		var turnedAway []sitecheck.AIBotResult
+		for _, v := range u.Bots {
+			if !v.RobotsAllowed || v.BlockedLive {
+				turnedAway = append(turnedAway, sitecheck.AIBotResult{Bot: defs[v.Name], BotVerdict: v.BotVerdict})
+			}
+		}
+		control := ""
+		switch {
+		case !rep.Live:
+		case u.ControlError != "":
+			control = fmt.Sprintf("  control: %s", u.ControlError)
+		default:
+			control = fmt.Sprintf("  control: status %d", u.ControlStatus)
+		}
+		fmt.Fprintf(out, "%s%s  (%d/%d bots allowed)\n", u.URL, control, len(u.Bots)-len(turnedAway), len(u.Bots))
+		for _, b := range turnedAway {
+			printAIBotRow(out, "  ", b)
+		}
+	}
+	fmt.Fprintln(out, "note: "+rep.Caveat)
+	printFindings(out, rep.Findings())
+}
+
+// printAIBotRow renders one bot's robots and live verdicts.
+func printAIBotRow(out io.Writer, indent string, b sitecheck.AIBotResult) {
+	robotsCol := "allowed"
+	switch {
+	case b.RobotsToken == "":
+		robotsCol = "no robots token"
+	case !b.RobotsAllowed:
+		robotsCol = fmt.Sprintf("BLOCKED (line %d: %s)", b.RobotsLine, b.RobotsRule)
+	}
+	if b.RobotsVia != "" {
+		robotsCol += " via " + b.RobotsVia
+	}
+	liveCol := "-"
+	switch {
+	case b.TokenOnly():
+		liveCol = "control token (never fetches)"
+	case b.Probed && b.LiveError != "":
+		liveCol = b.LiveError
+	case b.Probed && b.BlockedLive:
+		liveCol = fmt.Sprintf("BLOCKED (status %d)", b.LiveStatus)
+	case b.Probed:
+		liveCol = fmt.Sprintf("status %d", b.LiveStatus)
+	}
+	note := ""
+	if !b.RespectsRobots {
+		note = "  [does not honour robots.txt]"
+	}
+	fmt.Fprintf(out, "%s%-22s %-12s robots: %-40s live: %s%s\n",
+		indent, b.Name, b.Operator, robotsCol, liveCol, note)
 }
 
 func newToolsListCmd() *cobra.Command {
@@ -318,7 +389,7 @@ func newToolsRobotsCmd() *cobra.Command {
 		Long: "Fetches and audits a site's live robots.txt (or a local file via\n" +
 			"--robots-file) and reports a verdict for every given URL.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			chk, err := newToolChecker()
+			chk, err := newToolChecker(cmd)
 			if err != nil {
 				return err
 			}
@@ -388,7 +459,7 @@ func newToolsSitemapCmd() *cobra.Command {
 			"that file. Index files are expanded recursively.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			chk, err := newToolChecker()
+			chk, err := newToolChecker(cmd)
 			if err != nil {
 				return err
 			}
@@ -435,13 +506,24 @@ func newToolsSitemapCmd() *cobra.Command {
 	return cmd
 }
 
-// newToolChecker builds a checker over the default config — tools are
-// stateless one-shots in their own process. No limiter: nothing runs beside
-// a one-shot, so there is no process-wide ceiling to share (the executor's
-// single-crawl P17 fallback, applied to a no-crawl process). In-process
-// surfaces (desktop Tools hub, MCP run_tool) inject theirs via WithLimiter.
-func newToolChecker() (*sitecheck.Checker, error) {
+// newToolChecker builds a checker over the default config plus the group's
+// --set overrides (http.user_agent for the control fetch, speed.* for the
+// URL-list pacing, ...) — tools are stateless one-shots in their own process.
+// No limiter: nothing runs beside a one-shot, so there is no process-wide
+// ceiling to share (the executor's single-crawl P17 fallback, applied to a
+// no-crawl process). In-process surfaces (desktop Tools hub, MCP run_tool)
+// inject theirs via WithLimiter.
+func newToolChecker(cmd *cobra.Command) (*sitecheck.Checker, error) {
 	cfg := config.Default()
+	sets, _ := cmd.Flags().GetStringArray("set")
+	for _, s := range sets {
+		if err := cfg.Set(s); err != nil {
+			return nil, exitErr{2, err}
+		}
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, exitErr{2, err}
+	}
 	client, err := fetch.New(cfg)
 	if err != nil {
 		return nil, err

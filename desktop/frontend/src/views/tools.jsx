@@ -273,9 +273,11 @@ function AIBotsTool({ meta, onBack, prefill }) {
                   <div style={{ fontSize: 12.5, fontWeight: 600 }}>{b.name}</div>
                   <div style={{ fontSize: 10.5, color: "var(--ink-faint)" }}>{b.operator} · {PURPOSE[b.purpose] || b.purpose}</div>
                 </div>
-                <span className="badge tint" style={{ "--c": b.robots_allowed ? "var(--sev-ok)" : "var(--s-4xx)" }} title={b.robots_rule ? `line ${b.robots_line}: ${b.robots_rule}` : ""}>
-                  <Icon name={b.robots_allowed ? "circle-check" : "ban"} size={11} />robots {b.robots_allowed ? "allowed" : "blocked"}
-                </span>
+                {!b.robots_token
+                  ? <span className="pill" title="The operator publishes no robots.txt token — robots.txt cannot address this fetcher">no robots token</span>
+                  : <span className="badge tint" style={{ "--c": b.robots_allowed ? "var(--sev-ok)" : "var(--s-4xx)" }} title={[b.robots_rule && `line ${b.robots_line}: ${b.robots_rule}`, b.robots_via && `no group of its own; follows ${b.robots_via}'s`].filter(Boolean).join(" — ")}>
+                      <Icon name={b.robots_allowed ? "circle-check" : "ban"} size={11} />robots {b.robots_allowed ? "allowed" : "blocked"}
+                    </span>}
                 {!b.user_agent
                   ? <span className="pill" title="A robots.txt control token — no crawler sends this User-Agent">control token</span>
                   : b.probed && (b.live_error

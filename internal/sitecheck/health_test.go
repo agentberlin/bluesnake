@@ -59,9 +59,9 @@ func TestHealthSitemap(t *testing.T) {
 
 func TestHealthAIBots(t *testing.T) {
 	rep := &AIBotsReport{Site: "https://ex.com", URL: "https://ex.com/", Live: true, RobotsFound: true, Bots: []AIBotResult{
-		{Bot: Bot{Name: "GPTBot"}, RobotsAllowed: true},
-		{Bot: Bot{Name: "ClaudeBot"}, RobotsAllowed: false},
-		{Bot: Bot{Name: "PerplexityBot"}, RobotsAllowed: true, Probed: true, BlockedLive: true, LiveStatus: 403},
+		{Bot: Bot{Name: "GPTBot"}, BotVerdict: BotVerdict{RobotsAllowed: true}},
+		{Bot: Bot{Name: "ClaudeBot"}, BotVerdict: BotVerdict{RobotsAllowed: false}},
+		{Bot: Bot{Name: "PerplexityBot"}, BotVerdict: BotVerdict{RobotsAllowed: true, Probed: true, BlockedLive: true, LiveStatus: 403}},
 	}}
 	h, ok := Health(KindAIBots, mustJSON(t, rep))
 	if !ok || !strings.Contains(h.Summary, "1/3 crawlers allowed") || !strings.Contains(h.Summary, "live-probed") {

@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/fetch"
@@ -138,6 +140,71 @@ func (v capped) Fetch(ctx context.Context, rawURL string) *fetch.Result {
 
 func (v capped) FetchWith(ctx context.Context, rawURL string, o fetch.Override) *fetch.Result {
 	return v.c.fetchWith(ctx, rawURL, o)
+}
+
+// pacedView is the capped view with the per-site speed.max_urls_per_sec rate
+// on top, for a check that fans out over many URLs on one host — the
+// AI-bot URL-list run's pages × bots fetches — paced the way a crawl of that
+// host is. The caller bounds concurrency by speed.max_threads.
+type pacedView struct {
+	capped
+	gate *rateGate // nil ⇒ unlimited
+}
+
+func (c *Checker) paced() pacedView {
+	v := pacedView{capped: capped{c}}
+	if rate := c.cfg.Speed.MaxURLsPerSec; rate > 0 {
+		v.gate = &rateGate{every: time.Duration(float64(time.Second) / rate)}
+	}
+	return v
+}
+
+func (v pacedView) Fetch(ctx context.Context, rawURL string) *fetch.Result {
+	if !v.gate.wait(ctx) {
+		return &fetch.Result{URL: rawURL, FetchError: "cancelled while waiting for the rate limit"}
+	}
+	return v.capped.Fetch(ctx, rawURL)
+}
+
+func (v pacedView) FetchWith(ctx context.Context, rawURL string, o fetch.Override) *fetch.Result {
+	if !v.gate.wait(ctx) {
+		return &fetch.Result{URL: rawURL, FetchError: "cancelled while waiting for the rate limit"}
+	}
+	return v.capped.FetchWith(ctx, rawURL, o)
+}
+
+// rateGate spaces fetch starts at least every apart; the first goes at once.
+// A nil gate never waits.
+type rateGate struct {
+	every time.Duration
+	mu    sync.Mutex
+	next  time.Time
+}
+
+// wait blocks until the caller's turn, or reports false if ctx ends first.
+func (g *rateGate) wait(ctx context.Context) bool {
+	if g == nil {
+		return true
+	}
+	g.mu.Lock()
+	at := time.Now()
+	if g.next.After(at) {
+		at = g.next
+	}
+	g.next = at.Add(g.every)
+	g.mu.Unlock()
+	d := time.Until(at)
+	if d <= 0 {
+		return true
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // DecodeFindings re-derives the findings from a stored report of the given

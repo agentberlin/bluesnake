@@ -545,7 +545,7 @@ sitemaps* (discovery via robots directives ∪ `/sitemap.xml` conventions ∪
 declared, index recursion, gzip-aware sizes — which unblocked the >50 MB
 check — entry hygiene; robots-declared sitemaps are exempt from the
 cross-host finding per sitemaps.org cross-submission); *AI-bot access* (an
-embedded registry of ~20 crawlers — data, not code; robots verdicts per bot
+embedded registry of ~30 crawlers — data, not code; robots verdicts per bot
 plus optional live probes with each fetcher's real UA via `fetch.FetchWith`,
 classified against a control fetch to catch edge/WAF blocks; token-only
 entries are never probed; robots-ignoring fetchers carry an "only an edge
@@ -557,7 +557,20 @@ without both, a report cannot tell a site that opts out of training from one
 that blocks being found. They are token-only, since sites verify them by
 reverse DNS and a probe with their UA from our IP meets an impostor block the
 real crawler never does; they count toward the all-blocked headline like any
-search crawler. *JS render
+search crawler. Google-Extended is labelled search, not training: it also
+gates grounding in the Gemini apps and Vertex AI, so blocking it costs Gemini
+citations. An entry may carry its operator's documented **fallback group**
+(`robots_fallback`), which the matcher (`robots.File.VerdictFallback`) uses
+before `*` when no group names the bot — Applebot follows Googlebot's group,
+Amzn-SearchBot the search engines' (Googlebot's, then Bingbot's); the verdict
+records whose group decided (`robots_via`). An entry may also have a user
+agent and **no robots token** (Google's user-triggered fetchers, Google-Agent
+and Google-GeminiNotebook): robots.txt cannot address it, so it is probed live
+and always robots-allowed. `tools aibots --urls-file` runs the same per-URL
+audit (`sitecheck.AIBotsURLs`) on a list of pages on one host — one robots.txt
+fetch, the bot definitions once, then each page's control fetch and verdicts
+— for callers checking a brand's priority pages rather than its root; the
+crawl pass stays site-level and fixed-cost. *JS render
 diff* (one URL raw vs Chrome-rendered over `parse.Facts`; the full per-field
 diff lives in the report, while findings are three site-level IDs of their
 own — `js_dependent_content`, `js_dependent_links`,
@@ -599,7 +612,12 @@ Tools hub and MCP `run_tool` inject their `runner.ProcessWiring` limiter
 (exposed as `mcp.Backend.ProcessLimiter`), so interactive tool runs count
 against the same ceilings as the crawls they run beside; CLI `tools`
 one-shots inject nothing — nothing runs beside them. robots.txt keeps its documented
-serialized bypass via the robots manager's raw client.
+serialized bypass via the robots manager's raw client. CLI `tools` run on the
+built-in defaults plus the group's `--set` overrides (the control fetch's
+`http.user_agent`, `speed.*`, ...). The one check that fans out over many URLs
+on a host, the AI-bot URL list, is paced like a crawl of that host: at most
+`speed.max_threads` pages at once, each page's fetches in order, and every
+fetch start spaced to `speed.max_urls_per_sec` (on top of the global slot).
 
 **Surfaces** (engine-first per §0): CLI `bluesnake tools` — one command
 group, so the top level stays flat regardless of tool count (`list`, then one

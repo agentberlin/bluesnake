@@ -42,6 +42,41 @@ func TestGroupSelection(t *testing.T) {
 	}
 }
 
+// A documented fallback group decides before * only when no group names the
+// agent itself; the first fallback a group names wins.
+func TestVerdictFallback(t *testing.T) {
+	const body = "User-agent: Googlebot\nDisallow: /g/\n\n" +
+		"User-agent: bingbot\nDisallow: /b/\n\n" +
+		"User-agent: Applebot\nDisallow: /a/\n\n" +
+		"User-agent: *\nDisallow: /star/\n"
+	f := Parse([]byte(body))
+	tests := []struct {
+		ua       string
+		fallback []string
+		url      string
+		allowed  bool
+		via      string
+	}{
+		// no own group: the first named fallback decides, not *
+		{"NewBot", []string{"Googlebot"}, "https://ex.com/g/x", false, "Googlebot"},
+		{"NewBot", []string{"Googlebot"}, "https://ex.com/star/x", true, "Googlebot"},
+		{"NewBot", []string{"Nobody", "bingbot"}, "https://ex.com/b/x", false, "bingbot"},
+		// an own group always wins over the fallback
+		{"Applebot", []string{"Googlebot"}, "https://ex.com/g/x", true, ""},
+		{"Applebot", []string{"Googlebot"}, "https://ex.com/a/x", false, ""},
+		// no fallback names a group: * applies
+		{"NewBot", []string{"Nobody"}, "https://ex.com/star/x", false, ""},
+		{"NewBot", nil, "https://ex.com/star/x", false, ""},
+	}
+	for _, tt := range tests {
+		v, via := f.VerdictFallback(tt.ua, tt.fallback, tt.url)
+		if v.Allowed != tt.allowed || via != tt.via {
+			t.Errorf("VerdictFallback(%q, %v, %q) = allowed %v via %q, want %v via %q",
+				tt.ua, tt.fallback, tt.url, v.Allowed, via, tt.allowed, tt.via)
+		}
+	}
+}
+
 func TestLongestMatchAllowWinsTies(t *testing.T) {
 	f := Parse([]byte(sample))
 	tests := []struct {

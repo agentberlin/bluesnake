@@ -418,11 +418,11 @@ func kitchenSink() (map[string]*crawler.PageRecord, SitemapIndex, *LlmsTxtData, 
 			RobotsFound: true, Live: true, ControlStatus: 200,
 			Bots: []sitecheck.AIBotResult{
 				{Bot: sitecheck.Bot{Name: "GPTBot", Operator: "OpenAI", Purpose: "training", RespectsRobots: true},
-					RobotsLine: 2, RobotsRule: "Disallow: /"},
+					BotVerdict: sitecheck.BotVerdict{RobotsLine: 2, RobotsRule: "Disallow: /"}},
 				{Bot: sitecheck.Bot{Name: "ClaudeBot", Operator: "Anthropic", Purpose: "training", RespectsRobots: true,
 					UserAgent: "ClaudeBot/1.0"},
-					RobotsLine: 2, RobotsRule: "Disallow: /",
-					Probed: true, LiveStatus: 403, BlockedLive: true},
+					BotVerdict: sitecheck.BotVerdict{RobotsLine: 2, RobotsRule: "Disallow: /",
+						Probed: true, LiveStatus: 403, BlockedLive: true}},
 			},
 		}),
 		renderDiffCheck(&sitecheck.RenderDiffReport{ // → js_dependent_content + js_dependent_links + js_changed_robots_directives
@@ -561,7 +561,7 @@ func healthySiteChecks() []SiteCheck {
 			Bots: []sitecheck.AIBotResult{{
 				Bot: sitecheck.Bot{Name: "GPTBot", Operator: "OpenAI", Purpose: "training",
 					RespectsRobots: true, UserAgent: "GPTBot/1.2"},
-				RobotsAllowed: true, Probed: true, LiveStatus: 200,
+				BotVerdict: sitecheck.BotVerdict{RobotsAllowed: true, Probed: true, LiveStatus: 200},
 			}},
 		}),
 		renderDiffCheck(&sitecheck.RenderDiffReport{
