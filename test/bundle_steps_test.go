@@ -38,6 +38,12 @@ func (w *world) registerBundleSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the bundle page "([^"]*)" has structured jsonld containing "([^"]*)"$`, w.bundlePageJSONLDContains)
 	sc.Step(`^the bundle page "([^"]*)" has a link to "([^"]*)" with "([^"]*)" equal to "([^"]*)"$`, w.bundleLinkFieldEquals)
 	sc.Step(`^the bundle page "([^"]*)" has a link to "([^"]*)" with "([^"]*)" containing "([^"]*)"$`, w.bundleLinkFieldContains)
+	sc.Step(`^the bundle page "([^"]*)" has a link to "([^"]*)" with no "([^"]*)" field$`, w.bundleLinkFieldAbsent)
+	sc.Step(`^the bundle page "([^"]*)" has a null "([^"]*)"$`, w.bundlePageFieldNull)
+	sc.Step(`^the bundle page "([^"]*)" is listed in sitemap "([^"]*)" with lastmod "([^"]*)"$`, w.bundlePageInSitemap)
+	sc.Step(`^the bundle page "([^"]*)" is listed in no sitemap$`, w.bundlePageInNoSitemap)
+	sc.Step(`^the bundle header has an? "([^"]*)" site check whose report "([^"]*)" contains "([^"]*)"$`, w.bundleSiteCheckReportContains)
+	sc.Step(`^the bundle header has no site checks$`, w.bundleNoSiteChecks)
 	sc.Step(`^the bundle contains (an|no) external page$`, w.bundleExternalPages)
 	sc.Step(`^the bundle contains (a|no) link of type "([^"]*)"$`, w.bundleLinksOfType)
 	sc.Step(`^the file "([^"]*)" in the store dir is a gzip stream containing "([^"]*)"$`, w.storeFileGzipContains)
@@ -414,10 +420,136 @@ func (w *world) bundleLinkField(path, target, field string) (string, error) {
 			return l.Anchor, nil
 		case "type":
 			return l.Type, nil
+		case "no_alt_attr":
+			if l.NoAltAttr == nil {
+				return "", fmt.Errorf("page %s link %s has no no_alt_attr", path, target)
+			}
+			return fmt.Sprint(*l.NoAltAttr), nil
 		}
 		return "", fmt.Errorf("unsupported bundle link field %q", field)
 	}
 	return "", fmt.Errorf("page %s has no link to %s (%d links)", path, want, len(p.Links))
+}
+
+// bundleLinkFieldAbsent reads the link back as it is on the wire, so an absent
+// key is distinguishable from a false or empty one.
+func (w *world) bundleLinkFieldAbsent(path, target, field string) error {
+	p, err := w.bundlePage(path)
+	if err != nil {
+		return err
+	}
+	want := w.ensureServer().URL + target
+	for _, l := range p.Links {
+		if l.URL != want {
+			continue
+		}
+		raw, err := json.Marshal(l)
+		if err != nil {
+			return err
+		}
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return err
+		}
+		if v, ok := m[field]; ok {
+			return fmt.Errorf("page %s link %s carries %s = %v, want the key absent", path, target, field, v)
+		}
+		return nil
+	}
+	return fmt.Errorf("page %s has no link to %s (%d links)", path, want, len(p.Links))
+}
+
+func (w *world) bundlePageFieldNull(path, field string) error {
+	m, err := w.pageFields(path)
+	if err != nil {
+		return err
+	}
+	v, ok := m[field]
+	if !ok {
+		return fmt.Errorf("page %s has no field %q", path, field)
+	}
+	if v != nil {
+		return fmt.Errorf("page %s: %s = %v, want null", path, field, v)
+	}
+	return nil
+}
+
+func (w *world) bundlePageInSitemap(path, sitemap, lastmod string) error {
+	p, err := w.bundlePage(path)
+	if err != nil {
+		return err
+	}
+	want := w.ensureServer().URL + sitemap
+	for _, e := range p.Sitemaps {
+		if e.Sitemap != want {
+			continue
+		}
+		if e.Lastmod != lastmod {
+			return fmt.Errorf("page %s in %s: lastmod = %q, want %q", path, sitemap, e.Lastmod, lastmod)
+		}
+		return nil
+	}
+	return fmt.Errorf("page %s is not listed in %s; sitemaps = %+v", path, want, p.Sitemaps)
+}
+
+// bundlePageInNoSitemap checks the decoded array is empty and not missing: a
+// page no sitemap lists carries [], never null or an absent key.
+func (w *world) bundlePageInNoSitemap(path string) error {
+	p, err := w.bundlePage(path)
+	if err != nil {
+		return err
+	}
+	if p.Sitemaps == nil {
+		return fmt.Errorf("page %s carries no sitemaps array", path)
+	}
+	if len(p.Sitemaps) != 0 {
+		return fmt.Errorf("page %s is listed in %+v, want no sitemap", path, p.Sitemaps)
+	}
+	return nil
+}
+
+// bundleSiteCheckReportContains finds a site-check report by kind and reads one
+// top-level report field, as a consumer decoding the stored JSON would.
+func (w *world) bundleSiteCheckReportContains(kind, field, want string) error {
+	h, _, err := w.readBundle()
+	if err != nil {
+		return err
+	}
+	want = strings.ReplaceAll(want, "<serverurl>", w.ensureServer().URL)
+	var kinds []string
+	for _, sc := range h.SiteChecks {
+		kinds = append(kinds, sc.Kind)
+		if sc.Kind != kind {
+			continue
+		}
+		var report map[string]any
+		if err := json.Unmarshal(sc.Report, &report); err != nil {
+			return fmt.Errorf("%s report is not a JSON object: %w", kind, err)
+		}
+		v, ok := report[field]
+		if !ok {
+			return fmt.Errorf("%s report has no field %q: %s", kind, field, sc.Report)
+		}
+		if got := fmt.Sprint(v); !strings.Contains(got, want) {
+			return fmt.Errorf("%s report %s = %q, want it to contain %q", kind, field, got, want)
+		}
+		return nil
+	}
+	return fmt.Errorf("header has no %q site check; got %v", kind, kinds)
+}
+
+// bundleNoSiteChecks reads the raw header line: the key must be on the wire as
+// an empty array, not missing, since a missing key means an older bundle.
+func (w *world) bundleNoSiteChecks() error {
+	data, err := os.ReadFile(filepath.Join(w.storeDirPath(), bundleFile))
+	if err != nil {
+		return err
+	}
+	line, _, _ := strings.Cut(string(data), "\n")
+	if !strings.Contains(line, `"site_checks":[]`) {
+		return fmt.Errorf("header does not carry an empty site_checks array:\n%s", line)
+	}
+	return nil
 }
 
 func (w *world) bundleExternalPages(qualifier string) error {

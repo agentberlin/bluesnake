@@ -153,6 +153,54 @@ type Header struct {
 	// produced it; the digest is how a consumer notices a corpus built under two
 	// different rule sets.
 	ConfigDigest string `json:"config_digest"`
+	// SiteChecks and LlmsTxt are the crawl-level stored data: the site-check
+	// pass's reports (DESIGN.md §5.10) and the llms.txt audit's files. They
+	// follow the data, not the config — a row exists exactly when a check ran
+	// or a file was fetched, so [] means nothing ran, and the frozen config
+	// (ConfigDigest) still records what was asked for. Reports only: their
+	// findings are issues, which the bundle leaves out as verdicts. Both come
+	// last because they are the header's bulk (the robots.txt body, the
+	// llms.txt files). Added within bluesnake.pages/1: absent on an older
+	// bundle, which means "not carried", not "none ran".
+	SiteChecks []SiteCheck `json:"site_checks"`
+	LlmsTxt    []LlmsTxt   `json:"llms_txt"`
+}
+
+// SiteCheck is one stored site-check report: the check kind (robots | sitemap
+// | ai_bots | render_diff), the URL it audited, and the report exactly as the
+// pass stored it — the robots report carries the robots.txt body the crawl
+// obeyed (capped at the 500 KiB Google reads), the ai_bots report each bot's
+// robots verdict and, when probed, its live fetch of the site root beside a
+// control fetch. Sorted by (kind, subject). The stored checked_at is left out:
+// it is a wall-clock value the report does not need.
+type SiteCheck struct {
+	Kind    string          `json:"kind"`
+	Subject string          `json:"subject"`
+	Report  json.RawMessage `json:"report"`
+}
+
+// LlmsTxt is one fetched /llms.txt or /llms-full.txt with its structural
+// validation and its raw body — stored on a miss too, where it is whatever the
+// server returned — and the curated links it listed. Sorted by URL, links by
+// URL; Links is always an array (only llms.txt carries a link index).
+type LlmsTxt struct {
+	URL       string        `json:"url"`
+	Kind      string        `json:"kind"` // llms_txt | llms_full_txt
+	Status    int           `json:"status"`
+	Found     bool          `json:"found"`
+	Title     string        `json:"title"`
+	Summary   string        `json:"summary"`
+	Malformed bool          `json:"malformed"`
+	Content   string        `json:"content"`
+	Links     []LlmsTxtLink `json:"links"`
+}
+
+// LlmsTxtLink is one curated link an llms.txt listed: the resolved target, the
+// section heading it sat under and its link text.
+type LlmsTxtLink struct {
+	URL     string `json:"url"`
+	Section string `json:"section"`
+	Anchor  string `json:"anchor"`
 }
 
 // StatusCounts is the header's per-outcome breakdown of the page lines, keyed
@@ -227,11 +275,18 @@ type Page struct {
 	// Headers are the response headers as stored (first value each). The map
 	// is always present — {} where nothing was recorded — and LastModified stays
 	// as the one header the first bundles already pulled out.
-	Headers         map[string]string `json:"headers"`
-	LastModified    string            `json:"last_modified"`
-	Title           string            `json:"title"`
-	MetaDescription string            `json:"meta_description"`
-	MetaKeywords    []string          `json:"meta_keywords"`
+	Headers      map[string]string `json:"headers"`
+	LastModified string            `json:"last_modified"`
+	// Sitemaps are the sitemap entries that list this page, sorted by sitemap,
+	// each with the <lastmod> it gave the page exactly as written ("" when it
+	// gave none, or on a crawl stored before lastmod was kept). [] when no
+	// sitemap lists the page. A lastmod belongs to an entry, not a URL — two
+	// sitemaps can date one page differently — which is why it travels with
+	// membership rather than as one value.
+	Sitemaps        []SitemapEntry `json:"sitemaps"`
+	Title           string         `json:"title"`
+	MetaDescription string         `json:"meta_description"`
+	MetaKeywords    []string       `json:"meta_keywords"`
 	// H1, H2, MetaRobots and XRobotsTag stay ARRAYS. They are natural multiples
 	// that CSV forced into H1-1, H1-2, …; the single-value flattening in the tab
 	// exports is a presentation choice a machine format should not inherit.
@@ -296,6 +351,12 @@ type Page struct {
 	RenderedHTML *string `json:"rendered_html,omitempty"`
 }
 
+// SitemapEntry is one sitemap listing a page, with the lastmod it gave it.
+type SitemapEntry struct {
+	Sitemap string `json:"sitemap"`
+	Lastmod string `json:"lastmod"`
+}
+
 // AgentDirective is one robots meta tag scoped to a named crawler.
 type AgentDirective struct {
 	Agent   string `json:"agent"`
@@ -338,13 +399,18 @@ type Link struct {
 	Anchor string `json:"anchor"`
 	// Alt, Width and Height belong to image links and Lang to hreflang links;
 	// like Origin they are omitted where the link type cannot carry them.
-	Alt      string `json:"alt,omitempty"`
-	Rel      string `json:"rel"`
-	Target   string `json:"target"`
-	Nofollow bool   `json:"nofollow"`
-	Type     string `json:"type"`
-	PathType string `json:"path_type"`
-	Position string `json:"position"`
+	Alt string `json:"alt,omitempty"`
+	// NoAltAttr says an image link's <img> had no alt attribute at all, which
+	// Alt cannot: it is omitted when empty, so a missing alt and a decorative
+	// alt="" would look the same. Present on every image link, false included,
+	// and absent on every other type.
+	NoAltAttr *bool  `json:"no_alt_attr,omitempty"`
+	Rel       string `json:"rel"`
+	Target    string `json:"target"`
+	Nofollow  bool   `json:"nofollow"`
+	Type      string `json:"type"`
+	PathType  string `json:"path_type"`
+	Position  string `json:"position"`
 	// ElemPath is the pure-positional SF link path; PositionPath is the
 	// id/class-annotated chain the position rules matched. Both are empty when
 	// the crawl ran with link-path storage off, and PositionPath is also empty
@@ -365,11 +431,12 @@ const (
 	blobRenderedHTML = "rendered_html"
 )
 
-// pageColumns is the single row shape the stream decodes. The custom results
-// and the two blob paths are correlated subqueries rather than per-page
-// round trips, so the whole crawl is still ONE cursor: custom_results is
-// aggregated into a JSON array (sorted on decode — SQLite does not promise an
-// aggregate's order), and each blobs lookup is a primary-key probe.
+// pageColumns is the single row shape the stream decodes. The custom results,
+// the sitemap entries and the two blob paths are correlated subqueries rather
+// than per-page round trips, so the whole crawl is still ONE cursor:
+// custom_results and sitemap_entries are aggregated into JSON arrays (sorted on
+// decode — SQLite does not promise an aggregate's order) through an index on
+// url, and each blobs lookup is a primary-key probe.
 const pageColumns = `url, scope, state, COALESCE(depth, ?), status_code, status,
 	content_type, COALESCE(http_version, ''), response_time_ms, size, fetch_error,
 	redirect_url, redirect_type, indexable, indexability_status,
@@ -379,6 +446,8 @@ const pageColumns = `url, scope, state, COALESCE(depth, ?), status_code, status,
 	headers, structured, jsdiff, facts,
 	COALESCE((SELECT json_group_array(json_object('kind', kind, 'name', name, 'value', value))
 		FROM custom_results WHERE custom_results.url = pages.url), '[]'),
+	COALESCE((SELECT json_group_array(json_object('sitemap', sitemap, 'lastmod', COALESCE(lastmod, '')))
+		FROM sitemap_entries WHERE sitemap_entries.url = pages.url), '[]'),
 	COALESCE((SELECT path FROM blobs WHERE blobs.url = pages.url AND blobs.kind = '` + blobHTML + `'), ''),
 	COALESCE((SELECT path FROM blobs WHERE blobs.url = pages.url AND blobs.kind = '` + blobRenderedHTML + `'), '')`
 
@@ -441,6 +510,16 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 		Status2xx: sc.S2xx, Status3xx: sc.S3xx, Status4xx: sc.S4xx, Status5xx: sc.S5xx,
 		BlockedByRobots: sc.Blocked, NoResponse: sc.NoResponse,
 	}
+	// The crawl-level rows are read in the same transaction too, so the header
+	// describes one snapshot of the crawl.
+	checks, err := siteChecks(tx)
+	if err != nil {
+		return err
+	}
+	llms, err := llmsTxt(tx)
+	if err != nil {
+		return err
+	}
 
 	out := w
 	var gz *gzip.Writer
@@ -473,6 +552,8 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 		Crawled:          info.Crawled,
 		Total:            info.Total,
 		ConfigDigest:     configDigest(cfgYAML),
+		SiteChecks:       checks,
+		LlmsTxt:          llms,
 	}); err != nil {
 		return err
 	}
@@ -523,7 +604,7 @@ func (s *stream) pages(fn func(*Page) error) error {
 	for rows.Next() {
 		var p Page
 		var depth, indexable, outside int
-		var headersJSON, structuredJSON, jsdiffJSON, factsJSON, customJSON []byte
+		var headersJSON, structuredJSON, jsdiffJSON, factsJSON, customJSON, sitemapsJSON []byte
 		var htmlPath, renderedPath string
 		if err := rows.Scan(&p.URL, &p.Scope, &p.State, &depth, &p.StatusCode, &p.Status,
 			&p.ContentType, &p.HTTPVersion, &p.ResponseTimeMs, &p.Size, &p.FetchError,
@@ -531,7 +612,7 @@ func (s *stream) pages(fn func(*Page) error) error {
 			&p.MatchedRobotsLine, &p.Proxy,
 			&p.Inlinks, &p.UniqueInlinks, &p.UniqueOutlinks, &p.LinkScore, &p.DiscoveredFrom, &outside,
 			&p.DuplicateOf, &p.ClosestSimilarity, &p.NearDupCount,
-			&headersJSON, &structuredJSON, &jsdiffJSON, &factsJSON, &customJSON,
+			&headersJSON, &structuredJSON, &jsdiffJSON, &factsJSON, &customJSON, &sitemapsJSON,
 			&htmlPath, &renderedPath); err != nil {
 			return err
 		}
@@ -572,6 +653,14 @@ func (s *stream) pages(fn func(*Page) error) error {
 			}
 			return strings.Compare(a.Name, b.Name)
 		})
+		if err := json.Unmarshal(sitemapsJSON, &p.Sitemaps); err != nil {
+			return fmt.Errorf("%s: sitemaps: %w", p.URL, err)
+		}
+		if p.Sitemaps == nil {
+			p.Sitemaps = []SitemapEntry{}
+		}
+		// (sitemap, url) is the table's key, so the sitemap alone orders them.
+		slices.SortFunc(p.Sitemaps, func(a, b SitemapEntry) int { return strings.Compare(a.Sitemap, b.Sitemap) })
 		// Links come from this row's own facts rather than a per-page query
 		// against the links table: same values, no second round trip, and
 		// Facts.Links is in document order where a links-table scan would need an
@@ -675,13 +764,87 @@ func fillFromFacts(p *Page, f *parse.Facts, want map[string]bool) {
 		if want != nil && !want[string(l.Type)] {
 			continue
 		}
-		p.Links = append(p.Links, Link{
+		link := Link{
 			URL: l.URL, Raw: l.Raw, Anchor: l.Anchor, Alt: l.Alt, Rel: l.Rel, Target: l.Target,
 			Nofollow: l.Nofollow, Type: string(l.Type), PathType: l.PathType, Position: l.Position,
 			ElemPath: l.ElemPath, PositionPath: l.PositionPath,
 			Lang: l.Lang, Width: l.Width, Height: l.Height, Origin: l.Origin,
-		})
+		}
+		if l.Type == parse.Image {
+			link.NoAltAttr = &l.NoAltAttr // l is this iteration's own copy
+		}
+		p.Links = append(p.Links, link)
 	}
+}
+
+// siteChecks reads the stored site-check reports, sorted by (kind, subject):
+// SQLite's binary collation is Go's string order, so the header is as
+// deterministic as the page lines. [] when the pass never ran.
+func siteChecks(tx *sql.Tx) ([]SiteCheck, error) {
+	rows, err := tx.Query(`SELECT kind, subject, report FROM site_checks ORDER BY kind, subject`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	checks := []SiteCheck{}
+	for rows.Next() {
+		var sc SiteCheck
+		var report string
+		if err := rows.Scan(&sc.Kind, &sc.Subject, &report); err != nil {
+			return nil, err
+		}
+		// Verbatim, so validated rather than decoded: a corrupt row must fail
+		// here, naming itself, not deep inside the encoder.
+		if !json.Valid([]byte(report)) {
+			return nil, fmt.Errorf("site check %s %s: stored report is not JSON", sc.Kind, sc.Subject)
+		}
+		sc.Report = json.RawMessage(report)
+		checks = append(checks, sc)
+	}
+	return checks, rows.Err()
+}
+
+// llmsTxt reads the stored llms.txt files, sorted by URL, each with the
+// curated links it listed, sorted by URL. [] when no file was fetched.
+func llmsTxt(tx *sql.Tx) ([]LlmsTxt, error) {
+	rows, err := tx.Query(`SELECT url, kind, status, found, title, summary, malformed, COALESCE(content, '')
+		FROM llmstxt ORDER BY url`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	files := []LlmsTxt{}
+	index := map[string]int{}
+	for rows.Next() {
+		f := LlmsTxt{Links: []LlmsTxtLink{}}
+		var found, malformed int
+		if err := rows.Scan(&f.URL, &f.Kind, &f.Status, &found, &f.Title, &f.Summary, &malformed, &f.Content); err != nil {
+			return nil, err
+		}
+		f.Found, f.Malformed = found == 1, malformed == 1
+		index[f.URL] = len(files)
+		files = append(files, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	lrows, err := tx.Query(`SELECT src, url, section, anchor FROM llmstxt_links ORDER BY src, url`)
+	if err != nil {
+		return nil, err
+	}
+	defer lrows.Close()
+	for lrows.Next() {
+		var src string
+		var l LlmsTxtLink
+		if err := lrows.Scan(&src, &l.URL, &l.Section, &l.Anchor); err != nil {
+			return nil, err
+		}
+		// A link is recorded only after its file, so its src always has a row.
+		if i, ok := index[src]; ok {
+			files[i].Links = append(files[i].Links, l)
+		}
+	}
+	return files, lrows.Err()
 }
 
 // storedAssets reads which page assets the crawl kept from its frozen config —

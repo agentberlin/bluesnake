@@ -145,7 +145,7 @@ bluesnake mcp                          # MCP server for LLM agents over streamab
 
 Global flags: `--config <file>`, `--store-dir <dir>` (default `~/.bluesnake`), `--output <dir>`, `--format csv|json|jsonl|xlsx`, `--timestamped-output`, `--overwrite`, `--quiet/--verbose`, `--log json|text`.
 
-Every config key is overridable as a flag using dotted names: `--set spider.limits.max_depth=3 --set speed.max_threads=10` plus dedicated shorthand flags for the common ones (`--depth`, `--threads`, `--rate`, `--include`, `--exclude`, `--user-agent`, ...).
+Every config key is overridable as a flag using dotted names: `--set spider.limits.max_depth=3 --set speed.max_threads=10` plus dedicated shorthand flags for the common ones (`--depth`, `--threads`, `--rate`, `--include`, `--exclude`, `--user-agent`, ...). `crawl --site-checks auto|all|off` is the desktop setup card's site-checks selector on the CLI (§5.10), mapped by the same function.
 
 Base setup (§5.11): `crawl` defaults to reusing the setup the seed's site last ran with; `--setup last|app|defaults` picks the base explicitly (`app` = the saved default profile, `defaults` = the pinned built-ins for CI), `--profile <name>`/`--config <file>` are the named bases — all mutually exclusive, with `--set`/shorthands overlaying whichever base wins. The resolved source is printed. `projects crawl-all` resolves per member by default (each site's own last setup) and treats `--profile`/`--config`/`--setup app|defaults` as override-all.
 
@@ -408,7 +408,8 @@ CREATE TABLE cookies   (page_id INTEGER, name TEXT, value TEXT, domain TEXT, exp
 CREATE TABLE hreflang  (page_id INTEGER, source TEXT, lang TEXT, url TEXT, valid_code INTEGER);  -- source: html|http|sitemap
 CREATE TABLE structured_data (page_id INTEGER, format TEXT, raw JSON, types JSON, errors JSON, warnings JSON);
 CREATE TABLE custom_results (page_id INTEGER, kind TEXT, name TEXT, value TEXT);  -- kind: search|extraction|js
-CREATE TABLE sitemap_entries (sitemap_url TEXT, url TEXT, lastmod TEXT, attrs JSON);
+CREATE TABLE sitemap_entries (sitemap TEXT, url TEXT, lastmod TEXT,  -- one row per (sitemap, listed URL); lastmod as the entry wrote it,
+                              PRIMARY KEY (sitemap, url));         -- "" for none, NULL on rows stored before v8; indexed on url
 CREATE TABLE llmstxt       (url TEXT PRIMARY KEY, kind TEXT, status INT, found INT,  -- one row per /llms.txt + /llms-full.txt
                             title TEXT, summary TEXT, malformed INT, content TEXT);  -- (structural validation outcome)
 CREATE TABLE llmstxt_links (src TEXT, url TEXT, section TEXT, anchor TEXT);          -- curated links (provenance, cross-checked in analysis)
@@ -439,7 +440,7 @@ Crawl DBs and the registry DB are durable artifacts that outlive the binary, so 
 - A **fresh** database (no tables yet → this open created it) is stamped straight to the top of its ladder — `max(floor, highest step)`, so an empty/fully-retired ladder still stamps the current revision, not v0; the migration steps never run.
 - An **existing** database runs only the ladder steps whose version is above its stored revision, each applied in a transaction that bumps `user_version` atomically (a crash mid-step rolls back to the prior revision). The common case — already current — is one pragma read.
 
-Migrations are an **append-only ladder** (`crawlMigrations`, `registryMigrations`): each step has a *stable* version number (never renumbered or reordered) and an idempotent `apply` func. Adding a schema change = append one step. The two `min*Version` floors are the removal lever (below). Both ladders are **currently empty**: every step was retired once all installs reached the top (crawl v5, registry v2), so the floors now sit at those tops and the next schema change appends just above (v6 / v3), reusing the retained `addColumn`/`columnExists` helpers.
+Migrations are an **append-only ladder** (`crawlMigrations`, `registryMigrations`): each step has a *stable* version number (never renumbered or reordered) and an idempotent `apply` func. Adding a schema change = append one step. The two `min*Version` floors are the removal lever (below). Every step through crawl v5 / registry v2 was retired once all installs reached them, so the floors sit there; the crawl ladder's live steps are v6 `pages.proxy`, v7 `links.position_path` and v8 `sitemap_entries.lastmod`, the registry ladder is empty, and the next change appends just above (v9 / v3), reusing the retained `addColumn`/`columnExists` helpers.
 
 > **Retiring a migration.** Stable version numbers + a floor are what make old step code *safely deletable* — without a durable revision marker you can never prove a DB on disk doesn't still need an old step. To drop support for ancient databases and delete their migration code:
 > 1. Pick the new floor **F** — the oldest revision you still want to open.
@@ -544,11 +545,19 @@ sitemaps* (discovery via robots directives ∪ `/sitemap.xml` conventions ∪
 declared, index recursion, gzip-aware sizes — which unblocked the >50 MB
 check — entry hygiene; robots-declared sitemaps are exempt from the
 cross-host finding per sitemaps.org cross-submission); *AI-bot access* (an
-embedded registry of ~16 crawlers — data, not code; robots verdicts per bot
+embedded registry of ~20 crawlers — data, not code; robots verdicts per bot
 plus optional live probes with each fetcher's real UA via `fetch.FetchWith`,
 classified against a control fetch to catch edge/WAF blocks; token-only
 entries are never probed; robots-ignoring fetchers carry an "only an edge
-block works" note; all findings Warning — blocking can be policy); *JS render
+block works" note; all findings Warning — blocking can be policy). The
+registry carries the search engines' own crawlers — Googlebot, Bingbot,
+Applebot — beside their training tokens (Google-Extended, Applebot-Extended),
+because AI Overviews, Copilot and Siri answer from what those crawlers index:
+without both, a report cannot tell a site that opts out of training from one
+that blocks being found. They are token-only, since sites verify them by
+reverse DNS and a probe with their UA from our IP meets an impostor block the
+real crawler never does; they count toward the all-blocked headline like any
+search crawler. *JS render
 diff* (one URL raw vs Chrome-rendered over `parse.Facts`; the full per-field
 diff lives in the report, while findings are three site-level IDs of their
 own — `js_dependent_content`, `js_dependent_links`,
@@ -572,8 +581,13 @@ subject, report JSON, PRIMARY KEY(kind, subject))`, INSERT OR REPLACE —
 resume re-runs idempotently. Config: `site_checks.{enabled, robots, sitemap,
 ai_bots.{check, live_probe, bots, skip}, render_diff}`; everything defaults
 on except `render_diff` (launches headless Chrome — a different cost class;
-the desktop New Crawl form's "run all checks" toggle and
-`site_checks.render_diff: true` opt in).
+`site_checks.render_diff: true` opts in). Per crawl, the desktop setup card's
+selector and `crawl --site-checks` take the same three choices through one
+mapping (`runner.SiteChecksOverrides`): `auto` sets the gate to auto, `off`
+to never, and `all` sets the gate to always **and every check on** — robots,
+sitemap, AI-bot verdicts and live probes, render diff — so it means the same
+thing over any base config (the base's bot roster edits stay). Shorthand
+rules apply: the flag overrides the config file and `--set`.
 
 **Slot discipline.** `sitecheck.WithLimiter` injects the
 process-wide `limiter.Limiter` into the Checker, which itself brackets every
@@ -720,9 +734,15 @@ from — the duplicate fields, egress attribution), every parsed fact (h1/h2 and
 heading order, hreflang from both sources, rel next/prev, meta refresh, AMP and
 mobile alternates, readability, the raw-body hash, head validity, robots meta
 tags addressed to one crawler and the text of `data-nosnippet` elements), the
-`custom_search` / `custom_extraction` / `custom_js` values by name, and the
-`jsdiff` of a rendering crawl. The bundle is the one export a consumer should
-never have to go back to the store for, so an omission is a bug, not a trim.
+`custom_search` / `custom_extraction` / `custom_js` values by name, the
+`jsdiff` of a rendering crawl, and the sitemap entries that list it
+(`sitemaps: [{sitemap, lastmod}]`, sorted by sitemap, lastmod exactly as the
+entry wrote it, `[]` when no sitemap lists the page — a lastmod belongs to an
+entry, not a URL, so it travels with membership). Its image links carry
+`no_alt_attr` (true or false; absent on other types), since `alt` is omitted
+when empty and cannot tell a missing alt from a decorative `alt=""`. The
+bundle is the one export a consumer should never have to go back to the store
+for, so an omission is a bug, not a trim.
 Two things are deliberately not in the default stream: issues, which are
 verdicts, and the page sources, which are opt-in below.
 
@@ -785,6 +805,20 @@ below 200) → `no_response`. Every page lands in exactly one bucket, so the six
 sum to `pages`. All six keys are always present, zeros included; the field was
 added within `bluesnake.pages/1`, so a bundle without it is an older bundle and
 means "no breakdown", not zeros.
+
+The header carries the crawl-level stored data too. `site_checks` is the
+site-check pass's reports, `[{kind, subject, report}]` sorted by kind then
+subject, each report the stored JSON verbatim: the robots report includes the
+robots.txt body the crawl obeyed (capped at Google's 500 KiB), the ai_bots
+report each bot's robots verdict and its live probe of the site root against
+a control fetch. `llms_txt` is the llms.txt audit's files (every stored column,
+the raw body included), each nesting the curated links it listed. Both follow
+the data, not the config: a row exists exactly when a check ran or a file was
+fetched, so `[]` means none ran, and `config_digest` still records what was
+asked for. Reports only — their findings are issues — and no `checked_at`, a
+wall-clock value the reports don't need. Both are header-only, so the
+streaming RAM gate is unaffected, and both were added within
+`bluesnake.pages/1`.
 
 It also carries `config_digest`, a hash of the crawl's frozen config:
 the link-position rules are configurable, so `position` is only interpretable

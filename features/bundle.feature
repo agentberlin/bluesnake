@@ -143,6 +143,80 @@ Feature: Crawl bundle export
     And the bundle page "/about" has "inlinks" equal to "1"
     And the bundle page "/about" has "discovered_from" equal to "<serverurl>/"
 
+  # The site-check pass's reports are stored data, so they ride in the header:
+  # the robots.txt the crawl obeyed, verbatim inside the robots report, and the
+  # AI-bot verdicts, the search engines' crawlers among them. Their findings are
+  # issues — verdicts — and stay out.
+  Scenario: The header carries the site-check reports, robots.txt body included
+    Given a robots.txt file:
+      """
+      User-agent: GPTBot
+      Disallow: /
+
+      User-agent: *
+      Disallow: /private
+      """
+    And the test server serves the background robots.txt
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
+    Then the exit code is 0
+    And the bundle header has a "robots" site check whose report "body" contains "Disallow: /private"
+    And the bundle header has an "ai_bots" site check whose report "bots" contains "Googlebot"
+
+  # A report row exists exactly when a check ran, so a crawl run with the checks
+  # off carries an empty array rather than leaving the key out.
+  Scenario: A crawl run with --site-checks off carries no site-check reports
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet --site-checks off"
+    And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
+    Then the exit code is 0
+    And the bundle header has no site checks
+
+  # Each page carries the sitemap entries that list it, with the lastmod each
+  # gave it as written: honest last-updated dates, sitemap coverage (pages no
+  # sitemap lists) and, with a null depth, orphans (listed, but no internal link
+  # reaches them).
+  Scenario: A page carries the sitemaps that list it, with their lastmod
+    Given a robots.txt file:
+      """
+      User-agent: *
+      Allow: /
+      Sitemap: <serverurl>/sitemap.xml
+      """
+    And the test server serves the background robots.txt
+    And a site page "/sitemap.xml" with body:
+      """
+      <?xml version="1.0" encoding="UTF-8"?>
+      <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+        <url><loc><serverurl>/</loc><lastmod>2026-01-15</lastmod></url>
+        <url><loc><serverurl>/orphan</loc></url>
+      </urlset>
+      """
+    And a site page "/orphan" with body "<html><head><title>Bundle orphan page title</title></head><body><p>orphan</p></body></html>"
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
+    Then the exit code is 0
+    And the bundle page "/" is listed in sitemap "/sitemap.xml" with lastmod "2026-01-15"
+    And the bundle page "/orphan" is listed in sitemap "/sitemap.xml" with lastmod ""
+    And the bundle page "/orphan" has a null "depth"
+    And the bundle page "/about" is listed in no sitemap
+
+  # alt is omitted when empty, so on its own it cannot tell a missing alt from a
+  # decorative alt="". no_alt_attr can, on every image link.
+  Scenario: An image link says whether its img had an alt attribute
+    Given a site page "/" with body:
+      """
+      <html><head><title>Bundle images page title</title></head><body>
+      <img src="/missing.png"><img src="/decorative.png" alt="">
+      <a href="/about">About</a>
+      </body></html>
+      """
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake bundle <crawlid> --store-dir <storedir> --link-types hyperlink,image -o <storedir>/crawl.jsonl"
+    Then the exit code is 0
+    And the bundle page "/" has a link to "/missing.png" with "no_alt_attr" equal to "true"
+    And the bundle page "/" has a link to "/decorative.png" with "no_alt_attr" equal to "false"
+    And the bundle page "/" has a link to "/about" with no "no_alt_attr" field
+
   Scenario: A JSON-LD block is emitted verbatim
     When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet --set extraction.structured_data.jsonld=true"
     And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
