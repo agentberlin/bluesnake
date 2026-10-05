@@ -571,8 +571,12 @@ func TestInvalidLinksSkipped(t *testing.T) {
 type recordingSink struct {
 	mu       sync.Mutex
 	pages    map[string]*PageRecord
-	sitemaps map[string][]string
+	sitemaps map[string][]sitemapRow
 }
+
+// sitemapRow is one SitemapEntry call: the sitemap that listed a URL and the
+// lastmod it gave it.
+type sitemapRow struct{ sitemap, lastmod string }
 
 func (s *recordingSink) Page(rec *PageRecord) error {
 	s.mu.Lock()
@@ -594,13 +598,13 @@ func (s *recordingSink) snapshot() map[string]*PageRecord {
 	return out
 }
 func (s *recordingSink) FrontierDone(string) error { return nil }
-func (s *recordingSink) SitemapEntry(sitemap, url string) error {
+func (s *recordingSink) SitemapEntry(sitemap, url, lastmod string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.sitemaps == nil {
-		s.sitemaps = map[string][]string{}
+		s.sitemaps = map[string][]sitemapRow{}
 	}
-	s.sitemaps[url] = append(s.sitemaps[url], sitemap)
+	s.sitemaps[url] = append(s.sitemaps[url], sitemapRow{sitemap, lastmod})
 	return nil
 }
 
@@ -612,7 +616,11 @@ func TestSitemapCrawling(t *testing.T) {
 	})
 	// sitemap index -> child sitemap -> urls
 	s.pages["/sitemap-index.xml"] = `<sitemapindex><sitemap><loc>` + s.server.URL + `/sitemap.xml</loc></sitemap></sitemapindex>`
-	s.pages["/sitemap.xml"] = `<urlset><url><loc>` + s.server.URL + `/linked</loc></url><url><loc>` + s.server.URL + `/orphan</loc></url></urlset>`
+	// /linked carries a lastmod (pretty-printed, so wrapped in whitespace);
+	// /orphan carries none.
+	s.pages["/sitemap.xml"] = `<urlset><url><loc>` + s.server.URL + `/linked</loc><lastmod>
+		2026-01-15T10:00:00+00:00
+	</lastmod></url><url><loc>` + s.server.URL + `/orphan</loc></url></urlset>`
 
 	sink := &recordingSink{}
 	cfg := config.Default()
@@ -630,6 +638,18 @@ func TestSitemapCrawling(t *testing.T) {
 	defer sink.mu.Unlock()
 	if got := sink.sitemaps[s.server.URL+"/orphan"]; len(got) != 1 {
 		t.Errorf("sitemap entries for /orphan = %v", got)
+	}
+	// The entry carries the sitemap that listed the URL and its lastmod as
+	// written — never parsed or reformatted, only the XML whitespace around it
+	// dropped — and "" when the entry gave none.
+	child := s.server.URL + "/sitemap.xml"
+	for path, want := range map[string]sitemapRow{
+		"/linked": {child, "2026-01-15T10:00:00+00:00"},
+		"/orphan": {child, ""},
+	} {
+		if got := sink.sitemaps[s.server.URL+path]; len(got) != 1 || got[0] != want {
+			t.Errorf("sitemap entries for %s = %+v, want [%+v]", path, got, want)
+		}
 	}
 }
 

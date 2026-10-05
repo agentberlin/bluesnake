@@ -748,10 +748,10 @@ const schemaNotes = `Notes:
 - meta: key/value crawl metadata (config YAML under 'config', seed, mode).
 - frontier: URLs discovered but not yet crawled (the pending queue of a paused crawl).
 - custom_results: custom search/extraction hits (kind is 'search'|'extraction').
-- sitemap_entries: URLs listed per sitemap.
+- sitemap_entries: one row per (sitemap, listed URL), with the lastmod that entry gave it as written ('' when it gave none, NULL on crawls stored before it was kept).
 - llmstxt: one row per fetched /llms.txt (and /llms-full.txt); found is 0/1, title/summary/malformed capture structural validation, content holds the raw body.
 - llmstxt_links: curated links listed in llms.txt (src is the llms.txt URL, url the target) — provenance independent of the link graph; the llms_txt_* issues cross-check these against pages.
-- site_checks: one row per site-level audit report from a full-domain crawl (kind is robots|sitemap|ai_bots|render_diff; subject is the audited URL; report is the full JSON — query with json_extract). The derived robots_txt_*/sitemap_*/ai_bot_*/js_* findings are ordinary rows in issues.
+- site_checks: one row per site-level audit report from the crawl's site-check pass (full-domain crawls by default; site_checks.enabled decides) (kind is robots|sitemap|ai_bots|render_diff; subject is the audited URL; report is the full JSON — query with json_extract). The derived robots_txt_*/sitemap_*/ai_bot_*/js_* findings are ordinary rows in issues.
 - analysis: post-crawl analysis blobs (redirect chains, near-duplicate clusters) keyed by analysis name.
 
 Example queries:
