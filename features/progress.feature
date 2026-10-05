@@ -4,7 +4,8 @@ Feature: Live progress for headless crawls
   "type":"progress". There is a record when the crawl starts, one every
   --progress-interval while it runs, and a final record with the terminal
   state. stdout carries exactly what it does without the flag, so the summary
-  and the "Crawl ID:" line stay where scripts parse them. These scenarios put
+  and the "Crawl ID:" line stay where scripts parse them. `tools aibots`
+  streams its check the same way, in a record of its own. These scenarios put
   stdout and stderr on separate pipes, as a container runtime does.
 
   Scenario: Progress streams on stderr while stdout is unchanged
@@ -87,5 +88,29 @@ Feature: Live progress for headless crawls
     Then the exit code is 2
     And stdout is empty
     When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --progress-interval 30s" with stdout and stderr apart
+    Then the exit code is 2
+    And stdout is empty
+
+  # The AI-bot check over a URL list is the long step of a priority-page job:
+  # its feed counts pages and fetches done out of the total, which the first
+  # record already carries, and none of a crawl's counters.
+  Scenario: The AI-bot check streams its progress on stderr
+    Given a site page "/open" linking to ""
+    And a site page "/hidden" linking to ""
+    And a URL list file containing "<serverurl>/open" and "<serverurl>/hidden"
+    When I run "bluesnake tools aibots <serverurl> --urls-file <listfile> --json --progress json" with stdout and stderr apart
+    Then the exit code is 0
+    And stdout contains "<serverurl>/hidden"
+    And every stderr line is a progress record
+    And the first progress record has "state" equal to "running"
+    And the first progress record has "site" equal to "<serverurl>"
+    And the first progress record has "pages_total" equal to "2"
+    And the first progress record has "pages_done" equal to "0"
+    And the first progress record has "fetches_done" equal to "0"
+    And the last progress record has "state" equal to "completed"
+    And the last progress record has "pages_done" equal to "2"
+
+  Scenario: The AI-bot check has no progress bar
+    When I run "bluesnake tools aibots <serverurl> --progress bar" with stdout and stderr apart
     Then the exit code is 2
     And stdout is empty

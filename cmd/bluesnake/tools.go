@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/fetch"
@@ -233,6 +236,7 @@ func newToolsAIBotsCmd() *cobra.Command {
 	var skip []string
 	var urlsFile string
 	var asJSON bool
+	var progress progressOpts
 	cmd := &cobra.Command{
 		Use:   "aibots <site>",
 		Short: "Test which AI crawlers can access a site",
@@ -243,22 +247,38 @@ func newToolsAIBotsCmd() *cobra.Command {
 			"--urls-file runs the same check on each listed page instead of the root\n" +
 			"(read the way `bluesnake list` reads its input; '-' for stdin). Every URL\n" +
 			"must be on <site>'s host. Pages run up to speed.max_threads at a time and\n" +
-			"fetches are paced to speed.max_urls_per_sec — set either with --set.",
+			"fetches are paced to speed.max_urls_per_sec — set either with --set.\n\n" +
+			"--progress json streams the check's progress to stderr as JSON Lines\n" +
+			"(pages and fetches done out of the total); stdout is unchanged.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := progress.validate(cmd); err != nil {
+				return err
+			}
 			chk, err := newToolChecker(cmd)
 			if err != nil {
 				return err
 			}
-			opts := sitecheck.AIBotOptions{Live: live, Skip: skip}
+			var urls []string
 			if urlsFile != "" {
-				urls, err := readURLList(cmd, urlsFile)
-				if err != nil {
+				if urls, err = readURLList(cmd, urlsFile); err != nil {
 					return exitErr{2, err}
 				}
-				rep, err := chk.AIBotsURLs(cmd.Context(), args[0], urls, opts)
-				if err != nil {
-					return exitErr{2, err}
+			}
+			ctx := cmd.Context()
+			feed := progress.aibotsFeed(cmd.ErrOrStderr())
+			if feed != nil {
+				// The feed promises a final record, so an interrupt ends the
+				// check rather than the process (aibotsFeed.end).
+				var stop context.CancelFunc
+				ctx, stop = signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+				defer stop()
+			}
+			opts := sitecheck.AIBotOptions{Live: live, Skip: skip, Progress: feed.counters()}
+			if urlsFile != "" {
+				rep, err := chk.AIBotsURLs(ctx, args[0], urls, opts)
+				if err := feed.end(ctx, err); err != nil {
+					return err
 				}
 				if asJSON {
 					return emitToolJSON(cmd.OutOrStdout(), rep)
@@ -266,9 +286,9 @@ func newToolsAIBotsCmd() *cobra.Command {
 				printAIBotsURLs(cmd.OutOrStdout(), rep)
 				return nil
 			}
-			rep, err := chk.AIBots(cmd.Context(), args[0], opts)
-			if err != nil {
-				return exitErr{2, err}
+			rep, err := chk.AIBots(ctx, args[0], opts)
+			if err := feed.end(ctx, err); err != nil {
+				return err
 			}
 			if asJSON {
 				return emitToolJSON(cmd.OutOrStdout(), rep)
@@ -289,6 +309,7 @@ func newToolsAIBotsCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&skip, "skip", nil, "registry bot names to exclude")
 	cmd.Flags().StringVar(&urlsFile, "urls-file", "", "check these pages of the site instead of its root ('-' for stdin)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the full report as JSON")
+	progress.registerJSON(cmd, "live progress on stderr while the check runs: none, or json (one JSON object per line)")
 	return cmd
 }
 
