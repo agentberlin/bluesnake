@@ -65,10 +65,10 @@ func TestHeaderCarriesEachSiteCheckReportVerbatim(t *testing.T) {
 			Site: "https://ex.test", URL: "https://ex.test/", RobotsFound: true, Live: true, ControlStatus: 200,
 			Bots: []sitecheck.AIBotResult{
 				{Bot: sitecheck.Bot{Name: "GPTBot", Operator: "OpenAI", Purpose: "training", RobotsToken: "GPTBot",
-					UserAgent: "GPTBot/1.2", RespectsRobots: true}, RobotsLine: 2, RobotsRule: "Disallow: /",
-					Probed: true, LiveStatus: 403, BlockedLive: true},
+					UserAgent: "GPTBot/1.2", RespectsRobots: true}, BotVerdict: sitecheck.BotVerdict{RobotsLine: 2, RobotsRule: "Disallow: /",
+					Probed: true, LiveStatus: 403, BlockedLive: true}},
 				{Bot: sitecheck.Bot{Name: "Googlebot", Operator: "Google", Purpose: "search", RobotsToken: "Googlebot",
-					RespectsRobots: true}, RobotsAllowed: true},
+					RespectsRobots: true}, BotVerdict: sitecheck.BotVerdict{RobotsAllowed: true}},
 			},
 			Caveat: sitecheck.AIBotCaveat,
 		}, func() any { return &sitecheck.AIBotsReport{} }},

@@ -22,6 +22,26 @@ import (
 
 var urlToken = regexp.MustCompile(`https?://\S+`)
 
+// readURLList reads a URL list the way `bluesnake list` reads its input: every
+// http(s):// token in the file, or in stdin for "-".
+func readURLList(cmd *cobra.Command, path string) ([]string, error) {
+	var data []byte
+	var err error
+	if path == "-" {
+		data, err = io.ReadAll(cmd.InOrStdin())
+	} else {
+		data, err = os.ReadFile(path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	urls := urlToken.FindAllString(string(data), -1)
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("no http(s):// URLs found in the input")
+	}
+	return urls, nil
+}
+
 func newListCmd() *cobra.Command {
 	var (
 		cfgFile, profile, storeDir, sitemapURL string
@@ -68,18 +88,9 @@ func newListCmd() *cobra.Command {
 			case sitemapURL != "":
 				spec.SitemapURL = sitemapURL
 			case len(args) == 1:
-				var data []byte
-				if args[0] == "-" {
-					data, err = io.ReadAll(cmd.InOrStdin())
-				} else {
-					data, err = os.ReadFile(args[0])
-				}
+				seeds, err := readURLList(cmd, args[0])
 				if err != nil {
 					return exitErr{2, err}
-				}
-				seeds := urlToken.FindAllString(string(data), -1)
-				if len(seeds) == 0 {
-					return exitErr{2, fmt.Errorf("no http(s):// URLs found in the input")}
 				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "list mode: %d URLs\n", len(seeds))
 				spec.URLs = seeds

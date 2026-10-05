@@ -165,7 +165,25 @@ func (f *File) Verdict(userAgent, rawURL string) Verdict {
 	return Verdict{Allowed: best.Allow, Rule: best}
 }
 
-func (f *File) rulesFor(uaLower string) []Rule {
+// VerdictFallback is Verdict for an agent whose operator documents a fallback
+// before *: when no group names userAgent, the first fallback token that a
+// group does name decides, and only then do the * groups apply (Applebot
+// follows Googlebot's group). via is the fallback token that decided, or ""
+// when userAgent's own group or * did.
+func (f *File) VerdictFallback(userAgent string, fallback []string, rawURL string) (v Verdict, via string) {
+	if f.namedToken(strings.ToLower(userAgent)) == "" {
+		for _, fb := range fallback {
+			if f.namedToken(strings.ToLower(fb)) != "" {
+				return f.Verdict(fb, rawURL), fb
+			}
+		}
+	}
+	return f.Verdict(userAgent, rawURL), ""
+}
+
+// namedToken is the longest non-* group token that prefixes the user-agent,
+// or "" when no group names it.
+func (f *File) namedToken(uaLower string) string {
 	bestToken := ""
 	for _, g := range f.Groups {
 		for _, a := range g.Agents {
@@ -174,6 +192,11 @@ func (f *File) rulesFor(uaLower string) []Rule {
 			}
 		}
 	}
+	return bestToken
+}
+
+func (f *File) rulesFor(uaLower string) []Rule {
+	bestToken := f.namedToken(uaLower)
 	match := func(a string) bool { return a == bestToken }
 	if bestToken == "" {
 		match = func(a string) bool { return a == "*" }

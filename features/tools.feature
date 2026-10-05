@@ -78,6 +78,27 @@ Feature: Standalone tools (bluesnake tools)
     And the output contains "AI Bot Blocked by robots.txt"
     And the output contains "User-Agent-based blocking only"
 
+  Scenario: AI-bot tester checks each listed page, with documented fallback groups
+    Given a robots.txt file:
+      """
+      User-agent: Googlebot
+      Disallow: /hidden
+      """
+    And the test server serves the background robots.txt
+    And a site page "/open" linking to ""
+    And a site page "/hidden" linking to ""
+    And a URL list file containing "<serverurl>/open" and "<serverurl>/hidden"
+    When I run "bluesnake tools aibots <serverurl> --urls-file <listfile>"
+    Then the exit code is 0
+    And the output contains "<serverurl>/open  control: status 200"
+    And the output contains "<serverurl>/hidden  control: status 200"
+    And the output contains "BLOCKED (line 2: Disallow: /hidden) via Googlebot"
+
+  Scenario: AI-bot tester refuses a URL list spanning hosts
+    Given a URL list file containing "<serverurl>/a" and "https://elsewhere.example/b"
+    When I run "bluesnake tools aibots <serverurl> --urls-file <listfile>"
+    Then the exit code is 2
+
   Scenario: llms tester validates the site files
     Given a site page "/llms.txt" with body:
       """
