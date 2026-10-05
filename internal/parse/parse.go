@@ -152,6 +152,11 @@ type Facts struct {
 	// inside its ancestor's text and once on its own.
 	NoSnippet []string
 
+	// Authors is the evidence of who wrote the page, in document order, each
+	// (source, name, url) once: what was found and where (see authors.go).
+	// With rendering on it is read from the rendered DOM, as structured data is.
+	Authors []Author
+
 	MetaRefresh    string // raw content attribute
 	MetaRefreshURL string // resolved target ("" if none); self URL for bare delays
 
@@ -318,6 +323,8 @@ func (p *parser) handleElement(n *html.Node, path string) {
 	if hasAttr(n, "data-nosnippet") {
 		f.NoSnippet = append(f.NoSnippet, collapseSpace(subtreeText(n)))
 	}
+	p.microdataAuthor(n)
+	p.byline(n, path)
 	switch n.Data {
 	case "html":
 		if lang := attr(n, "lang"); lang != "" {
@@ -458,6 +465,7 @@ func (p *parser) handleMeta(n *html.Node, path string) {
 			p.addLink(n, path, Link{Type: MetaRefreshLink, Raw: content, URL: f.MetaRefreshURL})
 		}
 	}
+	p.metaAuthor(n)
 }
 
 // metaRefreshTarget extracts the url= part of a refresh content attribute.
@@ -484,6 +492,7 @@ func (p *parser) handleLinkElement(n *html.Node, path string) {
 	if href == "" {
 		return
 	}
+	p.relAuthor(n, href)
 	rels := strings.Fields(strings.ToLower(attr(n, "rel")))
 	resolved := p.resolve(href)
 	for _, rel := range rels {
@@ -532,6 +541,8 @@ func (p *parser) handleAnchor(n *html.Node, path string) {
 	if href == "" {
 		return
 	}
+	// Before the scheme filter: a rel=author mailto: still names the author.
+	p.relAuthor(n, href)
 	lower := strings.ToLower(href)
 	switch {
 	case strings.HasPrefix(lower, "javascript:"):

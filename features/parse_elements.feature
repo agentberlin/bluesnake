@@ -184,3 +184,31 @@ Feature: On-page element extraction
       <html lang="de"><head><title>t</title></head><body></body></html>
       """
     Then the page language is "de"
+
+  # Author evidence is what was found and where, not a verdict: the same name
+  # from two sources is two entries. A nav's "Authors" link and the site
+  # footer's credit are furniture; an article's own footer is where HTML puts
+  # its author.
+  Scenario: Author evidence is collected with the source it came from
+    Given a page at URL "https://ex.com/post" with HTML:
+      """
+      <html><head>
+        <meta name="author" content="Jane Doe">
+        <meta property="article:author" content="https://ex.com/people/jane">
+      </head><body>
+        <nav><a class="authors-link" href="/authors">Authors</a></nav>
+        <article>
+          <a rel="author" href="/people/jane">Jane Doe</a>
+          <span itemprop="author" itemscope><span itemprop="name">Jane Doe</span></span>
+          <footer><p class="byline">By Jane Doe</p></footer>
+        </article>
+        <footer><p class="author-credit">Site by Agency</p></footer>
+      </body></html>
+      """
+    Then the page has author evidence:
+      | source    | name        | url                        |
+      | meta      | Jane Doe    |                            |
+      | article   |             | https://ex.com/people/jane |
+      | rel       | Jane Doe    | https://ex.com/people/jane |
+      | microdata | Jane Doe    |                            |
+      | byline    | By Jane Doe |                            |

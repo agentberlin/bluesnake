@@ -974,10 +974,11 @@ func (c *Crawler) Close() {
 }
 
 // renderAndDiff renders the page in Chrome, parses the rendered DOM, extracts
-// structured data from it, merges rendered-only links into the link set
-// (origin=rendered) and records the raw-vs-rendered element differences. It
-// returns renderedOK=true when rendering succeeded — the caller then trusts the
-// rendered-DOM structured data instead of re-extracting from the raw body.
+// structured data and author evidence from it, merges rendered-only links into
+// the link set (origin=rendered) and records the raw-vs-rendered element
+// differences. It returns renderedOK=true when rendering succeeded — the
+// caller then trusts the rendered-DOM structured data instead of re-extracting
+// from the raw body.
 // interrupted=true means a pause/stop cancelled the crawl while waiting for a
 // render slot or mid-render: the caller must abandon the item (leave it
 // pending, record nothing) so a resume re-fetches and re-renders it — a
@@ -1025,6 +1026,10 @@ func (c *Crawler) renderAndDiff(ctx context.Context, url string, rec *PageRecord
 	// but are what Google and Screaming Frog read. The raw-body extraction in
 	// crawlOne runs only when this render path doesn't.
 	rec.StructuredData = structured.Extract([]byte(rendered.HTML), c.cfg)
+	// Author evidence follows structured data: a byline or author markup a
+	// script injects is what a reader sees, and what the raw body said is in
+	// the rendered DOM too unless a script took it out.
+	facts.Authors = rFacts.Authors
 
 	first := func(v []string) string {
 		if len(v) > 0 {
