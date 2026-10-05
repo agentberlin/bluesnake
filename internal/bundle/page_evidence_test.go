@@ -71,3 +71,32 @@ func TestIframeLinksCarryTheirTitle(t *testing.T) {
 		t.Errorf("iframe title missing on the wire:\n%s", line)
 	}
 }
+
+// Headings ride on the page as one record in document order — every level,
+// with its text and whether an h1's text came from its image's alt — and the
+// h1, h2 and heading_levels arrays it replaced in bluesnake.pages/2 are gone.
+func TestPageCarriesItsHeadings(t *testing.T) {
+	p, line := bundledFacts(t, &parse.Facts{Headings: []parse.Heading{
+		{Level: 1, Text: "Logo", FromAlt: true},
+		{Level: 2, Text: "Overview"},
+		{Level: 3, Text: "Detail"},
+		{Level: 2},
+	}})
+	want := []Heading{
+		{Level: 1, Text: "Logo", FromAlt: true},
+		{Level: 2, Text: "Overview"},
+		{Level: 3, Text: "Detail"},
+		{Level: 2},
+	}
+	if !slices.Equal(p.Headings, want) {
+		t.Errorf("headings = %+v, want %+v", p.Headings, want)
+	}
+	if !strings.Contains(line, `"headings":[{"level":1,"text":"Logo","from_alt":true},{"level":2,"text":"Overview","from_alt":false},`) {
+		t.Errorf("headings on the wire:\n%s", line)
+	}
+	for _, gone := range []string{`"h1":`, `"h2":`, `"heading_levels":`} {
+		if strings.Contains(line, gone) {
+			t.Errorf("page line still carries %s:\n%s", gone, line)
+		}
+	}
+}

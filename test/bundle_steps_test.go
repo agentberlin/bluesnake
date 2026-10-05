@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/agentberlin/bluesnake/internal/bundle"
@@ -37,6 +38,7 @@ func (w *world) registerBundleSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the bundle page "([^"]*)" has a data-nosnippet element with text "([^"]*)"$`, w.bundleNoSnippet)
 	sc.Step(`^the bundle page "([^"]*)" has author evidence from "([^"]*)" named "([^"]*)"$`, w.bundleAuthor)
 	sc.Step(`^the bundle page "([^"]*)" has author evidence from "([^"]*)" named "([^"]*)" linking "([^"]*)"$`, w.bundleAuthorLinking)
+	sc.Step(`^the bundle page "([^"]*)" has headings:$`, w.bundleHeadings)
 	sc.Step(`^the bundle page "([^"]*)" has structured jsonld containing "([^"]*)"$`, w.bundlePageJSONLDContains)
 	sc.Step(`^the bundle page "([^"]*)" has a link to "([^"]*)" with "([^"]*)" equal to "([^"]*)"$`, w.bundleLinkFieldEquals)
 	sc.Step(`^the bundle page "([^"]*)" has a link to "([^"]*)" with "([^"]*)" containing "([^"]*)"$`, w.bundleLinkFieldContains)
@@ -368,6 +370,27 @@ func (w *world) bundleAuthorEntry(path string, want bundle.Author) error {
 		}
 	}
 	return fmt.Errorf("page %s has no author evidence %+v; got %+v", path, want, p.Authors)
+}
+
+// bundleHeadings compares a page's headings, in order, with a level | text |
+// from_alt table.
+func (w *world) bundleHeadings(path string, table *godog.Table) error {
+	p, err := w.bundlePage(path)
+	if err != nil {
+		return err
+	}
+	hs, err := headingsTable(table)
+	if err != nil {
+		return err
+	}
+	want := make([]bundle.Heading, 0, len(hs))
+	for _, h := range hs {
+		want = append(want, bundle.Heading{Level: h.Level, Text: h.Text, FromAlt: h.FromAlt})
+	}
+	if !slices.Equal(p.Headings, want) {
+		return fmt.Errorf("page %s: headings = %+v, want %+v", path, p.Headings, want)
+	}
+	return nil
 }
 
 func (w *world) bundlePageHeaderContains(path, name, want string) error {

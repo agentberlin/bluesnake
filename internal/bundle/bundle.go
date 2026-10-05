@@ -74,8 +74,9 @@ import (
 // Format is the stream's self-description: <name>/<major>. The major is bumped
 // for any change that is NOT purely additive — a removed or retyped field, a
 // changed meaning — because that is what consumers pin on. Adding a field does
-// not bump it, so a reader that ignores unknown keys keeps working.
-const Format = "bluesnake.pages/1"
+// not bump it, so a reader that ignores unknown keys keeps working. /2 replaced
+// a page's h1, h2 and heading_levels with one headings record.
+const Format = "bluesnake.pages/2"
 
 // Scope values for Options.Scope.
 const (
@@ -293,14 +294,14 @@ type Page struct {
 	// in Structured verbatim. A parsed fact, so a crawl made before it was
 	// retained carries [].
 	Authors []Author `json:"authors"`
-	// H1, H2, MetaRobots and XRobotsTag stay ARRAYS. They are natural multiples
-	// that CSV forced into H1-1, H1-2, …; the single-value flattening in the tab
-	// exports is a presentation choice a machine format should not inherit.
-	// HeadingLevels is the document order of every h1..h6 level, the evidence
-	// behind any heading-structure verdict.
-	H1            []string `json:"h1"`
-	H2            []string `json:"h2"`
-	HeadingLevels []int    `json:"heading_levels"`
+	// Headings, MetaRobots and XRobotsTag stay ARRAYS. They are natural
+	// multiples that CSV forced into H1-1, H1-2, …; the single-value flattening
+	// in the tab exports is a presentation choice a machine format should not
+	// inherit. Headings is every h1–h6 in document order, the evidence behind
+	// any heading verdict: the outline is its levels, the h1s its level-1
+	// texts. A crawl stored before deeper levels' text was kept carries "" for
+	// h3–h6.
+	Headings []Heading `json:"headings"`
 	// Canonical, RelNext and RelPrev follow the `canonicals` tab's rule (HTML,
 	// falling back to the HTTP Link header), not the `internal` tab's HTML-only
 	// one.
@@ -363,6 +364,14 @@ type Author struct {
 	Source string `json:"source"`
 	Name   string `json:"name"`
 	URL    string `json:"url"`
+}
+
+// Heading is one h1–h6 heading: its level and text. FromAlt marks an h1 whose
+// text is its first image's alt, because it has no text of its own.
+type Heading struct {
+	Level   int    `json:"level"`
+	Text    string `json:"text"`
+	FromAlt bool   `json:"from_alt"`
 }
 
 // SitemapEntry is one sitemap listing a page, with the lastmod it gave it.
@@ -740,9 +749,10 @@ func fillFromFacts(p *Page, f *parse.Facts, want map[string]bool) {
 	for _, a := range f.Authors {
 		p.Authors = append(p.Authors, Author{Source: a.Source, Name: a.Name, URL: a.URL})
 	}
-	p.H1 = nonNil(f.HeadingTexts(1))
-	p.H2 = nonNil(f.HeadingTexts(2))
-	p.HeadingLevels = f.HeadingLevels()
+	p.Headings = make([]Heading, 0, len(f.Headings))
+	for _, h := range f.Headings {
+		p.Headings = append(p.Headings, Heading{Level: h.Level, Text: h.Text, FromAlt: h.FromAlt})
+	}
 	p.Canonical = firstOf(f.CanonicalHTML, f.CanonicalHTTP)
 	p.RelNext = firstOf(f.NextHTML, f.NextHTTP)
 	p.RelPrev = firstOf(f.PrevHTML, f.PrevHTTP)

@@ -730,8 +730,9 @@ with their anchor, position, element path and position path.
 A page record carries **everything the crawl stored about the page**: every
 column of its `pages` row (the response headers as a map, the link-graph
 metrics finalize derived — inlinks, unique in/outlinks, link score, discovered
-from — the duplicate fields, egress attribution), every parsed fact (h1/h2 and
-heading order, hreflang from both sources, rel next/prev, meta refresh, AMP and
+from — the duplicate fields, egress attribution), every parsed fact (the
+headings, `headings: [{level, text, from_alt}]` — every h1–h6 in document order,
+`from_alt` marking an h1 whose text is its image's alt — hreflang from both sources, rel next/prev, meta refresh, AMP and
 mobile alternates, readability, the raw-body hash, head validity, robots meta
 tags addressed to one crawler, the text of `data-nosnippet` elements, and the
 author evidence the page shows — `authors: [{source, name, url}]` in document
@@ -787,12 +788,15 @@ the bundle is the machine surface.
 
 Three properties are contractual, each with a test that fails if it is lost:
 
-- **Versioned and counted.** The header's `format` (`bluesnake.pages/1`) is what
+- **Versioned and counted.** The header's `format` (`bluesnake.pages/2`) is what
   a consumer pins on so it can refuse a shape it does not understand instead of
   silently misreading it — the failure mode of every CSV column rename. Its
   `pages` is the exact number of lines that follow, counted inside the same
   transaction that streams them, so a short read means a truncated transfer.
   The major bumps only on a non-additive change; a new field does not bump it.
+  `/2` replaced a page's `h1`, `h2` and `heading_levels` arrays with the one
+  `headings` record; the fields noted below as added within `/1` are in `/2`
+  unchanged.
 - **Streamed.** One `sql.Rows` scan over `pages`: decode a row, write a line,
   let it go — the shape `StreamContentText` already uses, with links read from
   that row's own `facts`. Peak RAM is one page record regardless of crawl size.

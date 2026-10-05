@@ -37,7 +37,7 @@ Feature: Crawl bundle export
     When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
     And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
     Then the exit code is 0
-    And the bundle header has "format" equal to "bluesnake.pages/1"
+    And the bundle header has "format" equal to "bluesnake.pages/2"
     And the bundle header carries "bluesnake_version"
     And the bundle header carries "crawl_id"
     And the bundle header carries "config_digest"
@@ -233,6 +233,27 @@ Feature: Crawl bundle export
     And the bundle page "/" has a link to "/embed/intro" with "title" equal to "Intro video"
     And the bundle page "/" has a link to "/embed/intro" with "raw" equal to "/embed/intro"
     And the bundle page "/" has a link to "/people/jane" with no "title" field
+
+  # One record replaces the h1, h2 and heading_levels arrays (bluesnake.pages/2):
+  # every level in document order, with its text, and whether an h1's text is
+  # its image's alt.
+  Scenario: A page carries its headings as one record
+    Given a site page "/" with body:
+      """
+      <html><head><title>Bundle headings page title</title></head><body>
+      <h1><img src="/logo.png" alt="Company Logo"></h1>
+      <h2>Overview</h2><h4>Detail</h4><h2>Pricing</h2>
+      </body></html>
+      """
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
+    Then the exit code is 0
+    And the bundle page "/" has headings:
+      | level | text         | from_alt |
+      | 1     | Company Logo | true     |
+      | 2     | Overview     | false    |
+      | 4     | Detail       | false    |
+      | 2     | Pricing      | false    |
 
   Scenario: A JSON-LD block is emitted verbatim
     When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet --set extraction.structured_data.jsonld=true"

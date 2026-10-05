@@ -37,7 +37,7 @@ func TestBundleCmd_HeaderCountAndPageText(t *testing.T) {
 	dir, id := completedCrawl(t)
 	header, pages := bundleLines(t, "bundle", id, "--store-dir", dir)
 
-	if header["format"] != "bluesnake.pages/1" {
+	if header["format"] != "bluesnake.pages/2" {
 		t.Errorf("format = %v", header["format"])
 	}
 	if header["crawl_id"] != id {
