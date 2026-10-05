@@ -25,8 +25,8 @@ func newBundleCmd() *cobra.Command {
 			"its site-check reports (robots.txt, sitemaps, AI-bot access) and llms.txt files\n" +
 			"included — then one record per page carrying everything the crawl stored about\n" +
 			"it: its text, response headers, structured data (including the raw JSON-LD\n" +
-			"blocks), custom search/extraction values, the sitemaps that list it, link-graph\n" +
-			"metrics and its nested link edges.\n" +
+			"blocks), the author evidence it shows, custom search/extraction values, the\n" +
+			"sitemaps that list it, link-graph metrics and its nested link edges.\n" +
 			"With --full, a crawl that kept its page sources (extraction.store_html,\n" +
 			"store_rendered_html) also carries them on every page record; the header's\n" +
 			"`stored` and `full` say what the crawl kept and whether this file has it. The\n" +

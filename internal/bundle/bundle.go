@@ -287,6 +287,12 @@ type Page struct {
 	Title           string         `json:"title"`
 	MetaDescription string         `json:"meta_description"`
 	MetaKeywords    []string       `json:"meta_keywords"`
+	// Authors is the evidence of who wrote the page, in document order, each
+	// entry naming its source (meta | article | rel | microdata | byline) —
+	// what was found, not a verdict on who the author is. JSON-LD authors are
+	// in Structured verbatim. A parsed fact, so a crawl made before it was
+	// retained carries [].
+	Authors []Author `json:"authors"`
 	// H1, H2, MetaRobots and XRobotsTag stay ARRAYS. They are natural multiples
 	// that CSV forced into H1-1, H1-2, …; the single-value flattening in the tab
 	// exports is a presentation choice a machine format should not inherit.
@@ -351,6 +357,14 @@ type Page struct {
 	RenderedHTML *string `json:"rendered_html,omitempty"`
 }
 
+// Author is one piece of author evidence: where it was found and what it said.
+// Name or URL is "" when that source carried none.
+type Author struct {
+	Source string `json:"source"`
+	Name   string `json:"name"`
+	URL    string `json:"url"`
+}
+
 // SitemapEntry is one sitemap listing a page, with the lastmod it gave it.
 type SitemapEntry struct {
 	Sitemap string `json:"sitemap"`
@@ -397,20 +411,24 @@ type Link struct {
 	// Raw is the href exactly as written, before resolution and normalisation.
 	Raw    string `json:"raw"`
 	Anchor string `json:"anchor"`
-	// Alt, Width and Height belong to image links and Lang to hreflang links;
-	// like Origin they are omitted where the link type cannot carry them.
+	// Alt, Width and Height belong to image links, Title to iframe links and
+	// Lang to hreflang links; like Origin they are omitted where the link type
+	// cannot carry them.
 	Alt string `json:"alt,omitempty"`
 	// NoAltAttr says an image link's <img> had no alt attribute at all, which
 	// Alt cannot: it is omitted when empty, so a missing alt and a decorative
 	// alt="" would look the same. Present on every image link, false included,
 	// and absent on every other type.
-	NoAltAttr *bool  `json:"no_alt_attr,omitempty"`
-	Rel       string `json:"rel"`
-	Target    string `json:"target"`
-	Nofollow  bool   `json:"nofollow"`
-	Type      string `json:"type"`
-	PathType  string `json:"path_type"`
-	Position  string `json:"position"`
+	NoAltAttr *bool `json:"no_alt_attr,omitempty"`
+	// Title is an iframe's title attribute, which usually names the video it
+	// embeds.
+	Title    string `json:"title,omitempty"`
+	Rel      string `json:"rel"`
+	Target   string `json:"target"`
+	Nofollow bool   `json:"nofollow"`
+	Type     string `json:"type"`
+	PathType string `json:"path_type"`
+	Position string `json:"position"`
 	// ElemPath is the pure-positional SF link path; PositionPath is the
 	// id/class-annotated chain the position rules matched. Both are empty when
 	// the crawl ran with link-path storage off, and PositionPath is also empty
@@ -718,6 +736,10 @@ func fillFromFacts(p *Page, f *parse.Facts, want map[string]bool) {
 	p.Title = first(f.Titles)
 	p.MetaDescription = first(f.Descriptions)
 	p.MetaKeywords = nonNil(f.Keywords)
+	p.Authors = make([]Author, 0, len(f.Authors))
+	for _, a := range f.Authors {
+		p.Authors = append(p.Authors, Author{Source: a.Source, Name: a.Name, URL: a.URL})
+	}
 	p.H1 = nonNil(f.H1s)
 	p.H2 = nonNil(f.H2s)
 	p.HeadingLevels = f.HeadingLevels
@@ -765,7 +787,7 @@ func fillFromFacts(p *Page, f *parse.Facts, want map[string]bool) {
 			continue
 		}
 		link := Link{
-			URL: l.URL, Raw: l.Raw, Anchor: l.Anchor, Alt: l.Alt, Rel: l.Rel, Target: l.Target,
+			URL: l.URL, Raw: l.Raw, Anchor: l.Anchor, Alt: l.Alt, Title: l.Title, Rel: l.Rel, Target: l.Target,
 			Nofollow: l.Nofollow, Type: string(l.Type), PathType: l.PathType, Position: l.Position,
 			ElemPath: l.ElemPath, PositionPath: l.PositionPath,
 			Lang: l.Lang, Width: l.Width, Height: l.Height, Origin: l.Origin,

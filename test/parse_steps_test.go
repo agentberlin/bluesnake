@@ -3,6 +3,7 @@ package acceptance
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/agentberlin/bluesnake/internal/config"
@@ -44,6 +45,7 @@ func (w *world) registerParseSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the average words per sentence is (\d+)$`, w.checkAvgWordsPerSentence)
 	sc.Step(`^both pages have the same hash$`, w.checkSameHash)
 	sc.Step(`^the page language is "([^"]*)"$`, w.checkLang)
+	sc.Step(`^the page has author evidence:$`, w.checkAuthors)
 
 	sc.Step(`^a hyperlink to "([^"]*)" exists$`, w.checkHyperlinkExists)
 	sc.Step(`^a hyperlink to "([^"]*)" exists with anchor "([^"]*)"$`, w.checkHyperlinkAnchor)
@@ -57,6 +59,8 @@ func (w *world) registerParseSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the link to "([^"]*)" has path type "([^"]*)"$`, w.checkLinkPathType)
 	sc.Step(`^the link to "([^"]*)" has target "([^"]*)"$`, w.checkLinkTarget)
 	sc.Step(`^the link to "([^"]*)" has rel "([^"]*)"$`, w.checkLinkRel)
+	sc.Step(`^the link to "([^"]*)" has alt "([^"]*)"$`, w.checkLinkAlt)
+	sc.Step(`^the link to "([^"]*)" has title "([^"]*)"$`, w.checkLinkTitle)
 	sc.Step(`^the page has (\d+) links? of type "([^"]*)"$`, w.checkLinkTypeCount)
 }
 
@@ -434,6 +438,47 @@ func (w *world) checkLinkRel(url, want string) error {
 	}
 	if l.Rel != want {
 		return fmt.Errorf("rel = %q, want %q", l.Rel, want)
+	}
+	return nil
+}
+
+func (w *world) checkLinkAlt(url, want string) error {
+	l, err := w.mustFindLink(url)
+	if err != nil {
+		return err
+	}
+	if l.Alt != want {
+		return fmt.Errorf("alt = %q, want %q", l.Alt, want)
+	}
+	return nil
+}
+
+func (w *world) checkLinkTitle(url, want string) error {
+	l, err := w.mustFindLink(url)
+	if err != nil {
+		return err
+	}
+	if l.Title != want {
+		return fmt.Errorf("title = %q, want %q", l.Title, want)
+	}
+	return nil
+}
+
+// checkAuthors compares the page's author evidence, in order, with a
+// source | name | url table (the first row is the header).
+func (w *world) checkAuthors(table *godog.Table) error {
+	var want []parse.Author
+	for i, row := range table.Rows {
+		if len(row.Cells) != 3 {
+			return fmt.Errorf("author rows need 3 cells (source | name | url)")
+		}
+		if i == 0 {
+			continue
+		}
+		want = append(want, parse.Author{Source: row.Cells[0].Value, Name: row.Cells[1].Value, URL: row.Cells[2].Value})
+	}
+	if !slices.Equal(w.facts.Authors, want) {
+		return fmt.Errorf("authors = %+v, want %+v", w.facts.Authors, want)
 	}
 	return nil
 }

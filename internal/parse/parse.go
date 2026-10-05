@@ -78,6 +78,7 @@ type Link struct {
 	Width        string // img width attribute
 	Height       string // img height attribute
 	NoAltAttr    bool   // img carried no alt attribute at all (vs alt="")
+	Title        string // iframe title attribute, collapsed: what the embed names itself
 	Origin       string // html | rendered | xhr (JS rendering mode)
 }
 
@@ -151,6 +152,11 @@ type Facts struct {
 	// it does for Google; a nested data-nosnippet element appears twice, once
 	// inside its ancestor's text and once on its own.
 	NoSnippet []string
+
+	// Authors is the evidence of who wrote the page, in document order, each
+	// (source, name, url) once: what was found and where (see authors.go).
+	// With rendering on it is read from the rendered DOM, as structured data is.
+	Authors []Author
 
 	MetaRefresh    string // raw content attribute
 	MetaRefreshURL string // resolved target ("" if none); self URL for bare delays
@@ -318,6 +324,8 @@ func (p *parser) handleElement(n *html.Node, path string) {
 	if hasAttr(n, "data-nosnippet") {
 		f.NoSnippet = append(f.NoSnippet, collapseSpace(subtreeText(n)))
 	}
+	p.microdataAuthor(n)
+	p.byline(n, path)
 	switch n.Data {
 	case "html":
 		if lang := attr(n, "lang"); lang != "" {
@@ -368,20 +376,27 @@ func (p *parser) handleElement(n *html.Node, path string) {
 			p.addLink(n, path, Link{Type: JS, Raw: src})
 		}
 	case "iframe":
-		if src := attr(n, "src"); src != "" {
-			p.addLink(n, path, Link{Type: IFrame, Raw: src})
+		// Consent managers defer an embed by leaving src empty or about:blank
+		// and parking the real URL in data-src, so a crawl without rendering
+		// would otherwise see no embed at all.
+		src := attr(n, "src")
+		if s := strings.TrimSpace(src); s == "" || strings.EqualFold(s, "about:blank") {
+			if deferred := attr(n, "data-src"); deferred != "" {
+				src = deferred
+			}
+		}
+		if src != "" {
+			p.addLink(n, path, Link{Type: IFrame, Raw: src, Title: collapseSpace(attr(n, "title"))})
 		}
 	case "video", "audio", "track":
 		if src := attr(n, "src"); src != "" {
 			p.addLink(n, path, Link{Type: Media, Raw: src})
 		}
 	case "source":
-		if src := attr(n, "src"); src != "" {
-			typ := Media
-			if n.Parent != nil && n.Parent.Data == "picture" {
-				typ = Image
-			}
-			p.addLink(n, path, Link{Type: typ, Raw: src})
+		if n.Parent != nil && n.Parent.Data == "picture" {
+			p.handlePictureSource(n, path)
+		} else if src := attr(n, "src"); src != "" {
+			p.addLink(n, path, Link{Type: Media, Raw: src})
 		}
 	case "embed":
 		if src := attr(n, "src"); src != "" {
@@ -458,6 +473,7 @@ func (p *parser) handleMeta(n *html.Node, path string) {
 			p.addLink(n, path, Link{Type: MetaRefreshLink, Raw: content, URL: f.MetaRefreshURL})
 		}
 	}
+	p.metaAuthor(n)
 }
 
 // metaRefreshTarget extracts the url= part of a refresh content attribute.
@@ -484,6 +500,7 @@ func (p *parser) handleLinkElement(n *html.Node, path string) {
 	if href == "" {
 		return
 	}
+	p.relAuthor(n, href)
 	rels := strings.Fields(strings.ToLower(attr(n, "rel")))
 	resolved := p.resolve(href)
 	for _, rel := range rels {
@@ -532,6 +549,8 @@ func (p *parser) handleAnchor(n *html.Node, path string) {
 	if href == "" {
 		return
 	}
+	// Before the scheme filter: a rel=author mailto: still names the author.
+	p.relAuthor(n, href)
 	lower := strings.ToLower(href)
 	switch {
 	case strings.HasPrefix(lower, "javascript:"):
@@ -568,6 +587,34 @@ func (p *parser) handleAnchor(n *html.Node, path string) {
 
 func (p *parser) handleImg(n *html.Node, path string) {
 	alt, altSet := attrOK(n, "alt")
+	if src := attr(n, "src"); src != "" {
+		p.addLink(n, path, Link{
+			Type: Image, Raw: src, Alt: alt, NoAltAttr: !altSet,
+			Width: attr(n, "width"), Height: attr(n, "height"),
+		})
+	}
+	if p.cfg.Advanced.ExtractSrcset {
+		for _, cand := range parseSrcset(attr(n, "srcset")) {
+			p.addLink(n, path, Link{Type: Image, Raw: cand, Alt: alt, NoAltAttr: !altSet})
+		}
+	}
+}
+
+// handlePictureSource reads a <source> inside a <picture>. Its image is
+// named in srcset (src is not valid there; it is read for the pages that use
+// it anyway), and its candidates are extracted under advanced.extract_srcset
+// like an <img>'s: they are alternates of the picture's <img>, which is always
+// read, and Screaming Frog gates picture alternatives behind the same option.
+// A <source> has no alt of its own — the picture's alternative text is its
+// <img>'s — so each link carries that alt, and whether it was present.
+func (p *parser) handlePictureSource(n *html.Node, path string) {
+	alt, altSet := "", false
+	for c := n.Parent.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == html.ElementNode && c.Data == "img" {
+			alt, altSet = attrOK(c, "alt")
+			break
+		}
+	}
 	if src := attr(n, "src"); src != "" {
 		p.addLink(n, path, Link{
 			Type: Image, Raw: src, Alt: alt, NoAltAttr: !altSet,

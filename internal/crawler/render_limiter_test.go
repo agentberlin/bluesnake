@@ -48,6 +48,7 @@ type fakeRenderer struct {
 	gauge     *renderGauge
 	delay     time.Duration
 	blockPath string // suffix; "" = never block
+	html      string // the rendered DOM; "" = a stock page
 
 	mu       sync.Mutex
 	inFlight map[string]bool
@@ -80,6 +81,9 @@ func (f *fakeRenderer) Render(ctx context.Context, url string) (*render.Result, 
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+	if f.html != "" {
+		return &render.Result{HTML: f.html}, nil
 	}
 	return &render.Result{HTML: "<html><body><p>rendered</p></body></html>"}, nil
 }

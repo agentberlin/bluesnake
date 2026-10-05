@@ -156,7 +156,7 @@ var descriptions = map[string]string{
 	"advanced.always_follow_canonicals":              "Follow canonical targets beyond crawl scope.",
 	"advanced.respect_hsts":                          "After seeing Strict-Transport-Security, treat http:// requests to that host as 307s to https (matches browsers).",
 	"advanced.respect_self_referencing_meta_refresh": "Count a meta refresh pointing at the page itself as a refresh (affects indexability).",
-	"advanced.extract_srcset":                        "Extract image URLs from srcset attributes.",
+	"advanced.extract_srcset":                        "Extract image URLs from srcset attributes: an <img>'s, and each <source> in a <picture>.",
 	"advanced.crawl_fragments":                       "Keep #fragment when deduplicating URLs (crawl /page#a and /page#b separately).",
 	"advanced.assume_pages_are_html":                 "Parse responses with no Content-Type as HTML.",
 	"advanced.response_timeout_sec":                  "Per-request timeout in seconds.",

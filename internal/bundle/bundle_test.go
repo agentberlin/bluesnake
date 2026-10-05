@@ -635,7 +635,7 @@ func TestFactlessPagesAreEmittedWithEmptyFacts(t *testing.T) {
 	}
 	// Arrays, not nulls — and the headers map and custom results likewise.
 	for _, want := range []string{`"h1":[]`, `"h2":[]`, `"heading_levels":[]`, `"meta_keywords":[]`,
-		`"meta_robots":[]`, `"x_robots_tag":[]`, `"meta_robots_agents":[]`, `"data_nosnippet":[]`,
+		`"meta_robots":[]`, `"x_robots_tag":[]`, `"meta_robots_agents":[]`, `"data_nosnippet":[]`, `"authors":[]`,
 		`"hreflang":[]`, `"amp_links":[]`, `"mobile_alternates":[]`,
 		`"head":{"invalid_elements":[],"missing":false,"multiple":false}`,
 		`"headers":{}`, `"sitemaps":[]`, `"custom_results":[]`, `"links":[]`, `"depth":null`} {

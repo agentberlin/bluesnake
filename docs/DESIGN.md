@@ -483,7 +483,7 @@ Each analyzer reads SQLite, writes back columns/tables; all are idempotent and r
 
 ### 5.8 Rendering (phase 2)
 
-`chromedp` pool (size = min(threads, cores-scaled cap: 2/4/8 tabs); per-page: navigate, wait until the page **settles**, snapshot rendered DOM, optional screenshot, console log capture, custom JS execution (action snippets then extraction snippets). Parse pipeline runs twice (raw + rendered) and diffs element sets → JavaScript tab data (`origin` on link edges, `*_rendered` facts). Resource blocking by robots reported as Blocked Resource.
+`chromedp` pool (size = min(threads, cores-scaled cap: 2/4/8 tabs); per-page: navigate, wait until the page **settles**, snapshot rendered DOM, optional screenshot, console log capture, custom JS execution (action snippets then extraction snippets). Parse pipeline runs twice (raw + rendered) and diffs element sets → JavaScript tab data (`origin` on link edges, `*_rendered` facts); structured data and author evidence are taken from the rendered DOM, since a script-injected FAQ block or byline is what a reader sees. Resource blocking by robots reported as Blocked Resource.
 
 **Shadow-DOM flattening** (`rendering.flatten_shadow_dom`, default on): `OuterHTML` does not serialize shadow roots, so links/headings/structured-data inside Web-Components shadow trees would be invisible. When on, the rendered snapshot is produced by a synchronous pass (right before serialization, after any screenshot) that moves each shadow host's children up into the host as light DOM and returns native `outerHTML`; nested roots are flattened a level per pass. Open roots are reached via `element.shadowRoot`; **closed** roots are reached via a document-start `attachShadow` shim that stashes them (mode left unchanged). The flattened HTML feeds the same `parse` + `structured` pipeline, so shadow links surface as `origin=rendered` — matching Screaming Frog, which pierces both open and closed shadow DOM. Residual: closed *declarative* shadow DOM (parser-created, no `attachShadow` call) is unreachable. (`rendering.flatten_iframes` remains unbuilt.)
 
@@ -733,14 +733,25 @@ metrics finalize derived — inlinks, unique in/outlinks, link score, discovered
 from — the duplicate fields, egress attribution), every parsed fact (h1/h2 and
 heading order, hreflang from both sources, rel next/prev, meta refresh, AMP and
 mobile alternates, readability, the raw-body hash, head validity, robots meta
-tags addressed to one crawler and the text of `data-nosnippet` elements), the
+tags addressed to one crawler, the text of `data-nosnippet` elements, and the
+author evidence the page shows — `authors: [{source, name, url}]` in document
+order from `meta`, `article` (`article:author`), `rel` (`rel="author"`),
+`microdata` (`itemprop="author"`) and `byline` (a visible element whose class
+or id holds the word author or byline, outside nav and the site footer, its
+text capped at 200 characters) — evidence, not a verdict on who wrote it), the
 `custom_search` / `custom_extraction` / `custom_js` values by name, the
 `jsdiff` of a rendering crawl, and the sitemap entries that list it
 (`sitemaps: [{sitemap, lastmod}]`, sorted by sitemap, lastmod exactly as the
 entry wrote it, `[]` when no sitemap lists the page — a lastmod belongs to an
 entry, not a URL, so it travels with membership). Its image links carry
 `no_alt_attr` (true or false; absent on other types), since `alt` is omitted
-when empty and cannot tell a missing alt from a decorative `alt=""`. The
+when empty and cannot tell a missing alt from a decorative `alt=""`. With
+`advanced.extract_srcset` on, a `<picture>`'s `<source srcset>` candidates are
+image links like an `<img srcset>`'s (Screaming Frog gates picture alternatives
+behind the same option), and they take the picture's `<img>` alt, since a
+source has none of its own. Iframe links carry the iframe's `title` (absent on other types),
+and a consent-deferred iframe (`src` empty or `about:blank`) is read from its
+`data-src`. The
 bundle is the one export a consumer should never have to go back to the store
 for, so an omission is a bug, not a trim.
 Two things are deliberately not in the default stream: issues, which are

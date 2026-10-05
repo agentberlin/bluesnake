@@ -35,6 +35,8 @@ func (w *world) registerBundleSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the bundle page "([^"]*)" has response header "([^"]*)" containing "([^"]*)"$`, w.bundlePageHeaderContains)
 	sc.Step(`^the bundle page "([^"]*)" has a robots meta tag for "([^"]*)" with content "([^"]*)"$`, w.bundleAgentRobotsMeta)
 	sc.Step(`^the bundle page "([^"]*)" has a data-nosnippet element with text "([^"]*)"$`, w.bundleNoSnippet)
+	sc.Step(`^the bundle page "([^"]*)" has author evidence from "([^"]*)" named "([^"]*)"$`, w.bundleAuthor)
+	sc.Step(`^the bundle page "([^"]*)" has author evidence from "([^"]*)" named "([^"]*)" linking "([^"]*)"$`, w.bundleAuthorLinking)
 	sc.Step(`^the bundle page "([^"]*)" has structured jsonld containing "([^"]*)"$`, w.bundlePageJSONLDContains)
 	sc.Step(`^the bundle page "([^"]*)" has a link to "([^"]*)" with "([^"]*)" equal to "([^"]*)"$`, w.bundleLinkFieldEquals)
 	sc.Step(`^the bundle page "([^"]*)" has a link to "([^"]*)" with "([^"]*)" containing "([^"]*)"$`, w.bundleLinkFieldContains)
@@ -346,6 +348,28 @@ func (w *world) bundleNoSnippet(path, text string) error {
 	return fmt.Errorf("page %s has no data-nosnippet element with text %q; got %v", path, text, p.DataNoSnippet)
 }
 
+func (w *world) bundleAuthor(path, source, name string) error {
+	return w.bundleAuthorEntry(path, bundle.Author{Source: source, Name: name})
+}
+
+// bundleAuthorLinking expects the author URL on the fixture server.
+func (w *world) bundleAuthorLinking(path, source, name, target string) error {
+	return w.bundleAuthorEntry(path, bundle.Author{Source: source, Name: name, URL: w.ensureServer().URL + target})
+}
+
+func (w *world) bundleAuthorEntry(path string, want bundle.Author) error {
+	p, err := w.bundlePage(path)
+	if err != nil {
+		return err
+	}
+	for _, a := range p.Authors {
+		if a == want {
+			return nil
+		}
+	}
+	return fmt.Errorf("page %s has no author evidence %+v; got %+v", path, want, p.Authors)
+}
+
 func (w *world) bundlePageHeaderContains(path, name, want string) error {
 	p, err := w.bundlePage(path)
 	if err != nil {
@@ -418,6 +442,12 @@ func (w *world) bundleLinkField(path, target, field string) (string, error) {
 			return l.ElemPath, nil
 		case "anchor":
 			return l.Anchor, nil
+		case "raw":
+			return l.Raw, nil
+		case "alt":
+			return l.Alt, nil
+		case "title":
+			return l.Title, nil
 		case "type":
 			return l.Type, nil
 		case "no_alt_attr":
