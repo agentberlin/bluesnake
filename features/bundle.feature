@@ -217,6 +217,23 @@ Feature: Crawl bundle export
     And the bundle page "/" has a link to "/decorative.png" with "no_alt_attr" equal to "false"
     And the bundle page "/" has a link to "/about" with no "no_alt_attr" field
 
+  Scenario: A page carries its author evidence, and an iframe its title
+    Given a site page "/" with body:
+      """
+      <html><head><title>Bundle authors page title</title><meta name="author" content="Jane Doe"></head><body>
+      <article><p class="byline">By <a href="/people/jane">Jane Doe</a></p>
+      <iframe src="about:blank" data-src="/embed/intro" title="Intro video"></iframe></article>
+      </body></html>
+      """
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake bundle <crawlid> --store-dir <storedir> --link-types hyperlink,iframe -o <storedir>/crawl.jsonl"
+    Then the exit code is 0
+    And the bundle page "/" has author evidence from "meta" named "Jane Doe"
+    And the bundle page "/" has author evidence from "byline" named "By Jane Doe" linking "/people/jane"
+    And the bundle page "/" has a link to "/embed/intro" with "title" equal to "Intro video"
+    And the bundle page "/" has a link to "/embed/intro" with "raw" equal to "/embed/intro"
+    And the bundle page "/" has a link to "/people/jane" with no "title" field
+
   Scenario: A JSON-LD block is emitted verbatim
     When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet --set extraction.structured_data.jsonld=true"
     And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
