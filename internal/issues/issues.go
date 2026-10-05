@@ -7,6 +7,7 @@ package issues
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -704,7 +705,7 @@ func (e *evaluator) elements(rec *crawler.PageRecord) {
 		} else if t.Title.MinPx > 0 && px < t.Title.MinPx {
 			e.add(u, "title_below_pixels", fmt.Sprintf("%dpx", px))
 		}
-		if len(f.H1s) > 0 && strings.EqualFold(title, f.H1s[0]) {
+		if h1s := f.HeadingTexts(1); len(h1s) > 0 && strings.EqualFold(title, h1s[0]) {
 			e.add(u, "title_same_as_h1")
 		}
 	}
@@ -747,37 +748,38 @@ func (e *evaluator) elements(rec *crawler.PageRecord) {
 		}
 		return false
 	}
+	h1s, h2s, levels := f.HeadingTexts(1), f.HeadingTexts(2), f.HeadingLevels()
 	switch {
-	case len(f.H1s) == 0 || strings.TrimSpace(f.H1s[0]) == "":
+	case len(h1s) == 0 || strings.TrimSpace(h1s[0]) == "":
 		e.add(u, "h1_missing")
 	default:
-		if len(f.H1s) > 1 {
+		if len(h1s) > 1 {
 			e.add(u, "h1_multiple")
 		}
-		if overChars(f.H1s, t.H1MaxChars) {
+		if overChars(h1s, t.H1MaxChars) {
 			e.add(u, "h1_over_chars")
 		}
-		if len(f.HeadingLevels) > 0 && f.HeadingLevels[0] != 1 {
-			e.add(u, "h1_non_sequential", fmt.Sprintf("first heading is h%d", f.HeadingLevels[0]))
+		if levels[0] != 1 {
+			e.add(u, "h1_non_sequential", fmt.Sprintf("first heading is h%d", levels[0]))
 		}
-		if f.H1AltText {
-			e.add(u, "h1_alt_text", f.H1s[0])
+		if slices.ContainsFunc(f.Headings, func(h parse.Heading) bool { return h.FromAlt }) {
+			e.add(u, "h1_alt_text", h1s[0])
 		}
 	}
 	switch {
-	case len(f.H2s) == 0:
+	case len(h2s) == 0:
 		e.add(u, "h2_missing")
 	default:
-		if len(f.H2s) > 1 {
+		if len(h2s) > 1 {
 			e.add(u, "h2_multiple")
 		}
-		if overChars(f.H2s, t.H2MaxChars) {
+		if overChars(h2s, t.H2MaxChars) {
 			e.add(u, "h2_over_chars")
 		}
 		// an h2 should be the next heading level after the h1: flag pages
 		// whose first h2 follows a deeper heading (h1 > h3 > h2 ordering)
 		prev := 0
-		for _, level := range f.HeadingLevels {
+		for _, level := range levels {
 			if level == 2 {
 				if prev > 2 {
 					e.add(u, "h2_non_sequential", fmt.Sprintf("first h2 follows an h%d", prev))
@@ -1301,12 +1303,13 @@ func (e *evaluator) duplicates() {
 		// SF extracts two h1s per page (H1-1, H1-2) and its Duplicate
 		// filter matches on either — a page whose two h1s are identical
 		// is itself a Duplicate (measured on hamming.ai blog pages)
-		for _, h1 := range f.H1s[:min(len(f.H1s), 2)] {
+		h1s, h2s := f.HeadingTexts(1), f.HeadingTexts(2)
+		for _, h1 := range h1s[:min(len(h1s), 2)] {
 			collect(byH1, h1, url)
 		}
 		// Screaming Frog extracts two h2s per page (H2-1, H2-2) and its
 		// Duplicate filter matches on either
-		for _, h2 := range f.H2s[:min(len(f.H2s), 2)] {
+		for _, h2 := range h2s[:min(len(h2s), 2)] {
 			collect(byH2, h2, url)
 		}
 	}

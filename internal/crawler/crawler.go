@@ -1047,7 +1047,7 @@ func (c *Crawler) renderAndDiff(ctx context.Context, url string, rec *PageRecord
 		diff.RenderedTitle = rt
 	}
 	diff.DescriptionChanged = first(rFacts.Descriptions) != first(facts.Descriptions)
-	diff.H1Changed = first(rFacts.H1s) != first(facts.H1s)
+	diff.H1Changed = first(rFacts.HeadingTexts(1)) != first(facts.HeadingTexts(1))
 	if rc, cn := first(rFacts.CanonicalHTML), first(facts.CanonicalHTML); rc != cn {
 		diff.CanonicalChanged = true
 		diff.RenderedCanonical = rc

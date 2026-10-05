@@ -440,7 +440,7 @@ Crawl DBs and the registry DB are durable artifacts that outlive the binary, so 
 - A **fresh** database (no tables yet → this open created it) is stamped straight to the top of its ladder — `max(floor, highest step)`, so an empty/fully-retired ladder still stamps the current revision, not v0; the migration steps never run.
 - An **existing** database runs only the ladder steps whose version is above its stored revision, each applied in a transaction that bumps `user_version` atomically (a crash mid-step rolls back to the prior revision). The common case — already current — is one pragma read.
 
-Migrations are an **append-only ladder** (`crawlMigrations`, `registryMigrations`): each step has a *stable* version number (never renumbered or reordered) and an idempotent `apply` func. Adding a schema change = append one step. The two `min*Version` floors are the removal lever (below). Every step through crawl v5 / registry v2 was retired once all installs reached them, so the floors sit there; the crawl ladder's live steps are v6 `pages.proxy`, v7 `links.position_path` and v8 `sitemap_entries.lastmod`, the registry ladder is empty, and the next change appends just above (v9 / v3), reusing the retained `addColumn`/`columnExists` helpers.
+Migrations are an **append-only ladder** (`crawlMigrations`, `registryMigrations`): each step has a *stable* version number (never renumbered or reordered) and an idempotent `apply` func. Adding a schema change = append one step. The two `min*Version` floors are the removal lever (below). Every step through crawl v5 / registry v2 was retired once all installs reached them, so the floors sit there; the crawl ladder's live steps are v6 `pages.proxy`, v7 `links.position_path`, v8 `sitemap_entries.lastmod` and v9 `facts.headings`, the registry ladder is empty, and the next change appends just above (v10 / v3), reusing the retained `addColumn`/`columnExists` helpers. A step may rewrite data as well as schema: v9 rewrites each page's stored `facts` from the old `H1s`/`H2s`/`HeadingLevels`/`H1AltText` fields into the one `Headings` record (levels and h1/h2 text carried over, `""` for h3–h6 text that was never kept, the page-level alt flag as `FromAlt` on the first h1), so analysis, compare and the exports read an old crawl as they read a new one.
 
 > **Retiring a migration.** Stable version numbers + a floor are what make old step code *safely deletable* — without a durable revision marker you can never prove a DB on disk doesn't still need an old step. To drop support for ancient databases and delete their migration code:
 > 1. Pick the new floor **F** — the oldest revision you still want to open.
@@ -730,8 +730,9 @@ with their anchor, position, element path and position path.
 A page record carries **everything the crawl stored about the page**: every
 column of its `pages` row (the response headers as a map, the link-graph
 metrics finalize derived — inlinks, unique in/outlinks, link score, discovered
-from — the duplicate fields, egress attribution), every parsed fact (h1/h2 and
-heading order, hreflang from both sources, rel next/prev, meta refresh, AMP and
+from — the duplicate fields, egress attribution), every parsed fact (the
+headings, `headings: [{level, text, from_alt}]` — every h1–h6 in document order,
+`from_alt` marking an h1 whose text is its image's alt — hreflang from both sources, rel next/prev, meta refresh, AMP and
 mobile alternates, readability, the raw-body hash, head validity, robots meta
 tags addressed to one crawler, the text of `data-nosnippet` elements, and the
 author evidence the page shows — `authors: [{source, name, url}]` in document
@@ -787,12 +788,15 @@ the bundle is the machine surface.
 
 Three properties are contractual, each with a test that fails if it is lost:
 
-- **Versioned and counted.** The header's `format` (`bluesnake.pages/1`) is what
+- **Versioned and counted.** The header's `format` (`bluesnake.pages/2`) is what
   a consumer pins on so it can refuse a shape it does not understand instead of
   silently misreading it — the failure mode of every CSV column rename. Its
   `pages` is the exact number of lines that follow, counted inside the same
   transaction that streams them, so a short read means a truncated transfer.
   The major bumps only on a non-additive change; a new field does not bump it.
+  `/2` replaced a page's `h1`, `h2` and `heading_levels` arrays with the one
+  `headings` record; the fields noted below as added within `/1` are in `/2`
+  unchanged.
 - **Streamed.** One `sql.Rows` scan over `pages`: decode a row, write a line,
   let it go — the shape `StreamContentText` already uses, with links read from
   that row's own `facts`. Peak RAM is one page record regardless of crawl size.

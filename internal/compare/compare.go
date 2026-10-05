@@ -243,7 +243,7 @@ func changeDetection(prev, curr map[string]*crawler.PageRecord, cfg *config.Conf
 		if p.Facts != nil && c.Facts != nil {
 			note("titles", first(p.Facts.Titles), first(c.Facts.Titles))
 			note("descriptions", first(p.Facts.Descriptions), first(c.Facts.Descriptions))
-			note("h1", first(p.Facts.H1s), first(c.Facts.H1s))
+			note("h1", first(p.Facts.HeadingTexts(1)), first(c.Facts.HeadingTexts(1)))
 			note("word_count", itoa(p.Facts.WordCount), itoa(c.Facts.WordCount))
 			if slices.Contains(enabled, "content") {
 				if ch, ok := contentChange(url, p.Facts, c.Facts, cfg.Compare.ContentChangeThreshold); ok {

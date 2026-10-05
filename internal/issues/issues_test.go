@@ -118,18 +118,17 @@ func TestResponseCodeIssues(t *testing.T) {
 
 func TestTitleAndHeadingIssues(t *testing.T) {
 	occs := eval(
-		htmlPage("https://ex.com/missing", &parse.Facts{H2s: []string{"sub"}}),
+		htmlPage("https://ex.com/missing", &parse.Facts{Headings: []parse.Heading{{Level: 2, Text: "sub"}}}),
 		htmlPage("https://ex.com/long", &parse.Facts{
-			Titles: []string{strings.Repeat("long title ", 10)},
-			H1s:    []string{"ok"}, HeadingLevels: []int{1}, H2s: []string{"x"},
+			Titles:   []string{strings.Repeat("long title ", 10)},
+			Headings: []parse.Heading{{Level: 1, Text: "ok"}, {Level: 2, Text: "x"}},
 		}),
 		htmlPage("https://ex.com/same", &parse.Facts{
-			Titles: []string{"Same Text"}, H1s: []string{"same text"},
-			HeadingLevels: []int{1}, H2s: []string{"x"},
+			Titles: []string{"Same Text"}, Headings: []parse.Heading{{Level: 1, Text: "same text"}, {Level: 2, Text: "x"}},
 		}),
 		htmlPage("https://ex.com/multi", &parse.Facts{
-			Titles: []string{"one two three four five six seven eight", "second"},
-			H1s:    []string{"a", "b"}, HeadingLevels: []int{2, 1}, H2s: []string{"x", "y"},
+			Titles:   []string{"one two three four five six seven eight", "second"},
+			Headings: []parse.Heading{{Level: 2, Text: "x"}, {Level: 1, Text: "a"}, {Level: 1, Text: "b"}, {Level: 2, Text: "y"}},
 		}),
 	)
 	checks := map[string][]string{
@@ -152,7 +151,7 @@ func TestTitleAndHeadingIssues(t *testing.T) {
 
 func TestDuplicates(t *testing.T) {
 	mk := func(url, title, hash string) *crawler.PageRecord {
-		return htmlPage(url, &parse.Facts{Titles: []string{title}, Hash: hash, H1s: []string{url}, H2s: []string{"x"}, HeadingLevels: []int{1}})
+		return htmlPage(url, &parse.Facts{Titles: []string{title}, Hash: hash, Headings: []parse.Heading{{Level: 1, Text: url}, {Level: 2, Text: "x"}}})
 	}
 	occs := eval(
 		mk("https://ex.com/a", "Same Title", "hash1"),
@@ -179,14 +178,12 @@ func TestDuplicates(t *testing.T) {
 func TestIgnorePaginatedForDuplicates(t *testing.T) {
 	mk := func(url string, next, prev []string) *crawler.PageRecord {
 		return htmlPage(url, &parse.Facts{
-			Titles:        []string{"Catalogue Page Title Here"},
-			Descriptions:  []string{"Browse the full catalogue of items."},
-			H1s:           []string{"Catalogue"},
-			H2s:           []string{"Items"},
-			HeadingLevels: []int{1, 2},
-			Hash:          "samehash",
-			NextHTML:      next,
-			PrevHTML:      prev,
+			Titles:       []string{"Catalogue Page Title Here"},
+			Descriptions: []string{"Browse the full catalogue of items."},
+			Headings:     []parse.Heading{{Level: 1, Text: "Catalogue"}, {Level: 2, Text: "Items"}},
+			Hash:         "samehash",
+			NextHTML:     next,
+			PrevHTML:     prev,
 		})
 	}
 	// p1 -> p2 -> p3 sequence plus a standalone page, all identical content.
@@ -239,8 +236,8 @@ func TestIgnorePaginatedForDuplicates(t *testing.T) {
 
 func TestSecurityIssues(t *testing.T) {
 	rec := htmlPage("https://ex.com/p", &parse.Facts{
-		Titles: []string{"a reasonable length page title here"},
-		H1s:    []string{"h"}, H2s: []string{"x"}, HeadingLevels: []int{1},
+		Titles:   []string{"a reasonable length page title here"},
+		Headings: []parse.Heading{{Level: 1, Text: "h"}, {Level: 2, Text: "x"}},
 		Links: []parse.Link{
 			{Type: parse.Image, URL: "http://ex.com/i.png"},
 			{Type: parse.CSS, URL: "https://cdn.x.com/s.css", PathType: "protocol_relative"},
@@ -252,9 +249,9 @@ func TestSecurityIssues(t *testing.T) {
 	})
 	rec.Headers = map[string]string{"X-Content-Type-Options": "nosniff"}
 	httpPage := htmlPage("http://ex.com/insecure", &parse.Facts{
-		Titles: []string{"another reasonable length page title"},
-		H1s:    []string{"h"}, H2s: []string{"x"}, HeadingLevels: []int{1},
-		Forms: []parse.Form{{Action: "http://ex.com/insecure"}},
+		Titles:   []string{"another reasonable length page title"},
+		Headings: []parse.Heading{{Level: 1, Text: "h"}, {Level: 2, Text: "x"}},
+		Forms:    []parse.Form{{Action: "http://ex.com/insecure"}},
 	})
 	occs := eval(rec, httpPage)
 
@@ -292,7 +289,7 @@ func TestSecurityIssues(t *testing.T) {
 func TestURLIssues(t *testing.T) {
 	mkURL := func(url string) *crawler.PageRecord {
 		return htmlPage(url, &parse.Facts{Titles: []string{"a reasonable length page title here"},
-			H1s: []string{"h"}, H2s: []string{"x"}, HeadingLevels: []int{1}})
+			Headings: []parse.Heading{{Level: 1, Text: "h"}, {Level: 2, Text: "x"}}})
 	}
 	occs := eval(
 		mkURL("https://ex.com/Upper/Case"),
@@ -334,14 +331,14 @@ func TestContentAndCanonicalIssues(t *testing.T) {
 	canonTarget.Indexable = false
 	occs := eval(
 		htmlPage("https://ex.com/thin", &parse.Facts{
-			Titles: []string{"a reasonable length page title here"},
-			H1s:    []string{"h"}, H2s: []string{"x"}, HeadingLevels: []int{1},
+			Titles:    []string{"a reasonable length page title here"},
+			Headings:  []parse.Heading{{Level: 1, Text: "h"}, {Level: 2, Text: "x"}},
 			WordCount: 50, ContentText: "lorem ipsum dolor", Flesch: 80,
 		}),
 		func() *crawler.PageRecord {
 			r := htmlPage("https://ex.com/canon", &parse.Facts{
-				Titles: []string{"a reasonable length page title here"},
-				H1s:    []string{"h"}, H2s: []string{"x"}, HeadingLevels: []int{1},
+				Titles:        []string{"a reasonable length page title here"},
+				Headings:      []parse.Heading{{Level: 1, Text: "h"}, {Level: 2, Text: "x"}},
 				CanonicalHTML: []string{"https://ex.com/gone", "https://ex.com/other"},
 				Links: []parse.Link{
 					{Type: parse.Canonical, URL: "https://ex.com/gone", Raw: "/gone", PathType: "root_relative"},
@@ -383,17 +380,15 @@ func TestIgnoreNonIndexable(t *testing.T) {
 func TestRemainingElementChecks(t *testing.T) {
 	occs := eval(
 		htmlPage("https://ex.com/d", &parse.Facts{
-			Titles:        []string{"a reasonable length page title here"},
-			Descriptions:  []string{strings.Repeat("very long description ", 10), "second desc"},
-			Keywords:      []string{"a", "b"},
-			H1s:           []string{strings.Repeat("long h1 ", 12)},
-			H2s:           []string{strings.Repeat("long h2 ", 12)},
-			HeadingLevels: []int{1, 2},
-			WordCount:     500, Flesch: 20, ContentText: "complex words",
+			Titles:       []string{"a reasonable length page title here"},
+			Descriptions: []string{strings.Repeat("very long description ", 10), "second desc"},
+			Keywords:     []string{"a", "b"},
+			Headings:     []parse.Heading{{Level: 1, Text: strings.Repeat("long h1 ", 12)}, {Level: 2, Text: strings.Repeat("long h2 ", 12)}},
+			WordCount:    500, Flesch: 20, ContentText: "complex words",
 		}),
 		htmlPage("https://ex.com/soft404", &parse.Facts{
-			Titles: []string{"a reasonable length soft error title"},
-			H1s:    []string{"h"}, H2s: []string{"x"}, HeadingLevels: []int{1},
+			Titles:    []string{"a reasonable length soft error title"},
+			Headings:  []parse.Heading{{Level: 1, Text: "h"}, {Level: 2, Text: "x"}},
 			WordCount: 300, Flesch: 60, ContentText: "sorry, page not found",
 		}),
 	)
@@ -416,8 +411,8 @@ func TestImageAndDepthChecks(t *testing.T) {
 		State: crawler.StateCrawled, StatusCode: 200, ContentType: "image/png",
 		Size: 500 * 1024}
 	page := htmlPage("https://ex.com/p", &parse.Facts{
-		Titles: []string{"a reasonable length page title here"},
-		H1s:    []string{"h"}, H2s: []string{"x"}, HeadingLevels: []int{1},
+		Titles:   []string{"a reasonable length page title here"},
+		Headings: []parse.Heading{{Level: 1, Text: "h"}, {Level: 2, Text: "x"}},
 		Links: []parse.Link{
 			{Type: parse.Image, URL: "https://ex.com/big.png", Alt: ""},
 			{Type: parse.Image, URL: "https://ex.com/ok.png", Alt: strings.Repeat("long alt ", 20)},
@@ -441,8 +436,8 @@ func TestImageAndDepthChecks(t *testing.T) {
 
 func TestDirectiveChecks(t *testing.T) {
 	page := htmlPage("https://ex.com/p", &parse.Facts{
-		Titles: []string{"a reasonable length page title here"},
-		H1s:    []string{"h"}, H2s: []string{"x"}, HeadingLevels: []int{1},
+		Titles:     []string{"a reasonable length page title here"},
+		Headings:   []parse.Heading{{Level: 1, Text: "h"}, {Level: 2, Text: "x"}},
 		MetaRobots: []string{"noindex, nofollow"},
 		XRobotsTag: []string{"none"},
 	})
@@ -456,19 +451,19 @@ func TestDirectiveChecks(t *testing.T) {
 
 func TestValidationAndAMPChecks(t *testing.T) {
 	broken := htmlPage("https://ex.com/broken", &parse.Facts{
-		Titles: []string{"a reasonable length page title here"},
-		H1s:    []string{"h"}, H2s: []string{"x"}, HeadingLevels: []int{1},
+		Titles:   []string{"a reasonable length page title here"},
+		Headings: []parse.Heading{{Level: 1, Text: "h"}, {Level: 2, Text: "x"}},
 		Head: parse.HeadValidity{MissingHead: true, MultipleBody: true,
 			InvalidElementsInHead: []string{"div"}},
 	})
 	amp := htmlPage("https://ex.com/amp", &parse.Facts{
-		Titles: []string{"an amp page with a fine title here"},
-		H1s:    []string{"h"}, H2s: []string{"x"}, HeadingLevels: []int{1},
-		IsAMP: true, // no canonical, viewport, charset, or amp script
+		Titles:   []string{"an amp page with a fine title here"},
+		Headings: []parse.Heading{{Level: 1, Text: "h"}, {Level: 2, Text: "x"}},
+		IsAMP:    true, // no canonical, viewport, charset, or amp script
 	})
 	desktop := htmlPage("https://ex.com/desktop", &parse.Facts{
-		Titles: []string{"the desktop variant with a title"},
-		H1s:    []string{"h"}, H2s: []string{"x"}, HeadingLevels: []int{1},
+		Titles:   []string{"the desktop variant with a title"},
+		Headings: []parse.Heading{{Level: 1, Text: "h"}, {Level: 2, Text: "x"}},
 		AMPLinks: []string{"https://ex.com/amp"},
 	})
 	occs := eval(broken, amp, desktop)
@@ -488,9 +483,9 @@ func TestValidationAndAMPChecks(t *testing.T) {
 
 	// a correct AMP page raises none of the AMP issues
 	good := htmlPage("https://ex.com/amp-good", &parse.Facts{
-		Titles: []string{"a good amp page with a fine title"},
-		H1s:    []string{"h"}, H2s: []string{"x"}, HeadingLevels: []int{1},
-		IsAMP: true, HasViewport: true, HasCharset: true, HasAMPScript: true,
+		Titles:   []string{"a good amp page with a fine title"},
+		Headings: []parse.Heading{{Level: 1, Text: "h"}, {Level: 2, Text: "x"}},
+		IsAMP:    true, HasViewport: true, HasCharset: true, HasAMPScript: true,
 		CanonicalHTML: []string{"https://ex.com/desktop"},
 	})
 	good.Indexable = false
@@ -539,9 +534,8 @@ func TestNonHTMLPageScoping(t *testing.T) {
 // whose H1-1 equals its H1-2 is itself a duplicate (hamming.ai blog pages).
 func TestSamePageH1Duplicate(t *testing.T) {
 	rec := htmlPage("https://ex.com/post", &parse.Facts{
-		Titles: []string{"a reasonable length page title here"},
-		H1s:    []string{"Same Heading", "Same Heading"},
-		H2s:    []string{"x"}, HeadingLevels: []int{1, 1, 2},
+		Titles:   []string{"a reasonable length page title here"},
+		Headings: []parse.Heading{{Level: 1, Text: "Same Heading"}, {Level: 1, Text: "Same Heading"}, {Level: 2, Text: "x"}},
 	})
 	occs := eval(rec)
 	if !has(occs, rec.URL, "h1_duplicate") {

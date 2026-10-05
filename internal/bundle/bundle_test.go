@@ -351,8 +351,8 @@ func TestPageCarriesContentTextAndFacts(t *testing.T) {
 		t.Errorf("title/description = %q / %q", home.Title, home.MetaDescription)
 	}
 	// Arrays stay arrays: both h1s, not just the first.
-	if len(home.H1) != 2 || home.H1[0] != "First heading" || home.H1[1] != "Second heading" {
-		t.Errorf("h1 = %v, want both headings in document order", home.H1)
+	if want := []Heading{{Level: 1, Text: "First heading"}, {Level: 1, Text: "Second heading"}}; !slices.Equal(home.Headings, want) {
+		t.Errorf("headings = %+v, want both h1s in document order", home.Headings)
 	}
 	if len(home.MetaRobots) != 1 || home.MetaRobots[0] != "index,follow" {
 		t.Errorf("meta_robots = %v", home.MetaRobots)
@@ -634,7 +634,7 @@ func TestFactlessPagesAreEmittedWithEmptyFacts(t *testing.T) {
 		t.Errorf("Facts-derived fields must be empty: %+v", p)
 	}
 	// Arrays, not nulls — and the headers map and custom results likewise.
-	for _, want := range []string{`"h1":[]`, `"h2":[]`, `"heading_levels":[]`, `"meta_keywords":[]`,
+	for _, want := range []string{`"headings":[]`, `"meta_keywords":[]`,
 		`"meta_robots":[]`, `"x_robots_tag":[]`, `"meta_robots_agents":[]`, `"data_nosnippet":[]`, `"authors":[]`,
 		`"hreflang":[]`, `"amp_links":[]`, `"mobile_alternates":[]`,
 		`"head":{"invalid_elements":[],"missing":false,"multiple":false}`,
@@ -1089,7 +1089,7 @@ func TestPageCarriesTheRestOfTheFacts(t *testing.T) {
 	if err := c.Page(&crawler.PageRecord{
 		URL: "https://ex.test/", Scope: "internal", State: crawler.StateCrawled, StatusCode: 200,
 		Facts: &parse.Facts{
-			Keywords: []string{"alpha, bravo"}, H2s: []string{"Sub one", "Sub two"}, HeadingLevels: []int{1, 2, 2},
+			Keywords: []string{"alpha, bravo"},
 			NextHTTP: []string{"https://ex.test/?page=2"}, PrevHTML: []string{"https://ex.test/?page=0"},
 			MetaRefresh: "5; url=/x", MetaRefreshURL: "https://ex.test/x",
 			HreflangHTML: []parse.Hreflang{{Lang: "en", URL: "https://ex.test/"}},
@@ -1110,11 +1110,8 @@ func TestPageCarriesTheRestOfTheFacts(t *testing.T) {
 	}
 	_, pages, raw := bundleOf(t, c, store.Info{ID: c.ID}, Options{LinkTypes: []string{LinkTypeAll}})
 	p := pages[0]
-	if !slices.Equal(p.MetaKeywords, []string{"alpha, bravo"}) || !slices.Equal(p.H2, []string{"Sub one", "Sub two"}) {
-		t.Errorf("meta_keywords = %v h2 = %v", p.MetaKeywords, p.H2)
-	}
-	if !slices.Equal(p.HeadingLevels, []int{1, 2, 2}) {
-		t.Errorf("heading_levels = %v", p.HeadingLevels)
+	if !slices.Equal(p.MetaKeywords, []string{"alpha, bravo"}) {
+		t.Errorf("meta_keywords = %v", p.MetaKeywords)
 	}
 	// rel next/prev follow the canonical rule: HTML, else the HTTP Link header.
 	if p.RelNext != "https://ex.test/?page=2" || p.RelPrev != "https://ex.test/?page=0" {

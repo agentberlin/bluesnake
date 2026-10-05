@@ -58,11 +58,11 @@ func TestElementExtraction(t *testing.T) {
 	if f.Lang != "en" {
 		t.Errorf("lang = %q", f.Lang)
 	}
-	if len(f.H1s) != 1 || f.H1s[0] != "Main heading" {
-		t.Errorf("h1s = %v", f.H1s)
+	if h1s := f.HeadingTexts(1); len(h1s) != 1 || h1s[0] != "Main heading" {
+		t.Errorf("h1s = %v", h1s)
 	}
-	if want := []int{2, 1, 3}; len(f.HeadingLevels) != 3 || f.HeadingLevels[0] != want[0] || f.HeadingLevels[1] != want[1] || f.HeadingLevels[2] != want[2] {
-		t.Errorf("heading levels = %v, want %v", f.HeadingLevels, want)
+	if want := []int{2, 1, 3}; !slices.Equal(f.HeadingLevels(), want) {
+		t.Errorf("heading levels = %v, want %v", f.HeadingLevels(), want)
 	}
 	if f.TitlesOutsideHead != 0 {
 		t.Errorf("titles outside head = %d", f.TitlesOutsideHead)
@@ -220,11 +220,11 @@ func TestHeadingSameTagAdjacentJoin(t *testing.T) {
 	f := parseHTML(t, "https://ex.com/p",
 		`<html><body><h1><span>Run</span><span>Execute</span></h1>`+
 			`<h2><span>AaA</span><span>BbB</span><span>CcC</span></h2></body></html>`, nil, nil)
-	if len(f.H1s) != 1 || f.H1s[0] != "RunExecute" {
-		t.Errorf("H1s = %q, want [RunExecute]", f.H1s)
+	if len(f.HeadingTexts(1)) != 1 || f.HeadingTexts(1)[0] != "RunExecute" {
+		t.Errorf("H1s = %q, want [RunExecute]", f.HeadingTexts(1))
 	}
-	if len(f.H2s) != 1 || f.H2s[0] != "AaABbBCcC" {
-		t.Errorf("H2s = %q, want [AaABbBCcC]", f.H2s)
+	if len(f.HeadingTexts(2)) != 1 || f.HeadingTexts(2)[0] != "AaABbBCcC" {
+		t.Errorf("H2s = %q, want [AaABbBCcC]", f.HeadingTexts(2))
 	}
 }
 
@@ -390,11 +390,11 @@ func TestUncrawlableLinks(t *testing.T) {
 func TestZeroWidthCharsStripped(t *testing.T) {
 	f := parseHTML(t, "https://ex.com/p",
 		"<html><body><h2>\u200b Filters</h2><h1>A\ufeffB</h1></body></html>", nil, nil)
-	if len(f.H2s) != 1 || f.H2s[0] != "Filters" {
-		t.Errorf("H2s = %q, want [Filters]", f.H2s)
+	if len(f.HeadingTexts(2)) != 1 || f.HeadingTexts(2)[0] != "Filters" {
+		t.Errorf("H2s = %q, want [Filters]", f.HeadingTexts(2))
 	}
-	if len(f.H1s) != 1 || f.H1s[0] != "AB" {
-		t.Errorf("H1s = %q, want [AB]", f.H1s)
+	if len(f.HeadingTexts(1)) != 1 || f.HeadingTexts(1)[0] != "AB" {
+		t.Errorf("H1s = %q, want [AB]", f.HeadingTexts(1))
 	}
 }
 
@@ -564,8 +564,8 @@ func TestAnchorTextBlockInlineBoundaries(t *testing.T) {
 	// two label runs just like in anchors.
 	h := parseHTML(t, "https://ex.com/h",
 		`<html><body><h1><span>Icon<svg width="1" height="1"></svg></span><span>Heading</span></h1></body></html>`, nil, nil)
-	if len(h.H1s) != 1 || h.H1s[0] != "Icon Heading" {
-		t.Errorf("H1s = %q, want [Icon Heading]", h.H1s)
+	if len(h.HeadingTexts(1)) != 1 || h.HeadingTexts(1)[0] != "Icon Heading" {
+		t.Errorf("H1s = %q, want [Icon Heading]", h.HeadingTexts(1))
 	}
 }
 
@@ -696,8 +696,8 @@ func TestTemplateContentInert(t *testing.T) {
 		t.Errorf("templated link extracted (anchor %q) — <template> links must be inert", l.Anchor)
 	}
 	// The template <h1> must not leak into headings.
-	if len(f.H1s) != 1 || f.H1s[0] != "RealHeading" {
-		t.Errorf("H1s = %v, want [RealHeading] (template <h1> must not leak)", f.H1s)
+	if len(f.HeadingTexts(1)) != 1 || f.HeadingTexts(1)[0] != "RealHeading" {
+		t.Errorf("H1s = %v, want [RealHeading] (template <h1> must not leak)", f.HeadingTexts(1))
 	}
 	// Word-count path (content.go nonTextElements) must already exclude template
 	// text — guard it here so the two extraction paths never drift apart.

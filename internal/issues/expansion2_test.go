@@ -402,14 +402,20 @@ func TestImageMissingAltAttribute(t *testing.T) {
 
 func TestH1AltText(t *testing.T) {
 	alt := expansionFacts()
-	alt.H1s = []string{"Company Logo"}
-	alt.H1AltText = true
+	alt.Headings = []parse.Heading{{Level: 1, Text: "Company Logo", FromAlt: true}, {Level: 2, Text: "x"}}
+	// the alt-text h1 need not be the first: any h1 that fell back flags the page
+	second := expansionFacts()
+	second.Headings = []parse.Heading{{Level: 1, Text: "Welcome"}, {Level: 1, Text: "Logo", FromAlt: true}, {Level: 2, Text: "x"}}
 	occs := eval(
 		htmlPage("https://ex.com/alt-h1", alt),
+		htmlPage("https://ex.com/second-alt-h1", second),
 		htmlPage("https://ex.com/text-h1", expansionFacts()),
 	)
 	if !has(occs, "https://ex.com/alt-h1", "h1_alt_text") {
 		t.Error("missing h1_alt_text on a page whose h1 text came from an image alt")
+	}
+	if !has(occs, "https://ex.com/second-alt-h1", "h1_alt_text") {
+		t.Error("missing h1_alt_text on a page whose second h1 came from an image alt")
 	}
 	if has(occs, "https://ex.com/alt-h1", "h1_missing") {
 		t.Error("alt-text h1 also reported missing — the alt is the h1 text")

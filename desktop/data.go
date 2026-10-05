@@ -478,8 +478,8 @@ func (a *App) PageDetail(id, pageURL string) (*PageDetail, error) {
 		if len(f.Descriptions) > 0 {
 			d.Description = f.Descriptions[0]
 		}
-		if len(f.H1s) > 0 {
-			d.H1 = f.H1s[0]
+		if h1s := f.HeadingTexts(1); len(h1s) > 0 {
+			d.H1 = h1s[0]
 		}
 		if len(f.CanonicalHTML) > 0 {
 			d.Canonical = f.CanonicalHTML[0]

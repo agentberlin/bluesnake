@@ -51,7 +51,7 @@ func bodyTextStore(t *testing.T, n int) *store.Crawl {
 			URL: url, Scope: "internal", State: crawler.StateCrawled,
 			StatusCode: 200, Status: "OK", ContentType: "text/html",
 			Facts: &parse.Facts{
-				Titles: []string{"Page title"}, H1s: []string{"Heading"},
+				Titles: []string{"Page title"}, Headings: []parse.Heading{{Level: 1, Text: "Heading"}},
 				WordCount: 240, ContentText: body,
 				Links: []parse.Link{{Type: parse.Hyperlink, URL: "https://ex.test/page/0", Anchor: "home"}},
 			},

@@ -434,7 +434,7 @@ func TestLoadPagesAndIssues(t *testing.T) {
 		Indexable: true, Depth: 2,
 		Headers: map[string]string{"X-Frame-Options": "DENY"},
 		Facts: &parse.Facts{
-			Titles: []string{"Home"}, H1s: []string{"H"},
+			Titles: []string{"Home"}, Headings: []parse.Heading{{Level: 1, Text: "H"}},
 			Links: []parse.Link{{Type: parse.Hyperlink, URL: "https://ex.com/a"}},
 		},
 	}

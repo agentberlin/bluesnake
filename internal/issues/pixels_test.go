@@ -22,8 +22,8 @@ func occDetail(occs []Occurrence, url, id string) string {
 
 func titledPage(url, title string) *crawler.PageRecord {
 	return htmlPage(url, &parse.Facts{
-		Titles: []string{title},
-		H1s:    []string{"h"}, H2s: []string{"x"}, HeadingLevels: []int{1},
+		Titles:   []string{title},
+		Headings: []parse.Heading{{Level: 1, Text: "h"}, {Level: 2, Text: "x"}},
 	})
 }
 
@@ -31,7 +31,7 @@ func describedPage(url, desc string) *crawler.PageRecord {
 	return htmlPage(url, &parse.Facts{
 		Titles:       []string{"a reasonable length page title here"},
 		Descriptions: []string{desc},
-		H1s:          []string{"h"}, H2s: []string{"x"}, HeadingLevels: []int{1},
+		Headings:     []parse.Heading{{Level: 1, Text: "h"}, {Level: 2, Text: "x"}},
 	})
 }
 
@@ -46,7 +46,7 @@ func TestTitlePixelIssues(t *testing.T) {
 		titledPage("https://ex.com/wide", wide),
 		titledPage("https://ex.com/narrow", narrow),
 		titledPage("https://ex.com/normal", "The quick brown fox jumps over the lazy dog once mor"),
-		htmlPage("https://ex.com/none", &parse.Facts{H2s: []string{"x"}}),
+		htmlPage("https://ex.com/none", &parse.Facts{Headings: []parse.Heading{{Level: 2, Text: "x"}}}),
 		titledPage("https://ex.com/empty", ""),
 	)
 
