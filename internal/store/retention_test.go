@@ -110,8 +110,8 @@ func TestMigrationAddsPositionPathToAnExistingDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pre-position-path.db")
 
 	// A crawl DB as it looked at v6: the links table without position_path. Only
-	// steps above v6 run, and v7 ALTERs links alone; a later step on another
-	// table would need that table here too (production runs upgrade() after the
+	// steps above v6 run: v7 ALTERs links, and v8 ALTERs sitemap_entries, so the
+	// fixture carries that table too (production runs upgrade() after the
 	// schema's CREATE IF NOT EXISTS pass, so every table already exists).
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -126,6 +126,9 @@ func TestMigrationAddsPositionPathToAnExistingDatabase(t *testing.T) {
 	if _, err := db.Exec(
 		`INSERT INTO links(src, dst, type, elem_path, position) VALUES(?,?,?,?,?)`,
 		"https://ex.com/", "https://ex.com/a", "hyperlink", "//body/a", "content"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE sitemap_entries(sitemap TEXT, url TEXT, PRIMARY KEY(sitemap, url))`); err != nil {
 		t.Fatal(err)
 	}
 	if err := setUserVersion(db, 6); err != nil {

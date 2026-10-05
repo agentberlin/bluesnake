@@ -116,6 +116,9 @@ func TestMigrationAddsProxyToAnExistingDatabase(t *testing.T) {
 		elem_path TEXT, position TEXT)`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`CREATE TABLE sitemap_entries(sitemap TEXT, url TEXT, PRIMARY KEY(sitemap, url))`); err != nil {
+		t.Fatal(err)
+	}
 	if err := setUserVersion(db, minCrawlVersion); err != nil {
 		t.Fatal(err)
 	}

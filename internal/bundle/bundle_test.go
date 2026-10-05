@@ -638,7 +638,7 @@ func TestFactlessPagesAreEmittedWithEmptyFacts(t *testing.T) {
 		`"meta_robots":[]`, `"x_robots_tag":[]`, `"meta_robots_agents":[]`, `"data_nosnippet":[]`,
 		`"hreflang":[]`, `"amp_links":[]`, `"mobile_alternates":[]`,
 		`"head":{"invalid_elements":[],"missing":false,"multiple":false}`,
-		`"headers":{}`, `"custom_results":[]`, `"links":[]`, `"depth":null`} {
+		`"headers":{}`, `"sitemaps":[]`, `"custom_results":[]`, `"links":[]`, `"depth":null`} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("record does not contain %s:\n%s", want, raw)
 		}

@@ -129,10 +129,10 @@ func TestSitemapIndexRoundTrip(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	must(c.SitemapEntry("https://ex.com/sitemap.xml", "https://ex.com/a"))
-	must(c.SitemapEntry("https://ex.com/sitemap.xml", "https://ex.com/a")) // dup ignored
-	must(c.SitemapEntry("https://ex.com/sitemap.xml", "https://ex.com/b"))
-	must(c.SitemapEntry("https://ex.com/news-sitemap.xml", "https://ex.com/a"))
+	must(c.SitemapEntry("https://ex.com/sitemap.xml", "https://ex.com/a", ""))
+	must(c.SitemapEntry("https://ex.com/sitemap.xml", "https://ex.com/a", "")) // dup ignored
+	must(c.SitemapEntry("https://ex.com/sitemap.xml", "https://ex.com/b", ""))
+	must(c.SitemapEntry("https://ex.com/news-sitemap.xml", "https://ex.com/a", ""))
 
 	idx, err := c.SitemapIndex()
 	if err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -291,8 +292,10 @@ type StartRequest struct {
 	// the project "Crawl all" dialog share the card). Like every other
 	// quick-config field it is absolute — the choice is frozen into the crawl
 	// regardless of the base config: "auto" (gate on full-domain crawls),
-	// "all" (force everything on, render diff included), "off" (never). "" =
-	// no override (untouched knob, or non-form callers).
+	// "all" (every check on, render diff and live probes included), "off"
+	// (never) — mapped by runner.SiteChecksOverrides, as `crawl
+	// --site-checks` is. "" = no override (untouched knob, or non-form
+	// callers).
 	SiteChecks string `json:"siteChecks"`
 }
 
@@ -302,8 +305,9 @@ type StartRequest struct {
 // Every knob is absolute when set and silent when untouched — the card shows
 // the resolved base's values (SetupPreview) and only emits the ones the user
 // changed, so "Last crawl setup" and profiles show through exactly, and any
-// touched knob layers over every base (in "crawl all", batch-wide).
-func (req StartRequest) toSpec() queue.JobSpec {
+// touched knob layers over every base (in "crawl all", batch-wide). The one
+// error is a site-checks value outside the selector's three.
+func (req StartRequest) toSpec() (queue.JobSpec, error) {
 	cfg := map[string]any{}
 	if req.Rate >= 0 {
 		cfg["speed.max_urls_per_sec"] = req.Rate // 0 = an explicit unlimited
@@ -317,18 +321,12 @@ func (req StartRequest) toSpec() queue.JobSpec {
 	if req.Rendering != "" {
 		cfg["rendering.mode"] = req.Rendering
 	}
-	switch req.SiteChecks {
-	case "":
-		// no override — the profile's site_checks config decides
-	case "all":
-		cfg["site_checks.enabled"] = "always"
-		cfg["site_checks.render_diff"] = true
-	case "off":
-		cfg["site_checks.enabled"] = "never"
-	default:
-		// "auto", or any raw value — config validation rejects unknown enums
-		// at enqueue time, exactly like a mistyped rendering mode.
-		cfg["site_checks.enabled"] = req.SiteChecks
+	if req.SiteChecks != "" { // "" = no override: the base's site_checks config decides
+		overrides, err := runner.SiteChecksOverrides(req.SiteChecks)
+		if err != nil {
+			return queue.JobSpec{}, err
+		}
+		maps.Copy(cfg, overrides)
 	}
 	spec := queue.JobSpec{Mode: req.Mode, Profile: req.Profile, ConfigSource: req.ConfigSource, Config: cfg}
 	if len(cfg) == 0 {
@@ -340,7 +338,7 @@ func (req StartRequest) toSpec() queue.JobSpec {
 	} else {
 		spec.URL = req.URL
 	}
-	return spec
+	return spec, nil
 }
 
 func (req StartRequest) label() string {
@@ -361,7 +359,11 @@ func (req StartRequest) label() string {
 // jumps to the live view on the crawl:started event; when a crawl is already
 // running it queues behind it.
 func (a *App) StartCrawl(req StartRequest) (string, error) {
-	return a.EnqueueCrawl(req.toSpec(), "manual", "", req.label())
+	spec, err := req.toSpec()
+	if err != nil {
+		return "", err
+	}
+	return a.EnqueueCrawl(spec, "manual", "", req.label())
 }
 
 // ResumeCrawl enqueues a job that resumes an existing crawl.

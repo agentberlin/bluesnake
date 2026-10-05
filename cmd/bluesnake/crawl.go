@@ -19,20 +19,21 @@ import (
 
 func newCrawlCmd() *cobra.Command {
 	var (
-		cfgFile   string
-		profile   string
-		setup     string
-		storeDir  string
-		sets      []string
-		threads   int
-		depth     int
-		rate      float64
-		maxURLs   int
-		include   []string
-		exclude   []string
-		userAgent string
-		quiet     bool
-		progress  progressOpts
+		cfgFile    string
+		profile    string
+		setup      string
+		storeDir   string
+		sets       []string
+		threads    int
+		depth      int
+		rate       float64
+		maxURLs    int
+		include    []string
+		exclude    []string
+		userAgent  string
+		siteChecks string
+		quiet      bool
+		progress   progressOpts
 	)
 
 	cmd := &cobra.Command{
@@ -70,6 +71,16 @@ func newCrawlCmd() *cobra.Command {
 			}
 			if cmd.Flags().Changed("user-agent") {
 				cfg.HTTP.UserAgent = userAgent
+			}
+			if cmd.Flags().Changed("site-checks") {
+				// The desktop's site-checks selector, through the same mapping.
+				overrides, err := runner.SiteChecksOverrides(siteChecks)
+				if err != nil {
+					return exitErr{2, fmt.Errorf("--site-checks: %w", err)}
+				}
+				if err := runner.ApplyOverrides(cfg, overrides); err != nil {
+					return exitErr{2, err}
+				}
 			}
 			cfg.Scope.Include = append(cfg.Scope.Include, include...)
 			cfg.Scope.Exclude = append(cfg.Scope.Exclude, exclude...)
@@ -143,6 +154,8 @@ func newCrawlCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&include, "include", nil, "include pattern (scope.include), repeatable")
 	cmd.Flags().StringArrayVar(&exclude, "exclude", nil, "exclude pattern (scope.exclude), repeatable")
 	cmd.Flags().StringVar(&userAgent, "user-agent", "", "HTTP user-agent (http.user_agent)")
+	cmd.Flags().StringVar(&siteChecks, "site-checks", "",
+		"site-wide checks: auto (full-domain crawls only), all (every check, live AI-bot probes and the JS render diff included, on any crawl), off (site_checks.*)")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "suppress the summary")
 	progress.register(cmd)
 	return cmd

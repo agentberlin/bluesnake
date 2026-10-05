@@ -694,10 +694,10 @@ func TestAnalysisPersistence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := c.SitemapEntry("https://ex.com/sitemap.xml", "https://ex.com/a"); err != nil {
+	if err := c.SitemapEntry("https://ex.com/sitemap.xml", "https://ex.com/a", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.SitemapEntry("https://ex.com/sitemap.xml", "https://ex.com/a"); err != nil {
+	if err := c.SitemapEntry("https://ex.com/sitemap.xml", "https://ex.com/a", ""); err != nil {
 		t.Fatal(err) // dedup via INSERT OR IGNORE
 	}
 	index, err := c.SitemapIndex()

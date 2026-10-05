@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"strings"
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/fetch"
@@ -57,14 +58,16 @@ func FetchSitemapURLs(ctx context.Context, cfg *config.Config, sitemapURL string
 	return urls, nil
 }
 
-// SitemapSink is the optional sink extension for sitemap entries.
+// SitemapSink is the optional sink extension for sitemap entries: one call per
+// URL a sitemap lists, with the <lastmod> that entry gave it ("" for none).
 type SitemapSink interface {
-	SitemapEntry(sitemap, url string) error
+	SitemapEntry(sitemap, url, lastmod string) error
 }
 
 type sitemapURLSet struct {
 	URLs []struct {
-		Loc string `xml:"loc"`
+		Loc     string `xml:"loc"`
+		Lastmod string `xml:"lastmod"`
 	} `xml:"url"`
 	Sitemaps []struct {
 		Loc string `xml:"loc"`
@@ -158,7 +161,10 @@ func (c *Crawler) enumerateSitemaps(ctx context.Context, sitemapURLs []string, s
 				continue
 			}
 			if sink, ok := c.sink.(SitemapSink); ok && c.sink != nil {
-				c.noteSinkErr(sink.SitemapEntry(sitemapURL, norm))
+				// lastmod is kept as written — a W3C datetime of any precision, or
+				// whatever the site put there — with only the XML whitespace around
+				// it dropped; judging it is the consumer's call.
+				c.noteSinkErr(sink.SitemapEntry(sitemapURL, norm, strings.TrimSpace(entry.Lastmod)))
 			}
 			if d, ok := c.admitTarget(norm, frontier.Item{URL: src, Depth: -1}, false); ok {
 				d.Depth = 0

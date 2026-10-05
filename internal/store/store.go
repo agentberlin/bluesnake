@@ -111,7 +111,13 @@ CREATE INDEX IF NOT EXISTS frontier_claim ON frontier(claimed, depth, seq);
 CREATE TABLE IF NOT EXISTS content_hash(hash TEXT PRIMARY KEY, url TEXT);
 CREATE TABLE IF NOT EXISTS issues(url TEXT, issue TEXT, detail TEXT, PRIMARY KEY(url, issue, detail));
 CREATE TABLE IF NOT EXISTS custom_results(url TEXT, kind TEXT, name TEXT, value TEXT, PRIMARY KEY(url, kind, name));
-CREATE TABLE IF NOT EXISTS sitemap_entries(sitemap TEXT, url TEXT, PRIMARY KEY(sitemap, url));
+-- sitemap_entries is one row per (sitemap, listed URL), with the lastmod that
+-- entry gave it: a lastmod belongs to an entry, not a URL, since one URL listed
+-- in two sitemaps can carry two dates. lastmod is "" when the entry had none
+-- and NULL on rows recorded before the column existed. The url index serves
+-- the per-page lookup (the bundle's sitemaps array); the key leads with sitemap.
+CREATE TABLE IF NOT EXISTS sitemap_entries(sitemap TEXT, url TEXT, lastmod TEXT, PRIMARY KEY(sitemap, url));
+CREATE INDEX IF NOT EXISTS sitemap_entries_url ON sitemap_entries(url);
 CREATE TABLE IF NOT EXISTS llmstxt(
   url TEXT PRIMARY KEY, kind TEXT, status INT, found INT,
   title TEXT, summary TEXT, malformed INT, content TEXT);
@@ -442,7 +448,7 @@ type migration struct {
 // of existing tables. Every step through v5 was retired once all installs had
 // reached v5 (DESIGN.md §5.3 "Retiring a migration"), and the minCrawlVersion
 // floor below refuses anything older, so the live steps start at {6}. Append the
-// next schema change as {8, …}; its apply func can reuse addColumn/columnExists.
+// next schema change as {9, …}; its apply func can reuse addColumn/columnExists.
 var crawlMigrations = []migration{
 	{6, "pages.proxy", func(tx *sql.Tx) error {
 		// Which egress fetched each page. Without it, a crawl that a WAF
@@ -455,6 +461,12 @@ var crawlMigrations = []migration{
 		// crawls keep an empty column: the value cannot be recovered without the
 		// DOM, and a re-crawl is the only way to fill it.
 		return addColumn(tx, "links", "position_path TEXT")
+	}},
+	{8, "sitemap_entries.lastmod", func(tx *sql.Tx) error {
+		// The <lastmod> each sitemap gave a URL. Older rows keep NULL; unlike
+		// position_path the value is recoverable, and a resume's sitemap re-walk
+		// fills it in (SitemapEntry).
+		return addColumn(tx, "sitemap_entries", "lastmod TEXT")
 	}},
 }
 
@@ -1627,9 +1639,16 @@ func (c *Crawl) BlobPath(url, kind string) (string, error) {
 	return path, err
 }
 
-// SitemapEntry records one URL listed in a sitemap (crawler sink extension).
-func (c *Crawl) SitemapEntry(sitemap, url string) error {
-	_, err := c.db.Exec(`INSERT OR IGNORE INTO sitemap_entries(sitemap, url) VALUES(?,?)`, sitemap, url)
+// SitemapEntry records one URL listed in a sitemap, with the lastmod that entry
+// gave it ("" for none) — crawler sink extension. The first entry for a
+// (sitemap, url) pair wins, as a sitemap listing a URL twice is a sitemap
+// error, not new information; the one exception is a NULL lastmod, which only
+// a row recorded before the column existed carries, so a resumed old crawl's
+// sitemap re-walk fills it in rather than being ignored as a duplicate.
+func (c *Crawl) SitemapEntry(sitemap, url, lastmod string) error {
+	_, err := c.db.Exec(`INSERT INTO sitemap_entries(sitemap, url, lastmod) VALUES(?,?,?)
+		ON CONFLICT(sitemap, url) DO UPDATE SET lastmod = excluded.lastmod
+		WHERE sitemap_entries.lastmod IS NULL`, sitemap, url, lastmod)
 	return err
 }
 

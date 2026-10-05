@@ -19,8 +19,11 @@ type Bot struct {
 	// RobotsToken is the user-agent token matched in robots.txt.
 	RobotsToken string `json:"robots_token"`
 	// UserAgent is the full request User-Agent for live probes. Empty means
-	// the entry is a robots.txt control token only (Google-Extended,
-	// Applebot-Extended) — no fetcher sends it, so it is never probed.
+	// the entry is robots.txt-evaluated only and never probed: either a
+	// control token no fetcher sends (Google-Extended, Applebot-Extended), or
+	// a search engine's crawler that sites verify by reverse DNS (Googlebot,
+	// Bingbot, Applebot) — a probe sending its UA from our IP is blocked as an
+	// impostor by most WAFs, an edge block the real crawler never meets.
 	UserAgent string `json:"user_agent,omitempty"`
 	// RespectsRobots is the operator-documented (or, where noted in the
 	// registry, widely-reported) behaviour. A robots.txt block against a bot
@@ -30,14 +33,21 @@ type Bot struct {
 	DocURL         string `json:"doc_url,omitempty"`
 }
 
-// TokenOnly reports whether the entry is a robots.txt control token with no
-// fetcher behind it.
+// TokenOnly reports whether the entry is evaluated against robots.txt only,
+// never probed live (see UserAgent).
 func (b Bot) TokenOnly() bool { return b.UserAgent == "" }
 
 // DefaultBots is the embedded AI-crawler registry. UA strings and behaviour
 // follow each operator's published bot documentation (rosters churn — entries
 // carry their doc URL so staleness is checkable). Config extends via
 // site_checks.ai_bots.bots / skips via .skip.
+//
+// The search engines' own crawlers sit beside their training tokens because
+// AI answers are built from what they index — Google's AI Overviews and AI
+// Mode from Googlebot, Copilot from Bingbot, Siri and Apple Intelligence from
+// Applebot — while Google-Extended and Applebot-Extended only opt a site out
+// of training. Without both, a report cannot tell a site that blocks training
+// from one that blocks being found.
 func DefaultBots() []Bot {
 	return []Bot{
 		{Name: "GPTBot", Operator: "OpenAI", Purpose: "training", RobotsToken: "GPTBot",
@@ -66,10 +76,17 @@ func DefaultBots() []Bot {
 			// Perplexity documents that user-initiated fetches generally
 			// ignore robots.txt — a robots block alone cannot stop it.
 			RespectsRobots: false, DocURL: "https://docs.perplexity.ai/guides/bots"},
+		{Name: "Googlebot", Operator: "Google", Purpose: "search", RobotsToken: "Googlebot",
+			// Verified by reverse DNS, so token-only (see Bot.UserAgent).
+			RespectsRobots: true, DocURL: "https://developers.google.com/search/docs/crawling-indexing/googlebot"},
 		{Name: "Google-Extended", Operator: "Google", Purpose: "training", RobotsToken: "Google-Extended",
 			// Control token honoured by Google's ordinary crawlers — no
 			// fetcher sends this UA, so it is robots-evaluated only.
 			RespectsRobots: true, DocURL: "https://developers.google.com/search/docs/crawling-indexing/overview-google-crawlers"},
+		{Name: "Bingbot", Operator: "Microsoft", Purpose: "search", RobotsToken: "bingbot",
+			RespectsRobots: true, DocURL: "https://www.bing.com/webmasters/help/which-crawlers-does-bing-use-8c184ec0"},
+		{Name: "Applebot", Operator: "Apple", Purpose: "search", RobotsToken: "Applebot",
+			RespectsRobots: true, DocURL: "https://support.apple.com/en-us/119829"},
 		{Name: "Applebot-Extended", Operator: "Apple", Purpose: "training", RobotsToken: "Applebot-Extended",
 			RespectsRobots: true, DocURL: "https://support.apple.com/en-us/119829"},
 		{Name: "CCBot", Operator: "Common Crawl", Purpose: "training", RobotsToken: "CCBot",

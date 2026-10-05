@@ -176,7 +176,7 @@ func TestSinkForwardsSitemapEntry(t *testing.T) {
 	defer st.Close()
 
 	s := &sink{Crawl: st, r: &run{st: st}}
-	if err := s.SitemapEntry("http://ex.com/sitemap.xml", "http://ex.com/page"); err != nil {
+	if err := s.SitemapEntry("http://ex.com/sitemap.xml", "http://ex.com/page", "2026-01-15"); err != nil {
 		t.Fatal(err)
 	}
 	idx, err := st.SitemapIndex()
