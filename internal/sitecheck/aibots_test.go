@@ -102,8 +102,11 @@ func TestAIBotsLiveProbes(t *testing.T) {
 	if !gpt.Probed || gpt.LiveStatus != 200 || gpt.BlockedLive {
 		t.Errorf("GPTBot = %+v, want a clean probe", gpt)
 	}
-	// Token-only entries are never probed — no fetcher sends their name.
-	for _, name := range []string{"Google-Extended", "Applebot-Extended"} {
+	// Token-only entries are never probed: no fetcher sends a control token,
+	// and a search engine's crawler is verified by reverse DNS, so a probe
+	// with its UA from our IP would meet an impostor block the real one never
+	// does.
+	for _, name := range []string{"Google-Extended", "Applebot-Extended", "Googlebot", "Bingbot", "Applebot"} {
 		if b := byName[name]; b.Probed || !b.TokenOnly() {
 			t.Errorf("%s = %+v, want token-only and unprobed", name, b)
 		}
@@ -228,6 +231,89 @@ func TestRegistryInvariants(t *testing.T) {
 		}
 		if b.TokenOnly() && !b.RespectsRobots {
 			t.Errorf("token-only entry %s makes no sense as robots-ignoring", b.Name)
+		}
+	}
+}
+
+// The search engines' crawlers sit beside their training tokens, so a report
+// can tell a site that opts out of training (Google-Extended,
+// Applebot-Extended) from one that blocks being found — the crawlers AI
+// Overviews, Copilot and Siri answer from.
+func TestAIBotsSearchCrawlersBesideTrainingTokens(t *testing.T) {
+	s := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/robots.txt" {
+			fmt.Fprint(w, "User-agent: Google-Extended\nUser-agent: Applebot-Extended\nDisallow: /\n\n"+
+				"User-agent: bingbot\nDisallow: /\n\nUser-agent: *\nAllow: /\n")
+			return
+		}
+	})
+	rep, err := newChecker(t).AIBots(context.Background(), s.URL, AIBotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]AIBotResult{}
+	for _, b := range rep.Bots {
+		byName[b.Name] = b
+	}
+	for _, tt := range []struct {
+		name, operator string
+		allowed        bool
+	}{
+		{"Googlebot", "Google", true},
+		{"Google-Extended", "Google", false},
+		{"Applebot", "Apple", true},
+		{"Applebot-Extended", "Apple", false},
+		{"Bingbot", "Microsoft", false}, // matched by the lowercase token Bing documents
+	} {
+		b, ok := byName[tt.name]
+		if !ok {
+			t.Errorf("%s missing from the report", tt.name)
+			continue
+		}
+		if b.Operator != tt.operator || b.RobotsAllowed != tt.allowed {
+			t.Errorf("%s = operator %q allowed %v, want %q %v", tt.name, b.Operator, b.RobotsAllowed, tt.operator, tt.allowed)
+		}
+	}
+	for _, name := range []string{"Googlebot", "Bingbot", "Applebot"} {
+		if b := byName[name]; b.Purpose != "search" || !b.TokenOnly() || b.DocURL == "" {
+			t.Errorf("%s = %+v, want a token-only search entry with its doc URL", name, b.Bot)
+		}
+	}
+}
+
+// The all-blocked headline counts every training and search crawler, the
+// search engines' included: a site that names every AI bot but still lets
+// Googlebot, Bingbot and Applebot in is not invisible to AI answers, since
+// those engines answer from what their crawlers index.
+func TestAIBotsAllBlockedCountsSearchEngineCrawlers(t *testing.T) {
+	engines := map[string]bool{"Googlebot": true, "Bingbot": true, "Applebot": true}
+	robotsFor := func(blockEngines bool) string {
+		var b strings.Builder
+		for _, bot := range DefaultBots() {
+			if engines[bot.Name] && !blockEngines {
+				continue
+			}
+			fmt.Fprintf(&b, "User-agent: %s\n", bot.RobotsToken)
+		}
+		b.WriteString("Disallow: /\n\nUser-agent: *\nAllow: /\n")
+		return b.String()
+	}
+	for _, tt := range []struct {
+		blockEngines, headline bool
+	}{{false, false}, {true, true}} {
+		body := robotsFor(tt.blockEngines)
+		s := serve(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/robots.txt" {
+				fmt.Fprint(w, body)
+			}
+		})
+		rep, err := newChecker(t).AIBots(context.Background(), s.URL, AIBotOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := hasFinding(rep, "ai_bots_all_blocked_robots"); got != tt.headline {
+			t.Errorf("engines blocked=%v: all-blocked headline = %v, want %v (findings %v)",
+				tt.blockEngines, got, tt.headline, findingIDs(rep))
 		}
 	}
 }
