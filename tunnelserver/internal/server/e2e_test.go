@@ -143,8 +143,9 @@ func TestEndToEndProxy(t *testing.T) {
 	reg := register(t, addr)
 	id, _ := startClient(t, addr, localAddr, reg)
 
-	// Public request through the tunnel, retried past the registration window.
-	resp, body := postThroughTunnel(t, clientTo(addr), id.MCPURL(), `{"jsonrpc":"2.0","method":"ping"}`)
+	// Public request through the tunnel. No retry: the server makes a session
+	// routable before it tells the client OK, so "online" means proxyable.
+	resp, body := postJSON(t, clientTo(addr), id.MCPURL(), `{"jsonrpc":"2.0","method":"ping"}`)
 	if resp.StatusCode != 200 {
 		t.Fatalf("public request status %d: %s", resp.StatusCode, body)
 	}
@@ -159,36 +160,6 @@ func TestEndToEndProxy(t *testing.T) {
 	}
 	if gotHost != localAddr {
 		t.Errorf("local MCP saw Host %q, want %q (DNS-rebinding rewrite)", gotHost, localAddr)
-	}
-}
-
-// postThroughTunnel POSTs to the public URL, retrying while the server still
-// returns the transient "tunnel not connected" 502.
-//
-// The tunnel client reports StateOnline (so startClient returns) the instant it
-// has read the auth response and stood up its yamux session — but the SERVER
-// registers the tunnel as routable a beat later: the gateway replies to auth,
-// then adds the session to its routing registry. A public request fired in that
-// sub-millisecond window (as this test does, immediately after "online") reaches
-// the server before the registry entry exists and gets a 502. The window is
-// benign in production (a user pastes the URL seconds later) but races the test
-// under load. Polling the real public path is what we actually want to assert:
-// that once the tunnel is up, requests proxy through.
-func postThroughTunnel(t *testing.T, cl *http.Client, url, body string) (*http.Response, []byte) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		resp, err := cl.Post(url, "application/json", strings.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusBadGateway && strings.Contains(string(b), "not connected") && time.Now().Before(deadline) {
-			time.Sleep(20 * time.Millisecond)
-			continue
-		}
-		return resp, b
 	}
 }
 
@@ -228,7 +199,7 @@ func TestEndToEndOfflineStub(t *testing.T) {
 	cl := clientTo(addr)
 
 	// Live: tools/call proxies to the local server.
-	resp, body := postThroughTunnel(t, cl, id.MCPURL(), `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"start_crawl"}}`)
+	resp, body := postJSON(t, cl, id.MCPURL(), `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"start_crawl"}}`)
 	if resp.StatusCode != 200 || !strings.Contains(string(body), "live result") {
 		t.Fatalf("live tools/call = %d %s", resp.StatusCode, body)
 	}
@@ -288,7 +259,7 @@ func TestEndToEndOfflineStub(t *testing.T) {
 	}
 }
 
-// postJSON is a single POST without the tunnel-window retry loop.
+// postJSON is a single POST to the public URL.
 func postJSON(t *testing.T, cl *http.Client, url, body string) (*http.Response, []byte) {
 	t.Helper()
 	resp, err := cl.Post(url, "application/json", strings.NewReader(body))

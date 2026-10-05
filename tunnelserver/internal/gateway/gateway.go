@@ -25,6 +25,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agentberlin/bluesnake/internal/tunnel/wire"
@@ -82,7 +83,8 @@ func New(reg *registry.Registry, st store.Store, baseDomain string, log *slog.Lo
 }
 
 // HandleConn runs one tunnel connection's lifetime: authenticate, register,
-// then block until the session drops and deregister. It always closes conn.
+// reply, then block until the session drops and deregister. It always closes
+// conn.
 func (g *Gateway) HandleConn(conn net.Conn) {
 	defer conn.Close()
 
@@ -131,15 +133,17 @@ func (g *Gateway) HandleConn(conn net.Conn) {
 		return
 	}
 
+	// The client reports online the moment it reads the OK reply, so the
+	// session must be routable before that reply is written: otherwise public
+	// requests in the gap reach the offline stub, which tells MCP clients the
+	// app is not running. The yamux session therefore starts first, with its
+	// writes held behind gc until the reply is on the wire.
 	host := tn.ID + "." + g.baseDomain
-	if err := wire.WriteFrame(conn, wire.AuthResponse{OK: true, Host: host}); err != nil {
-		return
-	}
-	_ = conn.SetDeadline(time.Time{}) // long-lived session: clear deadline
-
-	ysess, err := yamux.Client(conn, serverYamuxConfig())
+	gc := newGatedConn(conn)
+	ysess, err := yamux.Client(gc, serverYamuxConfig())
 	if err != nil {
 		g.log.Warn("tunnel session start failed", "tunnel_id", tn.ID, "err", err)
+		_ = wire.WriteFrame(conn, wire.AuthResponse{OK: false, Error: errUnavailable.Error()})
 		return
 	}
 	defer ysess.Close()
@@ -148,6 +152,12 @@ func (g *Gateway) HandleConn(conn net.Conn) {
 	sess.Handler = g.proxyFor(sess)
 	g.reg.Add(sess)
 	defer g.reg.Remove(sess)
+
+	if err := wire.WriteFrame(conn, wire.AuthResponse{OK: true, Host: host}); err != nil {
+		return
+	}
+	_ = conn.SetDeadline(time.Time{}) // long-lived session: clear deadline
+	gc.open()
 
 	// Handshake is done; free the slot so the session's (long) lifetime doesn't
 	// count against the concurrent-handshake cap.
@@ -316,6 +326,41 @@ func serverYamuxConfig() *yamux.Config {
 	cfg.ConnectionWriteTimeout = 30 * time.Second
 	cfg.LogOutput = discard{}
 	return cfg
+}
+
+// gatedConn holds the yamux session's writes until open is called. HandleConn
+// makes a session routable before its auth reply is written on the same
+// connection, so anything yamux sends in that window (a stream opened by a
+// public request) must queue behind the reply rather than precede it. Close
+// fails a held write with net.ErrClosed: yamux's Close waits for its send
+// loop, so a write stranded behind a reply that never went out would hang it.
+type gatedConn struct {
+	net.Conn
+	ready     chan struct{}
+	openOnce  sync.Once
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func newGatedConn(c net.Conn) *gatedConn {
+	return &gatedConn{Conn: c, ready: make(chan struct{}), closed: make(chan struct{})}
+}
+
+// open releases held and future writes.
+func (c *gatedConn) open() { c.openOnce.Do(func() { close(c.ready) }) }
+
+func (c *gatedConn) Write(p []byte) (int, error) {
+	select {
+	case <-c.ready:
+	case <-c.closed:
+		return 0, net.ErrClosed
+	}
+	return c.Conn.Write(p)
+}
+
+func (c *gatedConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return c.Conn.Close()
 }
 
 type discard struct{}
