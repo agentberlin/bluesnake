@@ -62,6 +62,13 @@ and update the import path of `wire`. No other coupling exists.
    server, gateway = yamux client). The gateway opens a stream per public HTTP
    request; the client serves it.
 
+The gateway makes the session routable **before** it writes `{ok:true}`, so a
+client that has read `ok` (and reports itself online) is reachable at once:
+public requests right after a connect go to the app, never to the offline stub
+below. To allow that, the gateway's yamux session starts before the reply with
+its writes held until the reply is on the wire, so a request landing in that
+window queues behind the reply instead of corrupting it.
+
 Frames are read byte-by-byte up to the newline so the reader never consumes into
 the yamux bytes that follow.
 

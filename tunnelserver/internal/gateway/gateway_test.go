@@ -2,12 +2,15 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -173,5 +176,139 @@ func TestPublicHandlerBadHost(t *testing.T) {
 	g.PublicHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("bad host status = %d, want 404", rec.Code)
+	}
+}
+
+// replyGateConn is the gateway's side of a tunnel connection that parks its
+// first write — the auth reply — before it reaches the wire, until the test
+// resumes it. Any other write arriving while the reply is parked means yamux
+// bytes would precede the reply, and is flagged on early.
+type replyGateConn struct {
+	net.Conn
+	writes   atomic.Int32
+	replying chan struct{}
+	resume   chan struct{}
+	early    chan struct{}
+}
+
+func (c *replyGateConn) Write(p []byte) (int, error) {
+	if c.writes.Add(1) == 1 {
+		close(c.replying)
+		<-c.resume
+	} else {
+		select {
+		case <-c.resume:
+		default:
+			select {
+			case c.early <- struct{}{}:
+			default:
+			}
+		}
+	}
+	return c.Conn.Write(p)
+}
+
+// TestConnectRoutableBeforeAuthReply pins the connect ordering. The client
+// reports online the moment it reads a successful AuthResponse, so the
+// session must be routable before that reply is written; otherwise the first
+// public requests after a connect reach the offline stub, and MCP clients are
+// told the app is not running while it is. The gateway is frozen just before
+// its reply, so the check is deterministic rather than a scheduling race. A
+// public request landing in that window must queue behind the reply (yamux
+// bytes ahead of it would corrupt the client's auth read) and then proxy to
+// the live app.
+func TestConnectRoutableBeforeAuthReply(t *testing.T) {
+	g, st := newGateway(t)
+	_ = st.Create(context.Background(), &store.Tunnel{ID: tunnelID, ConnectSecretHash: store.Hash("s")})
+
+	gwConn, appConn := net.Pipe()
+	rc := &replyGateConn{Conn: gwConn, replying: make(chan struct{}), resume: make(chan struct{}), early: make(chan struct{}, 1)}
+	var resumeOnce sync.Once
+	resume := func() { resumeOnce.Do(func() { close(rc.resume) }) }
+	handled := make(chan struct{})
+	go func() { g.HandleConn(rc); close(handled) }()
+	t.Cleanup(func() {
+		resume()
+		_ = appConn.Close()
+		<-handled
+	})
+
+	if err := wire.WriteFrame(appConn, wire.AuthRequest{V: wire.Version, TunnelID: tunnelID, ConnectSecret: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	<-rc.replying
+	if g.reg.Get(tunnelID) == nil {
+		t.Fatal("auth reply is being written before the session is routable: public requests in that window get the offline stub")
+	}
+
+	// A public request arrives while the reply is still parked.
+	inWindow := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		inWindow <- postMCP(g, tunnelID, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"start_crawl"}}`)
+	}()
+	select {
+	case <-rc.early:
+		t.Fatal("yamux bytes reached the wire ahead of the auth reply")
+	case <-time.After(50 * time.Millisecond):
+	}
+	resume()
+
+	// The app reads its reply and comes online, as tunnel.Client does.
+	var resp wire.AuthResponse
+	if err := wire.ReadFrame(appConn, &resp); err != nil || !resp.OK {
+		t.Fatalf("auth reply = %+v, %v", resp, err)
+	}
+	backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		result := `{}`
+		if req.Method == "tools/call" {
+			result = `{"content":[{"type":"text","text":"live result"}],"isError":false}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":`+string(req.ID)+`,"result":`+result+`}`)
+	})
+	appSess, err := yamux.Server(appConn, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: backend}
+	go func() { _ = srv.Serve(appSess) }()
+	t.Cleanup(func() { _ = srv.Close(); _ = appSess.Close() })
+
+	select {
+	case rec := <-inWindow:
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "live result") {
+			t.Errorf("request during the auth reply = %d %s, want the live app's result", rec.Code, rec.Body.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("request during the auth reply never completed")
+	}
+}
+
+// TestGatedConnCloseReleasesHeldWrite: when the auth reply never goes out,
+// closing the session must fail a write held at the gate rather than strand
+// yamux's send loop — yamux's Close waits for that loop, so a stuck write
+// would hang HandleConn.
+func TestGatedConnCloseReleasesHeldWrite(t *testing.T) {
+	gwConn, appConn := net.Pipe()
+	gc := newGatedConn(gwConn)
+	done := make(chan error, 1)
+	go func() { _, err := gc.Write([]byte("yamux")); done <- err }()
+
+	_ = gc.Close()
+	select {
+	case err := <-done:
+		if !errors.Is(err, net.ErrClosed) {
+			t.Errorf("held write after Close = %v, want net.ErrClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close left a held write blocked")
+	}
+	if b, err := io.ReadAll(appConn); len(b) != 0 || err != nil {
+		t.Errorf("peer read %q, %v; want nothing written", b, err)
 	}
 }
