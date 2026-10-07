@@ -6,6 +6,7 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/frontier"
 	"github.com/agentberlin/bluesnake/internal/llmstxt"
+	"github.com/agentberlin/bluesnake/internal/proxypool"
 	"github.com/agentberlin/bluesnake/internal/urlutil"
 )
 
@@ -56,6 +57,14 @@ func (c *Crawler) crawlLlmsTxt(ctx context.Context, seed string) []frontier.Item
 	sink, hasSink := c.sink.(LlmsTxtSink)
 
 	var items []frontier.Item
+	blocked := false
+	defer func() {
+		// A block before a proxy_on_block switch hides the file: fetch it again
+		// through the proxy (the file record is replaced, links deduplicate).
+		if blocked {
+			c.egress.addRerun(func(ctx context.Context) []frontier.Item { return c.crawlLlmsTxt(ctx, seed) })
+		}
+	}()
 	for _, k := range kinds {
 		target := base + k.path
 		// Under the global fetch cap like every crawl fetch (H1): with M crawls
@@ -63,6 +72,10 @@ func (c *Crawler) crawlLlmsTxt(ctx context.Context, seed string) []frontier.Item
 		res := c.fetchCapped(ctx, target)
 		if res == nil {
 			return items // crawl cancelled while waiting for a slot
+		}
+		if c.egress.preSwitch() && res.Proxy == proxypool.DirectLabel && classify(res) != proxypool.NotBlock {
+			blocked = true
+			continue
 		}
 		found := res.FetchError == "" && res.StatusCode == 200
 		rec := LlmsTxtRecord{URL: target, Kind: k.kind, Status: res.StatusCode, Found: found, Content: res.Body}

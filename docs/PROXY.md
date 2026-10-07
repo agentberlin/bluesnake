@@ -99,11 +99,72 @@ Three properties of the existing core did most of the work:
    correctly partitioned per proxy with zero work on our side**. One transport
    multiplexes the whole pool with proper keep-alive per (proxy, host, scheme).
 
+   **Except for HTTP/2.** Go keeps negotiated h2 connections in a second pool
+   keyed by host alone, and consults it *before* the `Proxy` hook. Once one h2
+   connection to a host exists, every later request to that host rides it
+   whatever egress the request was stamped with — and `pages.proxy` records the
+   stamp, not the route. Over HTTPS with several egresses, rotation silently
+   collapses onto one connection (measured: a "3 pages via proxy B" crawl in
+   which proxy B saw no connection at all). `http.version: "1.1"` avoids it;
+   the fallback mode below avoids it structurally by giving each tier its own
+   transport. Fixing rotation itself (a transport per egress) is open.
+
 3. **Concurrency is already bounded and layered.** `newWorkPool` + N persistent
    workers ([`workpool.go:51`](../internal/crawler/workpool.go#L51)), a
    crawl-wide token bucket ([`crawler.go:405`](../internal/crawler/crawler.go#L405)),
    and a process-wide `limiter`. Per-egress caps slot in beside them as a third
    axis without touching either.
+
+### 3.2 Fallback mode (`http.proxy_on_block`)
+
+The configured proxy becomes a fallback instead of the default route. Off (the
+default), nothing changes. On:
+
+1. **The crawl starts direct**, from this machine's IP; pages record `direct`.
+   Before anything is fetched, each fallback proxy is probed with a CONNECT to
+   the seed host (`proxypool.Probe`): a dead proxy or a 407 fails the crawl at
+   once, named — not after the switch, as a wall of failed pages.
+2. **In-scope page responses on the direct route feed a ban policy**
+   (`proxypool.Classify`, pure, table-tested) and a rolling window
+   (`proxypool.Window`): 429 is hard; a 403/503 with a firewall marker
+   (`cf-mitigated`, `x-amzn-waf-action`, …) is hard; a bare 403, a 503 with
+   `Retry-After`, a 999 or a reset/refused connection is soft; timeouts and a
+   plain 503 are not blocks. The window **trips on 5 blocks in the last 20, or
+   3 hard in a row**. External hosts never count. Idle rule: when nothing is
+   left but parked URLs and every answer so far was a block (a seed refused
+   from the first request discovers nothing else to count), it trips too.
+3. **A block before the switch is parked, never recorded**: the frontier row
+   stays claimed (a pause leaves it pending), the MaxURLs slot is refunded.
+   A parked URL the window moves past without a trip gets one last direct try,
+   whose answer is recorded — so a genuine 403 page cannot loop.
+4. **The trip drains, then switches once.** New fetches and renders wait at a
+   gate (`crawler.egressCtl.enter`); in-flight ones finish. The trip is
+   persisted the moment it happens (crawl meta `egress`), so a pause mid-drain
+   still resumes on the proxy. When nothing is on the wire the shared
+   `proxypool.Escalation` flips: the fetch client moves to its proxy **tier**
+   (its own `http.Transport` — no pre-switch connection, h2 included, can carry
+   a post-switch request), Chrome's loopback forwarder moves upstream and cuts
+   its live tunnels, and the parked URLs go back on the queue.
+5. **After the switch**: robots.txt entries that were blocked are fetched again
+   and their rules apply (parked URLs re-check robots when re-crawled);
+   sitemaps and llms.txt hidden by a block are fetched again; the site-check
+   pass runs again through the proxy. Blocks through the proxy are recorded as
+   real results and counted (`still_blocked`) — there is no second tier.
+6. **Visible everywhere**: `--progress json` / the bar panel (`egress`), the
+   crawl summary ("Switched to proxy after N pages; M URLs re-fetched after
+   blocks."), the desktop live panel banner, MCP `crawl_status`, and the bundle
+   header (`egress.switched_after`).
+
+Refused combinations (config errors): the toggle without `http.proxy`/
+`http.proxies`; with `proxy_include_direct`; with a shared identity
+(persistent cookies, auth cookies). With `rendering.mode: javascript` the
+fallback must be an http(s) proxy (the forwarder cannot relay to SOCKS).
+Surfaces that are not crawls — `bluesnake tools`, MCP site tools, desktop
+tools — have no switch to flip and stay on the direct route. Each parallel
+crawl switches on its own; crawl rate is unchanged by the switch (D4).
+
+Open: whether 5-of-20 / 3-in-a-row are right (constants in v1; one real
+crawl of a 429ing site answers it), and whether to expose them in YAML.
 
 ---
 

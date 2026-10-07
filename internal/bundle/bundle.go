@@ -178,6 +178,17 @@ type Header struct {
 	// they describe exactly the lines that follow.
 	SiteChecks int `json:"site_checks"`
 	LlmsTxt    int `json:"llms_txt"`
+	// Egress is present when the crawl switched to its proxy mid-crawl
+	// (http.proxy_on_block): pages recorded before SwitchedAfter came from this
+	// machine's IP, later ones through the proxy — each page line's `proxy`
+	// names its own route. Absent when the crawl never switched.
+	Egress *Egress `json:"egress,omitempty"`
+}
+
+// Egress is the header's record of a mid-crawl switch to the proxy.
+type Egress struct {
+	SwitchedAfter int64  `json:"switched_after"` // pages recorded when the switch tripped
+	At            string `json:"at"`             // RFC 3339, UTC
 }
 
 // SiteCheck is one stored site-check report, on a line of its own: the check
@@ -526,6 +537,12 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	var egress *Egress
+	if ev, err := st.Egress(); err != nil {
+		return err
+	} else if ev != nil {
+		egress = &Egress{SwitchedAfter: ev.After, At: ev.At.UTC().Format(time.RFC3339)}
+	}
 	cfgYAML, err := st.Meta("config")
 	if err != nil {
 		return err
@@ -593,6 +610,7 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 		ConfigDigest:     configDigest(cfgYAML),
 		SiteChecks:       checks,
 		LlmsTxt:          llms,
+		Egress:           egress,
 	}); err != nil {
 		return err
 	}

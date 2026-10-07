@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/url"
 
+	"github.com/agentberlin/bluesnake/internal/render"
 	"github.com/agentberlin/bluesnake/internal/robots"
 	"github.com/agentberlin/bluesnake/internal/sitecheck"
 )
@@ -68,7 +69,15 @@ func (c *Crawler) runSiteChecks(ctx context.Context, seed string) {
 		return
 	}
 	root := u.Scheme + "://" + u.Host
-	chk := sitecheck.New(c.cfg, c.client, sitecheck.WithLimiter(c.limiter))
+	var fetcher sitecheck.Fetcher = c.client
+	opts := []sitecheck.Option{sitecheck.WithLimiter(c.limiter)}
+	if c.egress != nil {
+		// Behind the proxy_on_block gate like page fetches, and the render
+		// diff's Chrome follows the crawl's switch.
+		fetcher = gatedFetcher{c}
+		opts = append(opts, sitecheck.WithRenderOptions(render.WithEscalation(c.esc)))
+	}
+	chk := sitecheck.New(c.cfg, fetcher, opts...)
 
 	record := func(kind, subject string, report any) {
 		data, err := json.Marshal(report)

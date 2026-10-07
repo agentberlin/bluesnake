@@ -435,10 +435,10 @@ func TestIdleConnsTrackThreadCount(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got, want := c.transport.MaxIdleConnsPerHost, max(threads, 2); got != want {
+		if got, want := c.tiers[0].transport.MaxIdleConnsPerHost, max(threads, 2); got != want {
 			t.Errorf("threads=%d: MaxIdleConnsPerHost = %d, want %d", threads, got, want)
 		}
-		if c.transport.IdleConnTimeout == 0 {
+		if c.tiers[0].transport.IdleConnTimeout == 0 {
 			t.Errorf("threads=%d: IdleConnTimeout unset — idle sockets stay pinned until the peer closes", threads)
 		}
 	}

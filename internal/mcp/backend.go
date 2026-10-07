@@ -79,6 +79,17 @@ type Progress struct {
 	Indexable  int     `json:"indexable"`
 	RatePerSec float64 `json:"urls_per_sec"`
 	ElapsedSec int     `json:"elapsed_sec"`
+	// Egress is the http.proxy_on_block route (absent when the toggle is
+	// off): mode direct | draining | proxy.
+	Egress *EgressProgress `json:"egress,omitempty"`
+}
+
+// EgressProgress is the live state of a crawl's direct→proxy switch.
+type EgressProgress struct {
+	Mode          string `json:"mode"`
+	SwitchedAfter int64  `json:"switched_after,omitempty"`
+	Refetched     int64  `json:"refetched,omitempty"`
+	StillBlocked  int64  `json:"still_blocked,omitempty"`
 }
 
 // Backend is the crawl-control surface the tools run against. The CLI uses
@@ -147,11 +158,15 @@ func capacityError(cur []queue.Job, maxCrawls int) error {
 
 // ProgressFromSnapshot maps the executor's live reading to the tool payload.
 func ProgressFromSnapshot(s runner.Snapshot) Progress {
-	return Progress{
+	p := Progress{
 		CrawlID: s.CrawlID, Seed: s.Seed, State: "running",
 		Total: s.Total, Discovered: s.Discovered, Queue: s.Queue,
 		S2xx: s.S2xx, S3xx: s.S3xx, S4xx: s.S4xx, S5xx: s.S5xx,
 		Blocked: s.Blocked, NoResponse: s.NoResponse, Indexable: s.Indexable,
 		RatePerSec: s.RatePerSec, ElapsedSec: s.ElapsedSec,
 	}
+	if e := s.Egress; e.Mode != "" {
+		p.Egress = &EgressProgress{Mode: e.Mode, SwitchedAfter: e.SwitchedAfter, Refetched: e.Refetched, StillBlocked: e.StillBlocked}
+	}
+	return p
 }

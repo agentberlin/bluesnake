@@ -57,6 +57,9 @@ type Result struct {
 	// Proxy is the redacted label of the egress that served this request
 	// ("direct" when unproxied). Never carries credentials.
 	Proxy string
+	// ProxyAuthFailed is set when a proxy refused the configured credentials
+	// (407) — a configuration error, never a property of the page.
+	ProxyAuthFailed bool
 }
 
 // Option customizes a Client (test hooks).
@@ -67,22 +70,42 @@ type Option func(*Client)
 // test that also configures trusted roots keeps them.
 func WithInsecureTLS() Option {
 	return func(c *Client) {
-		if c.transport.TLSClientConfig == nil {
-			c.transport.TLSClientConfig = &tls.Config{}
+		for _, t := range c.tiers {
+			if t.transport.TLSClientConfig == nil {
+				t.transport.TLSClientConfig = &tls.Config{}
+			}
+			t.transport.TLSClientConfig.InsecureSkipVerify = true
 		}
-		c.transport.TLSClientConfig.InsecureSkipVerify = true
 	}
 }
 
+// WithEscalation shares a crawl's direct→proxy switch with the client
+// (http.proxy_on_block): the crawler flips it, the client routes by it. Without
+// it, a proxy_on_block client builds a private switch that never flips.
+func WithEscalation(e *proxypool.Escalation) Option {
+	return func(c *Client) { c.esc = e }
+}
+
 type Client struct {
-	cfg       *config.Config
-	hc        *http.Client
-	transport *http.Transport
-	maxBody   int64
-	timeout   time.Duration
-	hsts      *hstsStore
+	cfg     *config.Config
+	tiers   []*tier // [0] = the route used before any escalation
+	esc     *proxypool.Escalation
+	maxBody int64
+	timeout time.Duration
+	hsts    *hstsStore
+	meter   *meter
+}
+
+// tier is one route a client can take: an egress pool with its OWN transport.
+// Separate transports are what make an escalation real. Go pools HTTP/2
+// connections per host, not per proxy, so with one shared transport a request
+// stamped for the proxy would ride a direct h2 connection opened earlier — and
+// be recorded as proxied. A tier's connections can only ever carry that tier's
+// requests.
+type tier struct {
 	pool      *proxypool.Pool
-	meter     *meter
+	transport *http.Transport
+	hc        *http.Client
 }
 
 // ctxProxyKey carries the egress chosen for one request. The transport's Proxy
@@ -98,6 +121,46 @@ func New(cfg *config.Config, opts ...Option) (*Client, error) {
 		return nil, err
 	}
 	m := newMeter(pool)
+	c := &Client{
+		cfg:     cfg,
+		maxBody: int64(cfg.Limits.MaxPageSizeKB) * 1024,
+		timeout: time.Duration(cfg.Advanced.ResponseTimeoutSec) * time.Second,
+		hsts:    newHSTSStore(),
+		meter:   m,
+	}
+	pools := []*proxypool.Pool{pool}
+	if cfg.HTTP.ProxyOnBlock {
+		// Fallback mode: tier 0 is direct, tier 1 is the configured pool.
+		direct, err := proxypool.New(nil, "")
+		if err != nil {
+			return nil, err
+		}
+		pools = []*proxypool.Pool{direct, pool}
+	}
+	for _, p := range pools {
+		t, err := newTier(cfg, p, m)
+		if err != nil {
+			return nil, err
+		}
+		c.tiers = append(c.tiers, t)
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	if cfg.HTTP.ProxyOnBlock && c.esc == nil {
+		c.esc = proxypool.NewEscalation(false)
+	}
+	if len(c.tiers) > 1 {
+		// Retire the direct route's pooled connections at the switch. The
+		// tier split already guarantees no post-switch request can use them;
+		// this just stops them pinning sockets for the idle timeout.
+		direct := c.tiers[0]
+		c.esc.OnEscalate(direct.transport.CloseIdleConnections)
+	}
+	return c, nil
+}
+
+func newTier(cfg *config.Config, pool *proxypool.Pool, m *meter) (*tier, error) {
 	transport := &http.Transport{
 		Proxy: func(req *http.Request) (*url.URL, error) {
 			if p, ok := req.Context().Value(ctxProxyKey{}).(*proxypool.Proxy); ok {
@@ -142,16 +205,7 @@ func New(cfg *config.Config, opts ...Option) (*Client, error) {
 		// transport to HTTP/1.1, matching what a browser negotiates.
 		transport.ForceAttemptHTTP2 = true
 	}
-	c := &Client{
-		cfg:       cfg,
-		transport: transport,
-		maxBody:   int64(cfg.Limits.MaxPageSizeKB) * 1024,
-		timeout:   time.Duration(cfg.Advanced.ResponseTimeoutSec) * time.Second,
-		hsts:      newHSTSStore(),
-		pool:      pool,
-		meter:     m,
-	}
-	c.hc = &http.Client{
+	hc := &http.Client{
 		Transport: transport,
 		// redirects are data: always return the 3xx itself
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -163,12 +217,31 @@ func New(cfg *config.Config, opts ...Option) (*Client, error) {
 		if err != nil {
 			return nil, err
 		}
-		c.hc.Jar = jar
+		hc.Jar = jar
 	}
-	for _, opt := range opts {
-		opt(c)
+	return &tier{pool: pool, transport: transport, hc: hc}, nil
+}
+
+// route is the tier requests take right now: the proxy tier once the crawl's
+// switch has flipped, the first tier otherwise.
+func (c *Client) route() *tier {
+	if len(c.tiers) > 1 && c.esc.Escalated() {
+		return c.tiers[1]
 	}
-	return c, nil
+	return c.tiers[0]
+}
+
+// Escalation is the client's direct→proxy switch (nil unless proxy_on_block).
+func (c *Client) Escalation() *proxypool.Escalation { return c.esc }
+
+// FallbackProxies lists the egresses the client switches to on escalation —
+// the ones a proxy_on_block crawl must probe before it starts. Empty when the
+// client has no fallback tier.
+func (c *Client) FallbackProxies() []*proxypool.Proxy {
+	if len(c.tiers) < 2 {
+		return nil
+	}
+	return c.tiers[1].pool.Proxies()
 }
 
 // CloseIdleConnections drops the client's pooled keep-alive connections,
@@ -177,7 +250,11 @@ func New(cfg *config.Config, opts ...Option) (*Client, error) {
 // crawl in a long-lived multi-crawl process, so owners still close explicitly.
 // Call it when the client's owner is done fetching (a finished crawl, a
 // completed tool run); the client stays usable — a later request dials fresh.
-func (c *Client) CloseIdleConnections() { c.transport.CloseIdleConnections() }
+func (c *Client) CloseIdleConnections() {
+	for _, t := range c.tiers {
+		t.transport.CloseIdleConnections()
+	}
+}
 
 // Override customizes a single request without touching the configured
 // profile — the AI-bot live probes fetch as each bot's User-Agent
@@ -226,6 +303,14 @@ func (c *Client) FetchWith(ctx context.Context, rawURL string, o Override) *Resu
 		if res.FetchError != "" || res.StatusCode < 500 {
 			break
 		}
+		// Before a proxy_on_block switch, a 5xx that is a block signal (a
+		// firewall 503, a 503 with Retry-After) is not retried: hammering it
+		// from the same IP only deepens the block, and the crawler wants the
+		// signal itself — it parks the URL and may switch routes.
+		if len(c.tiers) > 1 && !c.esc.Escalated() &&
+			proxypool.Classify(res.StatusCode, res.Headers, res.FetchError) != proxypool.NotBlock {
+			break
+		}
 	}
 	return res
 }
@@ -235,7 +320,9 @@ func (c *Client) FetchWith(ctx context.Context, rawURL string, o Override) *Resu
 func (c *Client) doOnce(ctx context.Context, u *url.URL, res *Result, o Override, avoid *proxypool.Proxy) *proxypool.Proxy {
 	*res = Result{URL: res.URL} // reset between retries
 
-	p := c.pool.SelectExcluding(u.Hostname(), avoid)
+	// The tier is read once per attempt, so a request never straddles a switch.
+	t := c.route()
+	p := t.pool.SelectExcluding(u.Hostname(), avoid)
 	// The per-egress concurrency cap is held only around the request itself.
 	// Providers enforce their own limits and answer a breach with errors
 	// indistinguishable from a ban, so exceeding one corrupts the crawl's
@@ -279,9 +366,12 @@ func (c *Client) doOnce(ctx context.Context, u *url.URL, res *Result, o Override
 	c.applyAuth(req)
 
 	start := time.Now()
-	resp, err := c.hc.Do(req)
+	resp, err := t.hc.Do(req)
 	if err != nil {
 		res.FetchError = err.Error()
+		// Go reports a CONNECT refused with 407 as an error carrying the
+		// status text; a plain-HTTP proxied request gets the 407 as a response.
+		res.ProxyAuthFailed = !p.Direct() && strings.Contains(err.Error(), "Proxy Authentication Required")
 		return p
 	}
 	defer resp.Body.Close()
@@ -298,6 +388,7 @@ func (c *Client) doOnce(ctx context.Context, u *url.URL, res *Result, o Override
 	}
 
 	res.StatusCode = resp.StatusCode
+	res.ProxyAuthFailed = !p.Direct() && resp.StatusCode == http.StatusProxyAuthRequired
 	res.Status = reasonPhrase(resp.Status, resp.StatusCode)
 	res.Headers = resp.Header
 	res.Body = body

@@ -219,6 +219,11 @@ func (o *progressBarOutput) panel(r progressReading, recent recentPages, width i
 	if r.state == "running" {
 		tail = append(tail, recent.line())
 	}
+	if line := egressSummary(s.Egress); line != "" {
+		var eg styledLine
+		eg.add("", line)
+		tail = append(tail, eg)
+	}
 	if s.SiteChecksState != "" {
 		var sc styledLine
 		sc.add("", fmt.Sprintf("site checks  %s · %d checks run · %d findings", s.SiteChecksState, s.SiteChecksRan, s.SiteChecksFindings))

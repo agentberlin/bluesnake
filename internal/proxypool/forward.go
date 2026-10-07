@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -42,6 +43,15 @@ type Forwarder struct {
 	auth     string // pre-encoded "Basic …", empty when the upstream needs none
 	tr       *http.Transport
 	once     sync.Once
+
+	// Switchable mode (http.proxy_on_block): while direct is set, the
+	// forwarder connects to targets itself instead of through the upstream,
+	// so Chrome starts from this machine's IP. Escalate clears it and cuts
+	// every open tunnel, so Chrome re-dials — through the upstream.
+	direct   atomic.Bool
+	directTr *http.Transport
+	tmu      sync.Mutex
+	tunnels  map[net.Conn]struct{}
 }
 
 // Forwardable reports whether a forwarder can carry this egress. A direct
@@ -71,7 +81,7 @@ func StartForwarder(p *Proxy) (*Forwarder, error) {
 	if err != nil {
 		return nil, err
 	}
-	f := &Forwarder{ln: ln, upstream: p.URL}
+	f := &Forwarder{ln: ln, upstream: p.URL, tunnels: map[net.Conn]struct{}{}}
 	if u := p.URL.User; u != nil {
 		pw, _ := u.Password()
 		f.auth = "Basic " + base64.StdEncoding.EncodeToString([]byte(u.Username()+":"+pw))
@@ -92,6 +102,59 @@ func StartForwarder(p *Proxy) (*Forwarder, error) {
 	return f, nil
 }
 
+// StartSwitchableForwarder is StartForwarder for http.proxy_on_block: Chrome
+// is always pointed at the loopback listener, which starts out connecting
+// direct (unless startDirect is false — a resumed crawl that already switched)
+// and moves to p on Escalate. p may be an unauthenticated http(s) proxy too.
+func StartSwitchableForwarder(p *Proxy, startDirect bool) (*Forwarder, error) {
+	f, err := StartForwarder(p)
+	if err != nil {
+		return nil, err
+	}
+	f.directTr = &http.Transport{
+		Proxy:               nil,
+		MaxIdleConnsPerHost: 8,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	f.direct.Store(startDirect)
+	return f, nil
+}
+
+// Escalate moves a switchable forwarder from direct to the upstream proxy and
+// closes every live tunnel and idle direct connection, so no request made after
+// the switch can ride a connection opened before it. Idempotent; a no-op on a
+// forwarder that was never direct.
+func (f *Forwarder) Escalate() {
+	if !f.direct.Swap(false) {
+		return
+	}
+	f.tmu.Lock()
+	for c := range f.tunnels {
+		c.Close()
+	}
+	f.tunnels = map[net.Conn]struct{}{}
+	f.tmu.Unlock()
+	if f.directTr != nil {
+		f.directTr.CloseIdleConnections()
+	}
+}
+
+func (f *Forwarder) track(conns ...net.Conn) {
+	f.tmu.Lock()
+	for _, c := range conns {
+		f.tunnels[c] = struct{}{}
+	}
+	f.tmu.Unlock()
+}
+
+func (f *Forwarder) untrack(conns ...net.Conn) {
+	f.tmu.Lock()
+	for _, c := range conns {
+		delete(f.tunnels, c)
+	}
+	f.tmu.Unlock()
+}
+
 // ProxyServer is the value to hand Chrome's --proxy-server: a loopback address
 // with no credentials in it.
 func (f *Forwarder) ProxyServer() string {
@@ -106,6 +169,9 @@ func (f *Forwarder) Close() error {
 		defer cancel()
 		err = f.srv.Shutdown(ctx)
 		f.tr.CloseIdleConnections()
+		if f.directTr != nil {
+			f.directTr.CloseIdleConnections()
+		}
 	})
 	return err
 }
@@ -117,7 +183,11 @@ func (f *Forwarder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	out := r.Clone(r.Context())
 	out.RequestURI = "" // required: a client request must not carry RequestURI
-	resp, err := f.tr.RoundTrip(out)
+	tr := f.tr
+	if f.direct.Load() {
+		tr = f.directTr
+	}
+	resp, err := tr.RoundTrip(out)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -135,6 +205,10 @@ func (f *Forwarder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // connect relays an opaque CONNECT tunnel: dial the upstream proxy, ask it to
 // open the tunnel with our credentials attached, then splice the two sockets.
 func (f *Forwarder) connect(w http.ResponseWriter, r *http.Request) {
+	if f.direct.Load() {
+		f.connectDirect(w, r)
+		return
+	}
 	up, err := f.dialUpstream(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -182,18 +256,56 @@ func (f *Forwarder) connect(w http.ResponseWriter, r *http.Request) {
 		client.Close()
 		return
 	}
+	// Read through br, not up: the CONNECT response parse may have buffered
+	// the first bytes of the tunnel, and reading the socket directly would
+	// silently drop them.
+	f.splice(client, up, br)
+}
+
+// connectDirect opens the tunnel to the target itself — the switchable
+// forwarder's pre-switch mode.
+func (f *Forwarder) connectDirect(w http.ResponseWriter, r *http.Request) {
+	d := &net.Dialer{Timeout: 30 * time.Second}
+	up, err := d.DialContext(r.Context(), "tcp", r.Host)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		up.Close()
+		http.Error(w, "connect unsupported", http.StatusInternalServerError)
+		return
+	}
+	client, _, err := hj.Hijack()
+	if err != nil {
+		up.Close()
+		return
+	}
+	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection established\r\n\r\n"); err != nil {
+		up.Close()
+		client.Close()
+		return
+	}
+	f.splice(client, up, up)
+}
+
+// splice relays bytes both ways until either side closes, tracking both
+// sockets so Escalate can cut the tunnel.
+func (f *Forwarder) splice(client, up net.Conn, fromUp io.Reader) {
+	f.track(client, up)
+	closeBoth := func() {
+		up.Close()
+		client.Close()
+		f.untrack(client, up)
+	}
 	go func() {
-		defer up.Close()
-		defer client.Close()
+		defer closeBoth()
 		_, _ = io.Copy(up, client)
 	}()
 	go func() {
-		defer up.Close()
-		defer client.Close()
-		// Read through br, not up: the CONNECT response parse may have buffered
-		// the first bytes of the tunnel, and reading the socket directly would
-		// silently drop them.
-		_, _ = io.Copy(client, br)
+		defer closeBoth()
+		_, _ = io.Copy(client, fromUp)
 	}()
 }
 

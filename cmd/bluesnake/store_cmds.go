@@ -133,6 +133,9 @@ func newResumeCmd() *cobra.Command {
 				return exitErr{2, out.Err}
 			}
 			if out.Status == store.StatusInterrupted {
+				if out.Err != nil {
+					fmt.Fprintln(cmd.ErrOrStderr(), "error:", out.Err)
+				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", args[0], storeDir)
 				return interrupted(cmd)
 			}
@@ -146,6 +149,9 @@ func newResumeCmd() *cobra.Command {
 				pages, _ := st.LoadPages()
 				st.Close()
 				printSummary(cmd, pages, out.Crawled, out.Total, time.Duration(out.DurationSec)*time.Second)
+			}
+			if line := egressSummary(out.Egress); line != "" {
+				fmt.Fprintln(cmd.OutOrStdout(), line)
 			}
 			printAnalysis(cmd, out.CrawlID, finalize.Outcome{
 				Analyzed: out.Analyzed, Chains: out.Chains, NearDups: out.NearDups,

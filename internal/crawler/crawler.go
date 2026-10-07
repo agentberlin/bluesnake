@@ -8,7 +8,9 @@ package crawler
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,7 +24,9 @@ import (
 	"github.com/agentberlin/bluesnake/internal/limiter"
 	"github.com/agentberlin/bluesnake/internal/minhash"
 	"github.com/agentberlin/bluesnake/internal/parse"
+	"github.com/agentberlin/bluesnake/internal/proxypool"
 	"github.com/agentberlin/bluesnake/internal/render"
+	"github.com/agentberlin/bluesnake/internal/sitecheck"
 	"github.com/agentberlin/bluesnake/internal/structured"
 	"github.com/agentberlin/bluesnake/internal/urlutil"
 )
@@ -217,6 +221,12 @@ type Resume struct {
 	PerDepth map[int]int
 	PerSub   map[string]int
 	PerPath  []int
+	// Escalated is set when an earlier session of an http.proxy_on_block
+	// crawl already switched to the proxy: the resumed crawl starts there —
+	// the direct IP is probably still blocked. EgressSwitchedAfter carries the
+	// page count the switch tripped at, for the summary.
+	Escalated           bool
+	EgressSwitchedAfter int64
 }
 
 // WithResume preseeds the crawler from a stored crawl: processed URLs are
@@ -264,6 +274,14 @@ type Crawler struct {
 	sinkErrOnce   sync.Once
 	sinkErr       error
 
+	// http.proxy_on_block: the shared direct→proxy switch and the controller
+	// that decides when to flip it. Both nil when the toggle is off.
+	esc    *proxypool.Escalation
+	egress *egressCtl
+	// abort ends the crawl early on a configuration error discovered mid-crawl
+	// (the fallback proxy refusing its credentials).
+	abort context.CancelFunc
+
 	// Page records are streamed straight to the sink and never retained
 	// (stream-and-drop); these atomic tallies replace counting over a held map.
 	crawledCount atomic.Int64
@@ -277,6 +295,7 @@ type Crawler struct {
 
 	sitemapMu    sync.Mutex
 	sitemapHosts map[string]bool // authority -> sitemap auto-discovery already run (R17)
+	sitemapsRead map[string]bool // proxy_on_block only: sitemaps read in full (rerun dedup)
 
 	// Site-check reports are streamed to the sink like page records and never
 	// retained (finalize and the desktop read them back from the store) —
@@ -305,11 +324,23 @@ func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
 	for _, opt := range opts {
 		opt(c)
 	}
-	client, err := fetch.New(cfg, c.fetchOpts...)
+	fetchOpts := c.fetchOpts
+	if cfg.HTTP.ProxyOnBlock {
+		c.esc = proxypool.NewEscalation(c.resume.Escalated)
+		fetchOpts = append(append([]fetch.Option{}, fetchOpts...), fetch.WithEscalation(c.esc))
+	}
+	client, err := fetch.New(cfg, fetchOpts...)
 	if err != nil {
 		return nil, err
 	}
-	robots, err := newRobotsMgr(cfg, client)
+	c.client = client
+	var robotsFetcher sitecheck.Fetcher = client
+	if cfg.HTTP.ProxyOnBlock {
+		c.egress = newEgressCtl(c, c.esc, cfg.Speed.MaxThreads)
+		c.egress.switchedAfter.Store(c.resume.EgressSwitchedAfter)
+		robotsFetcher = gatedFetcher{c}
+	}
+	robots, err := newRobotsMgr(cfg, robotsFetcher, c.esc)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +349,7 @@ func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
 		return nil, err
 	}
 	if cfg.Rendering.Mode == "javascript" && c.renderer == nil {
-		r, err := render.New(cfg)
+		r, err := render.New(cfg, render.WithEscalation(c.esc))
 		if err != nil {
 			return nil, err
 		}
@@ -334,7 +365,6 @@ func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
 			Pattern: mustCompile(rr.Pattern), Replace: rr.Replace,
 		})
 	}
-	c.client = client
 	c.opts = uopts
 	c.rewriter = urlutil.NewRewriter(cfg.URLRewriting.RemoveParams, replaces, cfg.URLRewriting.Lowercase, uopts)
 	c.filter = urlutil.NewFilter(cfg.Scope.IncludeRE(), cfg.Scope.ExcludeRE())
@@ -383,6 +413,8 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 	if len(seedsRaw) == 0 {
 		return nil, fmt.Errorf("crawler: no seed URLs")
 	}
+	ctx, c.abort = context.WithCancel(ctx)
+	defer c.abort()
 	seeds := make([]string, 0, len(seedsRaw))
 	for _, raw := range seedsRaw {
 		seed, err := urlutil.Normalize(raw, c.opts)
@@ -404,6 +436,9 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 		for _, s := range seeds {
 			c.seedAuth[urlutil.Authority(s)] = true
 		}
+	}
+	if err := c.preflightFallback(ctx, seeds[0]); err != nil {
+		return nil, err
 	}
 
 	if rate := c.cfg.Speed.MaxURLsPerSec; rate > 0 {
@@ -469,6 +504,21 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 		n = 1
 	}
 	pool := newWorkPool(c.queue, n, c.noteSinkErr)
+	if c.egress != nil {
+		// A parked URL goes back on the queue as claimable work: the store
+		// flips its still-claimed row back to claimable; the in-RAM queue
+		// appends it. Either way the feeder is poked to pick it up.
+		c.egress.requeue = func(it frontier.Item) {
+			if err := c.queue.Enqueue(it); err != nil {
+				c.noteSinkErr(err)
+				return
+			}
+			pool.notify()
+		}
+		stopWatch := make(chan struct{})
+		defer close(stopWatch)
+		c.egress.watch(ctx, stopWatch)
+	}
 	// Recover the queue FIRST — before anything is admitted and before the
 	// feeder's first claim: orphaned in-flight claims from a crash or pause
 	// become claimable exactly once (EC-01), structurally, on every surface.
@@ -493,6 +543,9 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 		}
 		pool.notify()
 	}
+	if c.egress != nil {
+		pool.onIdle = func() bool { return c.egress.idle(ctx, enqueue) }
+	}
 	for _, seed := range seeds {
 		enqueue(frontier.Item{URL: seed, Depth: 0})
 	}
@@ -516,6 +569,7 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 	// it never joins the worker WaitGroup; its own barrier below keeps the
 	// Result complete.
 	var siteChecksDone chan struct{}
+	workersDone := make(chan struct{})
 	if c.siteChecksApply(seeds[0]) {
 		siteChecksDone = make(chan struct{})
 		c.siteCheckMu.Lock()
@@ -523,7 +577,25 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 		c.siteCheckMu.Unlock()
 		go func() {
 			defer close(siteChecksDone)
+			startedDirect := c.egress != nil && !c.esc.Escalated()
 			c.runSiteChecks(ctx, seeds[0])
+			if startedDirect {
+				// The pass audited the site from the direct IP. If the crawl
+				// switches to the proxy, those reports may describe the block
+				// rather than the site: run the pass again through the proxy
+				// (reports are keyed on kind+subject, so the rerun replaces them).
+				select {
+				case <-c.esc.Done():
+					if ctx.Err() == nil {
+						c.siteCheckMu.Lock()
+						c.siteChecksRan, c.siteCheckFindings = 0, 0
+						c.siteCheckMu.Unlock()
+						c.runSiteChecks(ctx, seeds[0])
+					}
+				case <-workersDone:
+				case <-ctx.Done():
+				}
+			}
 			c.siteCheckMu.Lock()
 			c.siteCheckState = "done"
 			c.siteCheckMu.Unlock()
@@ -577,6 +649,7 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 		}()
 	}
 	wg.Wait()
+	close(workersDone)
 	if siteChecksDone != nil {
 		<-siteChecksDone
 	}
@@ -715,6 +788,18 @@ func (c *Crawler) classify(url string) urlutil.ScopeClass {
 // pause/stop cancelled the crawl mid-fetch: the caller then leaves the frontier
 // item pending so a resume re-fetches it rather than recording a stale error.
 func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) ([]frontier.Item, bool) {
+	// Crawl-start fetches that were blocked before a proxy_on_block switch run
+	// again once the crawl is on the proxy; their discoveries ride this item's.
+	var rerun []frontier.Item
+	for _, fn := range c.egress.takeReruns() {
+		rerun = append(rerun, fn(ctx)...)
+	}
+	disc, done := c.crawlPage(ctx, it)
+	return append(disc, rerun...), done
+}
+
+// crawlPage is crawlOne for the page itself.
+func (c *Crawler) crawlPage(ctx context.Context, it frontier.Item) ([]frontier.Item, bool) {
 	scopeClass := c.classify(it.URL)
 	rec := &PageRecord{URL: it.URL, Depth: it.Depth, Scope: scopeClass.String()}
 
@@ -757,6 +842,32 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) ([]frontier.It
 	// parent context live (ctx.Err() == nil), so it still records as an error.
 	if res.FetchError != "" && ctx.Err() != nil {
 		return nil, false
+	}
+	if c.egress != nil {
+		if res.ProxyAuthFailed {
+			// The fallback proxy refused its credentials: a configuration
+			// error. Fail the crawl loudly rather than record every remaining
+			// URL as an error (PROXY.md §8.6: a 407 is never a ban).
+			c.noteSinkErr(fmt.Errorf("http.proxy_on_block: %w (on %s)", proxypool.ErrProxyAuth, it.URL))
+			c.abort()
+			return nil, false
+		}
+		// Only the crawled site's own answers count: an external site that
+		// blocks a link check says nothing about whether this site does.
+		if scopeClass == urlutil.Internal {
+			s := classify(res)
+			if res.Proxy == proxypool.DirectLabel {
+				c.egress.observe(s)
+				if s != proxypool.NotBlock && !c.egress.takeLastTry(it.URL) {
+					if c.egress.park(it) == parkRefetch {
+						return c.crawlPage(ctx, it)
+					}
+					return nil, false
+				}
+			} else if s != proxypool.NotBlock {
+				c.egress.stillBlocked.Add(1)
+			}
+		}
 	}
 	rec.StatusCode = res.StatusCode
 	rec.Status = res.Status
@@ -830,6 +941,12 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) ([]frontier.It
 // host), so it adds at most one uncapped fetch per crawl, and gating it would
 // stall every worker of the crawl behind the slot wait.
 func (c *Crawler) fetchCapped(ctx context.Context, url string) *fetch.Result {
+	// The egress gate comes first, so a fetch held for a proxy_on_block switch
+	// never sits on a global fetch slot while it waits.
+	if !c.egress.enter(ctx) {
+		return nil
+	}
+	defer c.egress.exit()
 	if !c.limiter.AcquireFetch(ctx) {
 		return nil
 	}
@@ -960,6 +1077,38 @@ func (c *Crawler) handleContent(ctx context.Context, it frontier.Item, scopeClas
 	return discoveries, true
 }
 
+// EgressStatus reports the http.proxy_on_block switch's live state (zero value
+// when the toggle is off).
+func (c *Crawler) EgressStatus() EgressStatus { return c.egress.status() }
+
+// preflightFallback checks, before anything is fetched, that every fallback
+// proxy of a proxy_on_block crawl accepts its credentials and can open a tunnel
+// to the seed host. The fallback carries nothing until the site blocks the
+// crawl, so without this a wrong password is discovered at the worst moment.
+func (c *Crawler) preflightFallback(ctx context.Context, seed string) error {
+	if c.egress == nil {
+		return nil
+	}
+	u, err := url.Parse(seed)
+	if err != nil {
+		return err
+	}
+	port := u.Port()
+	if port == "" {
+		port = "443"
+		if u.Scheme == "http" {
+			port = "80"
+		}
+	}
+	target := net.JoinHostPort(u.Hostname(), port)
+	for _, p := range c.client.FallbackProxies() {
+		if err := proxypool.Probe(ctx, p, target); err != nil {
+			return fmt.Errorf("http.proxy_on_block: fallback proxy check failed: %w", err)
+		}
+	}
+	return nil
+}
+
 // Close releases the crawl's held resources: the renderer (JS rendering
 // mode) and the fetch client's idle keep-alive connections — without the
 // latter, every finished crawl pins its pooled connections' goroutines and
@@ -994,10 +1143,17 @@ func (c *Crawler) Close() {
 // starve the fetch pool and can deadlock it). The slot is released the moment
 // Render returns — even on a panic — so parsing/diffing never holds it.
 func (c *Crawler) renderAndDiff(ctx context.Context, url string, rec *PageRecord, facts *parse.Facts, res *fetch.Result) (renderedOK, interrupted bool) {
+	// Renders hold the proxy_on_block drain like fetches: Chrome changes route
+	// only once no page is mid-render.
+	if !c.egress.enter(ctx) {
+		return false, true
+	}
 	if !c.limiter.AcquireRender(ctx) {
+		c.egress.exit()
 		return false, true // cancelled while waiting for a render slot
 	}
 	rendered, err := func() (*render.Result, error) {
+		defer c.egress.exit()
 		defer c.limiter.ReleaseRender()
 		return c.renderer.Render(ctx, url)
 	}()
