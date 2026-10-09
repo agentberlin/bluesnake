@@ -279,6 +279,14 @@ func (t *crawlTally) add(rec *crawler.PageRecord) {
 // egressSummary is the one-line account of an http.proxy_on_block crawl's
 // route: "" when the toggle is off.
 func egressSummary(e crawler.EgressStatus) string {
+	line := egressRoute(e)
+	if e.Warning != "" && line != "" {
+		line = "Warning: " + e.Warning + " — the crawl ran anyway.\n" + line
+	}
+	return line
+}
+
+func egressRoute(e crawler.EgressStatus) string {
 	switch e.Mode {
 	case "":
 		return ""

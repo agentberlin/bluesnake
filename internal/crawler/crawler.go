@@ -7,8 +7,8 @@ package crawler
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -1093,16 +1093,16 @@ func (c *Crawler) preflightFallback(ctx context.Context, seed string) error {
 	if err != nil {
 		return err
 	}
-	port := u.Port()
-	if port == "" {
-		port = "443"
-		if u.Scheme == "http" {
-			port = "80"
-		}
-	}
-	target := net.JoinHostPort(u.Hostname(), port)
 	for _, p := range c.client.FallbackProxies() {
-		if err := proxypool.Probe(ctx, p, target); err != nil {
+		err := proxypool.Probe(ctx, p, u)
+		switch {
+		case err == nil:
+		case errors.Is(err, proxypool.ErrProbeInconclusive):
+			// Not proof the fallback is broken (a port it won't tunnel, a
+			// passing gateway error): warn and crawl. A real 407 after the
+			// switch still fails the crawl loudly.
+			c.egress.warn(err.Error())
+		default:
 			return fmt.Errorf("http.proxy_on_block: fallback proxy check failed: %w", err)
 		}
 	}

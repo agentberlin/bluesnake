@@ -3,6 +3,7 @@ package crawler
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -31,8 +32,13 @@ import (
 type onBlockProxy struct {
 	srv      *httptest.Server
 	wantAuth string
-	hits     atomic.Int64
+	hits     atomic.Int64 // forwarded requests, the start-up HEAD probe excluded
+	probes   atomic.Int64 // forwarded HEAD requests (the start-up check of an http:// seed)
 	connects atomic.Int64
+	// connectAnswer, when set, is asked for every CONNECT (numbered from 1):
+	// a non-empty raw status line ("407 Auth Failed") is answered instead of
+	// opening the tunnel.
+	connectAnswer func(n int64) string
 
 	mu       sync.Mutex
 	upstream map[string]bool // local addrs of the proxy's own dials to origins
@@ -50,7 +56,17 @@ func newOnBlockProxy(t *testing.T, user, pass string) *onBlockProxy {
 			return
 		}
 		if r.Method == http.MethodConnect {
-			p.connects.Add(1)
+			n := p.connects.Add(1)
+			if p.connectAnswer != nil {
+				if status := p.connectAnswer(n); status != "" {
+					conn, _, err := w.(http.Hijacker).Hijack()
+					if err == nil {
+						io.WriteString(conn, "HTTP/1.1 "+status+"\r\nContent-Length: 0\r\n\r\n") //nolint:errcheck
+						conn.Close()
+					}
+					return
+				}
+			}
 			dst, err := net.DialTimeout("tcp", r.Host, 5*time.Second)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadGateway)
@@ -69,7 +85,11 @@ func newOnBlockProxy(t *testing.T, user, pass string) *onBlockProxy {
 			go func() { defer dst.Close(); defer src.Close(); io.Copy(src, dst) }() //nolint:errcheck
 			return
 		}
-		p.hits.Add(1)
+		if r.Method == http.MethodHead {
+			p.probes.Add(1)
+		} else {
+			p.hits.Add(1)
+		}
 		out, err := http.NewRequest(r.Method, r.RequestURI, r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
@@ -131,6 +151,7 @@ type blockingSite struct {
 	proxied       map[string]int
 	firstProxied  time.Time
 	directAfterSw int // direct requests that arrived after the first proxied one
+	headProbes    int // start-up checks that reached the site through the proxy
 }
 
 func newBlockingSite(pages map[string]string, allowDirect int) *blockingSite {
@@ -143,6 +164,15 @@ func (s *blockingSite) handler(w http.ResponseWriter, r *http.Request) {
 		proxied = s.viaProxy(r)
 	}
 	path := r.URL.Path
+	if r.Method == http.MethodHead {
+		// The start-up check of the fallback proxy (an http:// seed): it is
+		// not a crawl request and must not mark the switch.
+		s.mu.Lock()
+		s.headProbes++
+		s.mu.Unlock()
+		w.Header().Set("X-Seen-Via", "proxy")
+		return
+	}
 	s.mu.Lock()
 	if proxied {
 		s.proxied[path]++
@@ -388,8 +418,8 @@ func TestProxyOnBlockIsolated403sNeverTrip(t *testing.T) {
 			t.Errorf("%s fetched %d times direct, want 2 (parked once, then its last try)", p, d)
 		}
 	}
-	if px.hits.Load() != 0 || px.connects.Load() != 1 { // the one connect is the start-up probe
-		t.Errorf("proxy carried %d requests / %d tunnels, want none beyond the probe", px.hits.Load(), px.connects.Load())
+	if px.hits.Load() != 0 || px.connects.Load() != 0 || px.probes.Load() != 1 {
+		t.Errorf("proxy carried %d requests / %d tunnels / %d probes, want only the one start-up HEAD", px.hits.Load(), px.connects.Load(), px.probes.Load())
 	}
 	checkRoutes(t, r, px.srv.URL)
 }
@@ -709,5 +739,97 @@ func TestProxyOnBlockPersistsAtTrip(t *testing.T) {
 	e.exit() // the last fetch lands
 	if !c.esc.Escalated() || e.status().Mode != EgressProxy {
 		t.Fatal("the last fetch out of the drain must flip the switch")
+	}
+}
+
+// The start-up check takes the shape the crawl will. An http:// crawl never
+// tunnels, so a Squid-style proxy that refuses CONNECT must not stop it.
+func TestProxyOnBlockHTTPSeedRunsThroughAProxyThatRefusesCONNECT(t *testing.T) {
+	site := newBlockingSite(fanout(8), 2)
+	seed := site.start(t) + "/"
+	px := newOnBlockProxy(t, "", "")
+	px.connectAnswer = func(int64) string { return "403 Forbidden" }
+
+	r := runOnBlock(t, seed, func(cfg *config.Config) { cfg.HTTP.Proxy = px.url("", "") })
+	if r.err != nil {
+		t.Fatalf("crawl refused: %v — the proxy forwards http:// requests fine", r.err)
+	}
+	if r.status.Mode != EgressProxy || r.status.Warning != "" {
+		t.Fatalf("status = %+v, want switched with no warning", r.status)
+	}
+	checkRoutes(t, r, px.srv.URL)
+}
+
+// A check that is answered but inconclusive (a gateway 503 on the probe) is a
+// warning, not a refusal: the crawl runs, and still switches when blocked.
+func TestProxyOnBlockInconclusiveCheckOnlyWarns(t *testing.T) {
+	px := newOnBlockProxy(t, "", "")
+	px.connectAnswer = func(n int64) string {
+		if n == 1 {
+			return "503 Service Unavailable" // the probe hits a passing gateway error
+		}
+		return ""
+	}
+	site := newBlockingSite(fanout(10), 3)
+	site.viaProxy = func(r *http.Request) bool { return px.tunnelled(r.RemoteAddr) }
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(site.handler))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	site.srv = srv
+
+	r := runOnBlock(t, srv.URL+"/", func(cfg *config.Config) { cfg.HTTP.Proxy = px.url("", "") },
+		WithFetchOptions(fetch.WithInsecureTLS()))
+	if r.err != nil {
+		t.Fatalf("crawl refused over an inconclusive check: %v", r.err)
+	}
+	if !strings.Contains(r.status.Warning, "inconclusive") {
+		t.Errorf("warning = %q, want the inconclusive check reported", r.status.Warning)
+	}
+	if r.status.Mode != EgressProxy {
+		t.Fatalf("mode = %q, want the switch to still happen", r.status.Mode)
+	}
+	checkRoutes(t, r, px.srv.URL)
+}
+
+// Credentials that stop working after the switch fail the crawl loudly, even
+// when the proxy names its 407 its own way: Go reports a refused CONNECT with
+// only the proxy's reason phrase, which text matching would miss.
+func TestProxyOnBlock407AfterSwitchFailsWhateverItIsCalled(t *testing.T) {
+	px := newOnBlockProxy(t, "", "")
+	px.connectAnswer = func(n int64) string {
+		if n == 1 {
+			return "" // the start-up probe passes: the credentials worked then
+		}
+		return "407 Auth Failed" // ...and have expired by the switch
+	}
+	site := newBlockingSite(fanout(10), 3)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(site.handler))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	site.srv = srv
+
+	cfg := config.Default()
+	cfg.HTTP.ProxyOnBlock = true
+	cfg.HTTP.Proxy = px.url("", "")
+	cfg.SiteChecks.Enabled = "never"
+	cfg.LlmsTxt.Check = false
+	sink := newOnBlockSink()
+	c, err := New(cfg, WithSink(sink), WithFetchOptions(fetch.WithInsecureTLS()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	_, err = c.Run(ctx, srv.URL+"/")
+	if !errors.Is(err, proxypool.ErrProxyAuth) {
+		t.Fatalf("crawl err = %v, want ErrProxyAuth — a refused fallback must fail the crawl, not record errors", err)
+	}
+	for u, rec := range sink.snapshot() {
+		if rec.State == StateError {
+			t.Errorf("%s recorded as an error: a 407 must stop the crawl instead", u)
+		}
 	}
 }

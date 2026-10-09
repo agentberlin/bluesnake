@@ -121,9 +121,14 @@ The configured proxy becomes a fallback instead of the default route. Off (the
 default), nothing changes. On:
 
 1. **The crawl starts direct**, from this machine's IP; pages record `direct`.
-   Before anything is fetched, each fallback proxy is probed with a CONNECT to
-   the seed host (`proxypool.Probe`): a dead proxy or a 407 fails the crawl at
-   once, named — not after the switch, as a wall of failed pages.
+   Before anything is fetched, each fallback proxy is probed in the shape the
+   crawl will use it (`proxypool.Probe`): a CONNECT to the seed host for an
+   https:// seed, one absolute-form HEAD of the seed for an http:// seed
+   (which is never tunnelled). Only an unreachable proxy or a 407 fails the
+   crawl at once, named; any other answer (a refused port, a passing 502) is a
+   warning shown with the crawl, which runs anyway. After the switch, a 407 —
+   recognised by its status code, whatever the proxy's reason phrase — fails
+   the crawl rather than recording every remaining page as an error.
 2. **In-scope page responses on the direct route feed a ban policy**
    (`proxypool.Classify`, pure, table-tested) and a rolling window
    (`proxypool.Window`): 429 is hard; a 403/503 with a firewall marker

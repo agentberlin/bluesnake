@@ -137,6 +137,11 @@ export function CrawlProgress({ crawlId, onOpenResults, onResume, headerExtra })
               <Icon name="shield" size={12} /> Proxy on standby — crawling from this machine's IP until the site blocks.
             </div>
           )}
+          {s.egressWarning && (
+            <div style={{ fontSize: 11.5, color: "var(--sev-warn)", margin: "-6px 2px 12px", display: "flex", alignItems: "center", gap: 6 }}>
+              <Icon name="triangle-alert" size={12} /> Couldn't confirm the fallback proxy works: {s.egressWarning}
+            </div>
+          )}
 
           {/* stats */}
           <div className="card" style={{ display: "flex", padding: 0, overflow: "hidden", marginBottom: 16 }}>

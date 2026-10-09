@@ -160,6 +160,7 @@ type egressLine struct {
 	SwitchedAfter int64  `json:"switched_after,omitempty"` // pages recorded when it tripped
 	Refetched     int64  `json:"refetched,omitempty"`      // blocked URLs re-fetched through the proxy
 	StillBlocked  int64  `json:"still_blocked,omitempty"`  // block responses through the proxy
+	Warning       string `json:"warning,omitempty"`        // inconclusive start-up check of the fallback
 }
 
 type siteChecksLine struct {
@@ -180,7 +181,7 @@ func newProgressLine(s runner.Snapshot, state string) progressLine {
 		l.SiteChecks = &siteChecksLine{State: s.SiteChecksState, Ran: s.SiteChecksRan, Findings: s.SiteChecksFindings}
 	}
 	if e := s.Egress; e.Mode != "" {
-		l.Egress = &egressLine{Mode: e.Mode, SwitchedAfter: e.SwitchedAfter, Refetched: e.Refetched, StillBlocked: e.StillBlocked}
+		l.Egress = &egressLine{Mode: e.Mode, SwitchedAfter: e.SwitchedAfter, Refetched: e.Refetched, StillBlocked: e.StillBlocked, Warning: e.Warning}
 	}
 	return l
 }

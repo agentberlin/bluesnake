@@ -169,6 +169,9 @@ func (w *world) obExternal(status, n int) error {
 func (s *onBlockSite) serve(rw http.ResponseWriter, r *http.Request) {
 	proxied := r.Header.Get("X-Via-Proxy") != ""
 	path := r.URL.Path
+	if r.Method == http.MethodHead {
+		return // the start-up check of the fallback proxy, not a crawl request
+	}
 	s.mu.Lock()
 	if proxied {
 		s.proxied[path]++
@@ -259,7 +262,9 @@ func (w *world) obProxy(user, pass string) error {
 			go func() { defer dst.Close(); defer src.Close(); io.Copy(src, dst) }() //nolint:errcheck
 			return
 		}
-		p.pages.Add(1)
+		if r.Method != http.MethodHead { // the start-up check is not a page request
+			p.pages.Add(1)
+		}
 		out, err := http.NewRequest(r.Method, r.RequestURI, r.Body)
 		if err != nil {
 			http.Error(rw, err.Error(), http.StatusBadGateway)

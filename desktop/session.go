@@ -58,6 +58,7 @@ type ProgressSnapshot struct {
 	EgressSwitchedAfter int64  `json:"egressSwitchedAfter,omitempty"`
 	EgressRefetched     int64  `json:"egressRefetched,omitempty"`
 	EgressStillBlocked  int64  `json:"egressStillBlocked,omitempty"`
+	EgressWarning       string `json:"egressWarning,omitempty"` // inconclusive start-up check of the fallback proxy
 }
 
 // DoneEvent is the payload of the "crawl:done" event.
@@ -213,5 +214,6 @@ func (o *uiObserver) build(snap runner.Snapshot, state string) ProgressSnapshot 
 		SiteChecksFindings: snap.SiteChecksFindings,
 		EgressMode:         snap.Egress.Mode, EgressSwitchedAfter: snap.Egress.SwitchedAfter,
 		EgressRefetched: snap.Egress.Refetched, EgressStillBlocked: snap.Egress.StillBlocked,
+		EgressWarning: snap.Egress.Warning,
 	}
 }

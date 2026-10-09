@@ -467,3 +467,61 @@ func TestSharedIdentityForcesStickyHost(t *testing.T) {
 		t.Errorf("default resolved to %q, want round_robin", got)
 	}
 }
+
+// rawProxy answers every request with the given raw status line: what a
+// gateway that names its codes its own way looks like on the wire.
+func rawProxy(t *testing.T, status string) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		io.WriteString(conn, "HTTP/1.1 "+status+"\r\nContent-Length: 0\r\n\r\n") //nolint:errcheck
+		conn.Close()
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// A proxy refusing the credentials is recognised by its 407 status code, not
+// by its wording. Go reports a refused CONNECT as an error carrying only the
+// proxy's reason phrase, so a gateway answering "407 Auth Failed" used to slip
+// through as an ordinary fetch error — and a fallback crawl whose credentials
+// expired after the switch carried on recording every page as an error.
+func TestProxyAuthFailureRecognisedWhateverTheReasonPhrase(t *testing.T) {
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(origin.Close)
+	plainOrigin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(plainOrigin.Close)
+
+	for _, phrase := range []string{"407 Proxy Authentication Required", "407 Auth Failed", "407 Nope"} {
+		for _, target := range []string{origin.URL + "/", plainOrigin.URL + "/"} {
+			cfg := config.Default()
+			cfg.HTTP.Proxy = rawProxy(t, phrase)
+			c, err := New(cfg, WithInsecureTLS())
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := c.Fetch(context.Background(), target)
+			if !res.ProxyAuthFailed {
+				t.Errorf("%q via %s: ProxyAuthFailed = false (status %d, error %q)", phrase, target[:5], res.StatusCode, res.FetchError)
+			}
+		}
+	}
+}
+
+// Any other refusal is not a credential failure.
+func TestProxyAuthFailedOnlyFor407(t *testing.T) {
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(origin.Close)
+	cfg := config.Default()
+	cfg.HTTP.Proxy = rawProxy(t, "502 Bad Gateway")
+	c, err := New(cfg, WithInsecureTLS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := c.Fetch(context.Background(), origin.URL+"/"); res.ProxyAuthFailed || res.FetchError == "" {
+		t.Fatalf("502 on CONNECT: ProxyAuthFailed=%v error=%q, want a plain fetch error", res.ProxyAuthFailed, res.FetchError)
+	}
+}

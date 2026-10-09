@@ -8,6 +8,7 @@ package fetch
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -177,6 +178,16 @@ func newTier(cfg *config.Config, pool *proxypool.Pool, m *meter) (*tier, error) 
 		// fresh TLS ClientHello per page for any fingerprinting defender to
 		// sample. The cap is per (proxy, host), so a pool multiplies the
 		// connections this permits, which is the intended behaviour.
+		// A proxy refusing the credentials on CONNECT (https targets) is
+		// recognised by its status code. Go turns a non-200 CONNECT answer into
+		// an error carrying only the proxy's own reason phrase, so matching
+		// text would miss a proxy that answers "407 Auth Failed".
+		OnProxyConnectResponse: func(_ context.Context, _ *url.URL, _ *http.Request, res *http.Response) error {
+			if res.StatusCode == http.StatusProxyAuthRequired {
+				return proxypool.ErrProxyAuth
+			}
+			return nil
+		},
 		MaxIdleConnsPerHost: max(cfg.Speed.MaxThreads, 2),
 		IdleConnTimeout:     90 * time.Second,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -369,9 +380,10 @@ func (c *Client) doOnce(ctx context.Context, u *url.URL, res *Result, o Override
 	resp, err := t.hc.Do(req)
 	if err != nil {
 		res.FetchError = err.Error()
-		// Go reports a CONNECT refused with 407 as an error carrying the
-		// status text; a plain-HTTP proxied request gets the 407 as a response.
-		res.ProxyAuthFailed = !p.Direct() && strings.Contains(err.Error(), "Proxy Authentication Required")
+		// A CONNECT refused with 407 surfaces as ErrProxyAuth from the
+		// transport's OnProxyConnectResponse hook; a plain-HTTP proxied
+		// request gets the 407 as a response (below).
+		res.ProxyAuthFailed = !p.Direct() && errors.Is(err, proxypool.ErrProxyAuth)
 		return p
 	}
 	defer resp.Body.Close()

@@ -90,6 +90,7 @@ type EgressProgress struct {
 	SwitchedAfter int64  `json:"switched_after,omitempty"`
 	Refetched     int64  `json:"refetched,omitempty"`
 	StillBlocked  int64  `json:"still_blocked,omitempty"`
+	Warning       string `json:"warning,omitempty"` // inconclusive start-up check of the fallback proxy
 }
 
 // Backend is the crawl-control surface the tools run against. The CLI uses
@@ -166,7 +167,7 @@ func ProgressFromSnapshot(s runner.Snapshot) Progress {
 		RatePerSec: s.RatePerSec, ElapsedSec: s.ElapsedSec,
 	}
 	if e := s.Egress; e.Mode != "" {
-		p.Egress = &EgressProgress{Mode: e.Mode, SwitchedAfter: e.SwitchedAfter, Refetched: e.Refetched, StillBlocked: e.StillBlocked}
+		p.Egress = &EgressProgress{Mode: e.Mode, SwitchedAfter: e.SwitchedAfter, Refetched: e.Refetched, StillBlocked: e.StillBlocked, Warning: e.Warning}
 	}
 	return p
 }

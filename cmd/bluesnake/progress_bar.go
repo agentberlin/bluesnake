@@ -219,7 +219,12 @@ func (o *progressBarOutput) panel(r progressReading, recent recentPages, width i
 	if r.state == "running" {
 		tail = append(tail, recent.line())
 	}
-	if line := egressSummary(s.Egress); line != "" {
+	if w := s.Egress.Warning; w != "" {
+		var wl styledLine
+		wl.add(dim, "warning: "+w)
+		tail = append(tail, wl)
+	}
+	if line := egressRoute(s.Egress); line != "" {
 		var eg styledLine
 		eg.add("", line)
 		tail = append(tail, eg)

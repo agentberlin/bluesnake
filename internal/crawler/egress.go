@@ -40,6 +40,10 @@ type EgressStatus struct {
 	SwitchedAfter int64  // pages recorded when the switch tripped (meaningful once Mode is draining/proxy)
 	Refetched     int64  // blocked URLs re-fetched through the proxy
 	StillBlocked  int64  // in-scope block responses received through the proxy
+	// Warning is set when the start-up check of the fallback proxy was
+	// inconclusive (it answered, but neither confirmed nor refused): the
+	// crawl ran anyway, and the operator should know the fallback is unproven.
+	Warning string
 }
 
 type egressState int
@@ -82,6 +86,16 @@ type egressCtl struct {
 	switchedAfter atomic.Int64
 	refetched     atomic.Int64
 	stillBlocked  atomic.Int64
+	warning       string // guarded by mu
+}
+
+// warn records a start-up warning about the fallback proxy (first one kept).
+func (e *egressCtl) warn(msg string) {
+	e.mu.Lock()
+	if e.warning == "" {
+		e.warning = msg
+	}
+	e.mu.Unlock()
 }
 
 type parkedURL struct {
@@ -349,7 +363,7 @@ func (e *egressCtl) status() EgressStatus {
 		return EgressStatus{}
 	}
 	e.mu.Lock()
-	st := e.state
+	st, warning := e.state, e.warning
 	e.mu.Unlock()
 	mode := EgressDirect
 	switch st {
@@ -363,6 +377,7 @@ func (e *egressCtl) status() EgressStatus {
 		SwitchedAfter: e.switchedAfter.Load(),
 		Refetched:     e.refetched.Load(),
 		StillBlocked:  e.stillBlocked.Load(),
+		Warning:       warning,
 	}
 }
 
