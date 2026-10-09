@@ -11,7 +11,9 @@
 // which value Select returns. Go's http.Transport evaluates its Proxy hook per
 // request and includes the proxy URL in its connection-pool key, so one
 // transport multiplexes the whole pool with correct per-(proxy, host)
-// keep-alive — the rotation costs us no connection reuse.
+// keep-alive — the rotation costs us no connection reuse. HTTP/2 is the
+// exception: Go pools h2 connections per host only, so over HTTPS a request can
+// ride an h2 connection opened through a different egress (docs/PROXY.md §3.1).
 //
 // Credentials live in the *url.Userinfo of each Proxy.URL and must never leave
 // this package in printable form: Label() is the only string a caller should

@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/agentberlin/bluesnake/internal/config"
-	"github.com/agentberlin/bluesnake/internal/fetch"
+	"github.com/agentberlin/bluesnake/internal/proxypool"
 	"github.com/agentberlin/bluesnake/internal/robots"
 	"github.com/agentberlin/bluesnake/internal/sitecheck"
 )
@@ -23,8 +23,13 @@ import (
 // the parsed file so the robots audit reuses the same single fetch.
 type robotsMgr struct {
 	cfg    *config.Config
-	client *fetch.Client
+	client sitecheck.Fetcher
 	retain bool // keep raw fetch records for the site-check pass
+	// esc is the crawl's proxy_on_block switch (nil when off). A robots.txt
+	// fetch that came back blocked before the switch is cached as allow-all
+	// like any non-2xx answer — but only until the switch: after it, the entry
+	// is fetched again through the proxy and its real rules apply.
+	esc *proxypool.Escalation
 
 	mu     sync.Mutex
 	cache  map[string]*robotsEntry // scheme://host[:port]
@@ -34,12 +39,15 @@ type robotsMgr struct {
 type robotsEntry struct {
 	file *robots.File
 	rec  *sitecheck.RobotsFetch // nil unless retained
+	// blocked marks a pre-switch fetch the site answered with a block signal.
+	blocked bool
 }
 
-func newRobotsMgr(cfg *config.Config, client *fetch.Client) (*robotsMgr, error) {
+func newRobotsMgr(cfg *config.Config, client sitecheck.Fetcher, esc *proxypool.Escalation) (*robotsMgr, error) {
 	m := &robotsMgr{
 		cfg:    cfg,
 		client: client,
+		esc:    esc,
 		retain: cfg.SiteChecks.Enabled != "never" && (cfg.SiteChecks.Robots || cfg.SiteChecks.Sitemap),
 		cache:  make(map[string]*robotsEntry),
 		custom: make(map[string]*robots.File),
@@ -52,6 +60,19 @@ func newRobotsMgr(cfg *config.Config, client *fetch.Client) (*robotsMgr, error) 
 		m.custom[strings.ToLower(cr.Host)] = robots.Parse(data)
 	}
 	return m, nil
+}
+
+// wasBlocked reports whether the URL's host answered its robots.txt fetch
+// with a block signal before a proxy_on_block switch.
+func (m *robotsMgr) wasBlocked(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.cache[u.Scheme+"://"+u.Host]
+	return ok && e.blocked
 }
 
 // customFor returns the custom robots.txt override for a hostname, nil when
@@ -125,7 +146,7 @@ func (m *robotsMgr) fetchRecordFor(ctx context.Context, root string) *sitecheck.
 // a retained raw record: a cache hit without one (unreachable in practice —
 // records are retained whenever the pass can run) refetches and overwrites.
 func (m *robotsMgr) entryFor(ctx context.Context, key string, withRec bool) *robotsEntry {
-	if e, ok := m.cache[key]; ok && (!withRec || e.rec != nil) {
+	if e, ok := m.cache[key]; ok && (!withRec || e.rec != nil) && !(e.blocked && m.esc.Escalated()) {
 		return e
 	}
 	rf := sitecheck.FetchRobots(ctx, m.client, key)
@@ -136,6 +157,13 @@ func (m *robotsMgr) entryFor(ctx context.Context, key string, withRec bool) *rob
 		file = robots.Parse(nil)
 	}
 	e := &robotsEntry{file: file}
+	// Blocked is decided by the route the answer came over, not the switch
+	// state before the fetch: the fetch can wait out a drain at the gate and
+	// go through the proxy, and a block there must not mark the entry for a
+	// refetch on every later check of the host.
+	if m.esc != nil && rf.Proxy == proxypool.DirectLabel && proxypool.Classify(rf.Status, nil, rf.FetchError) != proxypool.NotBlock {
+		e.blocked = true
+	}
 	if withRec {
 		e.rec = rf
 	}

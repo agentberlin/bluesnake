@@ -9,6 +9,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/fetch"
 	"github.com/agentberlin/bluesnake/internal/frontier"
+	"github.com/agentberlin/bluesnake/internal/proxypool"
 	"github.com/agentberlin/bluesnake/internal/urlutil"
 )
 
@@ -87,7 +88,32 @@ func (c *Crawler) crawlSitemaps(ctx context.Context, seed string) []frontier.Ite
 		// (no download), custom per-host overrides, and the rule-check cache
 		urls = append(urls, c.robots.sitemapsFor(ctx, seed)...)
 	}
-	return c.enumerateSitemaps(ctx, urls, seed)
+	items, blocked := c.walkSitemaps(ctx, urls, seed)
+	c.rerunSitemapsIfBlocked(seed, blocked, true)
+	return items
+}
+
+// rerunSitemapsIfBlocked schedules sitemap discovery for src to run again
+// after a proxy_on_block switch when the site answered robots.txt or a sitemap
+// fetch with a block signal: those sitemaps were never read, and the URLs they
+// list would otherwise be missed for good.
+func (c *Crawler) rerunSitemapsIfBlocked(src string, blocked, withConfigured bool) {
+	if !c.egress.preSwitch() || (!blocked && !c.robots.wasBlocked(src)) {
+		return
+	}
+	// A sitemap that still answers with a block on its last direct try was
+	// never recorded before proxy_on_block either: lastTry changes nothing.
+	c.egress.addRerun(func(ctx context.Context, _ bool) []frontier.Item {
+		var urls []string
+		if withConfigured {
+			urls = append(urls, c.cfg.Sitemaps.URLs...)
+		}
+		if c.cfg.Sitemaps.AutoDiscoverViaRobots {
+			urls = append(urls, c.robots.sitemapsFor(ctx, src)...)
+		}
+		items, _ := c.walkSitemaps(ctx, urls, src)
+		return items
+	})
 }
 
 // discoverHostSitemaps runs robots-based sitemap auto-discovery for an in-scope
@@ -105,9 +131,12 @@ func (c *Crawler) discoverHostSitemaps(ctx context.Context, pageURL string) []fr
 	}
 	urls := c.robots.sitemapsFor(ctx, pageURL)
 	if len(urls) == 0 {
+		c.rerunSitemapsIfBlocked(pageURL, false, false)
 		return nil
 	}
-	return c.enumerateSitemaps(ctx, urls, pageURL)
+	items, blocked := c.walkSitemaps(ctx, urls, pageURL)
+	c.rerunSitemapsIfBlocked(pageURL, blocked, false)
+	return items
 }
 
 // claimSitemapHost marks a host's sitemap auto-discovery as done, returning true
@@ -130,11 +159,21 @@ func (c *Crawler) claimSitemapHost(rawURL string) bool {
 // (Depth 0, Source "") — recomputeDepths assigns them NoDepth unless a link also
 // reaches them. Safe to call concurrently (only local state is mutated).
 func (c *Crawler) enumerateSitemaps(ctx context.Context, sitemapURLs []string, src string) []frontier.Item {
+	items, _ := c.walkSitemaps(ctx, sitemapURLs, src)
+	return items
+}
+
+// walkSitemaps is enumerateSitemaps that also reports whether any sitemap
+// fetch came back blocked before a proxy_on_block switch. Under the toggle,
+// sitemaps already read in full are skipped, so a post-switch rerun fetches
+// only what the block hid and never records an entry twice.
+func (c *Crawler) walkSitemaps(ctx context.Context, sitemapURLs []string, src string) ([]frontier.Item, bool) {
 	var items []frontier.Item
+	blocked := false
 	seen := map[string]bool{}
 	var walk func(sitemapURL string, depth int)
 	walk = func(sitemapURL string, depth int) {
-		if seen[sitemapURL] || depth > 2 {
+		if seen[sitemapURL] || depth > 2 || c.sitemapRead(sitemapURL) {
 			return
 		}
 		seen[sitemapURL] = true
@@ -145,6 +184,10 @@ func (c *Crawler) enumerateSitemaps(ctx context.Context, sitemapURLs []string, s
 		if res == nil { // crawl cancelled while waiting for a slot
 			return
 		}
+		if c.egress.preSwitch() && res.Proxy == proxypool.DirectLabel && classify(res) != proxypool.NotBlock {
+			blocked = true
+			return
+		}
 		if res.FetchError != "" || res.StatusCode != 200 {
 			return
 		}
@@ -152,6 +195,7 @@ func (c *Crawler) enumerateSitemaps(ctx context.Context, sitemapURLs []string, s
 		if err := xml.Unmarshal(res.Body, &set); err != nil {
 			return
 		}
+		c.markSitemapRead(sitemapURL)
 		for _, child := range set.Sitemaps {
 			walk(child.Loc, depth+1)
 		}
@@ -176,5 +220,29 @@ func (c *Crawler) enumerateSitemaps(ctx context.Context, sitemapURLs []string, s
 	for _, u := range sitemapURLs {
 		walk(u, 0)
 	}
-	return items
+	return items, blocked
+}
+
+// sitemapRead / markSitemapRead track sitemaps read in full, for
+// proxy_on_block reruns only (nil-map reads are false; nothing is tracked when
+// the toggle is off).
+func (c *Crawler) sitemapRead(u string) bool {
+	if c.egress == nil {
+		return false
+	}
+	c.sitemapMu.Lock()
+	defer c.sitemapMu.Unlock()
+	return c.sitemapsRead[u]
+}
+
+func (c *Crawler) markSitemapRead(u string) {
+	if c.egress == nil {
+		return
+	}
+	c.sitemapMu.Lock()
+	if c.sitemapsRead == nil {
+		c.sitemapsRead = map[string]bool{}
+	}
+	c.sitemapsRead[u] = true
+	c.sitemapMu.Unlock()
 }
