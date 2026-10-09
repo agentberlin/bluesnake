@@ -78,7 +78,7 @@ type egressCtl struct {
 	active  int // gated fetches and renders currently on the wire
 	parked  map[string]parkedURL
 	lastTry map[string]bool // aged-out URLs whose next attempt is recorded
-	reruns  []func(context.Context) []frontier.Item
+	reruns  []rerunFn
 
 	requeue   func(frontier.Item) // set by Run: publish the item as claimable work
 	maxParked int
@@ -295,16 +295,22 @@ func (e *egressCtl) releaseLocked(url string, p parkedURL) {
 	e.requeue(p.item)
 }
 
+// rerunFn re-runs a crawl-start fetch that came back blocked. lastTry is set
+// when the crawl ends without switching: the fetch goes direct one final time
+// and records whatever it gets, like a parked URL's last try.
+type rerunFn func(ctx context.Context, lastTry bool) []frontier.Item
+
 // addRerun schedules a crawl-start fetch (sitemaps, llms.txt) that came back
-// blocked to run again once the crawl is on the proxy.
-func (e *egressCtl) addRerun(fn func(context.Context) []frontier.Item) {
+// blocked to run again once the crawl is on the proxy — or, if it never
+// switches, once more direct when the crawl goes idle.
+func (e *egressCtl) addRerun(fn rerunFn) {
 	e.mu.Lock()
 	e.reruns = append(e.reruns, fn)
 	e.mu.Unlock()
 }
 
 // takeReruns hands out the scheduled reruns once the switch has happened.
-func (e *egressCtl) takeReruns() []func(context.Context) []frontier.Item {
+func (e *egressCtl) takeReruns() []rerunFn {
 	if e == nil {
 		return nil
 	}
@@ -321,8 +327,9 @@ func (e *egressCtl) takeReruns() []func(context.Context) []frontier.Item {
 // idle is the feeder's last word before it ends the crawl: nothing is queued
 // or in flight. Parked URLs must not be stranded, so they come back for their
 // last direct try; a drain still waiting on an out-of-band fetch (the site-
-// check pass) is waited out; reruns nobody picked up run here. Returns true
-// when it put work back on the queue.
+// check pass) is waited out; reruns nobody picked up run here — through the
+// proxy after a switch, or as their last direct try when the crawl is ending
+// without one. Returns true when it put work back on the queue.
 func (e *egressCtl) idle(ctx context.Context, enqueue func(frontier.Item)) bool {
 	if e == nil {
 		return false
@@ -347,13 +354,23 @@ func (e *egressCtl) idle(ctx context.Context, enqueue func(frontier.Item)) bool 
 		}
 		more = true
 	}
+	// Nothing parked is coming back and the crawl never switched: the blocked
+	// crawl-start fetches get their last direct try, recorded as answered.
+	var lastTries []rerunFn
+	if e.state == stDirect && !more && ctx.Err() == nil {
+		lastTries, e.reruns = e.reruns, nil
+	}
 	e.mu.Unlock()
-	for _, fn := range e.takeReruns() {
-		for _, it := range fn(ctx) {
-			enqueue(it)
-			more = true
+	run := func(fns []rerunFn, lastTry bool) {
+		for _, fn := range fns {
+			for _, it := range fn(ctx, lastTry) {
+				enqueue(it)
+				more = true
+			}
 		}
 	}
+	run(e.takeReruns(), false)
+	run(lastTries, true)
 	return more
 }
 

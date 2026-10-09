@@ -258,6 +258,7 @@ type onBlockSink struct {
 	calls    map[string]int
 	switches []EgressEvent
 	stateAt  []string // egress mode when EgressSwitched was called
+	llms     []LlmsTxtRecord
 	c        *Crawler
 }
 
@@ -278,6 +279,28 @@ func (s *onBlockSink) EgressSwitched(ev EgressEvent) error {
 	s.switches = append(s.switches, ev)
 	return nil
 }
+
+func (s *onBlockSink) LlmsTxtFile(rec LlmsTxtRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.llms = append(s.llms, rec)
+	return nil
+}
+
+// llmsTxt returns the records for the primary /llms.txt only.
+func (s *onBlockSink) llmsTxt() []LlmsTxtRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []LlmsTxtRecord
+	for _, r := range s.llms {
+		if r.Kind == "llms_txt" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func (s *onBlockSink) LlmsTxtLink(string, string, string, string) error { return nil }
 
 type onBlockRun struct {
 	res    *crawlT
@@ -831,5 +854,142 @@ func TestProxyOnBlock407AfterSwitchFailsWhateverItIsCalled(t *testing.T) {
 		if rec.State == StateError {
 			t.Errorf("%s recorded as an error: a 407 must stop the crawl instead", u)
 		}
+	}
+}
+
+// robotsFetcher answers every robots.txt fetch with a 429 over a fixed route,
+// optionally completing the switch while "waiting at the gate".
+type robotsFetcher struct {
+	route    string
+	esc      *proxypool.Escalation
+	escalate bool
+	n        int
+}
+
+func (f *robotsFetcher) Fetch(ctx context.Context, rawURL string) *fetch.Result {
+	return f.FetchWith(ctx, rawURL, fetch.Override{})
+}
+
+func (f *robotsFetcher) FetchWith(_ context.Context, rawURL string, _ fetch.Override) *fetch.Result {
+	f.n++
+	if f.escalate {
+		f.esc.Escalate()
+	}
+	return &fetch.Result{URL: rawURL, StatusCode: http.StatusTooManyRequests, Proxy: f.route}
+}
+
+// A robots.txt fetch that waits out the drain goes through the proxy. A block
+// there is a real answer, not a pre-switch one: it must be cached, not fetched
+// again on every later check of the host.
+func TestProxyOnBlockRobotsBlockedThroughProxyIsCached(t *testing.T) {
+	cfg := config.Default()
+	esc := proxypool.NewEscalation(false)
+	f := &robotsFetcher{route: "http://proxy.example:3128", esc: esc, escalate: true}
+	m, err := newRobotsMgr(cfg, f, esc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		m.check(context.Background(), "https://example.com/p")
+	}
+	if f.n != 1 {
+		t.Fatalf("robots.txt fetched %d times, want once: a block through the proxy is cached", f.n)
+	}
+	if m.wasBlocked("https://example.com/p") {
+		t.Fatal("a block that came through the proxy marked the entry as a pre-switch block")
+	}
+}
+
+// The other side: a block that came over the direct route is still marked, so
+// the file is fetched again once the crawl is on the proxy.
+func TestProxyOnBlockRobotsBlockedDirectIsRefetchedAfterSwitch(t *testing.T) {
+	cfg := config.Default()
+	esc := proxypool.NewEscalation(false)
+	f := &robotsFetcher{route: proxypool.DirectLabel, esc: esc}
+	m, err := newRobotsMgr(cfg, f, esc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.check(context.Background(), "https://example.com/p")
+	if !m.wasBlocked("https://example.com/p") {
+		t.Fatal("a direct 429 was not marked as a pre-switch block")
+	}
+	m.check(context.Background(), "https://example.com/p")
+	if f.n != 1 {
+		t.Fatalf("robots.txt fetched %d times before the switch, want once", f.n)
+	}
+	esc.Escalate()
+	m.check(context.Background(), "https://example.com/p")
+	if f.n != 2 {
+		t.Fatalf("robots.txt fetched %d times, want a second fetch after the switch", f.n)
+	}
+}
+
+// A blocked llms.txt in a crawl that never switches still gets its record: the
+// last direct try is recorded as answered, as it was without the toggle.
+func TestProxyOnBlockLlmsTxtRecordedWhenNoSwitch(t *testing.T) {
+	site := newBlockingSite(fanout(3), 1000)
+	site.route = func(path string, proxied bool, w http.ResponseWriter) bool {
+		if path != "/llms.txt" {
+			return false
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+		return true
+	}
+	seed := site.start(t) + "/"
+	px := newOnBlockProxy(t, "", "")
+
+	r := runOnBlock(t, seed, func(cfg *config.Config) {
+		cfg.HTTP.Proxy = px.url("", "")
+		cfg.LlmsTxt.Check = true
+	})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r.status.Mode != EgressDirect {
+		t.Fatalf("mode = %q, want direct: one blocked file must not trip the switch", r.status.Mode)
+	}
+	recs := r.sink.llmsTxt()
+	if len(recs) != 1 {
+		t.Fatalf("llms.txt records = %+v, want exactly one", recs)
+	}
+	if rec := recs[0]; rec.Status != http.StatusTooManyRequests || rec.Found {
+		t.Fatalf("llms.txt record = %+v, want Status 429, Found false", rec)
+	}
+	if d, p := site.counts("/llms.txt"); d != 2 || p != 0 {
+		t.Fatalf("llms.txt fetched direct=%d proxied=%d, want 2 direct (first try + last try), 0 proxied", d, p)
+	}
+}
+
+// After a switch the blocked llms.txt is fetched through the proxy and its
+// record is the proxy's answer — never the direct block.
+func TestProxyOnBlockLlmsTxtRefetchedAfterSwitch(t *testing.T) {
+	site := newBlockingSite(fanout(8), 1)
+	site.route = func(path string, proxied bool, w http.ResponseWriter) bool {
+		if path != "/llms.txt" {
+			return false
+		}
+		if !proxied {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return true
+		}
+		fmt.Fprint(w, "# Site\n\n> Summary\n")
+		return true
+	}
+	seed := site.start(t) + "/"
+	px := newOnBlockProxy(t, "", "")
+
+	r := runOnBlock(t, seed, func(cfg *config.Config) {
+		cfg.HTTP.Proxy = px.url("", "")
+		cfg.LlmsTxt.Check = true
+	})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r.status.Mode != EgressProxy {
+		t.Fatalf("mode = %q, want proxy", r.status.Mode)
+	}
+	if recs := r.sink.llmsTxt(); len(recs) != 1 || recs[0].Status != http.StatusOK || !recs[0].Found {
+		t.Fatalf("llms.txt records = %+v, want one Found record from the proxy", recs)
 	}
 }

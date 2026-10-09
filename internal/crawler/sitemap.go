@@ -101,7 +101,9 @@ func (c *Crawler) rerunSitemapsIfBlocked(src string, blocked, withConfigured boo
 	if !c.egress.preSwitch() || (!blocked && !c.robots.wasBlocked(src)) {
 		return
 	}
-	c.egress.addRerun(func(ctx context.Context) []frontier.Item {
+	// A sitemap that still answers with a block on its last direct try was
+	// never recorded before proxy_on_block either: lastTry changes nothing.
+	c.egress.addRerun(func(ctx context.Context, _ bool) []frontier.Item {
 		var urls []string
 		if withConfigured {
 			urls = append(urls, c.cfg.Sitemaps.URLs...)

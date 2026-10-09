@@ -149,7 +149,6 @@ func (m *robotsMgr) entryFor(ctx context.Context, key string, withRec bool) *rob
 	if e, ok := m.cache[key]; ok && (!withRec || e.rec != nil) && !(e.blocked && m.esc.Escalated()) {
 		return e
 	}
-	escalated := m.esc.Escalated()
 	rf := sitecheck.FetchRobots(ctx, m.client, key)
 	var file *robots.File
 	if rf.Found() {
@@ -158,7 +157,11 @@ func (m *robotsMgr) entryFor(ctx context.Context, key string, withRec bool) *rob
 		file = robots.Parse(nil)
 	}
 	e := &robotsEntry{file: file}
-	if m.esc != nil && !escalated && proxypool.Classify(rf.Status, nil, rf.FetchError) != proxypool.NotBlock {
+	// Blocked is decided by the route the answer came over, not the switch
+	// state before the fetch: the fetch can wait out a drain at the gate and
+	// go through the proxy, and a block there must not mark the entry for a
+	// refetch on every later check of the host.
+	if m.esc != nil && rf.Proxy == proxypool.DirectLabel && proxypool.Classify(rf.Status, nil, rf.FetchError) != proxypool.NotBlock {
 		e.blocked = true
 	}
 	if withRec {

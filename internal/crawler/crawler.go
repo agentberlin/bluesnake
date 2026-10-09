@@ -560,7 +560,7 @@ func (c *Crawler) Run(ctx context.Context, seedsRaw ...string) (*Result, error) 
 	// host; its curated links are validated against the crawl in analysis. List
 	// mode audits exactly the supplied URLs, so it is skipped there.
 	if c.cfg.LlmsTxt.Check && c.cfg.Mode != "list" {
-		for _, item := range c.crawlLlmsTxt(ctx, seeds[0]) {
+		for _, item := range c.crawlLlmsTxt(ctx, seeds[0], false) {
 			enqueue(item)
 		}
 	}
@@ -792,7 +792,7 @@ func (c *Crawler) crawlOne(ctx context.Context, it frontier.Item) ([]frontier.It
 	// again once the crawl is on the proxy; their discoveries ride this item's.
 	var rerun []frontier.Item
 	for _, fn := range c.egress.takeReruns() {
-		rerun = append(rerun, fn(ctx)...)
+		rerun = append(rerun, fn(ctx, false)...)
 	}
 	disc, done := c.crawlPage(ctx, it)
 	return append(disc, rerun...), done

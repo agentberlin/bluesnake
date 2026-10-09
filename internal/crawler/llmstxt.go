@@ -43,7 +43,11 @@ type LlmsTxtSink interface {
 // — it surfaces as an "unverified" link in analysis instead. Links are seeded at
 // Depth 0 (Source "") like sitemap URLs; recomputeDepths gives them their real
 // followed-link depth, or NoDepth when nothing links to them.
-func (c *Crawler) crawlLlmsTxt(ctx context.Context, seed string) []frontier.Item {
+//
+// lastTry is the proxy_on_block rerun of a file that was blocked while the
+// crawl never switched: the answer is recorded whatever it is, as it would be
+// without the toggle (a 429 stays a Status 429, Found false record).
+func (c *Crawler) crawlLlmsTxt(ctx context.Context, seed string, lastTry bool) []frontier.Item {
 	u, err := url.Parse(seed)
 	if err != nil {
 		return nil
@@ -60,9 +64,12 @@ func (c *Crawler) crawlLlmsTxt(ctx context.Context, seed string) []frontier.Item
 	blocked := false
 	defer func() {
 		// A block before a proxy_on_block switch hides the file: fetch it again
-		// through the proxy (the file record is replaced, links deduplicate).
+		// through the proxy (the file record is replaced, links deduplicate),
+		// or direct one last time if the crawl ends without switching.
 		if blocked {
-			c.egress.addRerun(func(ctx context.Context) []frontier.Item { return c.crawlLlmsTxt(ctx, seed) })
+			c.egress.addRerun(func(ctx context.Context, lastTry bool) []frontier.Item {
+				return c.crawlLlmsTxt(ctx, seed, lastTry)
+			})
 		}
 	}()
 	for _, k := range kinds {
@@ -73,7 +80,7 @@ func (c *Crawler) crawlLlmsTxt(ctx context.Context, seed string) []frontier.Item
 		if res == nil {
 			return items // crawl cancelled while waiting for a slot
 		}
-		if c.egress.preSwitch() && res.Proxy == proxypool.DirectLabel && classify(res) != proxypool.NotBlock {
+		if !lastTry && c.egress.preSwitch() && res.Proxy == proxypool.DirectLabel && classify(res) != proxypool.NotBlock {
 			blocked = true
 			continue
 		}

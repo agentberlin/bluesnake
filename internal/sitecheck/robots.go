@@ -62,6 +62,9 @@ type RobotsFetch struct {
 	Status     int
 	FetchError string
 	Body       []byte
+	// Proxy is the egress label of the terminal response (fetch.Result.Proxy):
+	// the route the answer actually came over.
+	Proxy string
 }
 
 // Found reports whether the retrieval landed on a 2xx file.
@@ -92,6 +95,7 @@ func FetchRobots(ctx context.Context, client Fetcher, root string) *RobotsFetch 
 	rf.FinalURL = target
 	rf.Status = res.StatusCode
 	rf.FetchError = res.FetchError
+	rf.Proxy = res.Proxy
 	if rf.Found() {
 		rf.Body = res.Body
 	}
