@@ -129,6 +129,7 @@ type world struct {
 	fetchClient   *fetch.Client
 	proxies       []*acceptProxy
 	proxyEntries  []config.ProxyEntry
+	onBlock       *onBlockWorld // http.proxy_on_block scenarios
 	seenHeaders   map[string]http.Header
 
 	// parse steps
@@ -265,6 +266,7 @@ func initializeScenario(sc *godog.ScenarioContext) {
 			w.extServer.Close()
 		}
 		w.closeProxies()
+		w.closeOnBlock()
 		if w.tmpDir != "" {
 			os.RemoveAll(w.tmpDir)
 		}
@@ -372,6 +374,7 @@ func initializeScenario(sc *godog.ScenarioContext) {
 	w.registerServeSteps(sc)
 	w.registerBundleSteps(sc)
 	w.registerProgressSteps(sc)
+	w.registerProxyOnBlockSteps(sc)
 
 	// --- include/exclude ---
 	sc.Step(`^no include or exclude patterns$`, w.noPatterns)

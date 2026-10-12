@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/agentberlin/bluesnake/internal/config"
+	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/queue"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
@@ -201,5 +202,63 @@ func TestResumeRefusedOnResumeStateLoadError(t *testing.T) {
 	}
 	if r.MaxEdgeSeq != 9 {
 		t.Errorf("MaxEdgeSeq = %d, want 9", r.MaxEdgeSeq)
+	}
+}
+
+// An http.proxy_on_block crawl that switched to its proxy in an earlier
+// session resumes on the proxy: the switch is persisted in crawl meta (at the
+// trip, before the drain finishes) and resume-open hands it to the engine.
+func TestOpenForResumeCarriesTheProxySwitch(t *testing.T) {
+	srv := chainServer(t, 4)
+	dir := t.TempDir()
+	obs := &recObs{pauseAfter: 2}
+	e := New(dir, obs)
+	obs.exec = e
+	if _, err := e.Run(context.Background(),
+		queue.JobSpec{URL: srv.URL + "/", Config: single(1)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	id := obs.startID
+
+	func() {
+		st, err := store.OpenCrawl(dir, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		if err := st.EgressSwitched(crawler.EgressEvent{State: crawler.EgressProxy, After: 42}); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	st, _, _, resume, err := openForResume(dir, id)
+	if err != nil {
+		t.Fatalf("openForResume: %v", err)
+	}
+	defer st.Close()
+	if !resume.Escalated || resume.EgressSwitchedAfter != 42 {
+		t.Fatalf("resume = escalated %v after %d, want the stored switch (true, 42)",
+			resume.Escalated, resume.EgressSwitchedAfter)
+	}
+}
+
+// A crawl that never switched resumes direct.
+func TestOpenForResumeWithoutASwitchStaysDirect(t *testing.T) {
+	srv := chainServer(t, 4)
+	dir := t.TempDir()
+	obs := &recObs{pauseAfter: 2}
+	e := New(dir, obs)
+	obs.exec = e
+	if _, err := e.Run(context.Background(),
+		queue.JobSpec{URL: srv.URL + "/", Config: single(1)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	st, _, _, resume, err := openForResume(dir, obs.startID)
+	if err != nil {
+		t.Fatalf("openForResume: %v", err)
+	}
+	defer st.Close()
+	if resume.Escalated {
+		t.Fatal("a crawl that never switched must not resume on the proxy")
 	}
 }

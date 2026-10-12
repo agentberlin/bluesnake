@@ -14,7 +14,7 @@ import (
 // unverified on every machine that runs the default suite.
 
 func TestChromeProxyWithoutConfiguredProxy(t *testing.T) {
-	f, arg, err := chromeProxy(config.Default())
+	f, arg, err := chromeProxy(config.Default(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestChromeProxyPassesCredentialFreeProxyDirectly(t *testing.T) {
 	cfg := config.Default()
 	cfg.HTTP.Proxy = "http://proxy.example:8080"
 
-	f, arg, err := chromeProxy(cfg)
+	f, arg, err := chromeProxy(cfg, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestChromeProxyStartsForwarderForCredentialedProxy(t *testing.T) {
 	cfg := config.Default()
 	cfg.HTTP.Proxy = "http://cust-zone:sekrit@brd.superproxy.io:44445"
 
-	f, arg, err := chromeProxy(cfg)
+	f, arg, err := chromeProxy(cfg, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestChromeProxyRefusesCredentialedSOCKS(t *testing.T) {
 	cfg := config.Default()
 	cfg.HTTP.Proxy = "socks5://user:sekrit@socks.example:1080"
 
-	f, arg, err := chromeProxy(cfg)
+	f, arg, err := chromeProxy(cfg, nil)
 	if err == nil {
 		if f != nil {
 			_ = f.Close()
@@ -100,7 +100,7 @@ func TestChromeProxyAcceptsUnauthenticatedSOCKS(t *testing.T) {
 	cfg := config.Default()
 	cfg.HTTP.Proxy = "socks5://socks.example:1080"
 
-	f, arg, err := chromeProxy(cfg)
+	f, arg, err := chromeProxy(cfg, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestChromeProxySkipsTheDirectEntry(t *testing.T) {
 	cfg.HTTP.Proxies = []config.ProxyEntry{{URL: "http://proxy.example:8080"}}
 	cfg.HTTP.ProxyIncludeDirect = true
 
-	f, arg, err := chromeProxy(cfg)
+	f, arg, err := chromeProxy(cfg, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestChromeProxyPropagatesPoolErrors(t *testing.T) {
 	cfg := config.Default()
 	cfg.HTTP.Proxies = []config.ProxyEntry{{URL: "http://p:8080", PasswordEnv: "BLUESNAKE_RENDER_PW_UNSET"}}
 
-	f, _, err := chromeProxy(cfg)
+	f, _, err := chromeProxy(cfg, nil)
 	if f != nil {
 		_ = f.Close()
 	}

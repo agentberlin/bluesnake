@@ -459,7 +459,7 @@ func TestRobotsSitemapsForIgnoreMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := newRobotsMgr(cfg, client)
+	m, err := newRobotsMgr(cfg, client, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +469,7 @@ func TestRobotsSitemapsForIgnoreMode(t *testing.T) {
 
 	cfg2 := config.Default()
 	client2, _ := fetch.New(cfg2)
-	m2, _ := newRobotsMgr(cfg2, client2)
+	m2, _ := newRobotsMgr(cfg2, client2, nil)
 	if got := m2.sitemapsFor(context.Background(), "://bad-url"); got != nil {
 		t.Errorf("sitemapsFor on an unparseable URL = %v, want nil", got)
 	}
@@ -483,7 +483,7 @@ func TestRobotsCheckUnparseableURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := newRobotsMgr(cfg, client)
+	m, err := newRobotsMgr(cfg, client, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

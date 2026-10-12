@@ -44,7 +44,10 @@ func BuildPool(cfg *config.Config) (*proxypool.Pool, error) {
 // same egresses as the raw fetches. A crawl whose raw fetch is proxied and
 // whose render is not leaks the origin IP and makes every raw-vs-rendered diff
 // an artefact of two different network paths.
-func (c *Client) Pool() *proxypool.Pool { return c.pool }
+//
+// It is the configured pool: under http.proxy_on_block that is the fallback
+// tier, which the client only uses after escalation.
+func (c *Client) Pool() *proxypool.Pool { return c.tiers[len(c.tiers)-1].pool }
 
 // Traffic reports the wire bytes this client has moved, which is what a per-GB
 // proxy provider bills for.

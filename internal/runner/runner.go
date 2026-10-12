@@ -56,6 +56,9 @@ type Snapshot struct {
 	SiteChecksState    string
 	SiteChecksRan      int
 	SiteChecksFindings int
+	// Egress is the http.proxy_on_block switch's state (Mode "" when the
+	// toggle is off): direct → draining → proxy, with its counts.
+	Egress crawler.EgressStatus
 	// Finalizing is set once the engine has returned and finalize (aggregates,
 	// full-graph depth/inlinks, analysis) is running. The counters are final by
 	// then, so a surface can tell a long analysis from a stalled crawl. It is a
@@ -79,6 +82,7 @@ type Outcome struct {
 	NearDups    int
 	IssueTotal  int
 	IssueChecks int
+	Egress      crawler.EgressStatus // final proxy_on_block state (Mode "" when off)
 	Err         error
 }
 
@@ -249,6 +253,7 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 
 	res, runErr := c.Run(runCtx, seeds...)
 	c.Close()
+	egress := c.EgressStatus()
 	defer st.Close()
 
 	r.mu.Lock()
@@ -256,7 +261,7 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 	r.finalizing = true
 	r.mu.Unlock()
 
-	out := Outcome{CrawlID: st.ID, Status: store.StatusInterrupted, Err: runErr}
+	out := Outcome{CrawlID: st.ID, Status: store.StatusInterrupted, Err: runErr, Egress: egress}
 	if res != nil {
 		out.DurationSec = int(res.Duration.Seconds())
 		// Bound how many crawls materialise a finalize/analysis working set at once
@@ -411,6 +416,17 @@ func openForResume(storeDir, id string) (
 	if err != nil {
 		closeOnErr()
 		return
+	}
+	// An http.proxy_on_block crawl that switched in an earlier session resumes
+	// on the proxy. The switch is crawl state, not config: the frozen config is
+	// untouched, so freeze-at-enqueue holds.
+	ev, err := st.Egress()
+	if err != nil {
+		closeOnErr()
+		return
+	}
+	if ev != nil {
+		r.Escalated, r.EgressSwitchedAfter = true, ev.After
 	}
 	return st, cfg, seeds, &r, nil
 }
@@ -613,6 +629,7 @@ func (r *run) snapshot() Snapshot {
 	}
 	if r.c != nil {
 		snap.SiteChecksState, snap.SiteChecksRan, snap.SiteChecksFindings = r.c.SiteCheckProgress()
+		snap.Egress = r.c.EgressStatus()
 	}
 	return snap
 }
@@ -684,6 +701,7 @@ var (
 	_ crawler.SitemapSink = (*sink)(nil)
 	_ crawler.LlmsTxtSink = (*sink)(nil)
 	_ crawler.ContentSink = (*sink)(nil) // the identical-content authority must reach the store, not the in-RAM fallback
+	_ crawler.EgressSink  = (*sink)(nil) // a proxy_on_block switch must persist, or a resume would start direct again
 	_ frontier.Dedup      = (*sink)(nil)
 	// The work-queue authority (issue #77): without it the engine falls back to
 	// the frontier-linear in-RAM queue — the bounded-RAM contract silently gone.

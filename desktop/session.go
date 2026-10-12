@@ -52,6 +52,13 @@ type ProgressSnapshot struct {
 	SiteChecksState    string `json:"siteChecksState,omitempty"`
 	SiteChecksRan      int    `json:"siteChecksRan,omitempty"`
 	SiteChecksFindings int    `json:"siteChecksFindings,omitempty"`
+	// http.proxy_on_block: "" when off, else direct | draining | proxy, with
+	// the page count the switch tripped at and the blocked URLs re-fetched.
+	EgressMode          string `json:"egressMode,omitempty"`
+	EgressSwitchedAfter int64  `json:"egressSwitchedAfter,omitempty"`
+	EgressRefetched     int64  `json:"egressRefetched,omitempty"`
+	EgressStillBlocked  int64  `json:"egressStillBlocked,omitempty"`
+	EgressWarning       string `json:"egressWarning,omitempty"` // inconclusive start-up check of the fallback proxy
 }
 
 // DoneEvent is the payload of the "crawl:done" event.
@@ -205,5 +212,8 @@ func (o *uiObserver) build(snap runner.Snapshot, state string) ProgressSnapshot 
 		Feed:            feed,
 		SiteChecksState: snap.SiteChecksState, SiteChecksRan: snap.SiteChecksRan,
 		SiteChecksFindings: snap.SiteChecksFindings,
+		EgressMode:         snap.Egress.Mode, EgressSwitchedAfter: snap.Egress.SwitchedAfter,
+		EgressRefetched: snap.Egress.Refetched, EgressStillBlocked: snap.Egress.StillBlocked,
+		EgressWarning: snap.Egress.Warning,
 	}
 }

@@ -1660,6 +1660,30 @@ func (c *Crawl) SitemapEntry(sitemap, url, lastmod string) error {
 
 // LlmsTxtFile records one fetched /llms.txt (or /llms-full.txt) file and its
 // structural-validation outcome (crawler sink extension).
+// EgressSwitched persists an http.proxy_on_block switch in crawl meta, where
+// resume reads it back (Egress) to start the crawl on the proxy.
+func (c *Crawl) EgressSwitched(ev crawler.EgressEvent) error {
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	return c.SetMeta("egress", string(b))
+}
+
+// Egress returns the crawl's recorded proxy_on_block switch, nil when the
+// crawl never switched (or never had the toggle).
+func (c *Crawl) Egress() (*crawler.EgressEvent, error) {
+	raw, err := c.Meta("egress")
+	if err != nil || raw == "" {
+		return nil, err
+	}
+	var ev crawler.EgressEvent
+	if err := json.Unmarshal([]byte(raw), &ev); err != nil {
+		return nil, err
+	}
+	return &ev, nil
+}
+
 func (c *Crawl) LlmsTxtFile(rec crawler.LlmsTxtRecord) error {
 	_, err := c.db.Exec(`INSERT OR REPLACE INTO llmstxt
 		(url, kind, status, found, title, summary, malformed, content) VALUES(?,?,?,?,?,?,?,?)`,

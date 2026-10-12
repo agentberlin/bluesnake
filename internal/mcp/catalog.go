@@ -216,6 +216,7 @@ var descriptions = map[string]string{
 	"http.proxies":              "Egress pool. Items: {url, password_env, max_concurrent}. Requests are spread across it per http.proxy_strategy.",
 	"http.proxy_strategy":       "How requests pick an egress: empty = auto (round_robin, or sticky_host when the crawl shares one identity), round_robin, sticky_host, random.",
 	"http.proxy_include_direct": "Add an unproxied egress to the rotation, so some traffic leaves from this machine's own IP.",
+	"http.proxy_on_block":       "Use the proxy only when blocked: start from this machine's IP and switch to http.proxy/http.proxies for the rest of the crawl once the site starts rate-limiting or blocking (429s, firewall 403/503s).",
 	"http.trusted_cert_dirs":    "Directories of extra trusted CA certificates (.pem/.crt/.cer/.ca). Required by proxies that terminate TLS, e.g. Bright Data's native proxy.",
 	"http.auth.basic":           "HTTP Basic credentials per URL prefix. Items: {url_prefix, username, password, password_env}.",
 	"http.auth.cookies":         "Auth cookies sent with matching requests. Items: {name, value, domain}.",

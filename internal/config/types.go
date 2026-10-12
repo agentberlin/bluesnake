@@ -410,9 +410,14 @@ type HTTPConfig struct {
 	ProxyStrategy string `yaml:"proxy_strategy"`
 	// ProxyIncludeDirect adds an unproxied egress to the rotation, so some
 	// share of traffic leaves from the machine's own IP.
-	ProxyIncludeDirect bool       `yaml:"proxy_include_direct"`
-	TrustedCertDirs    []string   `yaml:"trusted_cert_dirs"`
-	Auth               AuthConfig `yaml:"auth"`
+	ProxyIncludeDirect bool `yaml:"proxy_include_direct"`
+	// ProxyOnBlock turns the configured proxies into a fallback: the crawl
+	// starts direct, from this machine's IP, and switches once — for the rest
+	// of the crawl, renders included — to the proxy pool when the site starts
+	// rate-limiting or blocking. Off = the proxies carry every request.
+	ProxyOnBlock    bool       `yaml:"proxy_on_block"`
+	TrustedCertDirs []string   `yaml:"trusted_cert_dirs"`
+	Auth            AuthConfig `yaml:"auth"`
 }
 
 type CustomSearch struct {

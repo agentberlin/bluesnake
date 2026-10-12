@@ -110,6 +110,7 @@ export const SECTIONS = [
     txt("http.user_agent", "User-agent"),
     txt("http.robots_user_agent", "Robots user-agent token", "Used when matching robots.txt rules."),
     txt("http.proxy", "Proxy", "http://user:pass@host:port", true),
+    tg("http.proxy_on_block", "Use proxy only when blocked", "Start from this machine's IP and switch to the proxy mid-crawl if the site starts rate-limiting or blocking.", true),
     ch("http.proxy_strategy", "Proxy rotation", ["", "round_robin", "sticky_host", "random"], "How requests pick an egress when several proxies are configured. Auto = round-robin, or one proxy per site when the crawl reuses a session.", true),
     tg("http.proxy_include_direct", "Include a direct (unproxied) egress", "Send some traffic from this machine's own IP alongside the proxies.", true),
     lst("http.trusted_cert_dirs", "Trusted certificate folders", "Needed by proxies that terminate TLS and re-sign responses.", true),

@@ -27,6 +27,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/fetch"
 	"github.com/agentberlin/bluesnake/internal/limiter"
+	"github.com/agentberlin/bluesnake/internal/render"
 )
 
 // Check kinds — the site_checks storage rows and DecodeFindings dispatch.
@@ -80,9 +81,17 @@ type Fetcher interface {
 
 // Checker runs site-level checks over a shared fetcher.
 type Checker struct {
-	cfg    *config.Config
-	client Fetcher
-	lim    *limiter.Limiter // nil ⇒ no process-wide caps (one-shot CLI runs)
+	cfg        *config.Config
+	client     Fetcher
+	lim        *limiter.Limiter // nil ⇒ no process-wide caps (one-shot CLI runs)
+	renderOpts []render.Option
+}
+
+// WithRenderOptions passes options to the render diff's Chrome — the crawl
+// pass hands in its direct→proxy switch, so the render diff's browser moves
+// with the crawl (http.proxy_on_block) instead of keeping its own route.
+func WithRenderOptions(opts ...render.Option) Option {
+	return func(c *Checker) { c.renderOpts = opts }
 }
 
 // Option configures a Checker.

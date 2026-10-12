@@ -54,7 +54,7 @@ func (c *Checker) RenderDiff(ctx context.Context, pageURL string) (*RenderDiffRe
 	}
 	rawFacts := parse.Parse(pageURL, res.Body, res.Headers, c.cfg)
 
-	r, err := render.New(c.cfg)
+	r, err := render.New(c.cfg, c.renderOpts...)
 	if err != nil {
 		return nil, err
 	}

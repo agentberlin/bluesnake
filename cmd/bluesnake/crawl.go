@@ -124,9 +124,15 @@ func newCrawlCmd() *cobra.Command {
 			}
 			if !quiet {
 				obs.tally().print(cmd.OutOrStdout(), out.Crawled, out.Total, time.Duration(out.DurationSec)*time.Second)
+				if line := egressSummary(out.Egress); line != "" {
+					fmt.Fprintln(cmd.OutOrStdout(), line)
+				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Crawl ID: %s\n", out.CrawlID)
 			}
 			if out.Status == store.StatusInterrupted {
+				if out.Err != nil {
+					fmt.Fprintln(cmd.ErrOrStderr(), "error:", out.Err)
+				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "crawl interrupted — resume with: bluesnake resume %s --store-dir %s\n", out.CrawlID, storeDir)
 				return interrupted(cmd)
 			}
@@ -268,6 +274,32 @@ func (t *crawlTally) add(rec *crawler.PageRecord) {
 	} else {
 		t.nonIndexable++
 	}
+}
+
+// egressSummary is the one-line account of an http.proxy_on_block crawl's
+// route: "" when the toggle is off.
+func egressSummary(e crawler.EgressStatus) string {
+	line := egressRoute(e)
+	if e.Warning != "" && line != "" {
+		line = "Warning: " + e.Warning + " — the crawl ran anyway.\n" + line
+	}
+	return line
+}
+
+func egressRoute(e crawler.EgressStatus) string {
+	switch e.Mode {
+	case "":
+		return ""
+	case crawler.EgressDirect:
+		return "Proxy fallback: not needed — no rate-limiting or blocking detected; every page came from this machine's IP."
+	case crawler.EgressDraining:
+		return fmt.Sprintf("Proxy fallback: blocks detected after %d pages — switching to the proxy (waiting for pages in flight).", e.SwitchedAfter)
+	}
+	line := fmt.Sprintf("Switched to proxy after %d pages; %d URLs re-fetched after blocks.", e.SwitchedAfter, e.Refetched)
+	if e.StillBlocked > 0 {
+		line += fmt.Sprintf(" Still blocked through the proxy: %d responses.", e.StillBlocked)
+	}
+	return line
 }
 
 func (t crawlTally) print(out io.Writer, crawled, total int, dur time.Duration) {

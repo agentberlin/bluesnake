@@ -112,6 +112,37 @@ export function CrawlProgress({ crawlId, onOpenResults, onResume, headerExtra })
             </div>
           )}
 
+          {/* proxy fallback (http.proxy_on_block): the crawl starts from this
+              machine's IP and switches to the proxy once if the site starts
+              rate-limiting or blocking — announce the switch when it happens. */}
+          {(s.egressMode === "draining" || s.egressMode === "proxy") && (
+            <div className="card" style={{ padding: "10px 16px", marginBottom: 16, display: "flex", alignItems: "center", gap: 10, borderColor: "var(--sev-warn)" }}>
+              <Icon name="shield" size={14} style={{ color: "var(--sev-warn)" }} />
+              <span style={{ fontSize: 12, fontWeight: 650 }}>
+                {s.egressMode === "draining" ? "Site started blocking — switching to the proxy" : "Switched to the proxy"}
+              </span>
+              <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
+                {s.egressMode === "draining"
+                  ? `after ${(s.egressSwitchedAfter || 0).toLocaleString()} pages · finishing pages in flight…`
+                  : `after ${(s.egressSwitchedAfter || 0).toLocaleString()} pages · ${(s.egressRefetched || 0).toLocaleString()} blocked URLs re-fetched`}
+              </span>
+              <div style={{ flex: 1 }} />
+              {(s.egressStillBlocked || 0) > 0 && (
+                <span className="badge tint" style={{ "--c": "var(--sev-error, var(--sev-warn))" }}><Icon name="triangle-alert" size={11} />still blocked ×{s.egressStillBlocked}</span>
+              )}
+            </div>
+          )}
+          {s.egressMode === "direct" && (
+            <div style={{ fontSize: 11.5, color: "var(--ink-faint)", margin: "-6px 2px 12px", display: "flex", alignItems: "center", gap: 6 }}>
+              <Icon name="shield" size={12} /> Proxy on standby — crawling from this machine's IP until the site blocks.
+            </div>
+          )}
+          {s.egressWarning && (
+            <div style={{ fontSize: 11.5, color: "var(--sev-warn)", margin: "-6px 2px 12px", display: "flex", alignItems: "center", gap: 6 }}>
+              <Icon name="triangle-alert" size={12} /> Couldn't confirm the fallback proxy works: {s.egressWarning}
+            </div>
+          )}
+
           {/* stats */}
           <div className="card" style={{ display: "flex", padding: 0, overflow: "hidden", marginBottom: 16 }}>
             {stat("Queue", state !== "running" ? "0" : s.queue.toLocaleString(), state !== "running" ? "drained" : "URLs waiting")}

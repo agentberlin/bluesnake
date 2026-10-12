@@ -58,6 +58,10 @@ type workPool struct {
 	// wake that lands between the feeder's claim and its wait is never lost.
 	poke  chan struct{}
 	onErr func(error)
+	// onIdle, when set, is asked before the feeder ends the crawl (nothing
+	// buffered, in flight or claimable). Returning true means it put work back
+	// on the queue — http.proxy_on_block's parked URLs — so the feeder keeps going.
+	onIdle func() bool
 }
 
 func newWorkPool(queue frontier.Queue, threads int, onErr func(error)) *workPool {
@@ -132,6 +136,9 @@ func (p *workPool) feed(ctx context.Context) {
 				return
 			}
 			if len(items) == 0 {
+				if p.onIdle != nil && p.onIdle() {
+					continue
+				}
 				return // drained: nothing buffered, in-flight, or claimable
 			}
 		}

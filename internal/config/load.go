@@ -180,6 +180,23 @@ func (c *Config) Validate() error {
 			c.HTTP.ProxyStrategy)
 	}
 
+	// Fallback mode needs something to fall back to, and must be the only thing
+	// deciding when traffic leaves directly.
+	if c.HTTP.ProxyOnBlock {
+		if c.HTTP.Proxy == "" && len(c.HTTP.Proxies) == 0 {
+			bad("http.proxy_on_block needs a proxy to switch to: set http.proxy or http.proxies")
+		}
+		if c.HTTP.ProxyIncludeDirect {
+			bad("http.proxy_on_block cannot be combined with http.proxy_include_direct: " +
+				"both decide when traffic goes direct")
+		}
+		if c.SharedIdentity() {
+			bad("http.proxy_on_block cannot be combined with a shared identity " +
+				"(advanced.cookie_storage=persistent or http.auth.cookies): the switch would show " +
+				"one session from two source IPs")
+		}
+	}
+
 	if c.Speed.MaxThreads < 1 {
 		bad("speed.max_threads: must be >= 1, got %d", c.Speed.MaxThreads)
 	}

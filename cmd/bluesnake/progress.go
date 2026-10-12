@@ -150,7 +150,17 @@ type progressLine struct {
 	NoResponse int             `json:"no_response"`
 	Indexable  int             `json:"indexable"`
 	SiteChecks *siteChecksLine `json:"site_checks,omitempty"` // only when the pass is part of the crawl
+	Egress     *egressLine     `json:"egress,omitempty"`      // only with http.proxy_on_block
 	Error      string          `json:"error,omitempty"`       // final line only
+}
+
+// egressLine is the http.proxy_on_block switch: mode direct | draining | proxy.
+type egressLine struct {
+	Mode          string `json:"mode"`
+	SwitchedAfter int64  `json:"switched_after,omitempty"` // pages recorded when it tripped
+	Refetched     int64  `json:"refetched,omitempty"`      // blocked URLs re-fetched through the proxy
+	StillBlocked  int64  `json:"still_blocked,omitempty"`  // block responses through the proxy
+	Warning       string `json:"warning,omitempty"`        // inconclusive start-up check of the fallback
 }
 
 type siteChecksLine struct {
@@ -169,6 +179,9 @@ func newProgressLine(s runner.Snapshot, state string) progressLine {
 	}
 	if s.SiteChecksState != "" {
 		l.SiteChecks = &siteChecksLine{State: s.SiteChecksState, Ran: s.SiteChecksRan, Findings: s.SiteChecksFindings}
+	}
+	if e := s.Egress; e.Mode != "" {
+		l.Egress = &egressLine{Mode: e.Mode, SwitchedAfter: e.SwitchedAfter, Refetched: e.Refetched, StillBlocked: e.StillBlocked, Warning: e.Warning}
 	}
 	return l
 }

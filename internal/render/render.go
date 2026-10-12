@@ -96,8 +96,28 @@ func ChromePath(cfg *config.Config) string {
 	return ""
 }
 
+// Option configures a Renderer.
+type Option func(*options)
+
+type options struct {
+	esc *proxypool.Escalation
+}
+
+// WithEscalation routes Chrome by a crawl's direct→proxy switch
+// (http.proxy_on_block): Chrome always goes through a loopback forwarder that
+// starts direct and moves to the proxy when the switch flips — the same moment
+// the raw fetches move, so a render never leaves from a different IP than the
+// page it renders.
+func WithEscalation(e *proxypool.Escalation) Option {
+	return func(o *options) { o.esc = e }
+}
+
 // New starts the Chrome allocator. Errors when no Chrome can be found.
-func New(cfg *config.Config) (*Renderer, error) {
+func New(cfg *config.Config, ropts ...Option) (*Renderer, error) {
+	var o options
+	for _, fn := range ropts {
+		fn(&o)
+	}
 	path := ChromePath(cfg)
 	if path == "" {
 		return nil, fmt.Errorf("rendering.mode=javascript requires Chrome/Chromium (set rendering.chrome_path)")
@@ -118,12 +138,16 @@ func New(cfg *config.Config) (*Renderer, error) {
 	// pool pins renders to its first egress; rotating renders needs per-browser-
 	// context proxies, which are cache-partitioned and would cost far more in
 	// re-fetched subresources than the rotation is worth. See docs/PROXY.md §4.2.
-	forwarder, proxyArg, err := chromeProxy(cfg)
+	forwarder, proxyArg, err := chromeProxy(cfg, o.esc)
 	if err != nil {
 		return nil, err
 	}
 	if proxyArg != "" {
-		opts = append(opts, chromedp.ProxyServer(proxyArg))
+		// Chrome silently bypasses any proxy for localhost/loopback targets;
+		// the raw fetch client does not. "<-loopback>" removes that implicit
+		// bypass so a render takes the same route as its raw fetch, whatever
+		// the host (D6).
+		opts = append(opts, chromedp.ProxyServer(proxyArg), chromedp.Flag("proxy-bypass-list", "<-loopback>"))
 	}
 	opts = append(opts, chromedp.WindowSize(windowSize(cfg)))
 	// custom JS snippets load once, at construction: a missing file is a
@@ -160,7 +184,7 @@ func windowSize(cfg *config.Config) (w, h int) {
 // chromeProxy resolves the --proxy-server value for this config, starting a
 // credential-injecting forwarder when the egress needs one (Chrome rejects
 // user:pass@host:port outright). Returns ("", nil) when no proxy is configured.
-func chromeProxy(cfg *config.Config) (*proxypool.Forwarder, string, error) {
+func chromeProxy(cfg *config.Config, esc *proxypool.Escalation) (*proxypool.Forwarder, string, error) {
 	if len(cfg.HTTP.ProxyPool()) == 0 {
 		return nil, "", nil
 	}
@@ -180,6 +204,20 @@ func chromeProxy(cfg *config.Config) (*proxypool.Forwarder, string, error) {
 	}
 	if chosen == nil {
 		return nil, "", nil
+	}
+	if cfg.HTTP.ProxyOnBlock {
+		// Fallback mode: Chrome needs one stable --proxy-server for its whole
+		// life, so it always gets the switchable loopback forwarder.
+		if !proxypool.Forwardable(chosen) {
+			return nil, "", fmt.Errorf("http.proxy_on_block with rendering.mode=javascript needs an http(s) proxy: "+
+				"Chrome is switched mid-crawl through a loopback forwarder, which cannot relay to %s", chosen.Label())
+		}
+		f, err := proxypool.StartSwitchableForwarder(chosen, !esc.Escalated())
+		if err != nil {
+			return nil, "", fmt.Errorf("rendering proxy: %w", err)
+		}
+		esc.OnEscalate(f.Escalate)
+		return f, f.ProxyServer(), nil
 	}
 	if !proxypool.NeedsForwarder(chosen) {
 		return nil, chosen.Label(), nil
