@@ -18,6 +18,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/minhash"
 	"github.com/agentberlin/bluesnake/internal/parse"
 	"github.com/agentberlin/bluesnake/internal/sitecheck"
+	"github.com/agentberlin/bluesnake/internal/urlutil"
 )
 
 // Chain is one redirect or canonical chain.
@@ -105,7 +106,7 @@ func Run(pages map[string]*crawler.PageRecord, sitemaps SitemapIndex, llmstxt *L
 		UniqueOut:  map[string]int{},
 		NearDups:   map[string]NearDup{},
 	}
-	a := &analyzer{pages: pages, cfg: cfg, res: r}
+	a := &analyzer{pages: pages, cfg: cfg, res: r, rewrite: crawler.NewURLRewriter(cfg)}
 	for _, o := range opts {
 		o(a)
 	}
@@ -154,6 +155,9 @@ type analyzer struct {
 	cfg         *config.Config
 	res         *Results
 	hyperlinked map[string]bool // memoized by hyperlinkedSet
+	// rewrite maps a redirect's Location as the site sent it onto the key the
+	// crawl stored its target under, so a chain walks the page set by key.
+	rewrite *urlutil.Rewriter
 }
 
 func (a *analyzer) add(url, id, detail string) {
@@ -343,7 +347,12 @@ func (a *analyzer) linkGraph() {
 func (a *analyzer) chains() {
 	for url, rec := range a.pages {
 		if rec.RedirectURL != "" {
-			a.followChain(url, "redirect", func(r *crawler.PageRecord) string { return r.RedirectURL })
+			a.followChain(url, "redirect", func(r *crawler.PageRecord) string {
+				if r.RedirectURL == "" {
+					return ""
+				}
+				return a.rewrite.Rewrite(r.RedirectURL)
+			})
 		}
 		if canonicalTarget(rec) != "" && canonicalTarget(rec) != url {
 			a.followChain(url, "canonical", func(r *crawler.PageRecord) string {

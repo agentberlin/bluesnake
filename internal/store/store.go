@@ -1171,10 +1171,25 @@ func (c *Crawl) LinkRows() ([]crawler.LinkRow, error) {
 	return out, rows.Err()
 }
 
-// Redirects returns the redirect edges (page url -> redirect target) for the
-// depth CSR — a redirect counts as a hop.
+// Redirects returns, for the depth CSR, the redirect hop the crawl followed from
+// each redirecting page (page url -> the target's stored key) — a followed
+// redirect counts as a hop. pages.redirect_url is the Location as the site sent
+// it, which need not be the key its target is stored under (a Location of
+// https://www.ex.com:443/ was fetched and stored as https://www.ex.com/), and a
+// redirect the crawl refused (chain limit, external target, exclude pattern)
+// was never followed at all. The admitted, rewritten target of an HTTP or HSTS
+// redirect is that page's only gated edge — a 3xx is never parsed — so the hop
+// is read from `edges`, like inlinks and discovered_from. A meta refresh page is
+// a parsed 200 whose stored target is already the parser's normal form, so its
+// hop is returned as stored.
 func (c *Crawl) Redirects() (map[string]string, error) {
-	rows, err := c.db.Query(`SELECT url, redirect_url FROM pages WHERE redirect_url IS NOT NULL AND redirect_url != ''`)
+	rows, err := c.db.Query(`
+		SELECT p.url, e.dst FROM pages p JOIN edges e ON e.src = p.url AND e.hyperlink = 0
+		 WHERE p.redirect_url IS NOT NULL AND p.redirect_url != ''
+		   AND COALESCE(p.redirect_type, '') != 'meta_refresh'
+		UNION ALL
+		SELECT url, redirect_url FROM pages
+		 WHERE redirect_url IS NOT NULL AND redirect_url != '' AND redirect_type = 'meta_refresh'`)
 	if err != nil {
 		return nil, err
 	}

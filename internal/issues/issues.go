@@ -381,8 +381,11 @@ func Lookup(id string) (Def, bool) {
 }
 
 type evaluator struct {
-	cfg     *config.Config
-	pages   map[string]*crawler.PageRecord
+	cfg   *config.Config
+	pages map[string]*crawler.PageRecord
+	// rewrite maps a URL as a page sent it (a redirect's Location) onto the key
+	// the crawl stored its target under, so lookups in pages find the target.
+	rewrite *urlutil.Rewriter
 	skipDup bool
 	occs    []Occurrence
 }
@@ -397,7 +400,7 @@ func SkipDuplicates() EvalOption { return func(e *evaluator) { e.skipDup = true 
 
 // Evaluate runs the whole catalogue over a crawl's pages.
 func Evaluate(pages map[string]*crawler.PageRecord, cfg *config.Config, opts ...EvalOption) []Occurrence {
-	e := &evaluator{cfg: cfg, pages: pages}
+	e := &evaluator{cfg: cfg, pages: pages, rewrite: crawler.NewURLRewriter(cfg)}
 	for _, o := range opts {
 		o(e)
 	}
@@ -471,7 +474,7 @@ func (e *evaluator) responseCodes(rec *crawler.PageRecord) {
 	case rec.StatusCode >= 300:
 		if internal {
 			e.add(rec.URL, "internal_redirect", rec.RedirectURL)
-			if target, ok := e.pages[rec.RedirectURL]; ok && target.StatusCode >= 400 {
+			if target, ok := e.pages[e.rewrite.Rewrite(rec.RedirectURL)]; ok && target.StatusCode >= 400 {
 				e.add(rec.URL, "redirect_broken", rec.RedirectURL)
 			}
 		}

@@ -325,3 +325,42 @@ func TestSitemapSetOps(t *testing.T) {
 		t.Error("HTML page wrongly flagged sitemap_nested_as_url")
 	}
 }
+
+// TestRedirectChainThroughNonNormalLocations: each hop's RedirectURL is the
+// Location as sent, while the next page is stored under its normal form. The
+// chain walk must follow by normal form, and record the hops as page keys.
+func TestRedirectChainThroughNonNormalLocations(t *testing.T) {
+	redirect := func(url, target string) *crawler.PageRecord {
+		return &crawler.PageRecord{URL: url, Scope: "internal", State: crawler.StateCrawled,
+			StatusCode: 301, RedirectURL: target, RedirectType: "http"}
+	}
+	pages := toMap(
+		redirect("https://ex.com/a", "https://ex.com:443/b"),
+		redirect("https://ex.com/b", "https://EX.com/c#x"),
+		page("https://ex.com/c"),
+		redirect("https://ex.com/l1", "https://ex.com:443/l2"),
+		redirect("https://ex.com/l2", "https://ex.com/l1"),
+	)
+	r := Run(pages, nil, nil, nil, config.Default())
+	if !hasOcc(r, "https://ex.com/a", "redirect_chain") {
+		t.Error("missing redirect_chain on /a: the ':443' hop must not end the walk")
+	}
+	if !hasOcc(r, "https://ex.com/l1", "redirect_loop") {
+		t.Error("missing redirect_loop on /l1")
+	}
+	found := false
+	for _, c := range r.Chains {
+		if c.Source == "https://ex.com/a" {
+			found = true
+			if c.Final != "https://ex.com/c" || c.FinalStatus != 200 || c.Loop {
+				t.Errorf("chain a->b->c: final=%q status=%d loop=%v", c.Final, c.FinalStatus, c.Loop)
+			}
+			if len(c.Hops) != 2 || c.Hops[0] != "https://ex.com/b" || c.Hops[1] != "https://ex.com/c" {
+				t.Errorf("hops = %v, want the page keys [/b /c]", c.Hops)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("chain a->b->c not recorded: %+v", r.Chains)
+	}
+}
