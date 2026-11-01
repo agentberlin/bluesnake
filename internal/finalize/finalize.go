@@ -12,6 +12,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/parse"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
@@ -128,18 +129,17 @@ func Crawl(c *crawler.Crawler, st *store.Crawl, res *crawler.Result, p Params) (
 // recomputeDepths recomputes shortest-followed-path depth over the full stored
 // link graph (re-applying the follow gate) + redirect edges and persists it.
 // Idempotent: re-running over the same graph yields the same depths, so a resume
-// after a partial-crash finalize converges on the same result (EC-05). Reads only
-// Facts.Links and scalars, never the page body, so it stays off the page-body RAM
-// axis. Guards on a non-empty seed set — rooting the BFS from nothing would NULL
-// every page's depth. discovered_from needs no recompute here: it is already
-// persisted by SaveInlinksFromEdges (first-wins + seed-locked).
+// after a partial-crash finalize converges on the same result (EC-05). The BFS
+// pulls each page's links from the store as it reaches the page and drops them
+// once walked, so the step holds the page set and the depth map — sized by
+// pages — and never the link rows (loading them whole put finalize on the links
+// axis: 1.4 GB at 8,000 URLs of link-heavy pages). Guards on a non-empty seed
+// set — rooting the BFS from nothing would NULL every page's depth.
+// discovered_from needs no recompute here: it is already persisted by
+// SaveInlinksFromEdges (first-wins + seed-locked).
 func recomputeDepths(c *crawler.Crawler, st *store.Crawl, seeds []string) error {
 	if len(seeds) == 0 {
 		return nil
-	}
-	links, err := st.LinkRows()
-	if err != nil {
-		return err
 	}
 	redirects, err := st.Redirects()
 	if err != nil {
@@ -149,7 +149,16 @@ func recomputeDepths(c *crawler.Crawler, st *store.Crawl, seeds []string) error 
 	if err != nil {
 		return err
 	}
-	return st.SaveDepthsMap(c.RecomputeDepthsFromLinks(links, redirects, urls, seeds))
+	out, err := st.OutLinks()
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	depths, err := c.RecomputeDepths(out, redirects, urls, seeds)
+	if err != nil {
+		return err
+	}
+	return st.SaveDepthsMap(depths)
 }
 
 // Analyze runs the post-crawl analysis phase over the full stored graph: issue
@@ -158,9 +167,13 @@ func recomputeDepths(c *crawler.Crawler, st *store.Crawl, seeds []string) error 
 // Used by Crawl and by standalone re-analysis (the `analyze` command, desktop
 // Reanalyze). The returned Outcome.Status is always StatusCompleted.
 func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
-	// The ContentText-free map carries everything the issue catalogue and graph
-	// analyses need except the two content-text scans (streamed below) and
-	// near-duplicates (which needs the bodies — loaded fully only when enabled).
+	// The lite map — no link lists, no page bodies — carries everything the
+	// issue catalogue and graph analyses need except the per-page link and
+	// content-text checks (streamed one page at a time below), the link graph
+	// (read from the links table) and near-duplicates (which need the bodies —
+	// loaded fully only when the crawl stored no signatures). Its size is set by
+	// pages, not links: on a link-heavy site the link lists were 98% of the
+	// stored facts, and a map that kept them needed 1.3 MB a page.
 	lite, err := st.LoadPagesLite()
 	if err != nil {
 		return Outcome{}, err
@@ -207,13 +220,15 @@ func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
 		}
 		analyzePages = full
 	}
-	// PageRank/unique link graph is computed in CSR form over the stored links
-	// superset (Phase-2 PageRank-CSR), not each page's in-RAM Facts.Links.
-	links, err := st.LinkRows()
-	if err != nil {
+	// The PageRank/unique link graph is built from the stored hyperlinks,
+	// streamed from the links table into int32 edges (8 bytes a hyperlink) —
+	// never from the page map, which carries no link lists, and never as the
+	// rows themselves.
+	links := st.Hyperlinks()
+	results := analyze.Run(analyzePages, sitemaps, llmstxt, siteChecks, cfg, analyze.WithLinkSource(links))
+	if err := links.Err(); err != nil {
 		return Outcome{}, err
 	}
-	results := analyze.Run(analyzePages, sitemaps, llmstxt, siteChecks, cfg, analyze.WithLinks(links))
 	if err := st.SaveAnalysis(results); err != nil {
 		return Outcome{}, err
 	}
@@ -259,28 +274,30 @@ func minhashCoverageComplete(pages map[string]*crawler.PageRecord) bool {
 	return true
 }
 
-// evaluateIssues runs the full issue catalogue with bounded page-body memory: the
-// whole-map checks run over the ContentText-free lite map (where the two content-
-// text checks naturally no-op on the empty body), and those two — lorem/soft-404
-// — are re-added from a one-row-at-a-time ContentText stream. The merged set is
-// byte-identical to issues.Evaluate over a full map.
+// evaluateIssues runs the full issue catalogue with memory bounded by the page
+// count: the whole-map checks — the cross-page duplicates among them, which read
+// only titles, descriptions, headings and the content hash the lite map keeps —
+// run over the lite map, and the checks that read a page's links or body
+// (issues.LinkChecker, issues.ContentTextChecks) are fed both one page at a
+// time from a single pass over the stored facts. The merged set is
+// byte-identical to issues.Evaluate over a full map (pinned by the lite-path
+// parity tests).
 func evaluateIssues(st *store.Crawl, lite map[string]*crawler.PageRecord, cfg *config.Config) ([]issues.Occurrence, error) {
-	// Cross-page duplicate detection runs in pure SQL (Phase-2 dup-rule-SQL); the
-	// rest of the catalogue runs over the lite map with the two ContentText checks
-	// streamed in.
-	occs := issues.Evaluate(lite, cfg, issues.SkipDuplicates())
-	dups, err := st.DuplicateIssues(cfg.Advanced.IgnoreNonIndexableForIssues, cfg.Advanced.IgnorePaginatedForDuplicates)
+	occs := issues.Evaluate(lite, cfg, issues.SkipLinks())
+	linkChecks := issues.NewLinkChecker(lite, cfg)
+	err := st.StreamLinksAndText(func(url string, links []parse.Link, text string) error {
+		rec, ok := lite[url]
+		if !ok {
+			return nil
+		}
+		linkChecks.Page(url, links)
+		occs = append(occs, issues.ContentTextChecks(rec, text, cfg)...)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	occs = append(occs, dups...)
-	err = st.StreamContentText(func(url, text string) error {
-		if rec, ok := lite[url]; ok {
-			occs = append(occs, issues.ContentTextChecks(rec, text, cfg)...)
-		}
-		return nil
-	})
-	return occs, err
+	return append(occs, linkChecks.Finish()...), nil
 }
 
 // Issues re-evaluates only the issue catalogue over the full stored graph

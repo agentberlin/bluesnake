@@ -27,18 +27,18 @@ func prGraph(t *testing.T, adj map[string][]string, extra ...string) map[string]
 			pages[u] = &crawler.PageRecord{URL: u, Scope: "internal", State: crawler.StateCrawled, Facts: &parse.Facts{}}
 		}
 	}
-	var links []crawler.LinkRow
+	var links HyperlinkRows
 	for src, dsts := range adj {
 		ensure(src)
 		for _, dst := range dsts {
 			ensure(dst)
-			links = append(links, crawler.LinkRow{Src: src, Dst: dst, Type: string(parse.Hyperlink)})
+			links = append(links, Hyperlink{Src: src, Dst: dst})
 		}
 	}
 	for _, u := range extra { // isolated / non-linked pages
 		ensure(u)
 	}
-	return Run(pages, nil, nil, nil, cfg, WithLinks(links)).LinkScores
+	return Run(pages, nil, nil, nil, cfg, WithLinkSource(links)).LinkScores
 }
 
 func TestPageRank_DegenerateGraphs(t *testing.T) {
@@ -107,11 +107,11 @@ func TestPageRank_NodeSetFromPagesPredicate(t *testing.T) {
 		"/lonely":  {URL: "/lonely", Scope: "internal", State: crawler.StateCrawled, Facts: &parse.Facts{}},
 		"http://x": {URL: "http://x", Scope: "external", State: crawler.StateCrawled, Facts: &parse.Facts{}},
 	}
-	links := []crawler.LinkRow{
-		{Src: "/a", Dst: "/b", Type: string(parse.Hyperlink)},
-		{Src: "/a", Dst: "http://x", Type: string(parse.Hyperlink)}, // external endpoint
+	links := HyperlinkRows{
+		{Src: "/a", Dst: "/b"},
+		{Src: "/a", Dst: "http://x"}, // external endpoint
 	}
-	got := Run(pages, nil, nil, nil, cfg, WithLinks(links)).LinkScores
+	got := Run(pages, nil, nil, nil, cfg, WithLinkSource(links)).LinkScores
 
 	if _, ok := got["/lonely"]; !ok {
 		t.Error("an isolated internal crawled page must still be a scored node (pages predicate, not link endpoints)")
@@ -149,19 +149,19 @@ func TestPageRank_NonCrawledInternalDstHoldsNoRank(t *testing.T) {
 			ghost: {URL: ghost, Scope: "internal", State: crawler.StateBlockedRobots},
 		}
 	}
-	var links []crawler.LinkRow
+	var links HyperlinkRows
 	for src, rec := range mkPages() {
 		if rec.Facts == nil {
 			continue
 		}
 		for _, l := range rec.Facts.Links {
-			links = append(links, crawler.LinkRow{Src: src, Dst: l.URL, Type: string(parse.Hyperlink)})
+			links = append(links, Hyperlink{Src: src, Dst: l.URL})
 		}
 	}
 
 	for name, scores := range map[string]map[string]float64{
 		"facts": Run(mkPages(), nil, nil, nil, cfg).LinkScores,
-		"csr":   Run(mkPages(), nil, nil, nil, cfg, WithLinks(links)).LinkScores,
+		"csr":   Run(mkPages(), nil, nil, nil, cfg, WithLinkSource(links)).LinkScores,
 	} {
 		if _, ok := scores[ghost]; ok {
 			t.Errorf("%s: non-crawled internal target %s holds rank (score %v) — it is not a node", name, ghost, scores[ghost])

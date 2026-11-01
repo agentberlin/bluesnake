@@ -187,7 +187,7 @@ func (w *world) storedCrawlPreEdges() error {
 	for _, q := range []string{
 		`INSERT OR REPLACE INTO meta(key, value) VALUES('pre_edges','1')`,
 		`DELETE FROM edges`,
-		`UPDATE pages SET inlinks = 7, discovered_from = 'forged://src'`,
+		`UPDATE page_metrics SET inlinks = 7, discovered_from = 'forged://src'`,
 	} {
 		if _, err := st.DB().Exec(q); err != nil {
 			return err

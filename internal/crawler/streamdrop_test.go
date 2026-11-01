@@ -106,7 +106,8 @@ type crawlT struct {
 // finalize packages import crawler, so a crawler-package test cannot import them).
 func capFinalize(c *Crawler, pages map[string]*PageRecord, res *Result, seeds ...string) *crawlT {
 	// Depth: feed RecomputeDepthsFromLinks the link superset + redirect edges built
-	// from the captured Facts.Links, exactly as finalize feeds it store.LinkRows.
+	// from the captured Facts.Links — the in-memory form of the per-page adjacency
+	// finalize reads through store.OutLinks.
 	var links []LinkRow
 	redirects := map[string]string{}
 	urls := make([]string, 0, len(pages))

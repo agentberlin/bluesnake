@@ -112,9 +112,9 @@ func (s *Store) scoreCrawl(row *SiteScore, sc SiteCrawl, includeOptional bool) e
 		  COUNT(*),
 		  COUNT(*) FILTER (WHERE state='crawled'),
 		  COUNT(*) FILTER (WHERE indexable=1),
-		  COUNT(*) FILTER (WHERE near_dup_count>0),
-		  AVG(link_score)
-		FROM pages`).Scan(&urls, &crawled, &indexable, &nearDup, &avgLink)
+		  COUNT(*) FILTER (WHERE COALESCE(m.near_dup_count, 0) > 0),
+		  AVG(COALESCE(m.link_score, 0))
+		FROM pages p LEFT JOIN page_metrics m ON m.url = p.url`).Scan(&urls, &crawled, &indexable, &nearDup, &avgLink)
 	if err != nil {
 		return err
 	}

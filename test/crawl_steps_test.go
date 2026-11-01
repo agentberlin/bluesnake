@@ -313,10 +313,6 @@ func (w *world) finalizeCrawlPages(c *crawler.Crawler, st *store.Crawl, _ *crawl
 	if err := st.SaveInlinksFromEdges(c.NormalizeSeeds(seeds...)); err != nil {
 		return err
 	}
-	links, err := st.LinkRows()
-	if err != nil {
-		return err
-	}
 	redirects, err := st.Redirects()
 	if err != nil {
 		return err
@@ -325,7 +321,16 @@ func (w *world) finalizeCrawlPages(c *crawler.Crawler, st *store.Crawl, _ *crawl
 	if err != nil {
 		return err
 	}
-	if err := st.SaveDepthsMap(c.RecomputeDepthsFromLinks(links, redirects, urls, seeds)); err != nil {
+	out, err := st.OutLinks()
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	depths, err := c.RecomputeDepths(out, redirects, urls, seeds)
+	if err != nil {
+		return err
+	}
+	if err := st.SaveDepthsMap(depths); err != nil {
 		return err
 	}
 	if w.crawlPages, err = st.LoadPages(); err != nil {
