@@ -735,10 +735,21 @@ func (c *Crawler) RecomputeDepths(out OutLinks, redirects map[string]string, pag
 			reach(dst)
 		}
 		err := out.LinksFrom(u, func(dst, typ string, nofollow bool) error {
-			if dst == "" || dst == u || !c.followsForDepthRow(typ, dst, nofollow) {
+			// The follow gate classifies the RAW href, mirroring discoverLinks
+			// (which classifies l.URL before rewriting) ...
+			if dst == "" || !c.followsForDepthRow(typ, dst, nofollow) {
 				return nil
 			}
-			reach(dst)
+			// ... but the hop lands on the key the crawl fetched: admitTarget
+			// runs every discovered URL through the url_rewriting rules (+
+			// Normalize) before it is fetched and stored, while links.dst keeps
+			// the raw href. Keying on the raw href would drop every hop a
+			// rewrite rule changes (a link to /x?utm_source=a stored as /x) and
+			// leave the page — and everything reachable only through it — with
+			// no depth.
+			if v := c.rewriter.Rewrite(dst); v != u {
+				reach(v)
+			}
 			return nil
 		})
 		if err != nil {
