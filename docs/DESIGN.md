@@ -373,15 +373,19 @@ CREATE TABLE pages (
   word_count INTEGER, text_ratio REAL, avg_words_per_sentence REAL,
   flesch_score REAL, readability TEXT, language TEXT,
   -- flags packed as JSON for long-tail booleans (head validity, security signals, AMP, forms...)
-  facts JSON,
-  -- analysis outputs (filled by analyze phase)
-  link_score REAL, inlinks INTEGER, unique_inlinks INTEGER,
-  outlinks INTEGER, unique_outlinks INTEGER,
-  ext_outlinks INTEGER, unique_ext_outlinks INTEGER,
-  closest_similarity REAL, near_dup_count INTEGER
+  facts JSON
 );
 CREATE INDEX idx_pages_state ON pages(crawl_state);
 CREATE INDEX idx_pages_status ON pages(status_code);
+
+-- what finalize derives or corrects per page, in its own small row (see below)
+CREATE TABLE page_metrics (
+  url TEXT PRIMARY KEY REFERENCES pages(url),
+  depth INTEGER,                       -- shortest followed path from a seed; NULL = no path
+  inlinks INTEGER, discovered_from TEXT,
+  link_score REAL, unique_inlinks INTEGER, unique_outlinks INTEGER,
+  closest_similarity REAL, near_dup_count INTEGER
+);
 
 -- typed link edges
 CREATE TABLE links (
@@ -431,6 +435,8 @@ CREATE TABLE blobs (page_id INTEGER, kind TEXT, path TEXT);  -- stored html/rend
 CREATE TABLE analysis_meta (key TEXT PRIMARY KEY, value TEXT);  -- which analyses ran, params (e.g. near-dup threshold)
 ```
 
+**`pages` is the crawl's record; `page_metrics` is finalize's.** The crawler writes a page's row once (the metrics row with it, carrying the admit-time depth and discoverer), and finalize never touches `pages` again: inlinks and first-wins `discovered_from` (from `edges`), the recomputed depth, link score, unique in/outlinks and the near-duplicate fields all land in `page_metrics`, one upsert per page. The split is a cost fact about SQLite, not taste: an UPDATE that changes a row's stored size rewrites the whole row, overflow pages included, and a link-heavy page's `facts` blob runs to hundreds of KB — so setting a counter on every page of a 66,000-URL crawl rewrote tens of GB and grew the WAL to the size of every facts blob. A metrics row is a few dozen bytes. Readers (`LoadPages`, the bundle, the scorecard, MCP queries) join the two on `url`; the finalize pipeline that fills the table is bounded by the page count, never the link count (`internal/finalize`, MEMORY-SCALING.md §5.5).
+
 Write strategy: workers push results to a single writer goroutine; batched transactions (N=200 pages or 500 ms, whichever first) → continuous commit with bounded fsync cost. WAL mode + `synchronous=NORMAL`.
 
 Issue definitions (name, severity, priority, description, trigger doc) live in code (`internal/issues/catalogue.go`) as the single source of truth; `issues` table stores only occurrences.
@@ -442,7 +448,7 @@ Crawl DBs and the registry DB are durable artifacts that outlive the binary, so 
 - A **fresh** database (no tables yet → this open created it) is stamped straight to the top of its ladder — `max(floor, highest step)`, so an empty/fully-retired ladder still stamps the current revision, not v0; the migration steps never run.
 - An **existing** database runs only the ladder steps whose version is above its stored revision, each applied in a transaction that bumps `user_version` atomically (a crash mid-step rolls back to the prior revision). The common case — already current — is one pragma read.
 
-Migrations are an **append-only ladder** (`crawlMigrations`, `registryMigrations`): each step has a *stable* version number (never renumbered or reordered) and an idempotent `apply` func. Adding a schema change = append one step. The two `min*Version` floors are the removal lever (below). Every step through crawl v5 / registry v2 was retired once all installs reached them, so the floors sit there; the crawl ladder's live steps are v6 `pages.proxy`, v7 `links.position_path`, v8 `sitemap_entries.lastmod` and v9 `facts.headings`, the registry ladder is empty, and the next change appends just above (v10 / v3), reusing the retained `addColumn`/`columnExists` helpers. A step may rewrite data as well as schema: v9 rewrites each page's stored `facts` from the old `H1s`/`H2s`/`HeadingLevels`/`H1AltText` fields into the one `Headings` record (levels and h1/h2 text carried over, `""` for h3–h6 text that was never kept, the page-level alt flag as `FromAlt` on the first h1), so analysis, compare and the exports read an old crawl as they read a new one.
+Migrations are an **append-only ladder** (`crawlMigrations`, `registryMigrations`): each step has a *stable* version number (never renumbered or reordered) and an idempotent `apply` func. Adding a schema change = append one step. The two `min*Version` floors are the removal lever (below). Every step through crawl v5 / registry v2 was retired once all installs reached them, so the floors sit there; the crawl ladder's live steps are v6 `pages.proxy`, v7 `links.position_path`, v8 `sitemap_entries.lastmod`, v9 `facts.headings` and v10 `page_metrics`, the registry ladder is empty, and the next change appends just above (v11 / v3), reusing the retained `addColumn`/`columnExists` helpers. A step may rewrite data as well as schema: v9 rewrites each page's stored `facts` from the old `H1s`/`H2s`/`HeadingLevels`/`H1AltText` fields into the one `Headings` record (levels and h1/h2 text carried over, `""` for h3–h6 text that was never kept, the page-level alt flag as `FromAlt` on the first h1), so analysis, compare and the exports read an old crawl as they read a new one. v10 copies the finalize-written columns an older crawl kept in `pages` (depth, inlinks, discovered_from, link_score, unique in/outlinks, the near-duplicate pair) into `page_metrics` and leaves the old columns in place unread — nulling them would rewrite every facts blob, the cost the table exists to avoid.
 
 > **Retiring a migration.** Stable version numbers + a floor are what make old step code *safely deletable* — without a durable revision marker you can never prove a DB on disk doesn't still need an old step. To drop support for ancient databases and delete their migration code:
 > 1. Pick the new floor **F** — the oldest revision you still want to open.
@@ -467,7 +473,7 @@ Catalogue: every issue has `ID` (stable, snake_case), `Tab`, `Name`, `Severity` 
 
 ### 5.6 Post-crawl analysis (`bluesnake analyze`, auto by default)
 
-Each analyzer reads SQLite, writes back columns/tables; all are idempotent and re-runnable (e.g. after changing near-dup threshold — mirrors SF):
+Each analyzer reads SQLite and writes back to `page_metrics` and the result tables, never to `pages` (§5.3); all are idempotent and re-runnable (e.g. after changing near-dup threshold — mirrors SF). The phase holds a page map without link lists or bodies and streams those per page, so its memory is set by the page count, not the link count:
 - **link_score**: PageRank (d=0.85, 40 iters or ε<1e-6) over followed internal hyperlinks; scaled 0–100.
 - **chains**: follow redirect/canonical edges → `redirect_chains` result table (source, hops, loop flag, final status, chain type incl. mixed).
 - **near_duplicates**: 5-word shingles of content-area text → minhash(128) → LSH candidate pairs → exact Jaccard verify ≥ threshold.

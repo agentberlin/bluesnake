@@ -310,11 +310,12 @@ func TestDivergenceDimensions(t *testing.T) {
 	other.Robots.Mode = "ignore" // -> robots diverges
 	// rendering stays "text" in both -> rendering must NOT diverge
 
-	page := func(u string) string {
-		return `INSERT INTO pages(url, scope, state, status_code, indexable, link_score, near_dup_count) VALUES('` + u + `', 'internal', 'crawled', 200, 1, 40, 0)`
+	page := func(c *store.Crawl, u string) {
+		c.DB().Exec(`INSERT INTO pages(url, scope, state, status_code, indexable) VALUES('` + u + `', 'internal', 'crawled', 200, 1)`)
+		c.DB().Exec(`INSERT INTO page_metrics(url, link_score, near_dup_count) VALUES('` + u + `', 40, 0)`)
 	}
-	makeCrawl(t, dir, "https://main.com", "spider", base, true, func(c *store.Crawl) { c.DB().Exec(page("https://main.com/")) })
-	makeCrawl(t, dir, "https://rival.com", "spider", other, true, func(c *store.Crawl) { c.DB().Exec(page("https://rival.com/")) })
+	makeCrawl(t, dir, "https://main.com", "spider", base, true, func(c *store.Crawl) { page(c, "https://main.com/") })
+	makeCrawl(t, dir, "https://rival.com", "spider", other, true, func(c *store.Crawl) { page(c, "https://rival.com/") })
 
 	s, _ := Open(dir)
 	defer s.Close()
@@ -359,11 +360,14 @@ func TestScoreCrawlSeverityBuckets(t *testing.T) {
 
 	makeCrawl(t, dir, "https://main.com", "spider", config.Default(), true, func(c *store.Crawl) {
 		db := c.DB()
-		db.Exec(`INSERT INTO pages(url, scope, state, status_code, indexable, link_score, near_dup_count) VALUES
-			('https://main.com/', 'internal', 'crawled', 200, 1, 50, 0),
-			('https://main.com/a', 'internal', 'crawled', 200, 1, 10, 0),
-			('https://main.com/b', 'internal', 'crawled', 200, 1, 10, 0),
-			('https://main.com/c', 'internal', 'crawled', 200, 1, 10, 0)`)
+		db.Exec(`INSERT INTO pages(url, scope, state, status_code, indexable) VALUES
+			('https://main.com/', 'internal', 'crawled', 200, 1),
+			('https://main.com/a', 'internal', 'crawled', 200, 1),
+			('https://main.com/b', 'internal', 'crawled', 200, 1),
+			('https://main.com/c', 'internal', 'crawled', 200, 1)`)
+		db.Exec(`INSERT INTO page_metrics(url, link_score, near_dup_count) VALUES
+			('https://main.com/', 50, 0), ('https://main.com/a', 10, 0),
+			('https://main.com/b', 10, 0), ('https://main.com/c', 10, 0)`)
 		db.Exec(`INSERT INTO issues(url, issue, detail) VALUES
 			('https://main.com/a', ?, ''),
 			('https://main.com/b', ?, ''),

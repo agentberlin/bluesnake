@@ -113,13 +113,16 @@ func TestProjectComparisonScorecard(t *testing.T) {
 	def := config.Default()
 
 	makeComparableCrawl(t, dir, "https://main.com", def, func(c *store.Crawl) {
-		c.DB().Exec(`INSERT INTO pages(url, scope, state, status_code, indexable, link_score, near_dup_count) VALUES
-			('https://main.com/', 'internal', 'crawled', 200, 1, 50, 0),
-			('https://main.com/a', 'internal', 'crawled', 200, 1, 10, 0)`)
+		c.DB().Exec(`INSERT INTO pages(url, scope, state, status_code, indexable) VALUES
+			('https://main.com/', 'internal', 'crawled', 200, 1),
+			('https://main.com/a', 'internal', 'crawled', 200, 1)`)
+		c.DB().Exec(`INSERT INTO page_metrics(url, link_score, near_dup_count) VALUES
+			('https://main.com/', 50, 0), ('https://main.com/a', 10, 0)`)
 	})
 	makeComparableCrawl(t, dir, "https://rival.com", def, func(c *store.Crawl) {
-		c.DB().Exec(`INSERT INTO pages(url, scope, state, status_code, indexable, link_score, near_dup_count) VALUES
-			('https://rival.com/', 'internal', 'crawled', 200, 1, 80, 0)`)
+		c.DB().Exec(`INSERT INTO pages(url, scope, state, status_code, indexable) VALUES
+			('https://rival.com/', 'internal', 'crawled', 200, 1)`)
+		c.DB().Exec(`INSERT INTO page_metrics(url, link_score, near_dup_count) VALUES ('https://rival.com/', 80, 0)`)
 	})
 
 	// create project + members through the tools

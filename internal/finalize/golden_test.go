@@ -18,73 +18,30 @@ import (
 	"github.com/agentberlin/bluesnake/internal/analyze"
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
-	"github.com/agentberlin/bluesnake/internal/issues"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
 
-// TestDupSQLParity (FIN-DUPH/FIN-DUPGATE) proves store.DuplicateIssues (pure SQL)
-// reproduces the in-RAM issues.duplicates() occurrence set EXACTLY — the
-// eligibility gate, the 5 key types, and the per-(url,key) detail rows.
-func TestDupSQLParity(t *testing.T) {
-	st, _ := goldenGraph(t) // /b and /c share title "Same"
-	pages, err := st.LoadPages()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := config.Default()
-	dupIDs := map[string]bool{
-		"content_exact_duplicate": true, "title_duplicate": true, "description_duplicate": true,
-		"h1_duplicate": true, "h2_duplicate": true,
-	}
-	ram := map[string]bool{}
-	for _, o := range issues.Evaluate(pages, cfg) {
-		if dupIDs[o.IssueID] {
-			ram[o.URL+"|"+o.IssueID+"|"+o.Detail] = true
-		}
-	}
-	sqlDups, err := st.DuplicateIssues(cfg.Advanced.IgnoreNonIndexableForIssues, cfg.Advanced.IgnorePaginatedForDuplicates)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sql := map[string]bool{}
-	for _, o := range sqlDups {
-		sql[o.URL+"|"+o.IssueID+"|"+o.Detail] = true
-	}
-	if len(ram) == 0 {
-		t.Fatal("fixture produced no duplicate occurrences — parity check is vacuous")
-	}
-	for k := range ram {
-		if !sql[k] {
-			t.Errorf("SQL dup missing %q (present in-RAM)", k)
-		}
-	}
-	for k := range sql {
-		if !ram[k] {
-			t.Errorf("SQL dup has extra %q (absent in-RAM)", k)
-		}
-	}
-}
-
-// TestPageRankCSRParity (FIN-PR) proves the PageRank/unique link graph computed
-// in CSR form over the stored links superset (analyze.WithLinks) reproduces the
-// Facts.Links computation EXACTLY (link_score and unique in/out). The exact match
-// is now possible because PageRank accumulates in a canonical (sorted) order, so
-// both paths produce the same float sum bit-for-bit — no 1e-9 fudge needed.
+// TestPageRankCSRParity (FIN-PR) proves the PageRank/unique link graph built
+// from the stored hyperlinks streamed out of the links table
+// (analyze.WithLinkSource) reproduces the Facts.Links computation EXACTLY
+// (link_score and unique in/out). The exact match holds because both paths feed
+// the same sorted int32 edge list, so PageRank accumulates in the same
+// canonical order bit-for-bit — no 1e-9 fudge needed.
 func TestPageRankCSRParity(t *testing.T) {
 	st, _, _ := crawlGraph(t)
 	pages, err := st.LoadPages()
 	if err != nil {
 		t.Fatal(err)
 	}
-	links, err := st.LinkRows()
-	if err != nil {
-		t.Fatal(err)
-	}
+	links := st.Hyperlinks()
 	cfg := config.Default()
 	sm, _ := st.SitemapIndex()
 	lt, _ := st.LlmsTxt()
-	ram := analyze.Run(pages, sm, lt, nil, cfg)                           // Facts.Links
-	csr := analyze.Run(pages, sm, lt, nil, cfg, analyze.WithLinks(links)) // CSR over links table
+	ram := analyze.Run(pages, sm, lt, nil, cfg)                                // Facts.Links
+	csr := analyze.Run(pages, sm, lt, nil, cfg, analyze.WithLinkSource(links)) // streamed from the links table
+	if err := links.Err(); err != nil {
+		t.Fatal(err)
+	}
 
 	for url, want := range ram.LinkScores {
 		if csr.LinkScores[url] != want {

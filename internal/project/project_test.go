@@ -302,15 +302,18 @@ func TestBuildScorecard(t *testing.T) {
 
 	makeCrawl(t, dir, "https://main.com", "spider", def, true, func(c *store.Crawl) {
 		db := c.DB()
-		db.Exec(`INSERT INTO pages(url, scope, state, status_code, indexable, link_score, near_dup_count, facts, structured) VALUES
-			('https://main.com/', 'internal', 'crawled', 200, 1, 50, 0, '{"WordCount":100,"Flesch":60.5}', '{"types":["Product"]}'),
-			('https://main.com/a', 'internal', 'crawled', 200, 1, 10, 1, '{"WordCount":200}', NULL),
-			('https://main.com/404', 'internal', 'crawled', 404, 0, 0, 0, NULL, NULL)`)
+		db.Exec(`INSERT INTO pages(url, scope, state, status_code, indexable, facts, structured) VALUES
+			('https://main.com/', 'internal', 'crawled', 200, 1, '{"WordCount":100,"Flesch":60.5}', '{"types":["Product"]}'),
+			('https://main.com/a', 'internal', 'crawled', 200, 1, '{"WordCount":200}', NULL),
+			('https://main.com/404', 'internal', 'crawled', 404, 0, NULL, NULL)`)
+		db.Exec(`INSERT INTO page_metrics(url, link_score, near_dup_count) VALUES
+			('https://main.com/', 50, 0), ('https://main.com/a', 10, 1), ('https://main.com/404', 0, 0)`)
 		db.Exec(`INSERT INTO issues(url, issue, detail) VALUES('https://main.com/404', ?, '')`, errID)
 	})
 	makeCrawl(t, dir, "https://rival.com", "spider", js, true, func(c *store.Crawl) {
-		c.DB().Exec(`INSERT INTO pages(url, scope, state, status_code, indexable, link_score, near_dup_count) VALUES
-			('https://rival.com/', 'internal', 'crawled', 200, 1, 80, 0)`)
+		c.DB().Exec(`INSERT INTO pages(url, scope, state, status_code, indexable) VALUES
+			('https://rival.com/', 'internal', 'crawled', 200, 1)`)
+		c.DB().Exec(`INSERT INTO page_metrics(url, link_score, near_dup_count) VALUES ('https://rival.com/', 80, 0)`)
 	})
 
 	s, err := Open(dir)

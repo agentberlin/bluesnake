@@ -16,7 +16,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/parse"
 )
 
-func linkScoreFixture() (map[string]*crawler.PageRecord, []crawler.LinkRow) {
+func linkScoreFixture() (map[string]*crawler.PageRecord, HyperlinkRows) {
 	urls := []string{"/", "/a", "/b", "/c", "/d", "/e", "/hub"}
 	pages := map[string]*crawler.PageRecord{}
 	for _, u := range urls {
@@ -24,12 +24,12 @@ func linkScoreFixture() (map[string]*crawler.PageRecord, []crawler.LinkRow) {
 			URL: u, Scope: "internal", State: crawler.StateCrawled, Facts: &parse.Facts{},
 		}
 	}
-	hl := func(src, dst string) crawler.LinkRow {
-		return crawler.LinkRow{Src: src, Dst: dst, Type: string(parse.Hyperlink)}
+	hl := func(src, dst string) Hyperlink {
+		return Hyperlink{Src: src, Dst: dst}
 	}
 	// /a../e and / all link the hub; the spokes have differing out-degrees so the
 	// per-source share differs, making the hub's incoming sum order-sensitive.
-	links := []crawler.LinkRow{
+	links := HyperlinkRows{
 		hl("/", "/a"), hl("/", "/b"), hl("/", "/hub"),
 		hl("/a", "/hub"), hl("/a", "/b"),
 		hl("/b", "/hub"), hl("/b", "/c"), hl("/b", "/d"),
@@ -49,7 +49,7 @@ func TestLinkScore_DeterministicAcrossRuns(t *testing.T) {
 	const runs = 60
 	for i := 0; i < runs; i++ {
 		pages, links := linkScoreFixture()
-		res := Run(pages, nil, nil, nil, cfg, WithLinks(links))
+		res := Run(pages, nil, nil, nil, cfg, WithLinkSource(links))
 		if len(res.LinkScores) == 0 {
 			t.Fatal("no link scores produced")
 		}
