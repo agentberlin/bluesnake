@@ -493,12 +493,14 @@ const (
 // custom_results and sitemap_entries are aggregated into JSON arrays (sorted on
 // decode — SQLite does not promise an aggregate's order) through an index on
 // url, and each blobs lookup is a primary-key probe.
-const pageColumns = `url, scope, state, COALESCE(depth, ?), status_code, status,
+const pageColumns = `pages.url, scope, state, COALESCE(page_metrics.depth, ?), status_code, status,
 	content_type, COALESCE(http_version, ''), response_time_ms, size, fetch_error,
 	redirect_url, redirect_type, indexable, indexability_status,
 	matched_robots_line, COALESCE(proxy, ''),
-	inlinks, unique_inlinks, unique_outlinks, link_score, COALESCE(discovered_from, ''), outside_start_folder,
-	COALESCE(duplicate_of, ''), closest_similarity, near_dup_count,
+	COALESCE(page_metrics.inlinks, 0), COALESCE(page_metrics.unique_inlinks, 0),
+	COALESCE(page_metrics.unique_outlinks, 0), COALESCE(page_metrics.link_score, 0),
+	COALESCE(page_metrics.discovered_from, ''), outside_start_folder,
+	COALESCE(duplicate_of, ''), COALESCE(page_metrics.closest_similarity, 0), COALESCE(page_metrics.near_dup_count, 0),
 	headers, structured, jsdiff, facts,
 	COALESCE((SELECT json_group_array(json_object('kind', kind, 'name', name, 'value', value))
 		FROM custom_results WHERE custom_results.url = pages.url), '[]'),
@@ -651,15 +653,17 @@ type stream struct {
 }
 
 // pages scans the pages table one row at a time — decode a row, hand it over,
-// let it go. This is the shape store.StreamContentText already uses, and the
+// let it go. This is the shape store.StreamLinksAndText already uses, and the
 // reason the bundle's peak RAM is one page record rather than the whole crawl.
 // Do not replace it with a LoadPages map.
 func (s *stream) pages(fn func(*Page) error) error {
 	where, args := scopeFilter(s.scope)
 	// One placeholder list serves the whole statement, in SQL order: the `?` in
-	// pageColumns' COALESCE(depth, ?) comes before the scope filter's, so
-	// NoDepth is bound first.
-	q := `SELECT ` + pageColumns + ` FROM pages` + where + ` ORDER BY url`
+	// pageColumns' COALESCE(page_metrics.depth, ?) comes before the scope
+	// filter's, so NoDepth is bound first. The finalize-derived metrics live in
+	// page_metrics, one row per page, joined here.
+	q := `SELECT ` + pageColumns + ` FROM pages LEFT JOIN page_metrics ON page_metrics.url = pages.url` +
+		where + ` ORDER BY pages.url`
 	rows, err := s.tx.Query(q, append([]any{crawler.NoDepth}, args...)...)
 	if err != nil {
 		return err

@@ -128,8 +128,8 @@ func TestNearDupColumnEqualsContentTextPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	links, _ := st.LinkRows()
-	colRes := analyze.Run(lite, nil, nil, nil, cfg, analyze.WithLinks(links))
+	links := st.Hyperlinks()
+	colRes := analyze.Run(lite, nil, nil, nil, cfg, analyze.WithLinkSource(links))
 
 	// Fallback path: full map (has ContentText) with the signatures cleared, so
 	// analyze must recompute from the bodies.
@@ -140,7 +140,7 @@ func TestNearDupColumnEqualsContentTextPath(t *testing.T) {
 	for _, rec := range full {
 		rec.Minhash = nil
 	}
-	txtRes := analyze.Run(full, nil, nil, nil, cfg, analyze.WithLinks(links))
+	txtRes := analyze.Run(full, nil, nil, nil, cfg, analyze.WithLinkSource(links))
 
 	col := nearDupSet(colRes)
 	txt := nearDupSet(txtRes)

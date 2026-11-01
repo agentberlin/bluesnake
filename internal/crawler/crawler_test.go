@@ -996,8 +996,8 @@ func TestRecomputeDepthsReconstructsFreshDepths(t *testing.T) {
 	}
 
 	// Simulate the resume state: the full two-session graph reloaded from the
-	// store. This is exactly what the resume finalize feeds the depth CSR
-	// (RecomputeDepthsFromLinks over store.LinkRows). Build the link superset from
+	// store. This is exactly what the resume finalize feeds the depth BFS
+	// (RecomputeDepths over store.OutLinks). Build the link superset from
 	// the merged graph and recompute; an orphan with no followed path is NoDepth.
 	merged := map[string]*PageRecord{}
 	for url, rec := range res.Pages {

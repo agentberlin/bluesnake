@@ -60,18 +60,12 @@ func TestDepthThroughRewrittenLinks(t *testing.T) {
 	// Vacuity guard: the stored link row must really carry the RAW tracking href
 	// (the crawl rewrote the fetch key, not the link), otherwise the walk never
 	// has to translate anything and the test proves nothing.
-	links, err := st.LinkRows()
-	if err != nil {
+	var rawRows int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM links WHERE dst = ?`, seed+"x?utm_source=a").Scan(&rawRows); err != nil {
 		t.Fatal(err)
 	}
-	sawRaw := false
-	for _, l := range links {
-		if l.Dst == seed+"x?utm_source=a" {
-			sawRaw = true
-		}
-	}
-	if !sawRaw {
-		t.Fatalf("fixture did not store the raw tracking href in links — test is vacuous; rows: %+v", links)
+	if rawRows == 0 {
+		t.Fatalf("fixture did not store the raw tracking href %q in links — test is vacuous", seed+"x?utm_source=a")
 	}
 
 	pages, err := st.LoadPages()

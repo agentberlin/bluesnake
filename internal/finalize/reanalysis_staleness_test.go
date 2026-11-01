@@ -201,7 +201,7 @@ func TestReanalyzeClearsStaleScoreColumns(t *testing.T) {
 
 	var sim float64
 	var cnt int
-	if err := st.DB().QueryRow(`SELECT closest_similarity, near_dup_count FROM pages WHERE url = ?`,
+	if err := st.DB().QueryRow(`SELECT closest_similarity, near_dup_count FROM page_metrics WHERE url = ?`,
 		base+"/d1").Scan(&sim, &cnt); err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestReanalyzeClearsStaleScoreColumns(t *testing.T) {
 		t.Fatalf("fixture did not near-dup /d1 (similarity=%v count=%d) — test is vacuous", sim, cnt)
 	}
 	var score float64
-	if err := st.DB().QueryRow(`SELECT link_score FROM pages WHERE url = ?`, base+"/d1").Scan(&score); err != nil {
+	if err := st.DB().QueryRow(`SELECT link_score FROM page_metrics WHERE url = ?`, base+"/d1").Scan(&score); err != nil {
 		t.Fatal(err)
 	}
 	if score <= 0 {
@@ -223,7 +223,7 @@ func TestReanalyzeClearsStaleScoreColumns(t *testing.T) {
 		t.Fatalf("re-analyze: %v", err)
 	}
 
-	if err := st.DB().QueryRow(`SELECT closest_similarity, near_dup_count, link_score FROM pages WHERE url = ?`,
+	if err := st.DB().QueryRow(`SELECT closest_similarity, near_dup_count, link_score FROM page_metrics WHERE url = ?`,
 		base+"/d1").Scan(&sim, &cnt, &score); err != nil {
 		t.Fatal(err)
 	}

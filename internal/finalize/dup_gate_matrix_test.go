@@ -1,10 +1,12 @@
 package finalize
 
-// #74 Phase F: TestDupSQLParity runs only the default config, so the SQL
-// clauses behind ignore_non_indexable_for_issues (indexable = 1) and
-// ignore_paginated_for_duplicates (the json_array_length rel=prev checks) were
-// never exercised. This matrix proves RAM/SQL parity on every flag combination
-// over a fixture where each flag actually changes the result set.
+// The lite finalize path — a page map without link lists or bodies, the
+// per-page link and content checks streamed in one page at a time — must
+// evaluate the catalogue exactly as a whole-map issues.Evaluate does, under
+// every setting of the two flags that gate the duplicate checks:
+// ignore_non_indexable_for_issues and ignore_paginated_for_duplicates. The
+// duplicate checks run over the lite map, so this also proves the lite map
+// keeps every fact they read (titles, the rel=prev arrays, indexability).
 
 import (
 	"context"
@@ -64,9 +66,13 @@ func dupGateGraph(t *testing.T) *store.Crawl {
 	return st
 }
 
-func TestDupSQLParity_GateMatrix(t *testing.T) {
+func TestLitePathIssueParity_GateMatrix(t *testing.T) {
 	st := dupGateGraph(t)
-	pages, err := st.LoadPages()
+	full, err := st.LoadPages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lite, err := st.LoadPagesLite()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +81,7 @@ func TestDupSQLParity_GateMatrix(t *testing.T) {
 		"h1_duplicate": true, "h2_duplicate": true,
 	}
 
-	distinct := map[string]bool{} // result-set fingerprints across combos (vacuity guard)
+	distinct := map[string]bool{} // duplicate-set fingerprints across combos (vacuity guard)
 	for _, ignoreNonIdx := range []bool{false, true} {
 		for _, ignorePag := range []bool{false, true} {
 			name := fmt.Sprintf("nonIndexable=%v/paginated=%v", ignoreNonIdx, ignorePag)
@@ -83,34 +89,30 @@ func TestDupSQLParity_GateMatrix(t *testing.T) {
 			cfg.Advanced.IgnoreNonIndexableForIssues = ignoreNonIdx
 			cfg.Advanced.IgnorePaginatedForDuplicates = ignorePag
 
-			ram := map[string]bool{}
-			for _, o := range issues.Evaluate(pages, cfg) {
-				if dupIDs[o.IssueID] {
-					ram[o.URL+"|"+o.IssueID+"|"+o.Detail] = true
-				}
-			}
-			sqlDups, err := st.DuplicateIssues(ignoreNonIdx, ignorePag)
+			want := occurrenceSet(issues.Evaluate(full, cfg))
+			got, err := evaluateIssues(st, lite, cfg)
 			if err != nil {
 				t.Fatalf("%s: %v", name, err)
 			}
-			sqlSet := map[string]bool{}
-			for _, o := range sqlDups {
-				sqlSet[o.URL+"|"+o.IssueID+"|"+o.Detail] = true
+			gotSet := occurrenceSet(got)
+			dups := 0
+			for k := range want {
+				if _, ok := gotSet[k]; !ok {
+					t.Errorf("%s: lite path missing %q (present in the whole-map evaluation)", name, k)
+				}
 			}
-			if len(ram) == 0 {
+			for k, id := range gotSet {
+				if _, ok := want[k]; !ok {
+					t.Errorf("%s: lite path has extra %q (absent in the whole-map evaluation)", name, k)
+				}
+				if dupIDs[id] {
+					dups++
+				}
+			}
+			if dups == 0 {
 				t.Fatalf("%s: fixture produced no duplicate occurrences — parity is vacuous", name)
 			}
-			for k := range ram {
-				if !sqlSet[k] {
-					t.Errorf("%s: SQL missing %q (present in-RAM)", name, k)
-				}
-			}
-			for k := range sqlSet {
-				if !ram[k] {
-					t.Errorf("%s: SQL has extra %q (absent in-RAM)", name, k)
-				}
-			}
-			distinct[fmt.Sprint(len(ram))] = true
+			distinct[fmt.Sprint(dups)] = true
 		}
 	}
 	// Vacuity guard: the flags must actually bind on this fixture — at least
@@ -119,4 +121,13 @@ func TestDupSQLParity_GateMatrix(t *testing.T) {
 	if len(distinct) < 2 {
 		t.Errorf("every flag combination produced the same duplicate count — the gate clauses were never exercised: %v", distinct)
 	}
+}
+
+// occurrenceSet keys occurrences by url|issue|detail, mapping to the issue id.
+func occurrenceSet(occs []issues.Occurrence) map[string]string {
+	set := make(map[string]string, len(occs))
+	for _, o := range occs {
+		set[o.URL+"|"+o.IssueID+"|"+o.Detail] = o.IssueID
+	}
+	return set
 }

@@ -381,23 +381,29 @@ func Lookup(id string) (Def, bool) {
 }
 
 type evaluator struct {
-	cfg     *config.Config
-	pages   map[string]*crawler.PageRecord
-	skipDup bool
+	cfg       *config.Config
+	pages     map[string]*crawler.PageRecord
+	skipLinks bool
+	inlinks   map[string]*inlinkInfo // hyperlink inlinks per target, for the inlink aggregates
+	// rewrite maps a URL as a page sent it (a redirect's Location) onto the key
+	// the crawl stored its target under, so lookups in pages find the target.
+	rewrite *urlutil.Rewriter
 	occs    []Occurrence
 }
 
 // EvalOption configures Evaluate.
 type EvalOption func(*evaluator)
 
-// SkipDuplicates omits the cross-page duplicate checks (hash/title/desc/h1/h2);
-// the caller computes them in SQL via store.DuplicateIssues instead (Phase-2
-// dup-rule-SQL). The rest of the catalogue is unchanged.
-func SkipDuplicates() EvalOption { return func(e *evaluator) { e.skipDup = true } }
+// SkipLinks omits every check that reads a page's own link list — the
+// security, canonical-link, pagination, link and image checks and the
+// cross-page inlink aggregates — for a page map loaded without Facts.Links
+// (store.LoadPagesLite). The caller runs those through a LinkChecker fed each
+// page's links one page at a time; the two together are Evaluate exactly.
+func SkipLinks() EvalOption { return func(e *evaluator) { e.skipLinks = true } }
 
 // Evaluate runs the whole catalogue over a crawl's pages.
 func Evaluate(pages map[string]*crawler.PageRecord, cfg *config.Config, opts ...EvalOption) []Occurrence {
-	e := &evaluator{cfg: cfg, pages: pages}
+	e := &evaluator{cfg: cfg, pages: pages, inlinks: map[string]*inlinkInfo{}, rewrite: crawler.NewURLRewriter(cfg)}
 	for _, o := range opts {
 		o(e)
 	}
@@ -417,28 +423,77 @@ func Evaluate(pages map[string]*crawler.PageRecord, cfg *config.Config, opts ...
 		if rec.Facts == nil {
 			continue
 		}
-		e.security(rec)
+		links := rec.Facts.Links
+		if !e.skipLinks {
+			e.security(rec, links)
+		}
 		if !e.skipForIndexability(rec) {
 			e.elements(rec)
 			e.content(rec)
 			e.mobile(rec)
 		}
 		e.canonicals(rec)
-		e.paginationPage(rec)
+		if !e.skipLinks {
+			e.canonicalLinks(rec, links)
+			e.paginationPage(rec, links)
+		}
 		e.hreflangPage(rec)
 		e.structuredData(rec)
 		e.javascript(rec)
 		e.validation(rec)
 		e.amp(rec)
 		e.directives(rec)
-		e.links(rec)
-		e.images(rec)
+		if !e.skipLinks {
+			e.links(rec, links)
+			e.images(rec, links)
+			e.noteInlinks(rec, links)
+		}
 	}
-	if !e.skipDup {
-		e.duplicates()
+	e.duplicates()
+	if !e.skipLinks {
+		e.inlinkAggregates()
 	}
-	e.inlinkAggregates()
 	return e.occs
+}
+
+// LinkChecker runs the checks Evaluate(…, SkipLinks()) leaves out, one page at
+// a time, fed each page's link list by the caller: finalize streams the lists
+// from the store (store.StreamLinksAndText) so a crawl is evaluated without
+// its page map ever holding every page's links — on a link-heavy site those
+// were 98% of the stored facts. Page order does not matter. Finish runs the
+// cross-page inlink aggregates over everything Page saw and returns every
+// occurrence; with every page's links fed, the union with the SkipLinks
+// evaluation is byte-identical to a whole-map Evaluate (pinned by the finalize
+// package's lite-path parity tests).
+type LinkChecker struct{ e *evaluator }
+
+// NewLinkChecker prepares the per-page link checks over pages (the same map
+// the SkipLinks evaluation ran over).
+func NewLinkChecker(pages map[string]*crawler.PageRecord, cfg *config.Config) *LinkChecker {
+	return &LinkChecker{e: &evaluator{cfg: cfg, pages: pages, inlinks: map[string]*inlinkInfo{}, rewrite: crawler.NewURLRewriter(cfg)}}
+}
+
+// Page runs the link checks for url over its stored links. A page the
+// catalogue would not evaluate — not crawled, external, unparsed — is skipped
+// exactly as Evaluate skips it.
+func (l *LinkChecker) Page(url string, links []parse.Link) {
+	rec, ok := l.e.pages[url]
+	if !ok || rec.State != crawler.StateCrawled || rec.Scope != "internal" || rec.Facts == nil {
+		return
+	}
+	e := l.e
+	e.security(rec, links)
+	e.canonicalLinks(rec, links)
+	e.paginationPage(rec, links)
+	e.links(rec, links)
+	e.images(rec, links)
+	e.noteInlinks(rec, links)
+}
+
+// Finish runs the inlink aggregates and returns every occurrence found.
+func (l *LinkChecker) Finish() []Occurrence {
+	l.e.inlinkAggregates()
+	return l.e.occs
 }
 
 func (e *evaluator) add(url, id string, detail ...string) {
@@ -471,7 +526,7 @@ func (e *evaluator) responseCodes(rec *crawler.PageRecord) {
 	case rec.StatusCode >= 300:
 		if internal {
 			e.add(rec.URL, "internal_redirect", rec.RedirectURL)
-			if target, ok := e.pages[rec.RedirectURL]; ok && target.StatusCode >= 400 {
+			if target, ok := e.pages[e.rewrite.Rewrite(rec.RedirectURL)]; ok && target.StatusCode >= 400 {
 				e.add(rec.URL, "redirect_broken", rec.RedirectURL)
 			}
 		}
@@ -563,13 +618,13 @@ func hasRepeatedSegment(path string) bool {
 	return false
 }
 
-func (e *evaluator) security(rec *crawler.PageRecord) {
+func (e *evaluator) security(rec *crawler.PageRecord, links []parse.Link) {
 	f := rec.Facts
 	isHTTPS := strings.HasPrefix(rec.URL, "https://")
 	if !isHTTPS && isHTMLPage(rec) {
 		e.add(rec.URL, "security_http_url")
 	}
-	for _, l := range f.Links {
+	for _, l := range links {
 		switch l.Type {
 		case parse.Image, parse.CSS, parse.JS, parse.Media:
 			if isHTTPS && strings.HasPrefix(l.URL, "http://") {
@@ -796,7 +851,7 @@ func (e *evaluator) elements(rec *crawler.PageRecord) {
 // separately from the record. It is the streaming counterpart to the lorem/
 // soft-404 lines in content(): finalize runs Evaluate over a ContentText-free
 // map (where those two never fire on the empty text) and re-adds them here from
-// StreamContentText, so the merged set is byte-identical to a whole-map Evaluate
+// store.StreamLinksAndText, so the merged set is byte-identical to a whole-map Evaluate
 // while the page bodies are never all held in RAM at once. The eligibility gate
 // mirrors content()'s call site in Evaluate (crawled ∧ internal ∧ Facts ∧ not
 // skipped-for-indexability); keep the two in lockstep.
@@ -875,18 +930,6 @@ func (e *evaluator) canonicals(rec *crawler.PageRecord) {
 	if f.CanonicalOutsideHead > 0 {
 		e.add(u, "canonical_outside_head")
 	}
-	for _, l := range f.Links {
-		if l.Type == parse.Canonical && l.PathType != "absolute" {
-			e.add(u, "canonical_relative", l.Raw)
-			break
-		}
-	}
-	for _, l := range f.Links {
-		if l.Type == parse.Canonical && strings.Contains(l.Raw, "#") {
-			e.add(u, "canonical_contains_fragment", l.Raw)
-			break
-		}
-	}
 	if len(f.CanonicalInvalidAttrs) > 0 {
 		e.add(u, "canonical_invalid_attribute", strings.Join(f.CanonicalInvalidAttrs, ", "))
 	}
@@ -900,9 +943,31 @@ func (e *evaluator) canonicals(rec *crawler.PageRecord) {
 	}
 }
 
+// canonicalLinks runs the canonical checks that read the page's link
+// elements: a relative canonical href and one carrying a fragment. They apply
+// only to a page that declares a canonical, as canonicals' early return does.
+func (e *evaluator) canonicalLinks(rec *crawler.PageRecord, links []parse.Link) {
+	f := rec.Facts
+	if len(f.CanonicalHTML)+len(f.CanonicalHTTP) == 0 {
+		return
+	}
+	for _, l := range links {
+		if l.Type == parse.Canonical && l.PathType != "absolute" {
+			e.add(rec.URL, "canonical_relative", l.Raw)
+			break
+		}
+	}
+	for _, l := range links {
+		if l.Type == parse.Canonical && strings.Contains(l.Raw, "#") {
+			e.add(rec.URL, "canonical_contains_fragment", l.Raw)
+			break
+		}
+	}
+}
+
 // paginationPage runs the per-page Pagination-tab checks; sequence/loop/
 // unlinked checks that need the whole graph live in the analyze package.
-func (e *evaluator) paginationPage(rec *crawler.PageRecord) {
+func (e *evaluator) paginationPage(rec *crawler.PageRecord, links []parse.Link) {
 	f := rec.Facts
 	u := rec.URL
 	nexts := append(append([]string{}, f.NextHTML...), f.NextHTTP...)
@@ -914,7 +979,7 @@ func (e *evaluator) paginationPage(rec *crawler.PageRecord) {
 		e.add(u, "pagination_multiple", fmt.Sprintf("%d next, %d prev", len(nexts), len(prevs)))
 	}
 	hyperlinked := map[string]bool{}
-	for _, l := range f.Links {
+	for _, l := range links {
 		if l.Type == parse.Hyperlink && l.URL != "" {
 			hyperlinked[l.URL] = true
 		}
@@ -1158,12 +1223,12 @@ func (e *evaluator) directives(rec *crawler.PageRecord) {
 	}
 }
 
-func (e *evaluator) links(rec *crawler.PageRecord) {
-	f, t := rec.Facts, &e.cfg.Thresholds
+func (e *evaluator) links(rec *crawler.PageRecord, links []parse.Link) {
+	t := &e.cfg.Thresholds
 	u := rec.URL
 	internalOut, externalOut, uncrawlable := 0, 0, 0
 	flaggedTarget := map[string]bool{} // one occurrence per redirect/broken target
-	for _, l := range f.Links {
+	for _, l := range links {
 		if l.Type == parse.Uncrawlable {
 			uncrawlable++
 			continue
@@ -1230,13 +1295,13 @@ func (e *evaluator) links(rec *crawler.PageRecord) {
 // images flags issues on image *references* (per page) and oversized image
 // files (per crawled image URL). Image checks only run when images are
 // stored (Screaming Frog parity: no image reporting with storage off).
-func (e *evaluator) images(rec *crawler.PageRecord) {
+func (e *evaluator) images(rec *crawler.PageRecord, links []parse.Link) {
 	if !e.cfg.Resources.Images.Store {
 		return
 	}
 	t := &e.cfg.Thresholds
 	unsized := map[string]bool{} // one occurrence per distinct image URL
-	for _, l := range rec.Facts.Links {
+	for _, l := range links {
 		if l.Type != parse.Image {
 			continue
 		}
@@ -1331,35 +1396,43 @@ func (e *evaluator) duplicates() {
 	flag(byH2, "h2_duplicate")
 }
 
-// inlinkAggregates runs the cross-page link-graph checks: pages whose every
-// hyperlink inlink is nofollow, indexable pages linked only from
-// non-indexable pages, and canonical targets no page hyperlinks to
-// (DESIGN.md §5.6 inlink-derived flags). Self-links never count as inlinks.
+// inlinkInfo tallies one target's hyperlink inlinks for inlinkAggregates.
+type inlinkInfo struct{ total, nofollow, indexableSrc int }
+
+// noteInlinks tallies the hyperlink inlinks a crawled internal page's links
+// give their targets (self-links never count). The caller applies the page
+// gate: crawled, internal, with facts.
+func (e *evaluator) noteInlinks(rec *crawler.PageRecord, links []parse.Link) {
+	for _, l := range links {
+		if l.Type != parse.Hyperlink || l.URL == "" || l.URL == rec.URL {
+			continue
+		}
+		info := e.inlinks[l.URL]
+		if info == nil {
+			info = &inlinkInfo{}
+			e.inlinks[l.URL] = info
+		}
+		info.total++
+		if l.Nofollow {
+			info.nofollow++
+		}
+		if rec.Indexable {
+			info.indexableSrc++
+		}
+	}
+}
+
+// inlinkAggregates runs the cross-page link-graph checks over the inlinks
+// noteInlinks tallied: pages whose every hyperlink inlink is nofollow,
+// indexable pages linked only from non-indexable pages, and canonical targets
+// no page hyperlinks to (DESIGN.md §5.6 inlink-derived flags).
 func (e *evaluator) inlinkAggregates() {
-	type inlinkInfo struct{ total, nofollow, indexableSrc int }
-	inlinks := map[string]*inlinkInfo{}
+	inlinks := e.inlinks
 	canonicalRef := map[string]string{} // canonical target -> smallest referrer
 
 	for src, rec := range e.pages {
 		if rec.State != crawler.StateCrawled || rec.Scope != "internal" || rec.Facts == nil {
 			continue
-		}
-		for _, l := range rec.Facts.Links {
-			if l.Type != parse.Hyperlink || l.URL == "" || l.URL == src {
-				continue
-			}
-			info := inlinks[l.URL]
-			if info == nil {
-				info = &inlinkInfo{}
-				inlinks[l.URL] = info
-			}
-			info.total++
-			if l.Nofollow {
-				info.nofollow++
-			}
-			if rec.Indexable {
-				info.indexableSrc++
-			}
 		}
 		for _, c := range append(append([]string{}, rec.Facts.CanonicalHTML...), rec.Facts.CanonicalHTTP...) {
 			if c == "" || c == src {
