@@ -1071,8 +1071,8 @@ func TestPageCarriesGraphDuplicateAndRenderFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Inlinks and the analysis metrics are written by finalize, after the
-	// crawl, with UPDATEs like these — not by Page.
-	if _, err := c.DB().Exec(`UPDATE pages SET inlinks = 3, link_score = 0.25, unique_inlinks = 2, unique_outlinks = 5,
+	// crawl, into the page's page_metrics row — not by Page.
+	if _, err := c.DB().Exec(`UPDATE page_metrics SET inlinks = 3, link_score = 0.25, unique_inlinks = 2, unique_outlinks = 5,
 		closest_similarity = 0.9, near_dup_count = 1 WHERE url = ?`, "https://ex.test/a"); err != nil {
 		t.Fatal(err)
 	}

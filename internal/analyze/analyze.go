@@ -7,6 +7,7 @@ package analyze
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -91,12 +92,39 @@ type SiteCheck struct {
 // Option configures a Run.
 type Option func(*analyzer)
 
-// WithLinks supplies the stored link superset so the link graph (unique in/out +
-// PageRank) and the hyperlinked set are computed in CSR form over it instead of
-// each page's in-RAM Facts.Links — the Phase-2 PageRank-CSR path. Without it the
-// analyzer falls back to Facts.Links (unchanged behaviour for existing callers).
-func WithLinks(links []crawler.LinkRow) Option {
-	return func(a *analyzer) { a.links = links }
+// LinkSource streams the stored hyperlinks for the link graph: every links row
+// of type hyperlink — raw src and dst, nofollow flag — one at a time, in any
+// order, as often as it is asked. store.Hyperlinks serves it from the links
+// table; HyperlinkRows serves it from memory.
+type LinkSource interface {
+	EachHyperlink(fn func(src, dst string, nofollow bool))
+}
+
+// WithLinkSource supplies the stored hyperlinks so the link graph (unique in/out
+// + PageRank) and the hyperlinked set are built from the links table rather than
+// each page's Facts.Links — which the lite map finalize analyses over does not
+// carry. The graph is kept as int32 edges between internal pages (8 bytes a
+// hyperlink, deduplicated), never as the rows themselves. Without a source the
+// analyzer reads Facts.Links, for callers holding a whole-map load.
+func WithLinkSource(s LinkSource) Option {
+	return func(a *analyzer) { a.links = s }
+}
+
+// Hyperlink is one stored hyperlink row for HyperlinkRows.
+type Hyperlink struct {
+	Src, Dst string
+	Nofollow bool
+}
+
+// HyperlinkRows is a LinkSource over hyperlinks held in memory — the harness
+// for callers that have the graph in hand (tests).
+type HyperlinkRows []Hyperlink
+
+// EachHyperlink implements LinkSource.
+func (r HyperlinkRows) EachHyperlink(fn func(src, dst string, nofollow bool)) {
+	for _, h := range r {
+		fn(h.Src, h.Dst, h.Nofollow)
+	}
 }
 
 func Run(pages map[string]*crawler.PageRecord, sitemaps SitemapIndex, llmstxt *LlmsTxtData, siteChecks []SiteCheck, cfg *config.Config, opts ...Option) *Results {
@@ -151,7 +179,7 @@ func (a *analyzer) siteChecks(checks []SiteCheck) {
 
 type analyzer struct {
 	pages       map[string]*crawler.PageRecord
-	links       []crawler.LinkRow // stored link superset; nil ⇒ use Facts.Links
+	links       LinkSource // stored hyperlinks; nil ⇒ use Facts.Links
 	cfg         *config.Config
 	res         *Results
 	hyperlinked map[string]bool // memoized by hyperlinkedSet
@@ -164,20 +192,20 @@ func (a *analyzer) add(url, id, detail string) {
 	a.res.Occurrences = append(a.res.Occurrences, issues.Occurrence{URL: url, IssueID: id, Detail: detail})
 }
 
-// hyperlinkedSet returns every URL that is the target of at least one
+// hyperlinkedSet returns every page that is the target of at least one
 // hyperlink from another page (self-links excluded). The "unlinked" checks
-// (canonical-/hreflang-/pagination-only discoverability) test against it.
+// (canonical-/hreflang-/pagination-only discoverability) test crawled pages
+// against it, so only page URLs are kept: a hyperlink to a URL the crawl never
+// recorded has no reader, and keeping it would size the set by distinct link
+// targets rather than pages. linkGraph fills it as a by-product of its pass
+// when it runs first.
 func (a *analyzer) hyperlinkedSet() map[string]bool {
 	if a.hyperlinked != nil {
 		return a.hyperlinked
 	}
 	a.hyperlinked = map[string]bool{}
 	if a.links != nil {
-		for _, l := range a.links {
-			if l.Type == string(parse.Hyperlink) && l.Dst != "" && l.Dst != l.Src {
-				a.hyperlinked[l.Dst] = true
-			}
-		}
+		a.links.EachHyperlink(func(src, dst string, _ bool) { a.noteHyperlinked(src, dst) })
 		return a.hyperlinked
 	}
 	for src, rec := range a.pages {
@@ -185,41 +213,76 @@ func (a *analyzer) hyperlinkedSet() map[string]bool {
 			continue
 		}
 		for _, l := range rec.Facts.Links {
-			if l.Type == parse.Hyperlink && l.URL != "" && l.URL != src {
-				a.hyperlinked[l.URL] = true
+			if l.Type == parse.Hyperlink {
+				a.noteHyperlinked(src, l.URL)
 			}
 		}
 	}
 	return a.hyperlinked
 }
 
+func (a *analyzer) noteHyperlinked(src, dst string) {
+	if dst == "" || dst == src {
+		return
+	}
+	if _, ok := a.pages[dst]; ok {
+		a.hyperlinked[dst] = true
+	}
+}
+
 // linkGraph computes unique in/outlink counts and PageRank-style link scores
 // over followed internal hyperlink edges between crawled pages.
+//
+// The graph is an int32 edge list: every internal page gets an id in sorted URL
+// order, and each followed hyperlink from an internal page with facts to an
+// internal page becomes one packed (src, dst) pair, sorted and deduplicated.
+// That is 8 bytes a hyperlink and nothing per row otherwise, whether the rows
+// arrive from the links table (WithLinkSource) or from Facts.Links, so the
+// graph's memory is set by the hyperlink count alone — the string-keyed edge
+// sets it replaces held a Go string per endpoint of every edge, and the loaded
+// links table behind them ~250 bytes a row.
+//
+// Self-links count towards unique in/outlinks (Screaming Frog parity); PageRank
+// skips them so a page cannot vote for itself.
 func (a *analyzer) linkGraph() {
-	// self-links count towards unique in/outlinks (Screaming Frog parity);
-	// PageRank below skips them so a page cannot vote for itself
-	edges := map[string]map[string]bool{} // src -> set of dst
-	internal := func(url string) bool {
-		rec, ok := a.pages[url]
-		return ok && rec.Scope == "internal"
+	internal := make([]string, 0, len(a.pages))
+	for url, rec := range a.pages {
+		if rec.Scope == "internal" {
+			internal = append(internal, url)
+		}
+	}
+	sort.Strings(internal)
+	id := make(map[string]int32, len(internal))
+	for i, u := range internal {
+		id[u] = int32(i)
+	}
+	// The edge gate, the same for both sources: hyperlink, followed, from an
+	// internal page with facts, to an internal page.
+	var pairs []uint64
+	edge := func(src, dst string, nofollow bool) {
+		if nofollow {
+			return
+		}
+		s, ok := id[src]
+		if !ok || a.pages[src].Facts == nil {
+			return
+		}
+		d, ok := id[dst]
+		if !ok {
+			return
+		}
+		pairs = append(pairs, uint64(s)<<32|uint64(d))
 	}
 	if a.links != nil {
-		// CSR over the stored link superset: same gate as the Facts.Links walk —
-		// hyperlink, followed, internal src (with facts) -> internal dst.
-		for _, l := range a.links {
-			if l.Type != string(parse.Hyperlink) || l.Nofollow {
-				continue
-			}
-			if src, ok := a.pages[l.Src]; !ok || src.Facts == nil || src.Scope != "internal" {
-				continue
-			}
-			if !internal(l.Dst) {
-				continue
-			}
-			if edges[l.Src] == nil {
-				edges[l.Src] = map[string]bool{}
-			}
-			edges[l.Src][l.Dst] = true
+		// One pass serves the hyperlinked set too, when nothing has built it yet.
+		if a.hyperlinked == nil {
+			a.hyperlinked = map[string]bool{}
+			a.links.EachHyperlink(func(src, dst string, nofollow bool) {
+				a.noteHyperlinked(src, dst)
+				edge(src, dst, nofollow)
+			})
+		} else {
+			a.links.EachHyperlink(edge)
 		}
 	} else {
 		for url, rec := range a.pages {
@@ -227,117 +290,96 @@ func (a *analyzer) linkGraph() {
 				continue
 			}
 			for _, l := range rec.Facts.Links {
-				if l.Type != parse.Hyperlink || l.Nofollow {
-					continue
+				if l.Type == parse.Hyperlink {
+					edge(url, l.URL, l.Nofollow)
 				}
-				target, ok := a.pages[l.URL]
-				if !ok || target.Scope != "internal" {
-					continue
-				}
-				if edges[url] == nil {
-					edges[url] = map[string]bool{}
-				}
-				edges[url][l.URL] = true
 			}
 		}
 	}
-	for src, dsts := range edges {
-		a.res.UniqueOut[src] = len(dsts)
-		for dst := range dsts {
-			a.res.UniqueIn[dst]++
-		}
+	slices.Sort(pairs)
+	pairs = slices.Compact(pairs)
+	for _, p := range pairs {
+		a.res.UniqueOut[internal[p>>32]]++
+		a.res.UniqueIn[internal[uint32(p)]]++
 	}
-
 	if !a.cfg.Analysis.LinkScore {
 		return
 	}
-	// PageRank, d = 0.85
+	a.pageRank(internal, pairs)
+}
+
+// pageRank scores the internal crawled pages (the node set) over the sorted,
+// deduplicated edge list, d = 0.85, 40 iterations, scaled to v/max·100.
+//
+// Canonical accumulation order (FIN-CSRID): float addition is non-associative,
+// so the contributions into each node must land in a fixed order for the stored
+// link_score to be bit-stable run-to-run. The edge list is sorted by (src, dst)
+// with ids in sorted URL order, so every iteration walks sources ascending and
+// each source's destinations ascending — the order the earlier sorted-map
+// implementation used, which TestLinkScore_DeterministicAcrossRuns pins.
+//
+// A PageRank edge exists only between node-set members (#75 bug 3): a
+// destination outside the set — a self-loop, or an internal URL that was never
+// crawled (robots-blocked, errored, over-limit, still queued) — is dropped from
+// the graph entirely, so it neither receives a share nor dilutes its source's
+// out-degree. This is the classic dangling-link removal from the PageRank
+// literature; a source left with no node dsts is dangling and its mass is not
+// redistributed. Only the unique in/out metrics keep non-crawled internal dsts.
+func (a *analyzer) pageRank(internal []string, pairs []uint64) {
 	const damping, iterations = 0.85, 40
-	nodes := make([]string, 0, len(a.pages))
-	for url, rec := range a.pages {
-		if rec.Scope == "internal" && rec.State == crawler.StateCrawled {
-			nodes = append(nodes, url)
+	n := len(internal)
+	node := make([]bool, n)
+	nodes := 0
+	for i, u := range internal {
+		if a.pages[u].State == crawler.StateCrawled {
+			node[i] = true
+			nodes++
 		}
 	}
-	if len(nodes) == 0 {
+	if nodes == 0 {
 		return
 	}
-	// Canonical accumulation order (FIN-CSRID). Go map iteration is randomized and
-	// float addition is non-associative, so iterating `edges`/`dsts` in map order
-	// made the stored link_score jitter run-to-run at ~1e-12. Sort the node set and
-	// precompute each source's out-degree + sorted destination list ONCE, then
-	// accumulate in that fixed order every iteration — making the score bit-stable
-	// (a non-node or dangling source contributes 0, as before).
-	//
-	// A PageRank edge exists only between node-set members (#75 bug 3): a
-	// destination outside the set — a self-loop, or an internal URL that was
-	// never crawled (robots-blocked, errored, over-limit, still queued) — is
-	// dropped from the graph entirely, so it neither receives a share nor
-	// dilutes its source's out-degree. This is the classic dangling-link
-	// removal from the PageRank literature and mirrors how external dsts never
-	// enter `edges` above; a source left with no node dsts becomes dangling and
-	// takes the existing out==0 rule (its mass is not redistributed). Only
-	// `edges` — the link-metrics view — keeps non-crawled internal dsts.
-	sort.Strings(nodes)
-	nodeSet := make(map[string]bool, len(nodes))
-	for _, n := range nodes {
-		nodeSet[n] = true
-	}
-	srcs := make([]string, 0, len(edges))
-	for src := range edges {
-		srcs = append(srcs, src)
-	}
-	sort.Strings(srcs)
-	out := make(map[string]int, len(srcs))
-	dstsBySrc := make(map[string][]string, len(srcs))
-	for _, src := range srcs {
-		set := edges[src]
-		dsts := make([]string, 0, len(set))
-		for dst := range set {
-			if dst != src && nodeSet[dst] {
-				dsts = append(dsts, dst)
-			}
+	out := make([]int, n)
+	edges := pairs[:0] // filtered in place; the unique metrics are done with pairs
+	for _, p := range pairs {
+		s, d := int(p>>32), int(uint32(p))
+		if s != d && node[s] && node[d] {
+			edges = append(edges, p)
+			out[s]++
 		}
-		if len(dsts) == 0 {
-			continue // dangling: out[src] stays 0
+	}
+	rank := make([]float64, n)
+	next := make([]float64, n)
+	for i := range internal {
+		if node[i] {
+			rank[i] = 1.0 / float64(nodes)
 		}
-		sort.Strings(dsts)
-		out[src] = len(dsts)
-		dstsBySrc[src] = dsts
 	}
-
-	rank := make(map[string]float64, len(nodes))
-	for _, n := range nodes {
-		rank[n] = 1.0 / float64(len(nodes))
-	}
+	base := (1 - damping) / float64(nodes)
 	for range iterations {
-		next := make(map[string]float64, len(nodes))
-		base := (1 - damping) / float64(len(nodes))
-		for _, n := range nodes {
-			next[n] = base
-		}
-		for _, src := range srcs {
-			if out[src] == 0 {
-				continue
-			}
-			share := damping * rank[src] / float64(out[src])
-			for _, dst := range dstsBySrc[src] {
-				next[dst] += share
+		for i := range next {
+			next[i] = 0
+			if node[i] {
+				next[i] = base
 			}
 		}
-		rank = next
+		for _, p := range edges {
+			s, d := p>>32, uint32(p)
+			next[d] += damping * rank[s] / float64(out[s])
+		}
+		rank, next = next, rank
 	}
-	// max and the scaling assignment are reductions/keyed writes, so map iteration
-	// order does not affect them — only the accumulation above had to be ordered.
 	max := 0.0
-	for _, v := range rank {
-		if v > max {
+	for i, v := range rank {
+		if node[i] && v > max {
 			max = v
 		}
 	}
 	if max > 0 {
-		for n, v := range rank {
-			a.res.LinkScores[n] = v / max * 100
+		for i, u := range internal {
+			if node[i] {
+				a.res.LinkScores[u] = rank[i] / max * 100
+			}
 		}
 	}
 }

@@ -134,8 +134,8 @@ func TestMigrationAddsLastmodToAnExistingDatabase(t *testing.T) {
 		t.Error("legacy row gained a lastmod it was never given")
 	}
 	var v int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil || v != 9 {
-		t.Errorf("user_version = %d (err %v), want 9", v, err)
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil || v != ladderTop(crawlMigrations) {
+		t.Errorf("user_version = %d (err %v), want %d", v, err, ladderTop(crawlMigrations))
 	}
 	if err := upgrade(db, crawlMigrations, minCrawlVersion, false); err != nil {
 		t.Errorf("re-upgrade: %v", err)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
+	"github.com/agentberlin/bluesnake/internal/issues"
 	"github.com/agentberlin/bluesnake/internal/parse"
 )
 
@@ -96,8 +97,8 @@ func TestMigrationRewritesLegacyHeadings(t *testing.T) {
 	}
 	defer c.Close()
 	var v int
-	if err := c.db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil || v != 9 {
-		t.Errorf("user_version = %d (err %v), want 9", v, err)
+	if err := c.db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil || v != ladderTop(crawlMigrations) {
+		t.Errorf("user_version = %d (err %v), want %d", v, err, ladderTop(crawlMigrations))
 	}
 	pages, err := c.LoadPages()
 	if err != nil {
@@ -183,12 +184,12 @@ func TestMigratedCrawlKeepsItsHeadingChecks(t *testing.T) {
 		AND json_type(facts, '$.Headings') IS NULL`).Scan(&unmigrated); err != nil || unmigrated != 0 {
 		t.Errorf("%d pages left unmigrated (err %v)", unmigrated, err)
 	}
-	dups, err := c.DuplicateIssues(false, false)
+	lite, err := c.LoadPagesLite()
 	if err != nil {
 		t.Fatal(err)
 	}
 	count := map[string]int{}
-	for _, o := range dups {
+	for _, o := range issues.Evaluate(lite, config.Default()) {
 		count[o.IssueID]++
 		if o.IssueID == "h1_duplicate" && (o.Detail != "Shared heading" || !strings.HasPrefix(o.URL, "https://ex.com/p")) {
 			t.Errorf("h1_duplicate occurrence = %+v", o)

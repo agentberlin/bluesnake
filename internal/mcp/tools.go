@@ -740,7 +740,8 @@ func (s *Server) issueSummary(ctx context.Context, id string) (string, error) {
 }
 
 const schemaNotes = `Notes:
-- pages: one row per discovered URL. scope is internal|external; state is crawled|blocked_robots|error|skipped_*; indexable is 0/1 with the reason in indexability_status; redirect_url/redirect_type are set for 3xx/meta-refresh/JS redirects (redirects are stored as data, never auto-followed).
+- pages: one row per discovered URL, as the crawl recorded it. scope is internal|external; state is crawled|blocked_robots|error|skipped_*; indexable is 0/1 with the reason in indexability_status; redirect_url/redirect_type are set for 3xx/meta-refresh/JS redirects (redirects are stored as data, never auto-followed).
+- page_metrics: one row per URL with what the post-crawl analysis derived — depth (crawl depth; NULL when no followed path from a seed), inlinks, discovered_from, link_score, unique_inlinks, unique_outlinks, closest_similarity, near_dup_count. Join it to pages on url.
 - pages.facts (JSON, PascalCase keys): the parsed on-page data — Titles, Descriptions, Headings (every h1–h6 in document order: Level, Text, FromAlt — an h1 whose text is its image's alt), MetaRobots, CanonicalHTML, HreflangHTML, WordCount, TextRatio, Flesch, Lang, Authors (author evidence: Source meta|article|rel|microdata|byline, Name, URL), Links. Access with json_extract, e.g. json_extract(facts,'$.Titles[0]') or json_extract(facts,'$.WordCount'); the h1s are the Headings entries whose Level is 1 (json_each(facts,'$.Headings')).
 - pages.headers (JSON): response headers. pages.structured (JSON): JSON-LD/Microdata/RDFa items. pages.jsdiff (JSON): static-vs-rendered differences (JavaScript rendering mode).
 - links: the edge list. type is hyperlink|image|css|js|iframe|canonical|hreflang|next|prev|amp|meta_refresh|...; nofollow is 0/1.
@@ -757,7 +758,7 @@ const schemaNotes = `Notes:
 Example queries:
   SELECT status_code, COUNT(*) FROM pages WHERE scope='internal' GROUP BY status_code;
   SELECT url, json_extract(facts,'$.Titles[0]') AS title FROM pages WHERE indexable=1 AND length(title) > 60;
-  SELECT url, inlinks, link_score FROM pages WHERE scope='internal' ORDER BY link_score DESC LIMIT 20;
+  SELECT p.url, m.inlinks, m.link_score FROM pages p JOIN page_metrics m ON m.url = p.url WHERE p.scope='internal' ORDER BY m.link_score DESC LIMIT 20;
   SELECT src, anchor FROM links WHERE dst = 'https://example.com/old-page' AND type = 'hyperlink' LIMIT 50;
   SELECT url, json_extract(facts,'$.WordCount') AS words FROM pages WHERE state='crawled' ORDER BY words ASC LIMIT 10;
   SELECT url, detail FROM issues WHERE issue = '<id from issue_summary>';`

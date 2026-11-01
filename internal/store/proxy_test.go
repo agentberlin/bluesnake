@@ -62,12 +62,11 @@ func TestPageProxyNullScansAsEmpty(t *testing.T) {
 	// loadPages either, so leaving them unset would fail the scan for a reason
 	// that has nothing to do with this column.
 	if _, err := c.db.Exec(`INSERT INTO pages(
-		url, scope, state, depth, status_code, status, content_type, http_version,
+		url, scope, state, status_code, status, content_type, http_version,
 		response_time_ms, size, fetch_error, redirect_url, redirect_type,
-		matched_robots_line, indexable, indexability_status, inlinks,
-		outside_start_folder, link_score, unique_inlinks, unique_outlinks,
-		closest_similarity, proxy)
-		VALUES(?,?,?,0,200,'OK','text/html','HTTP/1.1',0,0,'','','',0,1,'Indexable',0,0,0,0,0,0,NULL)`,
+		matched_robots_line, indexable, indexability_status,
+		outside_start_folder, proxy)
+		VALUES(?,?,?,200,'OK','text/html','HTTP/1.1',0,0,'','','',0,1,'Indexable',0,NULL)`,
 		"https://ex.com/legacy", "internal", crawler.StateCrawled); err != nil {
 		t.Fatal(err)
 	}

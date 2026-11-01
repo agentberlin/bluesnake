@@ -674,39 +674,40 @@ func (c *Crawler) NormalizeSeeds(raw ...string) []string {
 	return out
 }
 
-// LinkRow is a stored raw link (links table) fed to the depth CSR. Type round-
-// trips through parse.LinkType so the follow gate can be re-applied.
+// LinkRow is a stored raw link (links table row) as the tests and the in-memory
+// depth harness hold it. Type round-trips through parse.LinkType so the follow
+// gate can be re-applied.
 type LinkRow struct {
 	Src, Dst string
 	Type     string
 	Nofollow bool
 }
 
-// RecomputeDepthsFromLinks computes shortest-followed-path depth purely from the
-// stored link rows + redirect edges — the SQL/CSR equivalent of RecomputeDepths
-// over the in-RAM Facts.Links (MEMORY-SCALING.md §5.5, FIN-DEPTH). It re-applies
-// the exact followsForDepth gate over the raw `links` superset (which has no
-// follow-gate at write), so it reproduces the in-RAM BFS byte-for-byte. Returns
+// OutLinks is the adjacency the depth BFS reads: the stored raw links leaving
+// one page (the ungated superset, as the links table holds them), handed to fn
+// one row at a time. store.OutLinks serves it from the links table on demand;
+// the tests serve it from a slice.
+type OutLinks interface {
+	LinksFrom(src string, fn func(dst, typ string, nofollow bool) error) error
+}
+
+// RecomputeDepths computes shortest-followed-path depth over the stored link
+// graph plus the redirect edges — the store-backed finalize path for fresh and
+// resumed crawls alike (MEMORY-SCALING.md §5.5, FIN-DEPTH). It re-applies the
+// exact followsForDepth gate over the raw links superset (which has no follow
+// gate at write), so it reproduces the crawl-time BFS byte-for-byte. Returns
 // url -> depth (NoDepth for pages with no followed path from a seed).
-func (c *Crawler) RecomputeDepthsFromLinks(links []LinkRow, redirects map[string]string, pageURLs, seedsRaw []string) map[string]int {
+//
+// The BFS pulls each reached page's links from out as it dequeues the page and
+// drops them once walked, so what it holds is the page set, the depth map and
+// the queue — all sized by pages. The link rows themselves are never
+// materialised, which is what keeps finalize's depth step off the links axis:
+// loading the links table whole peaked at 1.4 GB for 8,000 URLs of link-heavy
+// pages and grew linearly with the link count.
+func (c *Crawler) RecomputeDepths(out OutLinks, redirects map[string]string, pageURLs, seedsRaw []string) (map[string]int, error) {
 	pageSet := make(map[string]bool, len(pageURLs))
 	for _, u := range pageURLs {
 		pageSet[u] = true
-	}
-	adj := make(map[string][]string, len(pageSet))
-	for src, dst := range redirects { // redirect counts as a hop (like a followed link)
-		if dst != "" && dst != src {
-			adj[src] = append(adj[src], dst)
-		}
-	}
-	for _, l := range links {
-		if l.Dst == "" || l.Dst == l.Src {
-			continue
-		}
-		if !c.followsForDepthRow(l.Type, l.Dst, l.Nofollow) {
-			continue
-		}
-		adj[l.Src] = append(adj[l.Src], l.Dst)
 	}
 	depth := make(map[string]int, len(pageSet))
 	for u := range pageSet {
@@ -723,14 +724,53 @@ func (c *Crawler) RecomputeDepthsFromLinks(links []LinkRow, redirects map[string
 		u := queue[0]
 		queue = queue[1:]
 		d := depth[u]
-		for _, v := range adj[u] {
+		reach := func(v string) {
 			if pageSet[v] && depth[v] == NoDepth {
 				depth[v] = d + 1
 				queue = append(queue, v)
 			}
 		}
+		// A redirect counts as a hop, like a followed link.
+		if dst := redirects[u]; dst != "" && dst != u {
+			reach(dst)
+		}
+		err := out.LinksFrom(u, func(dst, typ string, nofollow bool) error {
+			if dst == "" || dst == u || !c.followsForDepthRow(typ, dst, nofollow) {
+				return nil
+			}
+			reach(dst)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
+	return depth, nil
+}
+
+// RecomputeDepthsFromLinks is RecomputeDepths over an in-memory link superset:
+// the harness the crawler-package tests and the acceptance steps use in place
+// of a store. Production reads the adjacency from the store (store.OutLinks)
+// and never holds the rows.
+func (c *Crawler) RecomputeDepthsFromLinks(links []LinkRow, redirects map[string]string, pageURLs, seedsRaw []string) map[string]int {
+	adj := make(map[string][]LinkRow)
+	for _, l := range links {
+		adj[l.Src] = append(adj[l.Src], l)
+	}
+	depth, _ := c.RecomputeDepths(linkSlice(adj), redirects, pageURLs, seedsRaw) // a slice never errors
 	return depth
+}
+
+// linkSlice serves OutLinks from rows grouped by source.
+type linkSlice map[string][]LinkRow
+
+func (s linkSlice) LinksFrom(src string, fn func(dst, typ string, nofollow bool) error) error {
+	for _, l := range s[src] {
+		if err := fn(l.Dst, l.Type, l.Nofollow); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // followsForDepthRow is followsForDepth over a stored link row (type as a string,

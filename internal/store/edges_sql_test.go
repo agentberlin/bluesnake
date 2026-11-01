@@ -8,9 +8,9 @@ import (
 	"github.com/agentberlin/bluesnake/internal/parse"
 )
 
-// TestEdgesAndDepthSQLMethods exercises the Phase-2 SQL/CSR store methods over a
-// crafted graph: gated-edge inlinks/discovered_from, the depth-CSR inputs
-// (LinkRows/Redirects/SaveDepthsMap), and the dup-rule SQL.
+// TestEdgesAndDepthSQLMethods exercises the Phase-2 SQL store methods over a
+// crafted graph: gated-edge inlinks/discovered_from and the depth BFS's inputs
+// and output (OutLinks/Redirects/SaveDepthsMap).
 func TestEdgesAndDepthSQLMethods(t *testing.T) {
 	dir := t.TempDir()
 	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
@@ -40,12 +40,38 @@ func TestEdgesAndDepthSQLMethods(t *testing.T) {
 	if m, _ := c.MaxEdgeSeq(); m != 3 {
 		t.Errorf("MaxEdgeSeq = %d, want 3", m)
 	}
-	rows, err := c.LinkRows()
+	// OutLinks serves each page's stored rows on demand — the depth BFS's
+	// adjacency — and nothing for a page that stored none.
+	out, err := c.OutLinks()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 3 {
-		t.Errorf("LinkRows = %d, want 3", len(rows))
+	defer out.Close()
+	adjacency := map[string][]string{}
+	for _, src := range []string{"https://ex.com/", "https://ex.com/a", "https://ex.com/b"} {
+		err := out.LinksFrom(src, func(dst, typ string, nofollow bool) error {
+			if typ != string(parse.Hyperlink) || nofollow {
+				t.Errorf("LinksFrom(%s) row %s: type %q nofollow %v, want a followed hyperlink", src, dst, typ, nofollow)
+			}
+			adjacency[src] = append(adjacency[src], dst)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(adjacency["https://ex.com/"]) != 2 || len(adjacency["https://ex.com/a"]) != 1 || len(adjacency["https://ex.com/b"]) != 0 {
+		t.Errorf("OutLinks adjacency = %v, want /:2 /a:1 /b:0", adjacency)
+	}
+	// Hyperlinks streams the same rows for the analysis link graph.
+	var streamed int
+	stream := c.Hyperlinks()
+	stream.EachHyperlink(func(src, dst string, nofollow bool) { streamed++ })
+	if err := stream.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if streamed != 3 {
+		t.Errorf("Hyperlinks streamed %d rows, want 3", streamed)
 	}
 	if red, _ := c.Redirects(); len(red) != 0 {
 		t.Errorf("Redirects = %v, want empty", red)
@@ -76,24 +102,6 @@ func TestEdgesAndDepthSQLMethods(t *testing.T) {
 	}
 	if pages["https://ex.com/b"].Depth != crawler.NoDepth {
 		t.Errorf("/b depth = %d, want NoDepth", pages["https://ex.com/b"].Depth)
-	}
-
-	// dup-rule SQL: /a and /b share title "Dup" (with the ignore flags both off,
-	// then on, to exercise the eligibility clauses).
-	for _, flags := range [][2]bool{{false, false}, {true, true}} {
-		dups, err := c.DuplicateIssues(flags[0], flags[1])
-		if err != nil {
-			t.Fatal(err)
-		}
-		titleDups := 0
-		for _, o := range dups {
-			if o.IssueID == "title_duplicate" && o.Detail == "Dup" {
-				titleDups++
-			}
-		}
-		if titleDups != 2 {
-			t.Errorf("DuplicateIssues(%v): title_duplicate = %d, want 2 (/a,/b)", flags, titleDups)
-		}
 	}
 }
 

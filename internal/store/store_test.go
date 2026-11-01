@@ -725,8 +725,8 @@ func TestAnalysisPersistence(t *testing.T) {
 	}
 	var score float64
 	var uniqueIn int
-	c.db.QueryRow(`SELECT link_score FROM pages WHERE url = 'https://ex.com/'`).Scan(&score)
-	c.db.QueryRow(`SELECT unique_inlinks FROM pages WHERE url = 'https://ex.com/a'`).Scan(&uniqueIn)
+	c.db.QueryRow(`SELECT link_score FROM page_metrics WHERE url = 'https://ex.com/'`).Scan(&score)
+	c.db.QueryRow(`SELECT unique_inlinks FROM page_metrics WHERE url = 'https://ex.com/a'`).Scan(&uniqueIn)
 	if score != 100 || uniqueIn != 3 {
 		t.Errorf("score=%v uniqueIn=%d", score, uniqueIn)
 	}
@@ -959,10 +959,6 @@ func TestListModeResumeRestoresAllSeeds(t *testing.T) {
 		}
 		// Reproduce finalize's completed-crawl depth step over the stored graph (the
 		// production path; the store package can't import finalize — it imports us).
-		links, err := st.LinkRows()
-		if err != nil {
-			t.Fatal(err)
-		}
 		redirects, err := st.Redirects()
 		if err != nil {
 			t.Fatal(err)
@@ -971,7 +967,16 @@ func TestListModeResumeRestoresAllSeeds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := st.SaveDepthsMap(c.RecomputeDepthsFromLinks(links, redirects, urls, seeds)); err != nil {
+		out, err := st.OutLinks()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer out.Close()
+		depths, err := c.RecomputeDepths(out, redirects, urls, seeds)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SaveDepthsMap(depths); err != nil {
 			t.Fatal(err)
 		}
 		pages, err := st.LoadPages()
@@ -1039,7 +1044,7 @@ func TestSaveDepths(t *testing.T) {
 	}
 	// inlinks baseline (a depth-only write must not disturb it); set it directly,
 	// since Page() does not write the inlinks column (the edges path does).
-	if _, err := c.db.Exec(`UPDATE pages SET inlinks = 7`); err != nil {
+	if _, err := c.db.Exec(`UPDATE page_metrics SET inlinks = 7`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1068,17 +1073,87 @@ func TestSaveDepths(t *testing.T) {
 	}
 	// NoDepth must be stored as SQL NULL, not -1
 	var nullCount int
-	c.db.QueryRow(`SELECT COUNT(*) FROM pages WHERE depth IS NULL`).Scan(&nullCount)
+	c.db.QueryRow(`SELECT COUNT(*) FROM page_metrics WHERE depth IS NULL`).Scan(&nullCount)
 	if nullCount != 1 {
 		t.Errorf("NULL depths = %d, want 1", nullCount)
 	}
 }
 
-// TestLoadPagesLiteAndStreamContentText pins the Phase-2 finalize plumbing:
-// LoadPagesLite returns every record with Facts intact but ContentText freed,
-// while StreamContentText hands the bodies back one row at a time and LoadPages
-// still round-trips them in full.
-func TestLoadPagesLiteAndStreamContentText(t *testing.T) {
+// TestPageMetricsMigrationBackfill pins ladder step v10: a crawl stored before
+// page_metrics existed keeps finalize's outputs in columns of its pages rows;
+// opening it copies them into page_metrics, so LoadPages (which reads only
+// page_metrics) sees the old crawl exactly as the old reader did. The fixture is
+// a fresh crawl pushed back into the old shape: the old columns added, filled,
+// the metrics rows removed, the revision stamped v9.
+func TestPageMetricsMigrationBackfill(t *testing.T) {
+	dir := t.TempDir()
+	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, url := range []string{"https://ex.com/", "https://ex.com/a"} {
+		if err := c.Page(&crawler.PageRecord{URL: url, Scope: "internal", State: crawler.StateCrawled,
+			StatusCode: 200, Facts: &parse.Facts{Titles: []string{"t"}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, q := range []string{
+		`ALTER TABLE pages ADD COLUMN depth INT`,
+		`ALTER TABLE pages ADD COLUMN inlinks INT DEFAULT 0`,
+		`ALTER TABLE pages ADD COLUMN discovered_from TEXT`,
+		`ALTER TABLE pages ADD COLUMN link_score REAL DEFAULT 0`,
+		`ALTER TABLE pages ADD COLUMN unique_inlinks INT DEFAULT 0`,
+		`ALTER TABLE pages ADD COLUMN unique_outlinks INT DEFAULT 0`,
+		`ALTER TABLE pages ADD COLUMN closest_similarity REAL DEFAULT 0`,
+		`ALTER TABLE pages ADD COLUMN near_dup_count INT DEFAULT 0`,
+		`UPDATE pages SET depth = 0, inlinks = 1, discovered_from = '', link_score = 100,
+			unique_inlinks = 1, unique_outlinks = 1 WHERE url = 'https://ex.com/'`,
+		`UPDATE pages SET depth = NULL, inlinks = 3, discovered_from = 'https://ex.com/', link_score = 42.5,
+			unique_inlinks = 2, unique_outlinks = 0, closest_similarity = 91.5, near_dup_count = 1 WHERE url = 'https://ex.com/a'`,
+		`DELETE FROM page_metrics`,
+		`PRAGMA user_version = 9`,
+	} {
+		if _, err := c.db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	id := c.ID
+	c.Close()
+
+	c, err = OpenCrawl(dir, id)
+	if err != nil {
+		t.Fatalf("open the v9 crawl: %v", err)
+	}
+	defer c.Close()
+	pages, err := c.LoadPages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, a := pages["https://ex.com/"], pages["https://ex.com/a"]
+	if home.Depth != 0 || home.Inlinks != 1 || home.LinkScore != 100 || home.UniqueInlinks != 1 || home.UniqueOutlinks != 1 {
+		t.Errorf("/ after migration = depth %d inlinks %d score %v unique %d/%d", home.Depth, home.Inlinks, home.LinkScore, home.UniqueInlinks, home.UniqueOutlinks)
+	}
+	if a.Depth != crawler.NoDepth || a.Inlinks != 3 || a.DiscoveredFrom != "https://ex.com/" || a.LinkScore != 42.5 ||
+		a.UniqueInlinks != 2 || a.ClosestSimilarity != 91.5 {
+		t.Errorf("/a after migration = depth %d inlinks %d from %q score %v unique_in %d similarity %v",
+			a.Depth, a.Inlinks, a.DiscoveredFrom, a.LinkScore, a.UniqueInlinks, a.ClosestSimilarity)
+	}
+	var nearDup int
+	if err := c.db.QueryRow(`SELECT near_dup_count FROM page_metrics WHERE url = 'https://ex.com/a'`).Scan(&nearDup); err != nil || nearDup != 1 {
+		t.Errorf("near_dup_count = %d (err %v), want 1", nearDup, err)
+	}
+	var v int
+	c.db.QueryRow(`PRAGMA user_version`).Scan(&v)
+	if want := max(minCrawlVersion, ladderTop(crawlMigrations)); v != want {
+		t.Errorf("user_version after open = %d, want %d", v, want)
+	}
+}
+
+// TestLoadPagesLiteAndStreamLinksAndText pins the finalize plumbing:
+// LoadPagesLite returns every record with its facts intact except the link
+// list and the content text, StreamLinksAndText hands both back one page at a
+// time, and LoadPages still round-trips them in full.
+func TestLoadPagesLiteAndStreamLinksAndText(t *testing.T) {
 	dir := t.TempDir()
 	c, err := CreateCrawl(dir, []string{"https://ex.com/"}, "spider", config.Default())
 	if err != nil {
@@ -1109,24 +1184,59 @@ func TestLoadPagesLiteAndStreamContentText(t *testing.T) {
 	if lr.Facts.ContentText != "" {
 		t.Errorf("LoadPagesLite retained ContentText (%d bytes), want freed", len(lr.Facts.ContentText))
 	}
-	if len(lr.Facts.Links) != 1 || lr.Facts.WordCount != 12 {
-		t.Errorf("lite record lost non-ContentText Facts: links=%d wc=%d", len(lr.Facts.Links), lr.Facts.WordCount)
+	if len(lr.Facts.Links) != 0 {
+		t.Errorf("LoadPagesLite retained %d links, want none (the link lists are streamed)", len(lr.Facts.Links))
+	}
+	if lr.Facts.WordCount != 12 {
+		t.Errorf("lite record lost the other facts: wc=%d", lr.Facts.WordCount)
 	}
 
 	full, err := c.LoadPages()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if full["https://ex.com/"].Facts.ContentText != body {
-		t.Errorf("LoadPages ContentText = %q, want full body", full["https://ex.com/"].Facts.ContentText)
+	if full["https://ex.com/"].Facts.ContentText != body || len(full["https://ex.com/"].Facts.Links) != 1 {
+		t.Errorf("LoadPages = text %q, %d links; want the full body and 1 link",
+			full["https://ex.com/"].Facts.ContentText, len(full["https://ex.com/"].Facts.Links))
 	}
 
-	got := map[string]string{}
-	if err := c.StreamContentText(func(url, text string) error { got[url] = text; return nil }); err != nil {
+	gotText := map[string]string{}
+	gotLinks := map[string][]parse.Link{}
+	err = c.StreamLinksAndText(func(url string, links []parse.Link, text string) error {
+		gotText[url], gotLinks[url] = text, links
+		return nil
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got["https://ex.com/"] != body {
-		t.Errorf("StreamContentText body = %q, want %q", got["https://ex.com/"], body)
+	if gotText["https://ex.com/"] != body {
+		t.Errorf("StreamLinksAndText body = %q, want %q", gotText["https://ex.com/"], body)
+	}
+	if l := gotLinks["https://ex.com/"]; len(l) != 1 || l[0].URL != "https://ex.com/a" || l[0].Type != parse.Hyperlink {
+		t.Errorf("StreamLinksAndText links = %+v, want the one stored hyperlink", l)
+	}
+	// A page without facts is not streamed at all; one whose facts carry no
+	// links and no text streams empty parts rather than failing.
+	if err := c.Page(&crawler.PageRecord{URL: "https://ex.com/bare", Scope: "internal", State: crawler.StateCrawled,
+		StatusCode: 200, Facts: &parse.Facts{WordCount: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Page(&crawler.PageRecord{URL: "https://ex.com/img", Scope: "internal", State: crawler.StateCrawled, StatusCode: 200}); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	err = c.StreamLinksAndText(func(url string, links []parse.Link, text string) error {
+		seen[url] = true
+		if url == "https://ex.com/bare" && (len(links) != 0 || text != "") {
+			t.Errorf("bare page streamed %d links, text %q; want empty parts", len(links), text)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !seen["https://ex.com/bare"] || seen["https://ex.com/img"] {
+		t.Errorf("streamed pages = %v, want the facts-bearing pages only", seen)
 	}
 }
 

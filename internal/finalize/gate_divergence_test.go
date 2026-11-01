@@ -77,25 +77,17 @@ func TestDepthAndInlinkGateDivergenceOracle(t *testing.T) {
 		t.Fatalf("finalize: %v", err)
 	}
 
-	// Depth: re-derive from the raw links superset via the production CSR, and
+	// Depth: re-derive from the raw links superset via the production BFS, and
 	// assert the hand-derived gated depths (NOT rec.Depth — independent oracle).
-	links, err := st.LinkRows()
-	if err != nil {
-		t.Fatal(err)
-	}
 	// Sanity: the raw links superset really does carry the gate-excluded edges, so
 	// the test would be vacuous (gate never exercised) if they were missing.
-	sawNofollow, sawImage := false, false
-	for _, l := range links {
-		if l.Nofollow {
-			sawNofollow = true
-		}
-		if l.Type == "image" {
-			sawImage = true
-		}
+	var nofollowRows, imageRows int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FILTER (WHERE nofollow = 1), COUNT(*) FILTER (WHERE type = 'image') FROM links`).
+		Scan(&nofollowRows, &imageRows); err != nil {
+		t.Fatal(err)
 	}
-	if !sawNofollow || !sawImage {
-		t.Fatalf("fixture did not store the gate-excluded edges (nofollow=%v image=%v) — test is vacuous", sawNofollow, sawImage)
+	if nofollowRows == 0 || imageRows == 0 {
+		t.Fatalf("fixture did not store the gate-excluded edges (nofollow=%d image=%d) — test is vacuous", nofollowRows, imageRows)
 	}
 	redirects, _ := st.Redirects()
 	// Vacuity guard for the redirect-hop assertion below (#74 R8): the fixture
@@ -111,7 +103,15 @@ func TestDepthAndInlinkGateDivergenceOracle(t *testing.T) {
 	for u := range pages {
 		urls = append(urls, u)
 	}
-	csr := c.RecomputeDepthsFromLinks(links, redirects, urls, []string{seed})
+	out, err := st.OutLinks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	csr, err := c.RecomputeDepths(out, redirects, urls, []string{seed})
+	if err != nil {
+		t.Fatal(err)
+	}
 	// /d's depth pins redirect-as-hop (#74 R8): its ONLY path from the seed is
 	// / -> /r -(HTTP redirect)-> /d, so depth(/d) = depth(/r) + 1. Dropping the
 	// redirect edges from the depth CSR leaves /d with no followed path at all.
