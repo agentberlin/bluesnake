@@ -355,18 +355,8 @@ func New(cfg *config.Config, opts ...Option) (*Crawler, error) {
 		}
 		c.renderer = r
 	}
-	uopts := urlutil.Options{
-		KeepFragments: cfg.Advanced.CrawlFragments,
-		LowercaseHex:  cfg.Advanced.PercentEncoding == "lower",
-	}
-	var replaces []urlutil.RegexReplace
-	for _, rr := range cfg.URLRewriting.RegexReplace {
-		replaces = append(replaces, urlutil.RegexReplace{
-			Pattern: mustCompile(rr.Pattern), Replace: rr.Replace,
-		})
-	}
-	c.opts = uopts
-	c.rewriter = urlutil.NewRewriter(cfg.URLRewriting.RemoveParams, replaces, cfg.URLRewriting.Lowercase, uopts)
+	c.opts = URLOptions(cfg)
+	c.rewriter = NewURLRewriter(cfg)
 	c.filter = urlutil.NewFilter(cfg.Scope.IncludeRE(), cfg.Scope.ExcludeRE())
 	c.robots = robots
 	// When the sink also implements frontier.Dedup (the SQLite store does), it is

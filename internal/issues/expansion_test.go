@@ -423,3 +423,27 @@ func TestCanonicalUnlinked(t *testing.T) {
 		t.Error("self-canonical page without referrers flagged")
 	}
 }
+
+// TestRedirectBrokenKeyedOnTheCrawledTarget: the Location is stored as the site
+// sent it, while the target page was crawled and stored under its normal form.
+// The lookup must bridge the two, and the detail keeps the Location as sent.
+func TestRedirectBrokenKeyedOnTheCrawledTarget(t *testing.T) {
+	dead := &crawler.PageRecord{URL: "https://ex.com/dead", Scope: "internal",
+		State: crawler.StateCrawled, StatusCode: 301, RedirectURL: "https://EX.com:443/gone#top"}
+	gone := &crawler.PageRecord{URL: "https://ex.com/gone", Scope: "internal",
+		State: crawler.StateCrawled, StatusCode: 404}
+	moved := &crawler.PageRecord{URL: "https://ex.com/moved", Scope: "internal",
+		State: crawler.StateCrawled, StatusCode: 301, RedirectURL: "https://ex.com:443/ok"}
+	ok := htmlPage("https://ex.com/ok", expansionFacts())
+
+	occs := eval(dead, gone, moved, ok)
+	if !has(occs, "https://ex.com/dead", "redirect_broken") {
+		t.Error("missing redirect_broken: the Location's spelling must not hide the 404 target")
+	}
+	if got := detailsOf(occs, "https://ex.com/dead", "redirect_broken"); len(got) != 1 || got[0] != "https://EX.com:443/gone#top" {
+		t.Errorf("redirect_broken details = %v, want the Location as sent", got)
+	}
+	if has(occs, "https://ex.com/moved", "redirect_broken") {
+		t.Error("redirect to a healthy page flagged")
+	}
+}

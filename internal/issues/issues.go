@@ -385,7 +385,10 @@ type evaluator struct {
 	pages     map[string]*crawler.PageRecord
 	skipLinks bool
 	inlinks   map[string]*inlinkInfo // hyperlink inlinks per target, for the inlink aggregates
-	occs      []Occurrence
+	// rewrite maps a URL as a page sent it (a redirect's Location) onto the key
+	// the crawl stored its target under, so lookups in pages find the target.
+	rewrite *urlutil.Rewriter
+	occs    []Occurrence
 }
 
 // EvalOption configures Evaluate.
@@ -400,7 +403,7 @@ func SkipLinks() EvalOption { return func(e *evaluator) { e.skipLinks = true } }
 
 // Evaluate runs the whole catalogue over a crawl's pages.
 func Evaluate(pages map[string]*crawler.PageRecord, cfg *config.Config, opts ...EvalOption) []Occurrence {
-	e := &evaluator{cfg: cfg, pages: pages, inlinks: map[string]*inlinkInfo{}}
+	e := &evaluator{cfg: cfg, pages: pages, inlinks: map[string]*inlinkInfo{}, rewrite: crawler.NewURLRewriter(cfg)}
 	for _, o := range opts {
 		o(e)
 	}
@@ -467,7 +470,7 @@ type LinkChecker struct{ e *evaluator }
 // NewLinkChecker prepares the per-page link checks over pages (the same map
 // the SkipLinks evaluation ran over).
 func NewLinkChecker(pages map[string]*crawler.PageRecord, cfg *config.Config) *LinkChecker {
-	return &LinkChecker{e: &evaluator{cfg: cfg, pages: pages, inlinks: map[string]*inlinkInfo{}}}
+	return &LinkChecker{e: &evaluator{cfg: cfg, pages: pages, inlinks: map[string]*inlinkInfo{}, rewrite: crawler.NewURLRewriter(cfg)}}
 }
 
 // Page runs the link checks for url over its stored links. A page the
@@ -523,7 +526,7 @@ func (e *evaluator) responseCodes(rec *crawler.PageRecord) {
 	case rec.StatusCode >= 300:
 		if internal {
 			e.add(rec.URL, "internal_redirect", rec.RedirectURL)
-			if target, ok := e.pages[rec.RedirectURL]; ok && target.StatusCode >= 400 {
+			if target, ok := e.pages[e.rewrite.Rewrite(rec.RedirectURL)]; ok && target.StatusCode >= 400 {
 				e.add(rec.URL, "redirect_broken", rec.RedirectURL)
 			}
 		}
