@@ -1,12 +1,9 @@
 package sitecheck
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/xml"
 	"fmt"
-	"io"
 	"net/url"
 	"strings"
 	"time"
@@ -224,19 +221,13 @@ func (c *Checker) fetchSitemapFile(ctx context.Context, u, source string, viaRob
 	if res.FetchError != "" || res.StatusCode < 200 || res.StatusCode >= 300 {
 		return f
 	}
-	body := res.Body
-	f.RawBytes = len(body)
+	f.RawBytes = len(res.Body)
 	f.Truncated = res.Truncated
-	if len(body) >= 2 && body[0] == 0x1f && body[1] == 0x8b {
-		f.Gzip = true
-		zr, err := gzip.NewReader(bytes.NewReader(body))
-		if err == nil {
-			body, err = io.ReadAll(io.LimitReader(zr, gunzipCap))
-		}
-		if err != nil {
-			f.Kind, f.XMLError = "invalid", "gzip: "+err.Error()
-			return f
-		}
+	body, gzipped, err := sitemapxml.Gunzip(res.Body)
+	f.Gzip = gzipped
+	if err != nil {
+		f.Kind, f.XMLError = "invalid", err.Error()
+		return f
 	}
 	f.SizeBytes = len(body)
 

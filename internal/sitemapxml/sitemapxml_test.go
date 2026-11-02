@@ -1,6 +1,8 @@
 package sitemapxml
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/xml"
 	"strings"
 	"testing"
@@ -112,5 +114,62 @@ func TestUnmarshalLeavesOtherProcessingInstructions(t *testing.T) {
 	note, err := Unmarshal([]byte(raw), &s)
 	if err != nil || note != "" || len(s.URLs) != 2 {
 		t.Errorf("Unmarshal = (%q, %v) with %d URLs, want (\"\", nil) with 2", note, err, len(s.URLs))
+	}
+}
+
+func gzipped(t *testing.T, b []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw, _ := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+	if _, err := zw.Write(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// TestUnmarshalGzip: a sitemap.xml.gz body (gzip magic, no Content-Encoding
+// for the transport to undo) is decompressed before decoding, its declaration
+// then settled as for a plain file.
+func TestUnmarshalGzip(t *testing.T) {
+	var s set
+	note, err := Unmarshal(gzipped(t, []byte(`<?xml version="1.1" encoding="UTF-8"?>`+body)), &s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.URLs) != 2 || note != `declares XML version "1.1"; read as 1.0` {
+		t.Errorf("Unmarshal = %+v, note %q; want the two-URL urlset noting 1.1", s, note)
+	}
+}
+
+func TestGunzip(t *testing.T) {
+	plain := []byte(body)
+	if out, gz, err := Gunzip(plain); err != nil || gz || !bytes.Equal(out, plain) {
+		t.Errorf("plain body: Gunzip = (%d bytes, %v, %v), want it back untouched", len(out), gz, err)
+	}
+	if out, gz, err := Gunzip(gzipped(t, plain)); err != nil || !gz || !bytes.Equal(out, plain) {
+		t.Errorf("gzipped body: Gunzip = (%q, %v, %v), want the plain body", out, gz, err)
+	}
+	// a truncated stream (a fetch cut short at max_page_size_kb) is an error,
+	// never a silently short sitemap
+	cut := gzipped(t, plain)
+	if _, gz, err := Gunzip(cut[:len(cut)-8]); err == nil || !gz || !strings.HasPrefix(err.Error(), "gzip: ") {
+		t.Errorf("truncated stream: Gunzip = (%v, %v), want a gzip: error", gz, err)
+	}
+	var s set
+	if _, err := Unmarshal(cut[:len(cut)-8], &s); err == nil {
+		t.Error("Unmarshal of a truncated gzip stream = nil error, want one")
+	}
+}
+
+// TestGunzipBound: decompression stops at MaxGunzipBytes, so a gzip bomb
+// costs at most that much memory.
+func TestGunzipBound(t *testing.T) {
+	bomb := gzipped(t, make([]byte, MaxGunzipBytes+1<<20))
+	out, _, err := Gunzip(bomb)
+	if err != nil || len(out) != MaxGunzipBytes {
+		t.Errorf("Gunzip = (%d bytes, %v), want exactly MaxGunzipBytes (%d)", len(out), err, MaxGunzipBytes)
 	}
 }

@@ -1,17 +1,20 @@
 // Package sitemapxml decodes sitemap XML the way search-engine crawlers read
-// it: a file whose URLs can be read is read, whatever its XML declaration
-// says. encoding/xml rejects any version other than 1.0 and any encoding other
-// than UTF-8 — a sitemap that declares XML 1.1, "utf8" or ISO-8859-1 but is
-// otherwise a valid urlset would be thrown away whole. Unmarshal settles the
-// declaration itself (it is dropped before encoding/xml sees it, the body
-// transcoded to UTF-8 when it names a known legacy encoding) and reports what
-// was odd about it as a note; only markup that really can't be read is an
-// error. Every sitemap reader shares it: spider-crawl discovery, list mode's
-// --sitemap source and the sitemap site check.
+// it: a file whose URLs can be read is read, gzipped or not and whatever its
+// XML declaration says. encoding/xml rejects any version other than 1.0 and
+// any encoding other than UTF-8 — a sitemap that declares XML 1.1, "utf8" or
+// ISO-8859-1 but is otherwise a valid urlset would be thrown away whole.
+// Unmarshal decompresses a gzipped file (sitemap.xml.gz served as is), then
+// settles the declaration itself (it is dropped before encoding/xml sees it,
+// the body transcoded to UTF-8 when it names a known legacy encoding) and
+// reports what was odd about it as a note; only a gzip stream or markup that
+// really can't be read is an error. Every sitemap reader shares it:
+// spider-crawl discovery, list mode's --sitemap source and the sitemap site
+// check.
 package sitemapxml
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -21,6 +24,11 @@ import (
 	"golang.org/x/text/encoding/htmlindex"
 	"golang.org/x/text/transform"
 )
+
+// MaxGunzipBytes bounds a gzipped sitemap's decompressed size: past the
+// protocol's 50 MB, so reading that far proves a file too big, yet short of
+// what a gzip bomb would take.
+const MaxGunzipBytes = 64 << 20
 
 var (
 	utf8BOM    = []byte("\xef\xbb\xbf")
@@ -34,12 +42,33 @@ func pseudoAttr(name string) *regexp.Regexp {
 	return regexp.MustCompile(`(?:^|\s)` + name + `\s*=\s*(?:"([^"]*)"|'([^']*)')`)
 }
 
-// Unmarshal is xml.Unmarshal for a sitemap body. note says what was odd about
-// the XML declaration ("" for none); err is non-nil only when the markup itself
-// can't be decoded.
+// Unmarshal is xml.Unmarshal for a sitemap body as fetched, gzipped or not.
+// note says what was odd about the XML declaration ("" for none); err is
+// non-nil only when the gzip stream or the markup itself can't be decoded.
 func Unmarshal(body []byte, v any) (note string, err error) {
+	if body, _, err = Gunzip(body); err != nil {
+		return "", err
+	}
 	r, note := reader(body)
 	return note, xml.NewDecoder(r).Decode(v)
+}
+
+// Gunzip returns body decompressed (at most MaxGunzipBytes) when it is a gzip
+// file — the magic bytes, not a Content-Encoding: a sitemap.xml.gz on a static
+// server comes without one, so the transport never decompresses it. Any other
+// body comes back as is, gzipped false.
+func Gunzip(body []byte) (out []byte, gzipped bool, err error) {
+	if len(body) < 2 || body[0] != 0x1f || body[1] != 0x8b {
+		return body, false, nil
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(body))
+	if err == nil {
+		out, err = io.ReadAll(io.LimitReader(zr, MaxGunzipBytes))
+	}
+	if err != nil {
+		return nil, true, fmt.Errorf("gzip: %w", err)
+	}
+	return out, true, nil
 }
 
 // reader returns body with its XML declaration (if any) settled: removed, the

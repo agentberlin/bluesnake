@@ -48,11 +48,10 @@ const (
 
 // Operational bounds for the checks themselves.
 const (
-	robotsRedirectHops = 5        // Google REP: follow at least five hops, then treat as 404
-	sitemapIndexDepth  = 2        // index recursion depth, matching the crawler's walker
-	maxSitemapFiles    = 100      // per-report expansion bound; overflow is recorded, never silent
-	maxExamples        = 5        // per-counter example URLs carried in a report
-	gunzipCap          = 64 << 20 // decompression bound; reading past 50MB already proves the finding
+	robotsRedirectHops = 5   // Google REP: follow at least five hops, then treat as 404
+	sitemapIndexDepth  = 2   // index recursion depth, matching the crawler's walker
+	maxSitemapFiles    = 100 // per-report expansion bound; overflow is recorded, never silent
+	maxExamples        = 5   // per-counter example URLs carried in a report
 )
 
 // Finding is one derived issue occurrence: a catalogue ID (plain string — see

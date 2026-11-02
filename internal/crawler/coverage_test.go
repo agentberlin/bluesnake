@@ -325,6 +325,26 @@ func TestFetchSitemapURLsXML11(t *testing.T) {
 	}
 }
 
+// TestFetchSitemapURLsGzip: list mode reads a gzipped sitemap file instead of
+// stopping the run on the compressed bytes.
+func TestFetchSitemapURLsGzip(t *testing.T) {
+	var srvURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		fmt.Fprint(w, gzipString(t, fmt.Sprintf(`<urlset><url><loc>%s/a</loc></url></urlset>`, srvURL)))
+	}))
+	defer srv.Close()
+	srvURL = srv.URL
+
+	urls, err := FetchSitemapURLs(context.Background(), config.Default(), srv.URL+"/sitemap.xml.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(urls) != 1 || urls[0] != srv.URL+"/a" {
+		t.Errorf("FetchSitemapURLs = %v, want [%s/a]", urls, srv.URL)
+	}
+}
+
 // TestFetchSitemapURLsErrors covers the error paths: a non-200 status and a
 // body that is not valid sitemap XML.
 func TestFetchSitemapURLsErrors(t *testing.T) {

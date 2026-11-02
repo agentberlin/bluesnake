@@ -5,6 +5,7 @@ package acceptance
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"net/http"
@@ -180,6 +181,7 @@ type routeSpec struct {
 	hsts       string
 	authUser   string
 	authPass   string
+	gzip       bool // serve the body gzip-compressed, as a static .gz file (no Content-Encoding)
 }
 
 func (w *world) ensureServer() *httptest.Server {
@@ -222,6 +224,12 @@ func (w *world) ensureServer() *httptest.Server {
 		}
 		rw.WriteHeader(spec.status)
 		body := strings.ReplaceAll(spec.body, "<serverurl>", "http://"+r.Host)
+		if spec.gzip {
+			zw := gzip.NewWriter(rw)
+			fmt.Fprint(zw, body)
+			zw.Close()
+			return
+		}
 		fmt.Fprint(rw, body)
 	})
 	switch {
@@ -328,6 +336,7 @@ func initializeScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^a test server route "([^"]*)" requiring basic auth "([^"]*)" "([^"]*)"$`, w.routeAuth)
 	sc.Step(`^a test server route "([^"]*)" that sleeps (\d+)ms before responding 200$`, w.routeSlow)
 	sc.Step(`^a test server route "([^"]*)" responding (\d+) with a body of (\d+) KB$`, w.routeBigBody)
+	sc.Step(`^a test server route "([^"]*)" serving a gzip file of:$`, w.routeGzipFile)
 	sc.Step(`^a TLS test server route "([^"]*)" responding (\d+) with body "([^"]*)" and HSTS header "([^"]*)"$`, w.routeTLSHSTS)
 	sc.Step(`^a TLS test server route "([^"]*)" responding (\d+) with body "([^"]*)" that supports HTTP/2$`, w.routeHTTP2)
 	sc.Step(`^the fetch config override "([^"]*)"$`, w.addFetchOverride)
@@ -758,6 +767,14 @@ func (w *world) routeSlow(path string, ms int) error {
 func (w *world) routeBigBody(path string, status, kb int) error {
 	r := w.route(path)
 	r.status, r.body = status, strings.Repeat("a", kb*1024)
+	return nil
+}
+
+// routeGzipFile serves doc gzip-compressed with no Content-Encoding — a
+// sitemap.xml.gz on a static server, which the transport never decompresses.
+func (w *world) routeGzipFile(path string, doc *godog.DocString) error {
+	r := w.route(path)
+	r.status, r.body, r.gzip = 200, doc.Content, true
 	return nil
 }
 

@@ -1,6 +1,8 @@
 package crawler
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"net/http"
@@ -684,6 +686,54 @@ func TestSitemapCrawlingXML11(t *testing.T) {
 			t.Errorf("sitemap entries for %s = %v, want one", path, got)
 		}
 	}
+}
+
+// A gzipped sitemap file (sitemap.xml.gz served as is, no Content-Encoding for
+// the transport to undo) is read like a plain one: the site check always
+// gunzipped it, but discovery handed the compressed bytes to the decoder and
+// dropped the file, so the pages only it lists were never crawled.
+func TestSitemapCrawlingGzip(t *testing.T) {
+	s := newSite(t, map[string]string{
+		"/":         link("/linked"),
+		"/linked":   "<p>x</p>",
+		"/unlinked": "<p>only the sitemap lists this</p>",
+	})
+	s.pages["/sitemap.xml.gz"] = gzipString(t, `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>`+s.server.URL+`/unlinked</loc></url></urlset>`)
+	s.pages["/robots.txt"] = "User-agent: *\nAllow: /\nSitemap: " + s.server.URL + "/sitemap.xml.gz\n"
+
+	sink := &recordingSink{}
+	cfg := config.Default()
+	cfg.Sitemaps.CrawlLinked = true
+	cfg.Sitemaps.AutoDiscoverViaRobots = true
+	c, err := New(cfg, WithSink(sink))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := runCap(t, c, sink, s.server.URL+"/")
+	if rec := s.page(res, "/unlinked"); rec == nil || rec.State != StateCrawled {
+		t.Errorf("page listed only by a gzipped sitemap must be crawled: %+v", rec)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	want := sitemapRow{s.server.URL + "/sitemap.xml.gz", ""}
+	if got := sink.sitemaps[s.server.URL+"/unlinked"]; len(got) != 1 || got[0] != want {
+		t.Errorf("sitemap entries for /unlinked = %+v, want [%+v]", got, want)
+	}
+}
+
+// gzipString is s gzip-compressed, as a static server would serve a .gz file.
+func gzipString(t *testing.T, s string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write([]byte(s)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
 }
 
 func TestSitemapAutoDiscovery(t *testing.T) {

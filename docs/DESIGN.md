@@ -249,8 +249,9 @@ internal/robots/         REP parser/matcher (Google semantics), per-host cache, 
 internal/llmstxt/        /llms.txt parser/validator (llmstxt.org): H1 title, blockquote summary,
                          H2 section link lists; pure (fetch/admit/issues live in crawler/analyze)
 internal/sitemapxml/     the one sitemap XML decoder (crawl discovery, list --sitemap, the site
-                         check): any XML version, misspelled/legacy encodings transcoded; the
-                         odd declaration comes back as a note, only unreadable markup is an error
+                         check): gzipped .xml.gz bodies (64 MB bound), any XML version,
+                         misspelled/legacy encodings transcoded; the odd declaration comes back
+                         as a note, only an unreadable gzip stream or markup is an error
 internal/fetch/          HTTP client: timeouts, retries, HSTS emulation, auth, headers, UA,
                          cookies, TLS + extra roots, redirects-as-data (never auto-follow),
                          per-request proxy selection, wire-byte metering

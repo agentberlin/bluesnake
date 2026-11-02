@@ -35,3 +35,13 @@ Feature: List mode
     When I run "bluesnake list --sitemap <serverurl>/list.xml --store-dir <storedir> --quiet"
     Then the exit code is 0
     And the page "/from-sitemap" was requested exactly 1 times
+
+  Scenario: A gzipped sitemap file can be the list source
+    Given a site page "/from-sitemap" linking to ""
+    And a test server route "/list.xml.gz" serving a gzip file of:
+      """
+      <urlset><url><loc><serverurl>/from-sitemap</loc></url></urlset>
+      """
+    When I run "bluesnake list --sitemap <serverurl>/list.xml.gz --store-dir <storedir> --quiet"
+    Then the exit code is 0
+    And the page "/from-sitemap" was requested exactly 1 times
