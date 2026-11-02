@@ -28,3 +28,10 @@ Feature: List mode
     When I run "bluesnake list --sitemap <serverurl>/list.xml --store-dir <storedir> --quiet"
     Then the exit code is 0
     And the page "/from-sitemap" was requested exactly 1 times
+
+  Scenario: A sitemap declaring XML 1.1 can be the list source
+    Given a site page "/from-sitemap" linking to ""
+    And a test server route "/list.xml" responding 200 with body "<?xml version='1.1' encoding='UTF-8'?><urlset><url><loc><serverurl>/from-sitemap</loc></url></urlset>"
+    When I run "bluesnake list --sitemap <serverurl>/list.xml --store-dir <storedir> --quiet"
+    Then the exit code is 0
+    And the page "/from-sitemap" was requested exactly 1 times

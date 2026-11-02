@@ -653,6 +653,39 @@ func TestSitemapCrawling(t *testing.T) {
 	}
 }
 
+// A sitemap declaring XML 1.1 (miniorange.com's does) is read like a 1.0 one:
+// encoding/xml alone rejected the whole file, so its entries were never
+// recorded and the pages only it lists were never crawled.
+func TestSitemapCrawlingXML11(t *testing.T) {
+	s := newSite(t, map[string]string{
+		"/":         link("/linked"),
+		"/linked":   "<p>x</p>",
+		"/unlinked": "<p>only the sitemap lists this</p>",
+	})
+	s.pages["/sitemap.xml"] = `<?xml version="1.1" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>` + s.server.URL + `/linked</loc></url><url><loc>` + s.server.URL + `/unlinked</loc></url></urlset>`
+
+	sink := &recordingSink{}
+	cfg := config.Default()
+	cfg.Sitemaps.CrawlLinked = true
+	cfg.Sitemaps.URLs = []string{s.server.URL + "/sitemap.xml"}
+	c, err := New(cfg, WithSink(sink))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := runCap(t, c, sink, s.server.URL+"/")
+	if rec := s.page(res, "/unlinked"); rec == nil || rec.State != StateCrawled {
+		t.Errorf("page listed only by an XML 1.1 sitemap must be crawled: %+v", rec)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	for _, path := range []string{"/linked", "/unlinked"} {
+		if got := sink.sitemaps[s.server.URL+path]; len(got) != 1 {
+			t.Errorf("sitemap entries for %s = %v, want one", path, got)
+		}
+	}
+}
+
 func TestSitemapAutoDiscovery(t *testing.T) {
 	s := newSite(t, map[string]string{
 		"/":            "<p>root</p>",

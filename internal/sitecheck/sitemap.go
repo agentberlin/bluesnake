@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/agentberlin/bluesnake/internal/sitemapxml"
 )
 
 // smNamespace is the required sitemaps.org XML namespace.
@@ -54,6 +56,7 @@ type SitemapFile struct {
 	Gzip             bool         `json:"gzip,omitempty"`
 	Kind             string       `json:"kind,omitempty"` // urlset | sitemapindex | invalid
 	XMLError         string       `json:"xml_error,omitempty"`
+	XMLNote          string       `json:"xml_note,omitempty"` // odd XML declaration, file still read: report-only
 	Entries          int          `json:"entries"`
 	Children         []string     `json:"children,omitempty"`
 	Duplicates       int          `json:"duplicate_entries,omitempty"`
@@ -238,7 +241,9 @@ func (c *Checker) fetchSitemapFile(ctx context.Context, u, source string, viaRob
 	f.SizeBytes = len(body)
 
 	var set smSet
-	if err := xml.Unmarshal(body, &set); err != nil {
+	note, err := sitemapxml.Unmarshal(body, &set)
+	f.XMLNote = note
+	if err != nil {
 		f.Kind, f.XMLError = "invalid", err.Error()
 		return f
 	}

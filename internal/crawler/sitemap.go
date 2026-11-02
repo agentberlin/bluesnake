@@ -2,7 +2,6 @@ package crawler
 
 import (
 	"context"
-	"encoding/xml"
 	"fmt"
 	"strings"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/fetch"
 	"github.com/agentberlin/bluesnake/internal/frontier"
 	"github.com/agentberlin/bluesnake/internal/proxypool"
+	"github.com/agentberlin/bluesnake/internal/sitemapxml"
 	"github.com/agentberlin/bluesnake/internal/urlutil"
 )
 
@@ -38,7 +38,7 @@ func FetchSitemapURLs(ctx context.Context, cfg *config.Config, sitemapURL string
 			return fmt.Errorf("fetching sitemap %s: status %d", u, res.StatusCode)
 		}
 		var set sitemapURLSet
-		if err := xml.Unmarshal(res.Body, &set); err != nil {
+		if _, err := sitemapxml.Unmarshal(res.Body, &set); err != nil {
 			return fmt.Errorf("parsing sitemap %s: %w", u, err)
 		}
 		for _, child := range set.Sitemaps {
@@ -192,7 +192,7 @@ func (c *Crawler) walkSitemaps(ctx context.Context, sitemapURLs []string, src st
 			return
 		}
 		var set sitemapURLSet
-		if err := xml.Unmarshal(res.Body, &set); err != nil {
+		if _, err := sitemapxml.Unmarshal(res.Body, &set); err != nil {
 			return
 		}
 		c.markSitemapRead(sitemapURL)

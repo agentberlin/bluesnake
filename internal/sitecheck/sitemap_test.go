@@ -163,6 +163,35 @@ func TestSitemapMissingNamespace(t *testing.T) {
 	}
 }
 
+// TestSitemapOddDeclarationIsRead: a urlset whose first line declares XML 1.1
+// or a non-UTF-8 encoding is read like any other (miniorange.com's declares
+// 1.1); the declaration is a report-only note, never kind invalid or a finding.
+func TestSitemapOddDeclarationIsRead(t *testing.T) {
+	healthy := urlset(entry("BASE/a"), entry("BASE/b"))
+	for decl, note := range map[string]string{
+		`<?xml version="1.1" encoding="UTF-8"?>`:        `declares XML version "1.1"; read as 1.0`,
+		`<?xml version="1.0" encoding="utf8"?>`:         `declares encoding "utf8"; read as UTF-8`,
+		`<?xml version="1.0" encoding="windows-1252"?>`: `declares encoding "windows-1252"; the sitemaps protocol requires UTF-8 (transcoded)`,
+	} {
+		t.Run(decl, func(t *testing.T) {
+			s := newSitemapSite(t, &sitemapSite{
+				bodies: map[string]string{"/sm.xml": strings.Replace(healthy, `<?xml version="1.0" encoding="UTF-8"?>`, decl, 1)},
+			})
+			rep, err := newChecker(t).Sitemaps(context.Background(), s.server.URL+"/sm.xml", SitemapOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := rep.Files[0]
+			if f.Kind != "urlset" || f.Entries != 2 || f.XMLError != "" || f.XMLNote != note {
+				t.Errorf("file = %+v, want a 2-entry urlset noting %q", f, note)
+			}
+			if ids := findingIDs(rep); ids != nil {
+				t.Errorf("findings = %v, want none", ids)
+			}
+		})
+	}
+}
+
 func TestSitemapEntryValidation(t *testing.T) {
 	s := newSitemapSite(t, &sitemapSite{
 		bodies: map[string]string{"/sm.xml": urlset(
