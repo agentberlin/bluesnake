@@ -248,6 +248,10 @@ internal/robots/         REP parser/matcher (Google semantics), per-host cache, 
                          matched-line reporting, sitemap discovery
 internal/llmstxt/        /llms.txt parser/validator (llmstxt.org): H1 title, blockquote summary,
                          H2 section link lists; pure (fetch/admit/issues live in crawler/analyze)
+internal/sitemapxml/     the one sitemap XML decoder (crawl discovery, list --sitemap, the site
+                         check): gzipped .xml.gz bodies (64 MB bound), any XML version,
+                         misspelled/legacy encodings transcoded; the odd declaration comes back
+                         as a note, only an unreadable gzip stream or markup is an error
 internal/fetch/          HTTP client: timeouts, retries, HSTS emulation, auth, headers, UA,
                          cookies, TLS + extra roots, redirects-as-data (never auto-follow),
                          per-request proxy selection, wire-byte metering
@@ -551,7 +555,9 @@ chain, 4xx ⇒ missing, 5xx ⇒ whole-site risk, 500 KiB cap; parse-level invali
 lines via `robots.File.Ignored`; blocks-all; sitemap directives); *XML
 sitemaps* (discovery via robots directives ∪ `/sitemap.xml` conventions ∪
 declared, index recursion, gzip-aware sizes — which unblocked the >50 MB
-check — entry hygiene; robots-declared sitemaps are exempt from the
+check — entry hygiene; an odd XML declaration — version 1.1, "utf8",
+ISO-8859-1 — is a report-only `xml_note`, never `kind: invalid`, since the
+file is still read; robots-declared sitemaps are exempt from the
 cross-host finding per sitemaps.org cross-submission); *AI-bot access* (an
 embedded registry of ~30 crawlers — data, not code; robots verdicts per bot
 plus optional live probes with each fetcher's real UA via `fetch.FetchWith`,

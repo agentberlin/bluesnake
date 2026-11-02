@@ -507,6 +507,9 @@ func newToolsSitemapCmd() *cobra.Command {
 					fmt.Fprintf(out, "OK       %s  (%s, %d entries, %d bytes, via %s)\n",
 						f.URL, f.Kind, f.Entries, f.SizeBytes, f.Source)
 				}
+				if f.XMLNote != "" {
+					fmt.Fprintf(out, "  note %s\n", f.XMLNote)
+				}
 				for _, ec := range f.EntryChecks {
 					if ec.Error != "" {
 						fmt.Fprintf(out, "  entry %s  (%s)\n", ec.URL, ec.Error)

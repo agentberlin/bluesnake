@@ -203,6 +203,59 @@ Feature: Crawl bundle export
     And the bundle page "/orphan" has a null "depth"
     And the bundle page "/about" is listed in no sitemap
 
+  # encoding/xml rejects any version but 1.0, so a valid urlset declaring 1.1
+  # (miniorange.com's) was dropped whole: none of its pages credited to it, the
+  # ones only it lists never crawled. The declaration is now just a note.
+  Scenario: A sitemap declaring XML 1.1 is read like a 1.0 one
+    Given a robots.txt file:
+      """
+      User-agent: *
+      Allow: /
+      Sitemap: <serverurl>/sitemap.xml
+      """
+    And the test server serves the background robots.txt
+    And a site page "/sitemap.xml" with body:
+      """
+      <?xml version="1.1" encoding="UTF-8"?>
+      <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+        <url><loc><serverurl>/</loc></url>
+        <url><loc><serverurl>/orphan</loc></url>
+      </urlset>
+      """
+    And a site page "/orphan" with body "<html><head><title>Bundle orphan page title</title></head><body><p>orphan</p></body></html>"
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
+    Then the exit code is 0
+    And the bundle page "/" is listed in sitemap "/sitemap.xml" with lastmod ""
+    And the bundle page "/orphan" is listed in sitemap "/sitemap.xml" with lastmod ""
+    And the bundle has a "sitemap" site check whose report "files" contains "kind:urlset"
+    And the bundle has a "sitemap" site check whose report "files" contains "xml_note:declares XML version"
+
+  # A sitemap.xml.gz on a static server carries no Content-Encoding, so the
+  # transport hands over the compressed bytes. The site check always gunzipped
+  # them; discovery dropped the file, so the pages only it lists went uncrawled.
+  Scenario: A gzipped sitemap file is read like a plain one
+    Given a robots.txt file:
+      """
+      User-agent: *
+      Allow: /
+      Sitemap: <serverurl>/sitemap.xml.gz
+      """
+    And the test server serves the background robots.txt
+    And a test server route "/sitemap.xml.gz" serving a gzip file of:
+      """
+      <?xml version="1.0" encoding="UTF-8"?>
+      <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+        <url><loc><serverurl>/orphan</loc></url>
+      </urlset>
+      """
+    And a site page "/orphan" with body "<html><head><title>Bundle orphan page title</title></head><body><p>orphan</p></body></html>"
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
+    Then the exit code is 0
+    And the bundle page "/orphan" is listed in sitemap "/sitemap.xml.gz" with lastmod ""
+    And the bundle has a "sitemap" site check whose report "files" contains "gzip:true"
+
   # alt is omitted when empty, so on its own it cannot tell a missing alt from a
   # decorative alt="". no_alt_attr can, on every image link.
   Scenario: An image link says whether its img had an alt attribute

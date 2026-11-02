@@ -213,6 +213,7 @@ function SitemapTool({ meta, onBack, prefill }) {
               <span>{(f.entries || 0).toLocaleString()} entries</span>
               <span>{((f.size_bytes || 0) / 1024).toFixed(1)} KB{f.gzip ? " (gzipped)" : ""}</span>
               {f.xml_error && <span style={{ color: "var(--s-4xx)" }}>{f.xml_error}</span>}
+              {f.xml_note && <span>{f.xml_note}</span>}
               {f.duplicate_entries > 0 && <span>{f.duplicate_entries} duplicates</span>}
               {f.cross_host_urls > 0 && <span>{f.cross_host_urls} cross-host</span>}
               {f.invalid_lastmod > 0 && <span>{f.invalid_lastmod} invalid lastmod</span>}
