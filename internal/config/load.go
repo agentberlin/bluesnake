@@ -227,6 +227,9 @@ func (c *Config) Validate() error {
 	if t := c.Content.NearDuplicates.Threshold; t < 0 || t > 100 {
 		bad("content.near_duplicates.threshold: must be between 0 and 100, got %d", t)
 	}
+	if n := c.Content.NearDuplicates.MinWords; n < 0 {
+		bad("content.near_duplicates.min_words: must be >= 0, got %d", n)
+	}
 	if t := c.Thresholds.Title; t.MinChars > t.MaxChars || t.MinPx > t.MaxPx {
 		bad("thresholds.title: min must not exceed max")
 	}

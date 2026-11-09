@@ -111,7 +111,7 @@ record the domain*, so the same divergence is never investigated twice.
 | Robots.txt | own implementation in `internal/robots` (Google REP: RFC 9309 + Google extensions) | exact UA-precedence/longest-match/allow-tie semantics + custom robots override + matched-line reporting need internals |
 | JS rendering | `chromedp` (CDP, headless Chrome) — optional at runtime, feature-gated | parity with SF's Chromium rendering; binary stays pure-Go when not rendering |
 | Crawl frontier | own implementation (in-memory queue mirrored to SQLite `frontier` table) | resume semantics + per-host politeness need custom structure |
-| Near-duplicates | own minhash (shingling + 128 perms + LSH banding) | small, well-understood; SF parity |
+| Near-duplicates | own minhash (5-word shingles, 64 perms, LSH banding) picks candidates; exact Jaccard measures them | small, well-understood; SF parity |
 | Link score | power-iteration PageRank over SQLite-loaded edge list | standard |
 | xlsx export | `xuri/excelize/v2` | only writer needed |
 | WARC archiving | `slyrz/warc` or own minimal writer (later phase) | |
@@ -274,9 +274,11 @@ internal/store/          SQLite schema + repositories (pages, links, frontier, s
                          analysis results, crawl meta), migrations, crawl manager (crawl IDs)
 internal/indexability/   the indexability state machine (status + reason)
 internal/issues/         rule engine: per-URL rules + aggregate rules; catalogue with id/severity/priority
-internal/analyze/        post-crawl: link score, chains (redirect/canonical), near-dup minhash,
+internal/analyze/        post-crawl: link score, chains (redirect/canonical), near-dup issues,
                          hreflang reciprocity, pagination sequence, sitemap set-ops, orphans,
                          inlink-derived flags
+internal/nearcopy/       the near-copy step (§5.6): every page's near copies with exact shares;
+                         runs in the analysis or on its own after a crawl with analysis off
 internal/export/         tab/filter datasets, bulk exports, writers (csv/json/jsonl/xlsx)
 internal/bundle/         the whole-crawl machine export (§5.13): versioned, counted, streamed
                          JSON Lines — header + one nested record per page (text, structured
@@ -388,7 +390,9 @@ CREATE TABLE page_metrics (
   depth INTEGER,                       -- shortest followed path from a seed; NULL = no path
   inlinks INTEGER, discovered_from TEXT,
   link_score REAL, unique_inlinks INTEGER, unique_outlinks INTEGER,
-  closest_similarity REAL, near_dup_count INTEGER
+  closest_similarity REAL, near_dup_count INTEGER,
+  near_copies TEXT,                    -- JSON [{url, share}], ≤ 50, most shared first; NULL = not compared
+  near_copy_count INTEGER              -- every near copy; NULL = not compared
 );
 
 -- typed link edges
@@ -452,7 +456,7 @@ Crawl DBs and the registry DB are durable artifacts that outlive the binary, so 
 - A **fresh** database (no tables yet → this open created it) is stamped straight to the top of its ladder — `max(floor, highest step)`, so an empty/fully-retired ladder still stamps the current revision, not v0; the migration steps never run.
 - An **existing** database runs only the ladder steps whose version is above its stored revision, each applied in a transaction that bumps `user_version` atomically (a crash mid-step rolls back to the prior revision). The common case — already current — is one pragma read.
 
-Migrations are an **append-only ladder** (`crawlMigrations`, `registryMigrations`): each step has a *stable* version number (never renumbered or reordered) and an idempotent `apply` func. Adding a schema change = append one step. The two `min*Version` floors are the removal lever (below). Every step through crawl v5 / registry v2 was retired once all installs reached them, so the floors sit there; the crawl ladder's live steps are v6 `pages.proxy`, v7 `links.position_path`, v8 `sitemap_entries.lastmod`, v9 `facts.headings` and v10 `page_metrics`, the registry ladder is empty, and the next change appends just above (v11 / v3), reusing the retained `addColumn`/`columnExists` helpers. A step may rewrite data as well as schema: v9 rewrites each page's stored `facts` from the old `H1s`/`H2s`/`HeadingLevels`/`H1AltText` fields into the one `Headings` record (levels and h1/h2 text carried over, `""` for h3–h6 text that was never kept, the page-level alt flag as `FromAlt` on the first h1), so analysis, compare and the exports read an old crawl as they read a new one. v10 copies the finalize-written columns an older crawl kept in `pages` (depth, inlinks, discovered_from, link_score, unique in/outlinks, the near-duplicate pair) into `page_metrics` and leaves the old columns in place unread — nulling them would rewrite every facts blob, the cost the table exists to avoid.
+Migrations are an **append-only ladder** (`crawlMigrations`, `registryMigrations`): each step has a *stable* version number (never renumbered or reordered) and an idempotent `apply` func. Adding a schema change = append one step. The two `min*Version` floors are the removal lever (below). Every step through crawl v5 / registry v2 was retired once all installs reached them, so the floors sit there; the crawl ladder's live steps are v6 `pages.proxy`, v7 `links.position_path`, v8 `sitemap_entries.lastmod`, v9 `facts.headings`, v10 `page_metrics` and v11 `page_metrics.near_copies`, the registry ladder is empty, and the next change appends just above (v12 / v3), reusing the retained `addColumn`/`columnExists` helpers. A step may rewrite data as well as schema: v9 rewrites each page's stored `facts` from the old `H1s`/`H2s`/`HeadingLevels`/`H1AltText` fields into the one `Headings` record (levels and h1/h2 text carried over, `""` for h3–h6 text that was never kept, the page-level alt flag as `FromAlt` on the first h1), so analysis, compare and the exports read an old crawl as they read a new one. v10 copies the finalize-written columns an older crawl kept in `pages` (depth, inlinks, discovered_from, link_score, unique in/outlinks, the near-duplicate pair) into `page_metrics` and leaves the old columns in place unread — nulling them would rewrite every facts blob, the cost the table exists to avoid.
 
 > **Retiring a migration.** Stable version numbers + a floor are what make old step code *safely deletable* — without a durable revision marker you can never prove a DB on disk doesn't still need an old step. To drop support for ancient databases and delete their migration code:
 > 1. Pick the new floor **F** — the oldest revision you still want to open.
@@ -480,7 +484,7 @@ Catalogue: every issue has `ID` (stable, snake_case), `Tab`, `Name`, `Severity` 
 Each analyzer reads SQLite and writes back to `page_metrics` and the result tables, never to `pages` (§5.3); all are idempotent and re-runnable (e.g. after changing near-dup threshold — mirrors SF). The phase holds a page map without link lists or bodies and streams those per page, so its memory is set by the page count, not the link count:
 - **link_score**: PageRank (d=0.85, 40 iters or ε<1e-6) over followed internal hyperlinks; scaled 0–100.
 - **chains**: follow redirect/canonical edges → `redirect_chains` result table (source, hops, loop flag, final status, chain type incl. mixed).
-- **near_duplicates**: 5-word shingles of content-area text → minhash(128) → LSH candidate pairs → exact Jaccard verify ≥ threshold.
+- **near_duplicates** — the near-copy step (`internal/nearcopy`): for every compared page, every other page whose content-area text is almost the same, with the **exact** share they have in common — the Jaccard of their 5-word shingle sets (`minhash.Shingles`, the shingling the signature hashes). The 64-value minhash signature stored at crawl time (`pages.minhash`, computed from the text when absent) only picks candidates: LSH bands plus a minimum number of agreeing values, chosen per threshold (`nearcopy.Banding`) so that a pair whose share is exactly the threshold is lost by each rule less than once in 10,000 (`TestBandingKeepsTheMissBudget`, simulated by `TestRecallAtTheThreshold`). The old check dropped a candidate whose *estimate* was under the threshold — at 80% the estimate spreads ±5 points, so half the pairs at the threshold vanished. Each compared page's shingle set is written once to a temporary file beside the crawl DB and read back per exact check; memory holds a signature and a few fields a page (`TestRunMemoryIsSetByPagesNotText`). Pages with identical sets are grouped, so a thousand identical shells cost one comparison, not half a million. Filters: internal, crawled, ≥ `content.near_duplicates.min_words` (and > 0) words, indexable when `indexable_only`, not page 2+ when `advanced.ignore_paginated_for_duplicates`. Byte-identical pages are near copies at 100% (and keep `duplicate_of`). Each page keeps its 50 most shared (then by URL) and the full count in `page_metrics.near_copies` / `near_copy_count`, NULL when not compared; `closest_similarity` / `near_dup_count` come from the same list, and the settings it ran with are the `analysis` row `near_copies`. The `content_near_duplicate` issue leaves out byte-identical twins, as SF's Near Duplicates does. The step runs whenever `content.near_duplicates.enabled` and `analysis.near_duplicates` are on — **with `analysis.auto` off too**: finalize then runs it alone (no link scores, unique links or issues) once the crawl completes, a resume's completion included, so the bundle carries it.
 - **hreflang**: reciprocity matrix, return-link checks, code validation (ISO 639-1 / 3166-1), x-default/self-reference, canonical consistency.
 - **pagination**: sequence reciprocity, loops, unlinked pagination URLs.
 - **canonicals/links**: unlinked-canonical detection, inlink-only-nofollow / non-indexable-inlinks-only flags, aggregates (unique in/outlinks, % of total).
@@ -881,6 +885,16 @@ than behind every page, and a reader after only the pages skips a counted
 number of lines. One file, not a sidecar: a crawl travels as one file. (A list
 crawl's header still names every listed URL in `seeds`, so a large list crawl
 still has a large line 1.)
+
+Each page line carries `near_copies` — `[{url, share}]`, the near-copy step's
+list (§5.6): exact share 0–1 to 4 places, highest first then by URL, at most
+50 — and `near_copy_count`, every near copy. Both are `null` when the page was
+not compared (the step did not run, or the page failed its filters) and `[]` /
+`0` when it was compared and has none: a consumer treats the two differently.
+The header's `near_copy_settings` (`threshold` in percent, `min_words`,
+`indexable_only`, `ignore_paginated`) records what the lists were measured
+under — the floor of every list — and is `null` when the step did not run.
+Both added within `/3`.
 
 It also carries `config_digest`, a hash of the crawl's frozen config:
 the link-position rules are configurable, so `position` is only interpretable

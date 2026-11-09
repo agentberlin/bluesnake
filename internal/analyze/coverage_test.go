@@ -583,7 +583,7 @@ func TestCatalogueFixtureCoverage(t *testing.T) {
 	for _, o := range issues.Evaluate(pages, cfg) {
 		triggered[o.IssueID] = true
 	}
-	for _, o := range Run(pages, sitemaps, llmstxt, siteChecks, cfg).Occurrences {
+	for _, o := range Run(pages, sitemaps, llmstxt, siteChecks, cfg, WithNearCopies(nearCopiesOf(t, pages, cfg))).Occurrences {
 		triggered[o.IssueID] = true
 	}
 
@@ -623,7 +623,7 @@ func TestCatalogueOwnershipPartition(t *testing.T) {
 			t.Errorf("Evaluate emitted %s, an analysis-owned check — the issues refresh would wipe rows it cannot recompute", o.IssueID)
 		}
 	}
-	for _, o := range Run(pages, sitemaps, llmstxt, siteChecks, cfg).Occurrences {
+	for _, o := range Run(pages, sitemaps, llmstxt, siteChecks, cfg, WithNearCopies(nearCopiesOf(t, pages, cfg))).Occurrences {
 		if !analysis[o.IssueID] {
 			t.Errorf("analyze.Run emitted %s, which is not analysis-owned — SaveAnalysis would reject or orphan it", o.IssueID)
 		}

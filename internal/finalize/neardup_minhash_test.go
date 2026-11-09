@@ -2,22 +2,20 @@ package finalize
 
 // FIN-NDSIG (MEMORY-SCALING.md §5.5, EC19): the near-dup minhash column. A
 // near-dup-enabled crawl precomputes each page's signature at crawl time and
-// persists it (pages.minhash), so finalize runs near-dup over the ContentText-
-// free lite map and never reloads the page bodies. These tests pin: (1) the
-// signatures round-trip through the store; (2) near-dup over the column path is
-// IDENTICAL to the ContentText fallback path; (3) finalize fires near-dup off
-// the lite map; (4) a near-dup-OFF crawl leaves the column empty.
+// persists it (pages.minhash), and the near-copy step picks its candidates from
+// the stored signatures. These tests pin: (1) the signatures round-trip through
+// the store; (2) the step over the column is IDENTICAL to the step computing
+// signatures from the stored text; (3) finalize raises the issue from it; (4) a
+// near-dup-OFF crawl leaves the column empty.
 
 import (
 	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sort"
 	"strings"
 	"testing"
 
-	"github.com/agentberlin/bluesnake/internal/analyze"
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/store"
@@ -113,9 +111,10 @@ func TestNearDupMinhashColumnPersisted(t *testing.T) {
 	}
 }
 
-// TestNearDupColumnEqualsContentTextPath proves near-dup over the precomputed
-// column (the lite map) is byte-identical to the ContentText fallback path (the
-// same map with the column cleared) — the cutover-safety parity gate.
+// TestNearDupColumnEqualsContentTextPath proves the near-copy step over the
+// precomputed signature column is byte-identical to the same step computing
+// each signature from the stored text — the path an older crawl, or one that
+// ran with the check off, takes when the check is turned on for re-analysis.
 func TestNearDupColumnEqualsContentTextPath(t *testing.T) {
 	st, _ := crawlNearDup(t, true)
 	cfg := config.Default()
@@ -123,41 +122,44 @@ func TestNearDupColumnEqualsContentTextPath(t *testing.T) {
 	cfg.Content.NearDuplicates.Enabled = true
 	cfg.Content.NearDuplicates.Threshold = 90
 
-	// Column path: lite map (no ContentText, has signatures).
-	lite, err := st.LoadPagesLite()
-	if err != nil {
+	if _, err := Analyze(st, cfg); err != nil {
 		t.Fatal(err)
 	}
-	links := st.Hyperlinks()
-	colRes := analyze.Run(lite, nil, nil, nil, cfg, analyze.WithLinkSource(links))
-
-	// Fallback path: full map (has ContentText) with the signatures cleared, so
-	// analyze must recompute from the bodies.
-	full, err := st.LoadPages()
-	if err != nil {
+	col := nearCopyRows(t, st)
+	if _, err := st.DB().Exec(`UPDATE pages SET minhash = NULL`); err != nil {
 		t.Fatal(err)
 	}
-	for _, rec := range full {
-		rec.Minhash = nil
+	if _, err := Analyze(st, cfg); err != nil {
+		t.Fatal(err)
 	}
-	txtRes := analyze.Run(full, nil, nil, nil, cfg, analyze.WithLinkSource(links))
-
-	col := nearDupSet(colRes)
-	txt := nearDupSet(txtRes)
-	if len(col) == 0 {
-		t.Fatal("near-dup produced no pairs — parity check is vacuous")
+	txt := nearCopyRows(t, st)
+	if !strings.Contains(strings.Join(col, "\n"), `"share"`) {
+		t.Fatalf("near copies found no pairs — parity check is vacuous: %v", col)
 	}
 	if strings.Join(col, "\n") != strings.Join(txt, "\n") {
-		t.Errorf("near-dup column path != ContentText path\n column: %v\n text:   %v", col, txt)
+		t.Errorf("near copies over the column != over the text\n column: %v\n text:   %v", col, txt)
 	}
 }
 
-func nearDupSet(r *analyze.Results) []string {
-	var out []string
-	for url, nd := range r.NearDups {
-		out = append(out, fmt.Sprintf("%s|%d|%.2f|%s", url, nd.Count, nd.ClosestSimilarity, nd.ClosestMatch))
+// nearCopyRows is every page's stored near-copy fields, one line a page.
+func nearCopyRows(t *testing.T, st *store.Crawl) []string {
+	t.Helper()
+	rows, err := st.DB().Query(`SELECT url, COALESCE(near_copies, 'null'), COALESCE(near_copy_count, -1),
+		closest_similarity, near_dup_count FROM page_metrics ORDER BY url`)
+	if err != nil {
+		t.Fatal(err)
 	}
-	sort.Strings(out)
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var url, list string
+		var count, dups int
+		var closest float64
+		if err := rows.Scan(&url, &list, &count, &closest, &dups); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, fmt.Sprintf("%s|%s|%d|%.2f|%d", url, list, count, closest, dups))
+	}
 	return out
 }
 

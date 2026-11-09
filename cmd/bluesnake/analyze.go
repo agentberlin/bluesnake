@@ -13,7 +13,7 @@ func newAnalyzeCmd() *cobra.Command {
 	var storeDir string
 	cmd := &cobra.Command{
 		Use:   "analyze <crawl-id>",
-		Short: "(Re-)run post-crawl analysis: link score, chains, near-duplicates, hreflang, pagination, sitemaps",
+		Short: "(Re-)run post-crawl analysis: link score, chains, near copies, hreflang, pagination, sitemaps",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			st, err := store.OpenCrawl(storeDir, args[0])
@@ -50,6 +50,10 @@ func storedConfig(st *store.Crawl) (*config.Config, error) {
 // resume, list and analyze commands.
 func printAnalysis(cmd *cobra.Command, id string, o finalize.Outcome) {
 	if !o.Analyzed {
+		// The rest of the analysis was off; near copies may still have run.
+		if o.NearCopies {
+			fmt.Fprintf(cmd.OutOrStdout(), "Near copies: %d pages have near copies\n", o.NearDups)
+		}
 		return
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Analysis: %d chains, %d near-duplicate pages\n",

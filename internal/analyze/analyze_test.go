@@ -1,8 +1,6 @@
 package analyze
 
 import (
-	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/agentberlin/bluesnake/internal/config"
@@ -108,106 +106,6 @@ func TestCanonicalChains(t *testing.T) {
 	r := Run(pages, nil, nil, nil, config.Default())
 	if !hasOcc(r, "https://ex.com/a", "canonical_chain") {
 		t.Error("missing canonical_chain")
-	}
-}
-
-func TestNearDuplicates(t *testing.T) {
-	// non-repetitive text: 200 distinct words, one word changed in `similar`
-	var w []string
-	for i := range 200 {
-		w = append(w, fmt.Sprintf("word%dx", i))
-	}
-	long := strings.Join(w, " ")
-	w[100] = "changed"
-	similar := strings.Join(w, " ")
-	var d []string
-	for i := range 200 {
-		d = append(d, fmt.Sprintf("other%dy", i))
-	}
-	different := strings.Join(d, " ")
-
-	mk := func(url, text, hash string) *crawler.PageRecord {
-		p := page(url)
-		p.Facts.ContentText = text
-		p.Facts.WordCount = len(strings.Fields(text))
-		p.Facts.Hash = hash
-		return p
-	}
-	cfg := config.Default()
-	cfg.Content.NearDuplicates.Enabled = true
-	pages := toMap(
-		mk("https://ex.com/a", long, "h1"),
-		mk("https://ex.com/b", similar, "h2"),
-		mk("https://ex.com/c", different, "h3"),
-	)
-	r := Run(pages, nil, nil, nil, cfg)
-	nd, ok := r.NearDups["https://ex.com/a"]
-	if !ok || nd.ClosestMatch != "https://ex.com/b" {
-		t.Fatalf("near dup for /a = %+v", nd)
-	}
-	if nd.ClosestSimilarity < 90 {
-		t.Errorf("similarity = %v, want >= 90", nd.ClosestSimilarity)
-	}
-	if _, ok := r.NearDups["https://ex.com/c"]; ok {
-		t.Error("different page flagged as near duplicate")
-	}
-	if !hasOcc(r, "https://ex.com/a", "content_near_duplicate") {
-		t.Error("missing content_near_duplicate occurrence")
-	}
-}
-
-// TestIgnorePaginatedForNearDuplicates pins the near-duplicate half of
-// advanced.ignore_paginated_for_duplicates: a URL declaring rel="prev" is
-// dropped from near-duplicate detection entirely (neither flagged nor a match
-// target), while page 1 (rel="next" only) keeps participating.
-func TestIgnorePaginatedForNearDuplicates(t *testing.T) {
-	var w []string
-	for i := range 200 {
-		w = append(w, fmt.Sprintf("word%dx", i))
-	}
-	base := strings.Join(w, " ")
-	w[100] = "changed"
-	near1 := strings.Join(w, " ")
-	w[100] = "word100x"
-	w[50] = "altered"
-	near2 := strings.Join(w, " ")
-
-	mk := func(url, text, hash string, next, prev []string) *crawler.PageRecord {
-		p := page(url)
-		p.Facts.ContentText = text
-		p.Facts.WordCount = len(strings.Fields(text))
-		p.Facts.Hash = hash
-		p.Facts.NextHTML = next
-		p.Facts.PrevHTML = prev
-		return p
-	}
-	build := func() map[string]*crawler.PageRecord {
-		return toMap(
-			mk("https://ex.com/a", base, "h1", []string{"https://ex.com/b"}, nil),
-			mk("https://ex.com/b", near1, "h2", nil, []string{"https://ex.com/a"}), // paginated
-			mk("https://ex.com/plain", near2, "h3", nil, nil),
-		)
-	}
-	cfg := config.Default()
-	cfg.Content.NearDuplicates.Enabled = true
-
-	// Flag off: the paginated page participates in near-dup detection.
-	off := Run(build(), nil, nil, nil, cfg)
-	if _, ok := off.NearDups["https://ex.com/b"]; !ok {
-		t.Fatal("flag off: paginated /b should be a near-duplicate candidate")
-	}
-
-	// Flag on: /b drops out; /a still matches the non-paginated /plain.
-	cfg.Advanced.IgnorePaginatedForDuplicates = true
-	on := Run(build(), nil, nil, nil, cfg)
-	if _, ok := on.NearDups["https://ex.com/b"]; ok {
-		t.Error("flag on: paginated /b must be excluded from near-duplicate detection")
-	}
-	if _, ok := on.NearDups["https://ex.com/a"]; !ok {
-		t.Error("flag on: non-paginated /a must still be detected as a near-duplicate of /plain")
-	}
-	if hasOcc(on, "https://ex.com/b", "content_near_duplicate") {
-		t.Error("flag on: paginated /b must not get a content_near_duplicate occurrence")
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/config"
 	"github.com/agentberlin/bluesnake/internal/crawler"
 	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/nearcopy"
 	"github.com/agentberlin/bluesnake/internal/parse"
 	"github.com/agentberlin/bluesnake/internal/store"
 )
@@ -19,11 +20,15 @@ import (
 // Outcome reports what finalization did, so each surface can render its own
 // summary/events without re-querying.
 type Outcome struct {
-	Status      string // store.StatusCompleted | store.StatusInterrupted
-	Crawled     int    // URLs fetched, over the full stored graph (authoritative)
-	Total       int    // URLs encountered, over the full stored graph (authoritative)
-	Analyzed    bool
-	Chains      int
+	Status   string // store.StatusCompleted | store.StatusInterrupted
+	Crawled  int    // URLs fetched, over the full stored graph (authoritative)
+	Total    int    // URLs encountered, over the full stored graph (authoritative)
+	Analyzed bool
+	Chains   int
+	// NearCopies says the near-copy step ran — as part of the analysis, or on
+	// its own when the rest of it is off; NearDups is then the number of pages
+	// with at least one near copy.
+	NearCopies  bool
 	NearDups    int
 	IssueTotal  int // total issue occurrences across every check that fired
 	IssueChecks int // number of distinct checks that fired
@@ -106,8 +111,19 @@ func Crawl(c *crawler.Crawler, st *store.Crawl, res *crawler.Result, p Params) (
 			return out, firstErr // leave StatusInterrupted; do not seal completed
 		}
 		out.Analyzed = true
-		out.Chains, out.NearDups = a.Chains, a.NearDups
+		out.Chains, out.NearCopies, out.NearDups = a.Chains, a.NearCopies, a.NearDups
 		out.IssueTotal, out.IssueChecks = a.IssueTotal, a.IssueChecks
+	} else if analyze.NearCopiesOn(p.Cfg) {
+		// The rest of the analysis is off, but near copies were asked for: they
+		// are part of the bundle, so they are worked out here, once, before
+		// any bundle is made — after a resume too — without link scores,
+		// unique links or issues.
+		nd, err := NearCopies(st, p.Cfg)
+		if err != nil {
+			note(err)
+			return out, firstErr
+		}
+		out.NearCopies, out.NearDups = true, nd
 	}
 
 	// Depth + analysis are durable — but seal only if NOTHING failed: a noted
@@ -163,17 +179,17 @@ func recomputeDepths(c *crawler.Crawler, st *store.Crawl, seeds []string) error 
 
 // Analyze runs the post-crawl analysis phase over the full stored graph: issue
 // evaluation followed by the graph analyses (link score, redirect chains,
-// near-duplicates, hreflang, pagination, sitemaps), persisting everything back.
+// near copies, hreflang, pagination, sitemaps), persisting everything back.
 // Used by Crawl and by standalone re-analysis (the `analyze` command, desktop
 // Reanalyze). The returned Outcome.Status is always StatusCompleted.
 func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
 	// The lite map — no link lists, no page bodies — carries everything the
 	// issue catalogue and graph analyses need except the per-page link and
 	// content-text checks (streamed one page at a time below), the link graph
-	// (read from the links table) and near-duplicates (which need the bodies —
-	// loaded fully only when the crawl stored no signatures). Its size is set by
-	// pages, not links: on a link-heavy site the link lists were 98% of the
-	// stored facts, and a map that kept them needed 1.3 MB a page.
+	// (read from the links table) and near copies (a step of their own that
+	// streams each page's text from the store). Its size is set by pages, not
+	// links: on a link-heavy site the link lists were 98% of the stored facts,
+	// and a map that kept them needed 1.3 MB a page.
 	lite, err := st.LoadPagesLite()
 	if err != nil {
 		return Outcome{}, err
@@ -200,32 +216,19 @@ func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
-	analyzePages := lite
-	if cfg.Analysis.NearDuplicates && cfg.Content.NearDuplicates.Enabled && !minhashCoverageComplete(lite) {
-		// Near-duplicates need each page's minhash signature. When near-dup was
-		// enabled at crawl time the signatures are persisted (the pages.minhash
-		// column) and the ContentText-free lite map already carries them — analyze
-		// reads them directly, so the page bodies are never re-materialised. The
-		// fallback below fires whenever ANY content page lacks a signature: the
-		// crawl ran with near-dup OFF and the operator turned it on for this
-		// re-analysis (a pre-minhash crawl migrates the column in as NULL), or the
-		// state is MIXED — some pages predate the switch-on (#74 N1). An
-		// any-page-HAS-a-signature check ran the lite map through near-dup in the
-		// mixed state, where every signature-less page hashed its empty lite
-		// ContentText to the all-max signature and "matched" every other one at
-		// 100%. It re-loads the full map (the sole pass that re-reads ContentText).
-		full, ferr := st.LoadPages()
-		if ferr != nil {
-			return Outcome{}, ferr
+	var nc *nearcopy.Result
+	if analyze.NearCopiesOn(cfg) {
+		if nc, err = nearCopies(st, cfg); err != nil {
+			return Outcome{}, err
 		}
-		analyzePages = full
 	}
 	// The PageRank/unique link graph is built from the stored hyperlinks,
 	// streamed from the links table into int32 edges (8 bytes a hyperlink) —
 	// never from the page map, which carries no link lists, and never as the
 	// rows themselves.
 	links := st.Hyperlinks()
-	results := analyze.Run(analyzePages, sitemaps, llmstxt, siteChecks, cfg, analyze.WithLinkSource(links))
+	results := analyze.Run(lite, sitemaps, llmstxt, siteChecks, cfg,
+		analyze.WithLinkSource(links), analyze.WithNearCopies(nc))
 	if err := links.Err(); err != nil {
 		return Outcome{}, err
 	}
@@ -247,31 +250,48 @@ func Analyze(st *store.Crawl, cfg *config.Config) (Outcome, error) {
 		Total:       encountered,
 		Analyzed:    true,
 		Chains:      len(results.Chains),
-		NearDups:    len(results.NearDups),
+		NearCopies:  nc != nil,
+		NearDups:    withCopies(nc),
 		IssueTotal:  total,
 		IssueChecks: len(counts),
 	}, nil
 }
 
-// minhashCoverageComplete reports whether EVERY page near-dup could consider
-// carries a precomputed signature — only then may near-dup run over the
-// ContentText-free lite map. The check is a deliberate superset of analyze's
-// candidate gate (crawled, internal, parsed, WordCount>0 — ignoring the
-// indexable/paginated config filters): an over-broad miss merely loads the
-// full map (correct, slower); an under-broad one would hand analyze a
-// signature-less page whose empty lite ContentText hashes to the all-max
-// signature and cross-matches every other one at 100% (#74 N1).
-func minhashCoverageComplete(pages map[string]*crawler.PageRecord) bool {
-	for _, rec := range pages {
-		if rec.State != crawler.StateCrawled || rec.Scope != "internal" ||
-			rec.Facts == nil || rec.Facts.WordCount == 0 {
-			continue
-		}
-		if len(rec.Minhash) == 0 {
-			return false
+// NearCopies runs the near-copy step on its own and persists its lists,
+// leaving link scores and issues as they are: the step finalize runs when the
+// rest of the analysis is off. It returns the number of pages with at least
+// one near copy.
+func NearCopies(st *store.Crawl, cfg *config.Config) (int, error) {
+	nc, err := nearCopies(st, cfg)
+	if err != nil {
+		return 0, err
+	}
+	if err := st.SaveNearCopies(nc); err != nil {
+		return 0, err
+	}
+	return withCopies(nc), nil
+}
+
+// nearCopies runs the step over the stored pages. It reads each compared
+// page's text once, from the store, and keeps only its signature and a few
+// fields; the shingle sets go to a temporary file beside the crawl database.
+func nearCopies(st *store.Crawl, cfg *config.Config) (*nearcopy.Result, error) {
+	s := analyze.NearCopySettings(cfg)
+	return nearcopy.Run(st.NearCopyPages(s.IndexableOnly), s, st.TempDir())
+}
+
+// withCopies counts the pages with at least one near copy.
+func withCopies(nc *nearcopy.Result) int {
+	if nc == nil {
+		return 0
+	}
+	n := 0
+	for _, p := range nc.Pages {
+		if p.Count > 0 {
+			n++
 		}
 	}
-	return true
+	return n
 }
 
 // evaluateIssues runs the full issue catalogue with memory bounded by the page

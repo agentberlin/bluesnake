@@ -79,6 +79,7 @@ type Outcome struct {
 	DurationSec int
 	Analyzed    bool
 	Chains      int
+	NearCopies  bool // the near-copy step ran (with the analysis, or on its own)
 	NearDups    int
 	IssueTotal  int
 	IssueChecks int
@@ -285,7 +286,8 @@ func (e *Executor) Run(ctx context.Context, spec queue.JobSpec, onStart func(cra
 		})
 		lim.ReleaseFinalize()
 		out.Status, out.Crawled, out.Total, out.Analyzed = fo.Status, fo.Crawled, fo.Total, fo.Analyzed
-		out.Chains, out.NearDups, out.IssueTotal, out.IssueChecks = fo.Chains, fo.NearDups, fo.IssueTotal, fo.IssueChecks
+		out.Chains, out.NearCopies, out.NearDups = fo.Chains, fo.NearCopies, fo.NearDups
+		out.IssueTotal, out.IssueChecks = fo.IssueTotal, fo.IssueChecks
 		if ferr != nil && out.Err == nil {
 			out.Err = ferr
 		}

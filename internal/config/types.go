@@ -306,6 +306,9 @@ type NearDuplicatesConfig struct {
 	Enabled       bool `yaml:"enabled"`
 	Threshold     int  `yaml:"threshold"` // percent 0-100
 	IndexableOnly bool `yaml:"indexable_only"`
+	// MinWords: pages with fewer content-area words are not compared. 0 (the
+	// default) compares every page with any words.
+	MinWords int `yaml:"min_words"`
 }
 
 type ContentConfig struct {

@@ -54,7 +54,6 @@ func seededStore(t *testing.T) *store.Crawl {
 		LinkScores: map[string]float64{"https://ex.com/": 100},
 		UniqueIn:   map[string]int{"https://ex.com/a": 1},
 		UniqueOut:  map[string]int{"https://ex.com/": 1},
-		NearDups:   map[string]analyze.NearDup{},
 		Chains: []analyze.Chain{
 			{Type: "redirect", Source: "https://ex.com/r", Hops: []string{"https://ex.com/r2", "https://ex.com/"},
 				Final: "https://ex.com/", FinalStatus: 200},

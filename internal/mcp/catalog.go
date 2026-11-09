@@ -192,6 +192,7 @@ var descriptions = map[string]string{
 	"content.near_duplicates.enabled":        "Detect near-duplicate pages (minhash similarity).",
 	"content.near_duplicates.threshold":      "Similarity percentage (0-100) above which pages count as near-duplicates.",
 	"content.near_duplicates.indexable_only": "Only consider indexable pages for duplicate detection.",
+	"content.near_duplicates.min_words":      "Pages with fewer content words than this are not compared for near duplicates (0 = any page with words).",
 
 	"robots.mode":                  "respect obeys robots.txt like Google; ignore crawls everything; ignore-report crawls everything but still reports what would be blocked.",
 	"robots.show_blocked_internal": "Report internal URLs blocked by robots.txt as results.",
@@ -233,7 +234,7 @@ var descriptions = map[string]string{
 	"analysis.auto":            "Run issue evaluation and graph analyses automatically when a crawl completes.",
 	"analysis.link_score":      "PageRank-style internal link score per URL (pages.link_score).",
 	"analysis.redirect_chains": "Follow redirect/canonical edges into chains and loops.",
-	"analysis.near_duplicates": "Near-duplicate clustering (pages.closest_similarity, near_dup_count).",
+	"analysis.near_duplicates": "Near copies: every page's near-copy list with exact shares (page_metrics.near_copies, near_copy_count, closest_similarity, near_dup_count). Runs after the crawl even with analysis.auto off.",
 	"analysis.pagination":      "rel=next/prev sequence checks.",
 	"analysis.hreflang":        "Hreflang reciprocity and validity checks.",
 	"analysis.links":           "Unique in/outlink counts per URL.",
