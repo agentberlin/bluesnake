@@ -56,10 +56,18 @@ type Info struct {
 // pageMetricsDDL is page_metrics' CREATE, shared by the schema and by ladder
 // step v10, which runs it too so a database it upgrades has the table to fill
 // even where the schema pass did not run first.
+//
+// near_copies is the page's near-copy list as the bundle carries it — a JSON
+// array of {url, share}, most shared first, at most nearcopy.MaxListed — and
+// near_copy_count the full count. Both are NULL when the page was not compared
+// (the step did not run, or the page failed its filters), which is not the
+// same as compared with none ('[]' and 0). closest_similarity and
+// near_dup_count are the older pair, written from the same list.
 const pageMetricsDDL = `CREATE TABLE IF NOT EXISTS page_metrics(
   url TEXT PRIMARY KEY, depth INT, inlinks INT DEFAULT 0, discovered_from TEXT,
   link_score REAL DEFAULT 0, unique_inlinks INT DEFAULT 0, unique_outlinks INT DEFAULT 0,
-  closest_similarity REAL DEFAULT 0, near_dup_count INT DEFAULT 0
+  closest_similarity REAL DEFAULT 0, near_dup_count INT DEFAULT 0,
+  near_copies TEXT, near_copy_count INT
 );`
 
 const crawlSchema = `
@@ -472,7 +480,7 @@ type migration struct {
 // of existing tables. Every step through v5 was retired once all installs had
 // reached v5 (DESIGN.md §5.3 "Retiring a migration"), and the minCrawlVersion
 // floor below refuses anything older, so the live steps start at {6}. Append the
-// next schema change as {11, …}; its apply func can reuse addColumn/columnExists.
+// next schema change as {12, …}; its apply func can reuse addColumn/columnExists.
 var crawlMigrations = []migration{
 	{6, "pages.proxy", func(tx *sql.Tx) error {
 		// Which egress fetched each page. Without it, a crawl that a WAF
@@ -514,6 +522,17 @@ var crawlMigrations = []migration{
 			SELECT url, depth, inlinks, discovered_from,
 			link_score, unique_inlinks, unique_outlinks, closest_similarity, near_dup_count FROM pages`)
 		return err
+	}},
+	{11, "page_metrics.near_copies", func(tx *sql.Tx) error {
+		// Each page's near-copy list and full count. An older crawl keeps NULL
+		// in both — not compared, never an empty list — until an analysis with
+		// the check on fills them; the step reads the stored text, so no
+		// re-crawl is needed. (A database whose page_metrics the schema pass
+		// just created already has them; addColumn tolerates that.)
+		if err := addColumn(tx, "page_metrics", "near_copies TEXT"); err != nil {
+			return err
+		}
+		return addColumn(tx, "page_metrics", "near_copy_count INT")
 	}},
 }
 
@@ -1886,7 +1905,8 @@ func (c *Crawl) SitemapIndex() (analyze.SitemapIndex, error) {
 // SaveAnalysis persists the graph analyses: the per-page metrics into
 // page_metrics (one upsert per page that has any, after resetting every page's
 // to the defaults so a re-analysis with a check turned off leaves no stale
-// value), the chains blob, and the analysis-phase issue occurrences.
+// value), the near-copy lists (replaced whole, cleared when the step did not
+// run), the chains blob, and the analysis-phase issue occurrences.
 func (c *Crawl) SaveAnalysis(r *analyze.Results) error {
 	tx, err := c.db.Begin()
 	if err != nil {
@@ -1894,13 +1914,12 @@ func (c *Crawl) SaveAnalysis(r *analyze.Results) error {
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`UPDATE page_metrics SET link_score = 0, unique_inlinks = 0,
-		unique_outlinks = 0, closest_similarity = 0, near_dup_count = 0`); err != nil {
+		unique_outlinks = 0`); err != nil {
 		return err
 	}
 	type metrics struct {
 		score   float64
 		in, out int
-		nd      analyze.NearDup
 	}
 	perURL := map[string]*metrics{}
 	at := func(url string) *metrics {
@@ -1920,22 +1939,21 @@ func (c *Crawl) SaveAnalysis(r *analyze.Results) error {
 	for url, n := range r.UniqueOut {
 		at(url).out = n
 	}
-	for url, nd := range r.NearDups {
-		at(url).nd = nd
-	}
-	stmt, err := tx.Prepare(`INSERT INTO page_metrics(url, link_score, unique_inlinks, unique_outlinks,
-			closest_similarity, near_dup_count) VALUES(?,?,?,?,?,?)
+	stmt, err := tx.Prepare(`INSERT INTO page_metrics(url, link_score, unique_inlinks, unique_outlinks)
+			VALUES(?,?,?,?)
 		ON CONFLICT(url) DO UPDATE SET link_score = excluded.link_score,
-			unique_inlinks = excluded.unique_inlinks, unique_outlinks = excluded.unique_outlinks,
-			closest_similarity = excluded.closest_similarity, near_dup_count = excluded.near_dup_count`)
+			unique_inlinks = excluded.unique_inlinks, unique_outlinks = excluded.unique_outlinks`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 	for url, m := range perURL {
-		if _, err := stmt.Exec(url, m.score, m.in, m.out, m.nd.ClosestSimilarity, m.nd.Count); err != nil {
+		if _, err := stmt.Exec(url, m.score, m.in, m.out); err != nil {
 			return err
 		}
+	}
+	if err := saveNearCopies(tx, r.NearCopies); err != nil {
+		return err
 	}
 	chains, err := json.Marshal(r.Chains)
 	if err != nil {

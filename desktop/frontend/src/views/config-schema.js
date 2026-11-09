@@ -121,6 +121,7 @@ export const SECTIONS = [
     tg("content.near_duplicates.enabled", "Near-duplicate detection"),
     num("content.near_duplicates.threshold", "Similarity threshold", "Re-running analysis is enough — no recrawl needed.", "%"),
     tg("content.near_duplicates.indexable_only", "Only check indexable pages"),
+    num("content.near_duplicates.min_words", "Minimum words", "Pages with fewer content words are not compared. 0 compares every page with text."),
   ]},
   { id: "analysis", label: "Analysis", icon: "git-compare", fields: [
     tg("analysis.auto", "Auto-analyse after crawl"),

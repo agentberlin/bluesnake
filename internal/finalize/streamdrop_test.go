@@ -54,7 +54,8 @@ func crawlOnePage(t *testing.T) (*store.Crawl, *crawler.Result, string) {
 // been persisted (the bulk of a PageRecord's footprint — the records themselves
 // are no longer retained at all post stream-and-drop, pinned by the crawler's
 // TestNoPageRecordRetainedAfterRun), but the store must round-trip it intact so
-// near-dup / lorem / soft-404 / compare keep reading it off LoadPages.
+// near copies (store.NearCopyPages) / lorem / soft-404 / compare keep reading
+// it back from the store.
 func TestContentTextRoundTripsThroughStore(t *testing.T) {
 	st, _, url := crawlOnePage(t)
 

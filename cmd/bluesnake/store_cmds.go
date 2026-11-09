@@ -154,7 +154,7 @@ func newResumeCmd() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), line)
 			}
 			printAnalysis(cmd, out.CrawlID, finalize.Outcome{
-				Analyzed: out.Analyzed, Chains: out.Chains, NearDups: out.NearDups,
+				Analyzed: out.Analyzed, Chains: out.Chains, NearCopies: out.NearCopies, NearDups: out.NearDups,
 				IssueTotal: out.IssueTotal, IssueChecks: out.IssueChecks,
 			})
 			return nil

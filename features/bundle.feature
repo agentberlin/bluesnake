@@ -144,6 +144,51 @@ Feature: Crawl bundle export
     And the bundle page "/about" has "inlinks" equal to "1"
     And the bundle page "/about" has "discovered_from" equal to "<serverurl>/"
 
+  # Near copies run when the crawl completes even with the rest of the analysis
+  # off — the way Berlin crawls a brand's own site — and each compared page
+  # lists the pages whose text is almost its own, with the exact share, and how
+  # many there are. A compared page with none carries an empty list; a page
+  # that was not compared (here the hub, under the minimum words) carries null,
+  # and the header records the settings the lists were measured under.
+  @nearcopies
+  Scenario: A page carries its near copies, with the analysis off
+    Given a site page "/hub" with body:
+      """
+      <html><body><a href="/guide-a">a</a> <a href="/guide-b">b</a> <a href="/pricing">p</a></body></html>
+      """
+    And a site page "/guide-a" with body:
+      """
+      <html><head><title>Guide A</title></head><body><p>Single sign on lets a person use one set of credentials to reach many applications across a company and the identity provider checks who they are once then tells each application through a signed message that the person may enter so nobody types a password twice and the security team can switch access off in one place when someone leaves the company or changes role inside it today</p></body></html>
+      """
+    And a site page "/guide-b" with body:
+      """
+      <html><head><title>Guide B</title></head><body><p>Single sign on lets a person use one set of credentials to reach many applications across a company and the identity provider checks who they are once then tells each application through a signed assertion that the person may enter so nobody types a password twice and the security team can switch access off in one place when someone leaves the company or changes role inside it today</p></body></html>
+      """
+    And a site page "/pricing" with body:
+      """
+      <html><head><title>Pricing</title></head><body><p>Pricing for the cloud plan starts with a free tier for small teams and grows with the number of monthly active users with discounts for annual billing and nonprofits plus a dedicated support channel on the enterprise plan which also adds audit logs custom domains and a service level agreement covering uptime response times and data residency in the region the customer chooses at signup</p></body></html>
+      """
+    When I run "bluesnake crawl <serverurl>/hub --store-dir <storedir> --quiet --set analysis.auto=false --set content.near_duplicates.enabled=true --set content.near_duplicates.threshold=80 --set content.near_duplicates.min_words=50"
+    And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
+    Then the exit code is 0
+    And the bundle page "/guide-a" has "near_copies" containing "<serverurl>/guide-b"
+    And the bundle page "/guide-a" has "near_copy_count" equal to "1"
+    And the bundle page "/guide-b" has "near_copies" containing "<serverurl>/guide-a"
+    And the bundle page "/pricing" has "near_copies" equal to "[]"
+    And the bundle page "/pricing" has "near_copy_count" equal to "0"
+    And the bundle page "/hub" has a null "near_copies"
+    And the bundle header has "near_copy_settings" equal to "map[ignore_paginated:false indexable_only:true min_words:50 threshold:80]"
+
+  # With the check off nothing is compared: every list is null, never empty.
+  @nearcopies
+  Scenario: A crawl without the near-copy check carries no lists
+    When I run "bluesnake crawl <serverurl>/ --store-dir <storedir> --quiet"
+    And I run "bluesnake bundle <crawlid> --store-dir <storedir> -o <storedir>/crawl.jsonl"
+    Then the exit code is 0
+    And the bundle page "/about" has a null "near_copies"
+    And the bundle page "/about" has a null "near_copy_count"
+    And the bundle header has "near_copy_settings" equal to "<nil>"
+
   # The site-check pass's reports are stored data, so they ride along, each on
   # a line of its own between the header and the pages, counted in the header:
   # the robots.txt the crawl obeyed, verbatim inside the robots report, and the

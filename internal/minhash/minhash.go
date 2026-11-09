@@ -9,6 +9,7 @@ package minhash
 import (
 	"encoding/binary"
 	"hash/fnv"
+	"slices"
 	"strings"
 )
 
@@ -30,13 +31,64 @@ const EncodedLen = SigSize * 8
 // independent (fixed 5-word shingle, fixed SigSize permutations), which is what
 // lets the crawler precompute it once and the analyzer reuse it verbatim.
 func Of(text string) Signature {
+	sig := empty()
+	eachShingle(text, func(base uint64) { sig.add(base) })
+	return sig
+}
+
+// Shingles returns the text's shingle set — the hash of every 5-word shingle
+// Of reads, deduplicated and sorted ascending — so the exact Jaccard of two
+// texts is the overlap of two of these, measured over exactly the shingles their
+// signatures estimate it from. A text of fewer than five words is one shingle
+// of all its words; an empty text has none.
+func Shingles(text string) []uint64 {
+	var set []uint64
+	eachShingle(text, func(base uint64) { set = append(set, base) })
+	slices.Sort(set)
+	return slices.Compact(set)
+}
+
+// FromShingles builds the signature of a shingle set, as Of builds it from the
+// text: FromShingles(Shingles(t)) == Of(t), since a minimum does not depend on
+// the order or repetition of what it is taken over.
+func FromShingles(set []uint64) Signature {
+	sig := empty()
+	for _, base := range set {
+		sig.add(base)
+	}
+	return sig
+}
+
+// empty is the signature of no shingles: every position at its maximum.
+func empty() Signature {
 	var sig Signature
 	for i := range sig {
 		sig[i] = ^uint64(0)
 	}
+	return sig
+}
+
+// add folds one shingle hash into the signature: position k keeps the minimum
+// of the k-th permutation over every shingle added.
+func (s *Signature) add(base uint64) {
+	for k := range s {
+		// k-th permutation via multiply-xor mixing
+		v := base ^ (uint64(k)*0x9E3779B97F4A7C15 + 0x517CC1B727220A95)
+		v *= 0xBF58476D1CE4E5B9
+		v ^= v >> 27
+		if v < s[k] {
+			s[k] = v
+		}
+	}
+}
+
+// eachShingle hands fn the hash of every 5-word shingle of the lowercased
+// text, in order and with repeats: FNV-1a over the words, each followed by a
+// zero byte. The one shingling Of, Shingles and FromShingles share.
+func eachShingle(text string, fn func(uint64)) {
 	words := strings.Fields(strings.ToLower(text))
 	if len(words) == 0 {
-		return sig
+		return
 	}
 	shingleLen := min(5, len(words))
 	for i := 0; i+shingleLen <= len(words); i++ {
@@ -45,18 +97,8 @@ func Of(text string) Signature {
 			h.Write([]byte(w))
 			h.Write([]byte{0})
 		}
-		base := h.Sum64()
-		for k := range sig {
-			// k-th permutation via multiply-xor mixing
-			v := base ^ (uint64(k)*0x9E3779B97F4A7C15 + 0x517CC1B727220A95)
-			v *= 0xBF58476D1CE4E5B9
-			v ^= v >> 27
-			if v < sig[k] {
-				sig[k] = v
-			}
-		}
+		fn(h.Sum64())
 	}
-	return sig
 }
 
 // Similarity estimates the Jaccard similarity (0–1) of the two shingle sets as
@@ -86,7 +128,7 @@ func (s Signature) Encode() []byte {
 // reaches Decode on bad data degrades to "no content" rather than panicking.
 func Decode(b []byte) Signature {
 	if len(b) != EncodedLen {
-		return Of("")
+		return empty()
 	}
 	var s Signature
 	for i := range s {

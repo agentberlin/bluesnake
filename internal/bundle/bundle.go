@@ -178,11 +178,27 @@ type Header struct {
 	// they describe exactly the lines that follow.
 	SiteChecks int `json:"site_checks"`
 	LlmsTxt    int `json:"llms_txt"`
+	// NearCopySettings are the settings the near-copy step ran with — the
+	// floor of every page's near_copies list — or null when it did not run on
+	// this crawl, in which case every page's near_copies is null too. Added
+	// within bluesnake.pages/3: absent on an older bundle, which means the same.
+	NearCopySettings *NearCopySettings `json:"near_copy_settings"`
 	// Egress is present when the crawl switched to its proxy mid-crawl
 	// (http.proxy_on_block): pages recorded before SwitchedAfter came from this
 	// machine's IP, later ones through the proxy — each page line's `proxy`
 	// names its own route. Absent when the crawl never switched.
 	Egress *Egress `json:"egress,omitempty"`
+}
+
+// NearCopySettings are the near-copy step's settings: a pair is a near copy
+// when its share is at least Threshold/100; pages under MinWords content words,
+// non-indexable pages when IndexableOnly, and page 2+ of a paginated series
+// when IgnorePaginated were not compared.
+type NearCopySettings struct {
+	Threshold       int  `json:"threshold"` // percent
+	MinWords        int  `json:"min_words"`
+	IndexableOnly   bool `json:"indexable_only"`
+	IgnorePaginated bool `json:"ignore_paginated"`
 }
 
 // Egress is the header's record of a mid-crawl switch to the proxy.
@@ -297,11 +313,23 @@ type Page struct {
 	DiscoveredFrom     string  `json:"discovered_from"`
 	OutsideStartFolder bool    `json:"outside_start_folder"`
 	// Duplicates: DuplicateOf names the page whose raw body this one was
-	// byte-identical to (the R8 short-circuit); ClosestSimilarity and
-	// NearDupCount are the near-duplicate analysis over content text.
-	DuplicateOf       string  `json:"duplicate_of"`
-	ClosestSimilarity float64 `json:"closest_similarity"`
-	NearDupCount      int     `json:"near_dup_count"`
+	// byte-identical to (the R8 short-circuit).
+	DuplicateOf string `json:"duplicate_of"`
+	// NearCopies are the other pages whose content-area text is almost this
+	// page's, each with the exact share of 5-word shingles the two have in
+	// common (0–1, 4 places): every one at or above the header's
+	// near_copy_settings.threshold, highest share first then by URL, at most
+	// 50 (nearcopy.MaxListed). A pair is listed on both pages with the same
+	// share, unless the cap cuts it from one. Byte-identical pages are listed
+	// at 1 (and keep duplicate_of). NearCopyCount counts them all, not only the
+	// listed ones. Both are null when the page was not compared — the step did
+	// not run, or the page failed its filters (see the header) — and [] / 0
+	// when it was compared and has none. ClosestSimilarity (the top share as a
+	// percent) and NearDupCount (the full count) come from the same list.
+	NearCopies        []NearCopy `json:"near_copies"`
+	NearCopyCount     *int       `json:"near_copy_count"`
+	ClosestSimilarity float64    `json:"closest_similarity"`
+	NearDupCount      int        `json:"near_dup_count"`
 	// Headers are the response headers as stored (first value each). The map
 	// is always present — {} where nothing was recorded — and LastModified stays
 	// as the one header the first bundles already pulled out.
@@ -385,6 +413,13 @@ type Page struct {
 	// come last so the rest of a record is readable before the wall of markup.
 	HTML         *string `json:"html,omitempty"`
 	RenderedHTML *string `json:"rendered_html,omitempty"`
+}
+
+// NearCopy is one near copy of a page: the other page and the share of
+// content text the two have in common.
+type NearCopy struct {
+	URL   string  `json:"url"`
+	Share float64 `json:"share"`
 }
 
 // Author is one piece of author evidence: where it was found and what it said.
@@ -501,6 +536,7 @@ const pageColumns = `pages.url, scope, state, COALESCE(page_metrics.depth, ?), s
 	COALESCE(page_metrics.unique_outlinks, 0), COALESCE(page_metrics.link_score, 0),
 	COALESCE(page_metrics.discovered_from, ''), outside_start_folder,
 	COALESCE(duplicate_of, ''), COALESCE(page_metrics.closest_similarity, 0), COALESCE(page_metrics.near_dup_count, 0),
+	page_metrics.near_copies, page_metrics.near_copy_count,
 	headers, structured, jsdiff, facts,
 	COALESCE((SELECT json_group_array(json_object('kind', kind, 'name', name, 'value', value))
 		FROM custom_results WHERE custom_results.url = pages.url), '[]'),
@@ -578,6 +614,13 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 	if err := tx.QueryRow(`SELECT (SELECT COUNT(*) FROM site_checks), (SELECT COUNT(*) FROM llmstxt)`).Scan(&checks, &llms); err != nil {
 		return err
 	}
+	var ncSettings *NearCopySettings
+	if ns, err := store.NearCopySettings(tx); err != nil {
+		return err
+	} else if ns != nil {
+		ncSettings = &NearCopySettings{Threshold: ns.Threshold, MinWords: ns.MinWords,
+			IndexableOnly: ns.IndexableOnly, IgnorePaginated: ns.IgnorePaginated}
+	}
 
 	out := w
 	var gz *gzip.Writer
@@ -612,6 +655,7 @@ func Write(st *store.Crawl, info store.Info, opts Options, w io.Writer) error {
 		ConfigDigest:     configDigest(cfgYAML),
 		SiteChecks:       checks,
 		LlmsTxt:          llms,
+		NearCopySettings: ncSettings,
 		Egress:           egress,
 	}); err != nil {
 		return err
@@ -675,15 +719,27 @@ func (s *stream) pages(fn func(*Page) error) error {
 		var depth, indexable, outside int
 		var headersJSON, structuredJSON, jsdiffJSON, factsJSON, customJSON, sitemapsJSON []byte
 		var htmlPath, renderedPath string
+		var nearCopies sql.NullString
+		var nearCopyCount sql.NullInt64
 		if err := rows.Scan(&p.URL, &p.Scope, &p.State, &depth, &p.StatusCode, &p.Status,
 			&p.ContentType, &p.HTTPVersion, &p.ResponseTimeMs, &p.Size, &p.FetchError,
 			&p.RedirectURL, &p.RedirectType, &indexable, &p.IndexabilityStatus,
 			&p.MatchedRobotsLine, &p.Proxy,
 			&p.Inlinks, &p.UniqueInlinks, &p.UniqueOutlinks, &p.LinkScore, &p.DiscoveredFrom, &outside,
-			&p.DuplicateOf, &p.ClosestSimilarity, &p.NearDupCount,
+			&p.DuplicateOf, &p.ClosestSimilarity, &p.NearDupCount, &nearCopies, &nearCopyCount,
 			&headersJSON, &structuredJSON, &jsdiffJSON, &factsJSON, &customJSON, &sitemapsJSON,
 			&htmlPath, &renderedPath); err != nil {
 			return err
+		}
+		// Stored as the bundle carries it — sorted, capped — so decoded only to
+		// validate it and keep the shape typed; NULL stays null.
+		if nearCopies.Valid {
+			p.NearCopies = []NearCopy{}
+			if err := json.Unmarshal([]byte(nearCopies.String), &p.NearCopies); err != nil {
+				return fmt.Errorf("%s: near_copies: %w", p.URL, err)
+			}
+			n := int(nearCopyCount.Int64)
+			p.NearCopyCount = &n
 		}
 		p.Indexable = indexable == 1
 		p.OutsideStartFolder = outside == 1

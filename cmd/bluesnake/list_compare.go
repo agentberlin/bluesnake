@@ -137,7 +137,7 @@ func newListCmd() *cobra.Command {
 				fmt.Fprintln(cmd.ErrOrStderr(), "finalize:", out.Err)
 			} else if !quiet {
 				printAnalysis(cmd, out.CrawlID, finalize.Outcome{
-					Analyzed: out.Analyzed, Chains: out.Chains, NearDups: out.NearDups,
+					Analyzed: out.Analyzed, Chains: out.Chains, NearCopies: out.NearCopies, NearDups: out.NearDups,
 					IssueTotal: out.IssueTotal, IssueChecks: out.IssueChecks,
 				})
 			}

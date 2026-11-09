@@ -19,6 +19,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/extract"
 	"github.com/agentberlin/bluesnake/internal/frontier"
 	"github.com/agentberlin/bluesnake/internal/issues"
+	"github.com/agentberlin/bluesnake/internal/nearcopy"
 	"github.com/agentberlin/bluesnake/internal/parse"
 	"github.com/agentberlin/bluesnake/internal/structured"
 )
@@ -712,9 +713,10 @@ func TestAnalysisPersistence(t *testing.T) {
 		LinkScores: map[string]float64{"https://ex.com/": 100},
 		UniqueIn:   map[string]int{"https://ex.com/a": 3},
 		UniqueOut:  map[string]int{"https://ex.com/": 5},
-		NearDups: map[string]analyze.NearDup{
-			"https://ex.com/a": {ClosestMatch: "https://ex.com/", ClosestSimilarity: 95, Count: 1},
-		},
+		NearCopies: &nearcopy.Result{Settings: nearcopy.Settings{Threshold: 90}, Pairs: 1, Pages: []nearcopy.PageResult{
+			{URL: "https://ex.com/", Copies: []nearcopy.Copy{{URL: "https://ex.com/a", Share: 0.95}}, Count: 1},
+			{URL: "https://ex.com/a", Copies: []nearcopy.Copy{{URL: "https://ex.com/", Share: 0.95}}, Count: 1},
+		}},
 		Chains: []analyze.Chain{{Type: "redirect", Source: "https://ex.com/r", Hops: []string{"a", "b"}}},
 		Occurrences: []issues.Occurrence{
 			{URL: "https://ex.com/a", IssueID: "content_near_duplicate"},
@@ -729,6 +731,14 @@ func TestAnalysisPersistence(t *testing.T) {
 	c.db.QueryRow(`SELECT unique_inlinks FROM page_metrics WHERE url = 'https://ex.com/a'`).Scan(&uniqueIn)
 	if score != 100 || uniqueIn != 3 {
 		t.Errorf("score=%v uniqueIn=%d", score, uniqueIn)
+	}
+	var list string
+	var closest float64
+	var count, dupCount int
+	c.db.QueryRow(`SELECT near_copies, near_copy_count, closest_similarity, near_dup_count FROM page_metrics
+		WHERE url = 'https://ex.com/a'`).Scan(&list, &count, &closest, &dupCount)
+	if list != `[{"url":"https://ex.com/","share":0.95}]` || count != 1 || closest != 95 || dupCount != 1 {
+		t.Errorf("near copies of /a = %s count %d closest %v near_dup_count %d", list, count, closest, dupCount)
 	}
 	chains, err := c.Chains()
 	if err != nil {

@@ -1,8 +1,9 @@
 // Package analyze implements the post-crawl analysis phase (DESIGN.md §5.6):
 // whole-graph computations that can't run while streaming — link score
 // (PageRank), redirect/canonical chains and loops, near-duplicate content
-// (minhash), hreflang reciprocity, pagination sequences, and sitemap set
-// operations. All analyses are pure over the loaded page set and re-runnable.
+// (from the internal/nearcopy step), hreflang reciprocity, pagination
+// sequences, and sitemap set operations. All analyses are pure over the loaded
+// page set and re-runnable.
 package analyze
 
 import (
@@ -16,7 +17,7 @@ import (
 	"github.com/agentberlin/bluesnake/internal/indexability"
 	"github.com/agentberlin/bluesnake/internal/isocodes"
 	"github.com/agentberlin/bluesnake/internal/issues"
-	"github.com/agentberlin/bluesnake/internal/minhash"
+	"github.com/agentberlin/bluesnake/internal/nearcopy"
 	"github.com/agentberlin/bluesnake/internal/parse"
 	"github.com/agentberlin/bluesnake/internal/sitecheck"
 	"github.com/agentberlin/bluesnake/internal/urlutil"
@@ -32,20 +33,15 @@ type Chain struct {
 	Loop        bool     `json:"loop"`
 }
 
-// NearDup is the near-duplicate result for one URL.
-type NearDup struct {
-	ClosestMatch      string  `json:"closest_match"`
-	ClosestSimilarity float64 `json:"closest_similarity"` // percent
-	Count             int     `json:"count"`
-}
-
 // Results carries everything the analysis pass computed.
 type Results struct {
-	LinkScores  map[string]float64
-	UniqueIn    map[string]int
-	UniqueOut   map[string]int
-	Chains      []Chain
-	NearDups    map[string]NearDup
+	LinkScores map[string]float64
+	UniqueIn   map[string]int
+	UniqueOut  map[string]int
+	Chains     []Chain
+	// NearCopies is the near-copy step's result, as WithNearCopies supplied
+	// it; nil when the step did not run.
+	NearCopies  *nearcopy.Result
 	Occurrences []issues.Occurrence
 }
 
@@ -110,6 +106,13 @@ func WithLinkSource(s LinkSource) Option {
 	return func(a *analyzer) { a.links = s }
 }
 
+// WithNearCopies supplies the near-copy step's result (nearcopy.Run, which
+// reads each page's text from the store itself), for Results and for the
+// content_near_duplicate issue. Without it no page is a near duplicate.
+func WithNearCopies(res *nearcopy.Result) Option {
+	return func(a *analyzer) { a.nearCopies = res }
+}
+
 // Hyperlink is one stored hyperlink row for HyperlinkRows.
 type Hyperlink struct {
 	Src, Dst string
@@ -132,7 +135,6 @@ func Run(pages map[string]*crawler.PageRecord, sitemaps SitemapIndex, llmstxt *L
 		LinkScores: map[string]float64{},
 		UniqueIn:   map[string]int{},
 		UniqueOut:  map[string]int{},
-		NearDups:   map[string]NearDup{},
 	}
 	a := &analyzer{pages: pages, cfg: cfg, res: r, rewrite: crawler.NewURLRewriter(cfg)}
 	for _, o := range opts {
@@ -144,7 +146,7 @@ func Run(pages map[string]*crawler.PageRecord, sitemaps SitemapIndex, llmstxt *L
 	if cfg.Analysis.RedirectChains {
 		a.chains()
 	}
-	if cfg.Analysis.NearDuplicates && cfg.Content.NearDuplicates.Enabled {
+	if a.nearCopies != nil {
 		a.nearDuplicates()
 	}
 	if cfg.Analysis.Hreflang {
@@ -179,7 +181,8 @@ func (a *analyzer) siteChecks(checks []SiteCheck) {
 
 type analyzer struct {
 	pages       map[string]*crawler.PageRecord
-	links       LinkSource // stored hyperlinks; nil ⇒ use Facts.Links
+	links       LinkSource       // stored hyperlinks; nil ⇒ use Facts.Links
+	nearCopies  *nearcopy.Result // the near-copy step's result; nil ⇒ none
 	cfg         *config.Config
 	res         *Results
 	hyperlinked map[string]bool // memoized by hyperlinkedSet
@@ -468,87 +471,19 @@ func (a *analyzer) followChain(source, typ string, next func(*crawler.PageRecord
 	}
 }
 
-// nearDuplicates estimates pairwise content similarity with minhash
-// signatures over 5-word shingles of the content-area text.
+// nearDuplicates carries the near-copy step's result and raises
+// content_near_duplicate on each page with a near copy that is not its
+// byte-identical twin — the exact-duplicate check reports those, and Screaming
+// Frog's Near Duplicates leaves them out — naming the closest such copy.
 func (a *analyzer) nearDuplicates() {
-	threshold := float64(a.cfg.Content.NearDuplicates.Threshold)
-	type cand struct {
-		url string
-		sig signature
-	}
-	var cands []cand
-	for url, rec := range a.pages {
-		if rec.Facts == nil || rec.Scope != "internal" || rec.State != crawler.StateCrawled {
+	a.res.NearCopies = a.nearCopies
+	for _, p := range a.nearCopies.Pages {
+		if p.DistinctCount == 0 {
 			continue
 		}
-		if a.cfg.Content.NearDuplicates.IndexableOnly && !rec.Indexable {
-			continue
-		}
-		// SF's "Ignore Paginated URLs for Duplicate Filters" also covers the
-		// Content near-duplicate filter: page 2+ of a sequence (declares
-		// rel="prev") is neither flagged nor offered as a match target.
-		if a.cfg.Advanced.IgnorePaginatedForDuplicates && rec.Facts.IsPaginated() {
-			continue
-		}
-		if rec.Facts.WordCount == 0 {
-			continue
-		}
-		// Prefer the signature precomputed at crawl time (the pages.minhash
-		// column, populated when near-dup was enabled) so we never re-materialise
-		// ContentText. Older crawls / near-dup-off crawls carry no column; fall
-		// back to hashing the body, which finalize loads in that case. A page
-		// with NEITHER a signature nor body text (a lite-map page predating the
-		// near-dup switch-on) is excluded outright: hashing the empty text yields
-		// the all-max signature, which matches every other empty signature at
-		// 100% (#74 N1) — finalize reloads the full map for that state, so
-		// reaching here without text is a caller bug this line defends against.
-		sig := minhash.Decode(rec.Minhash)
-		if len(rec.Minhash) != minhash.EncodedLen {
-			if rec.Facts.ContentText == "" {
-				continue
-			}
-			sig = minhash.Of(rec.Facts.ContentText)
-		}
-		cands = append(cands, cand{url, sig})
+		a.add(p.URL, "content_near_duplicate",
+			fmt.Sprintf("%.0f%% similar to %s", p.DistinctClosest.Share*100, p.DistinctClosest.URL))
 	}
-	exact := map[string]string{} // hash -> first url, to exclude exact dups
-	for _, c := range cands {
-		if rec := a.pages[c.url]; rec.Facts != nil {
-			exact[c.url] = rec.Facts.Hash
-		}
-	}
-	// LSH banding prunes the candidate space (vs all-pairs); every candidate
-	// pair is still verified with the exact signature similarity.
-	sigs := make([]signature, len(cands))
-	for i, c := range cands {
-		sigs[i] = c.sig
-	}
-	for _, p := range lshCandidates(sigs, lshRowsPerBand(threshold)) {
-		i, j := p[0], p[1]
-		if exact[cands[i].url] == exact[cands[j].url] {
-			continue // exact duplicates are a separate check
-		}
-		sim := cands[i].sig.Similarity(cands[j].sig) * 100
-		if sim < threshold {
-			continue
-		}
-		a.noteNearDup(cands[i].url, cands[j].url, sim)
-		a.noteNearDup(cands[j].url, cands[i].url, sim)
-	}
-	for url, nd := range a.res.NearDups {
-		a.add(url, "content_near_duplicate",
-			fmt.Sprintf("%.0f%% similar to %s", nd.ClosestSimilarity, nd.ClosestMatch))
-	}
-}
-
-func (a *analyzer) noteNearDup(url, other string, sim float64) {
-	nd := a.res.NearDups[url]
-	nd.Count++
-	if sim > nd.ClosestSimilarity {
-		nd.ClosestSimilarity = sim
-		nd.ClosestMatch = other
-	}
-	a.res.NearDups[url] = nd
 }
 
 // validHreflang checks a code against the embedded ISO registries: an
