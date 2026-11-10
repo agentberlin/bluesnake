@@ -130,7 +130,7 @@ jobs:
   desktop-macos:
     name: Desktop .app + .dmg (universal) + embedded CLI
     needs: [resolve-version, test]
-    runs-on: macos-14
+    runs-on: macos-latest
     env:
       VERSION: ${{ needs.resolve-version.outputs.version }}
     steps:
