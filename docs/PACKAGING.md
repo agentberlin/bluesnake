@@ -128,7 +128,7 @@ On a `v*` tag:
    **fails in seconds** only if the tag isn't `v<semver>`. Each build job stamps
    that value into `internal/version/VERSION` before building, so the binary and
    the desktop frontend report the tag's version.
-2. `cli-linux` (matrix amd64/arm64), `desktop-macos` (macos-14), and
+2. `cli-linux` (matrix amd64/arm64), `desktop-macos` (macos-latest), and
    `desktop-windows` (windows-latest) build and upload **GitHub Actions
    artifacts** (per-run, native, 90-day retention).
 3. `release` gathers everything, adds **version-less aliases** for the
